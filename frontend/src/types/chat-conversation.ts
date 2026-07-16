@@ -103,6 +103,7 @@ export const ChatConversationSchema = z.object({
   effectiveEffort: z.string().nullable().optional(),
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  boundAgentName: z.string().nullable().optional(),
   personaId: z.string().nullable().optional(),
   builderDraftId: z.string().nullable().optional(),
   lastRunPersonaRunId: z.string().nullable().optional(),

@@ -443,7 +443,7 @@ impl ResolvedChatHarnessCli {
                         &capabilities,
                         request.conversation,
                         request.user_message,
-                        None,
+                        request.conversation.bound_agent_name.as_deref(),
                         None,
                         request
                             .persona
@@ -2354,8 +2354,9 @@ pub async fn build_command(
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Compute agent_name using the resolution system (context type + optional status + team mode)
-    let agent_name =
-        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode);
+    let agent_name = conversation.bound_agent_name.as_deref().unwrap_or_else(|| {
+        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
+    });
     tracing::debug!(
         agent_name,
         context_type = ?conversation.context_type,

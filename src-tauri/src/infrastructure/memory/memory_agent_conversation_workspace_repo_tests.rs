@@ -3,10 +3,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewTargetScope, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -78,6 +79,69 @@ async fn restart_restore_rejects_missing_workspace() {
         .expect_err("restore should require an existing workspace");
 
     assert!(error.to_string().contains("Workspace not found"));
+}
+
+#[tokio::test]
+async fn approve_workspace_review_anyway_is_exact_and_single_use() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-review-bypass");
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .expect("insert workspace");
+    let artifact_id = ArtifactId::from_string("artifact-review-bypass");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-1".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(2);
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert blocking monitor");
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-1".to_string(),
+        artifact_id,
+        artifact_version: 2,
+    };
+
+    let applied = repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("approve exact snapshot")
+        .expect("transition should apply");
+    assert_eq!(
+        applied.review_outcome,
+        AgentWorkspaceReviewOutcome::Blocking
+    );
+    assert_eq!(
+        applied.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("retry should be a no-op")
+        .is_none());
+    let events = repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list audit events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "workspace_review_approved_anyway")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

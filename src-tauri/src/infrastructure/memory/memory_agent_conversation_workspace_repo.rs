@@ -13,8 +13,9 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -885,6 +886,52 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .get(conversation_id)
             .cloned())
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        let fixer_active = matches!(
+            monitor.review_fixer_status.as_deref(),
+            Some("routing" | "queued" | "running")
+        );
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
+            || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
+            || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
+            || monitor.current_target_scope != Some(snapshot.target_scope)
+            || monitor.reviewed_target_scope != Some(snapshot.target_scope)
+            || monitor.current_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.reviewed_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
+            || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || fixer_active
+        {
+            return Ok(None);
+        }
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_gate_bypassed_at = Some(approved_at);
+        monitor.review_gate_bypassed_target_scope = Some(snapshot.target_scope);
+        monitor.review_gate_bypassed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+        monitor.review_gate_bypassed_artifact_id = Some(snapshot.artifact_id.clone());
+        monitor.review_gate_bypassed_artifact_version = Some(snapshot.artifact_version);
+        monitor.updated_at = approved_at;
+        let updated = monitor.clone();
+        self.publication_events
+            .write()
+            .await
+            .entry(*conversation_id)
+            .or_default()
+            .push(snapshot.audit_event(*conversation_id, approved_at));
+        Ok(Some(updated))
     }
 
     async fn list_reviewing_workspace_review_monitors(

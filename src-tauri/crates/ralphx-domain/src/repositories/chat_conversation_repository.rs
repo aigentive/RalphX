@@ -126,6 +126,13 @@ pub trait ChatConversationRepository: Send + Sync {
         mode: Option<AgentConversationWorkspaceMode>,
     ) -> AppResult<()>;
 
+    /// Persist or clear the canonical specialist identity for a parented child.
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Set or clear the persona bound to a conversation.
     async fn update_persona_binding(
         &self,

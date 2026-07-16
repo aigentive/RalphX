@@ -39,9 +39,7 @@ use crate::application::agent_conversation_workspace::{
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
-use crate::application::agent_workspace_continuation::{
-    classify_agent_workspace_continuation_with_plan_branch,
-};
+use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation_with_plan_branch;
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
@@ -73,20 +71,19 @@ use crate::domain::entities::{
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
     IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, PersonaId,
-    PersonaStatus, ProjectId, TaskId,
-    TeamIntent, TeamMessageTarget,
+    PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, BranchUpdateRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PersonaRepository, PlanBranchRepository,
+    ProjectRepository, QueuedMessageRepository, ReviewRepository, StateHistoryMetadata,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -96,6 +93,9 @@ use crate::domain::services::{
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
+};
+use crate::infrastructure::agents::harness_agent_catalog::{
+    load_canonical_agent_definition, resolve_project_root_from_plugin_dir,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -115,11 +115,11 @@ const REGISTRY_PID_ZERO_GRACE_SECONDS: i64 = 30;
 const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user";
 
 // Re-exports from extracted modules
-#[doc(hidden)]
-pub use chat_service_context::create_assistant_message;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::build_launch_plan_for_harness_with_persona_for_test;
+#[doc(hidden)]
+pub use chat_service_context::create_assistant_message;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::ResolvedChatHarnessLaunch;
@@ -163,6 +163,7 @@ pub use chat_service_streaming::{
     StreamOutcome, StreamTimeoutConfig,
 };
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
+pub(crate) use chat_service_types::{decode_pending_initial_prompt, encode_pending_initial_prompt};
 pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
@@ -172,9 +173,6 @@ pub use chat_service_types::{
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
     TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
     TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
-};
-pub(crate) use chat_service_types::{
-    decode_pending_initial_prompt, encode_pending_initial_prompt,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -766,6 +764,28 @@ fn resolve_agent_name_for_send<'a>(
         })
 }
 
+fn preferred_agent_override<'a>(
+    explicit_agent_name: Option<&'a str>,
+    bound_agent_name: Option<&'a str>,
+) -> Option<&'a str> {
+    explicit_agent_name.or(bound_agent_name)
+}
+
+fn canonical_parented_agent_binding(
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    explicit_agent_name: Option<&str>,
+) -> Option<String> {
+    conversation.parent_conversation_id.as_ref()?;
+    let agent_name = explicit_agent_name?.trim();
+    if agent_name.is_empty() {
+        return None;
+    }
+
+    let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
+    load_canonical_agent_definition(&project_root, agent_name).map(|definition| definition.name)
+}
+
 /// Resolve the effective agent-conversation mode used for agent selection on a
 /// `send_message` spawn.
 ///
@@ -818,9 +838,7 @@ pub(super) fn persona_resolve_flags_for_conversation(
 }
 
 /// Returns whether this conversation uses the PersonaBuilder ingest-only runtime mode.
-pub fn is_persona_builder_conversation(
-    agent_mode: Option<AgentConversationWorkspaceMode>,
-) -> bool {
+pub fn is_persona_builder_conversation(agent_mode: Option<AgentConversationWorkspaceMode>) -> bool {
     agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
 }
 
@@ -1497,9 +1515,8 @@ impl<R: Runtime> AppChatService<R> {
     }
 
     fn persona_feature_enabled(&self) -> bool {
-        self.persona_feature_enabled_override.unwrap_or_else(
-            crate::infrastructure::agents::claude::agent_personas_enabled,
-        )
+        self.persona_feature_enabled_override
+            .unwrap_or_else(crate::infrastructure::agents::claude::agent_personas_enabled)
     }
 
     fn has_live_persona_builder_ingest_session(
@@ -4138,7 +4155,7 @@ impl<R: Runtime> AppChatService<R> {
             persona_resolve_flags_for_conversation(
                 self.persona_feature_enabled(),
                 options.is_external_mcp,
-                options.agent_name_override.is_some(),
+                options.agent_name_override.is_some() || conversation.bound_agent_name.is_some(),
                 conversation.context_type,
                 conversation,
                 workspace_mode,
@@ -4911,7 +4928,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             &context_type,
             entity_status.as_deref(),
             team_mode_val,
-            options.agent_name_override.as_deref(),
+            preferred_agent_override(
+                options.agent_name_override.as_deref(),
+                conversation.bound_agent_name.as_deref(),
+            ),
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
@@ -4981,16 +5001,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let run_chain_id = agent_run.run_chain_id.clone();
 
         let branch_update_binding = if context_type == ChatContextType::BranchUpdate {
-            let branch_update_repo = self
-                .branch_update_repo
-                .lock()
-                .unwrap()
-                .clone()
-                .ok_or_else(|| {
-                    ChatServiceError::SpawnFailed(
-                        "Branch updater has no durable authority repository".to_string(),
-                    )
-                })?;
+            let branch_update_repo =
+                self.branch_update_repo
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| {
+                        ChatServiceError::SpawnFailed(
+                            "Branch updater has no durable authority repository".to_string(),
+                        )
+                    })?;
             let task_id = TaskId::from_string(context_id.to_string());
             let operation = branch_update_repo
                 .get_active_operation(&task_id)
@@ -6126,6 +6146,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Ok(result) => result,
                 Err(error) => cleanup_and_err!(error),
             };
+
+        if let Some(bound_agent_name) = canonical_parented_agent_binding(
+            &self.plugin_dir,
+            &conversation,
+            options.agent_name_override.as_deref(),
+        ) {
+            if conversation.bound_agent_name.as_deref() != Some(bound_agent_name.as_str()) {
+                match self
+                    .conversation_repo
+                    .update_bound_agent_name(&conversation.id, Some(bound_agent_name.as_str()))
+                    .await
+                {
+                    Ok(()) => conversation.bound_agent_name = Some(bound_agent_name),
+                    Err(error) => tracing::error!(
+                        conversation_id = %conversation.id,
+                        error = %error,
+                        "Failed to persist the launched child runtime's canonical agent binding"
+                    ),
+                }
+            }
+        }
 
         // Register verification child PID for explicit cleanup after reconciliation (Fix A).
         // Only for Ideation sessions with SessionPurpose::Verification.

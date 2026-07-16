@@ -13,10 +13,10 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -273,6 +273,19 @@ fn row_to_workspace_review_monitor(
         review_artifact_updated_at: row
             .get::<_, Option<String>>("review_artifact_updated_at")?
             .map(|value| parse_datetime(&value)),
+        review_gate_bypassed_at: row
+            .get::<_, Option<String>>("review_gate_bypassed_at")?
+            .map(|value| parse_datetime(&value)),
+        review_gate_bypassed_target_scope: row
+            .get::<_, Option<String>>("review_gate_bypassed_target_scope")?
+            .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok()),
+        review_gate_bypassed_diff_fingerprint: row.get("review_gate_bypassed_diff_fingerprint")?,
+        review_gate_bypassed_artifact_id: row
+            .get::<_, Option<String>>("review_gate_bypassed_artifact_id")?
+            .map(ArtifactId::from_string),
+        review_gate_bypassed_artifact_version: row
+            .get::<_, Option<i64>>("review_gate_bypassed_artifact_version")?
+            .and_then(|value| u32::try_from(value).ok()),
         reviewed_head_sha: row.get("reviewed_head_sha")?,
         reviewed_diff_fingerprint: row.get("reviewed_diff_fingerprint")?,
         selected_source_base_ref: row.get("selected_source_base_ref")?,
@@ -1966,6 +1979,19 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let review_artifact_updated_at = monitor
             .review_artifact_updated_at
             .map(|value| value.to_rfc3339());
+        let review_gate_bypassed_at = monitor
+            .review_gate_bypassed_at
+            .map(|value| value.to_rfc3339());
+        let review_gate_bypassed_target_scope = monitor
+            .review_gate_bypassed_target_scope
+            .map(|scope| scope.to_string());
+        let review_gate_bypassed_diff_fingerprint = monitor.review_gate_bypassed_diff_fingerprint;
+        let review_gate_bypassed_artifact_id = monitor
+            .review_gate_bypassed_artifact_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_gate_bypassed_artifact_version =
+            monitor.review_gate_bypassed_artifact_version.map(i64::from);
         let reviewed_head_sha = monitor.reviewed_head_sha;
         let reviewed_diff_fingerprint = monitor.reviewed_diff_fingerprint;
         let selected_source_base_ref = monitor.selected_source_base_ref;
@@ -2032,6 +2058,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_gate_status, current_target_scope, reviewed_target_scope,
                         review_conversation_id, review_artifact_id,
                         review_artifact_version, review_artifact_updated_at,
+                        review_gate_bypassed_at, review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version,
                         reviewed_head_sha, reviewed_diff_fingerprint,
                         selected_source_base_ref, selected_source_base_sha,
                         selected_source_head_ref, selected_source_head_sha,
@@ -2049,7 +2079,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                         ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
-                        ?38, ?39, ?40
+                        ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -2062,6 +2092,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_review_monitors.review_artifact_id),
                         review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_review_monitors.review_artifact_version),
                         review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_review_monitors.review_artifact_updated_at),
+                        review_gate_bypassed_at = excluded.review_gate_bypassed_at,
+                        review_gate_bypassed_target_scope = excluded.review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint = excluded.review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id = excluded.review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version = excluded.review_gate_bypassed_artifact_version,
                         reviewed_head_sha = excluded.reviewed_head_sha,
                         reviewed_diff_fingerprint = excluded.reviewed_diff_fingerprint,
                         selected_source_base_ref = excluded.selected_source_base_ref,
@@ -2102,6 +2137,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_id,
                         review_artifact_version,
                         review_artifact_updated_at,
+                        review_gate_bypassed_at,
+                        review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version,
                         reviewed_head_sha,
                         reviewed_diff_fingerprint,
                         selected_source_base_ref,
@@ -2163,6 +2203,87 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 }
             })
             .await
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let conversation_id_value = conversation_id.as_str().to_string();
+        let target_scope = snapshot.target_scope.to_string();
+        let diff_fingerprint = snapshot.diff_fingerprint.clone();
+        let artifact_id = snapshot.artifact_id.as_str().to_string();
+        let artifact_version = i64::from(snapshot.artifact_version);
+        let approved_at_value = approved_at.to_rfc3339();
+        let audit_event = snapshot.audit_event(*conversation_id, approved_at);
+        let audit_id = audit_event.id;
+        let audit_step = audit_event.step;
+        let audit_status = audit_event.status;
+        let audit_summary = audit_event.summary;
+        let audit_classification = audit_event.classification;
+        let audit_created_at = audit_event.created_at.to_rfc3339();
+        let applied = self
+            .db
+            .run(move |conn| {
+                let tx = conn.unchecked_transaction()?;
+                let changed = tx.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET review_gate_status = 'passed',
+                         review_gate_bypassed_at = ?6,
+                         review_gate_bypassed_target_scope = ?2,
+                         review_gate_bypassed_diff_fingerprint = ?3,
+                         review_gate_bypassed_artifact_id = ?4,
+                         review_gate_bypassed_artifact_version = ?5,
+                         updated_at = ?6
+                     WHERE conversation_id = ?1
+                       AND status = 'ready'
+                       AND review_outcome = 'blocking'
+                       AND review_gate_status = 'blocking'
+                       AND current_target_scope = ?2
+                       AND reviewed_target_scope = ?2
+                       AND current_diff_fingerprint = ?3
+                       AND reviewed_diff_fingerprint = ?3
+                       AND review_artifact_id = ?4
+                       AND review_artifact_version = ?5
+                       AND (review_fixer_status IS NULL
+                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
+                    rusqlite::params![
+                        conversation_id_value,
+                        target_scope,
+                        diff_fingerprint,
+                        artifact_id,
+                        artifact_version,
+                        approved_at_value,
+                    ],
+                )?;
+                if changed == 0 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                tx.execute(
+                    "INSERT INTO agent_conversation_workspace_publication_events (
+                        id, conversation_id, step, status, summary, classification, created_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        audit_id,
+                        conversation_id_value,
+                        audit_step,
+                        audit_status,
+                        audit_summary,
+                        audit_classification,
+                        audit_created_at,
+                    ],
+                )?;
+                tx.commit()?;
+                Ok(true)
+            })
+            .await?;
+        if !applied {
+            return Ok(None);
+        }
+        self.get_workspace_review_monitor(conversation_id).await
     }
 
     async fn list_reviewing_workspace_review_monitors(

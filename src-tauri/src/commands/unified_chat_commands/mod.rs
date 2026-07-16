@@ -1729,6 +1729,7 @@ pub struct AgentConversationResponse {
     pub effective_effort: Option<String>,
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
+    pub bound_agent_name: Option<String>,
     pub persona_id: Option<String>,
     pub builder_draft_id: Option<String>,
     pub last_run_persona_run_id: Option<String>,
@@ -1771,6 +1772,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_effort: None,
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            bound_agent_name: c.bound_agent_name,
             persona_id: c.persona_id,
             builder_draft_id: c.builder_draft_id,
             last_run_persona_run_id: None,
@@ -4663,7 +4665,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 Arc::clone(&state.agent_conversation_workspace_repo),
             )
             .await
-                .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?;
             return Ok(());
         }
     }

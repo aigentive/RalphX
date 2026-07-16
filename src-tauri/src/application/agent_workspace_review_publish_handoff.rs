@@ -76,11 +76,61 @@ fn workspace_review_monitor_has_current_passing_review(
 ) -> bool {
     monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
         && workspace_review_monitor_current_target_matches(monitor, target)
-        && monitor.has_current_passing_review_for_target(
+        && monitor.has_current_review_publish_authorization_for_target(
             target.scope,
             target.head_sha.as_deref(),
             &target.diff_fingerprint,
         )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceReviewAuthorizationKind {
+    ReviewerPassed,
+    HumanBypass,
+}
+
+pub(crate) fn workspace_review_authorization_kind(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> Option<WorkspaceReviewAuthorizationKind> {
+    if monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Passed
+        || !workspace_review_monitor_current_target_matches(monitor, target)
+    {
+        return None;
+    }
+    if monitor.has_current_review_bypass_for_target(
+        target.scope,
+        target.head_sha.as_deref(),
+        &target.diff_fingerprint,
+    ) {
+        return Some(WorkspaceReviewAuthorizationKind::HumanBypass);
+    }
+    monitor
+        .has_current_passing_review_for_target(
+            target.scope,
+            target.head_sha.as_deref(),
+            &target.diff_fingerprint,
+        )
+        .then_some(WorkspaceReviewAuthorizationKind::ReviewerPassed)
+}
+
+impl WorkspaceReviewAuthorizationKind {
+    pub(crate) fn publishing_message(self, subject: &str) -> String {
+        match self {
+            Self::ReviewerPassed => format!("Workspace Review passed; publishing {subject}."),
+            Self::HumanBypass => {
+                format!("Workspace Review approved anyway; publishing {subject}.")
+            }
+        }
+    }
+
+    pub(crate) fn classification(self) -> String {
+        match self {
+            Self::ReviewerPassed => "workspace_review_passed",
+            Self::HumanBypass => "workspace_review_approved_anyway",
+        }
+        .to_string()
+    }
 }
 
 pub(crate) fn workspace_review_monitor_keeps_pr_fix_publish_handoff(
@@ -180,13 +230,18 @@ where
         return Ok(PrFixReviewPublishResumeOutcome::Skipped);
     }
 
-    let publishing_message = "Workspace Review passed; publishing PR fix updates.";
+    let Some(authorization_kind) =
+        current_target.and_then(|target| workspace_review_authorization_kind(monitor, target))
+    else {
+        return Ok(PrFixReviewPublishResumeOutcome::Skipped);
+    };
+    let publishing_message = authorization_kind.publishing_message("PR fix updates");
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
             workspace.pr_auto_merge_current,
             Some("publishing"),
-            Some(publishing_message),
+            Some(publishing_message.as_str()),
         )
         .await?;
     workspace_repo
@@ -195,33 +250,47 @@ where
             PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP,
             "publishing",
             publishing_message,
-            Some("workspace_review_passed".to_string()),
+            Some(authorization_kind.classification()),
         ))
         .await?;
 
     match publish_workspace(conversation_id.clone()).await {
         Ok(pr_auto_merge_current) => {
+            let monitoring_message = format!(
+                "{} and PR fix published; RalphX is monitoring the pull request.",
+                match authorization_kind {
+                    WorkspaceReviewAuthorizationKind::ReviewerPassed => "Workspace Review passed",
+                    WorkspaceReviewAuthorizationKind::HumanBypass => {
+                        "Workspace Review was approved anyway"
+                    }
+                }
+            );
             workspace_repo
                 .update_pr_auto_merge_state(
                     conversation_id,
                     pr_auto_merge_current,
                     Some("monitoring"),
-                    Some(
-                        "Workspace Review passed and PR fix published; RalphX is monitoring the pull request.",
-                    ),
+                    Some(monitoring_message.as_str()),
                 )
                 .await?;
             Ok(PrFixReviewPublishResumeOutcome::Published)
         }
         Err(error) => {
+            let failure_message = format!(
+                "{}, but PR fix publish failed: {error}",
+                match authorization_kind {
+                    WorkspaceReviewAuthorizationKind::ReviewerPassed => "Workspace Review passed",
+                    WorkspaceReviewAuthorizationKind::HumanBypass => {
+                        "Workspace Review was approved anyway"
+                    }
+                }
+            );
             workspace_repo
                 .update_pr_auto_merge_state(
                     conversation_id,
                     workspace.pr_auto_merge_current,
                     Some("blocked"),
-                    Some(&format!(
-                        "Workspace Review passed, but PR fix publish failed: {error}"
-                    )),
+                    Some(failure_message.as_str()),
                 )
                 .await?;
             workspace_repo

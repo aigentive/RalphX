@@ -367,7 +367,7 @@ async fn resolve_recovery_retry_persona<R: Runtime>(
         super::persona_resolve_flags_for_conversation(
             feature_enabled,
             false,
-            agent_name_override_set,
+            agent_name_override_set || conversation.bound_agent_name.is_some(),
             context_type,
             conversation,
             workspace_mode,

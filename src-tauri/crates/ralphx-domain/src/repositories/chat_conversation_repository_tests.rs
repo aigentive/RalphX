@@ -196,6 +196,14 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn update_bound_agent_name(
+        &self,
+        _id: &ChatConversationId,
+        _bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_persona_binding(
         &self,
         _id: &ChatConversationId,

@@ -991,6 +991,11 @@ function workspaceReviewContext(
     autoMergeGuardPrNumber?: number | null;
     autoMergeGuardMethod?: string | null;
     autoMergeGuardLastError?: string | null;
+    reviewGateBypassedAt?: string | null;
+    reviewGateBypassedTargetScope?: "selected_source" | "workspace_delta" | null;
+    reviewGateBypassedDiffFingerprint?: string | null;
+    reviewGateBypassedArtifactId?: string | null;
+    reviewGateBypassedArtifactVersion?: number | null;
     isCurrent?: boolean;
     isOutdated?: boolean;
     shouldShowTab?: boolean;
@@ -1040,6 +1045,15 @@ function workspaceReviewContext(
       workspaceHeadSha: target?.scope === "workspace_delta" ? target.headSha : null,
       currentDiffFingerprint: target?.diffFingerprint ?? null,
       previousVersionId: null,
+      reviewGateBypassedAt: overrides.reviewGateBypassedAt ?? null,
+      reviewGateBypassedTargetScope:
+        overrides.reviewGateBypassedTargetScope ?? null,
+      reviewGateBypassedDiffFingerprint:
+        overrides.reviewGateBypassedDiffFingerprint ?? null,
+      reviewGateBypassedArtifactId:
+        overrides.reviewGateBypassedArtifactId ?? null,
+      reviewGateBypassedArtifactVersion:
+        overrides.reviewGateBypassedArtifactVersion ?? null,
       reviewBlockingSummary: overrides.reviewBlockingSummary ?? null,
       reviewBlockingFingerprint: null,
       reviewFixerStatus: overrides.reviewFixerStatus ?? null,
