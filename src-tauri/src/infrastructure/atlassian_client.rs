@@ -12,12 +12,27 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
-    AtlassianOAuthResource,
+    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
 };
+use crate::application::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+};
 use crate::domain::services::ComposerIntegrationReference;
+
+use super::jira_agile_client::{
+    get_jira_board_configuration, list_jira_active_sprints, list_jira_boards,
+};
+
+pub(crate) type JiraAgileAuthContext = AtlassianAuthContext;
+#[cfg(test)]
+pub(crate) type JiraAgileCredential = AtlassianCredential;
+pub(crate) type JiraAgileResourceKind = AtlassianResourceKind;
+pub(crate) type JiraAgileBoardColumn = JiraBoardColumn;
+pub(crate) type JiraAgileBoardConfiguration = JiraBoardConfiguration;
+pub(crate) type JiraAgileBoardSummary = JiraBoardSummary;
+pub(crate) type JiraAgileSprintSummary = JiraSprintSummary;
 
 const JIRA_PROJECT_SEARCH_PAGE_SIZE: usize = 100;
 const JIRA_ISSUE_SEARCH_PAGE_SIZE: usize = 100;
@@ -42,7 +57,7 @@ impl HyperAtlassianApiClient {
         })
     }
 
-    fn resource_url(
+    pub(crate) fn resource_url(
         auth: &AtlassianAuthContext,
         kind: AtlassianResourceKind,
         path: &str,
@@ -154,7 +169,7 @@ impl AtlassianJsonRequester for HyperAtlassianApiClient {
     }
 }
 
-fn request_auth(auth: &AtlassianAuthContext) -> RequestAuth<'_> {
+pub(crate) fn request_auth(auth: &AtlassianAuthContext) -> RequestAuth<'_> {
     match &auth.credential {
         AtlassianCredential::ApiToken { email, token } => RequestAuth::Basic { email, token },
         AtlassianCredential::OAuth { access_token, .. } => RequestAuth::Bearer(access_token),
@@ -296,6 +311,30 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         limit: usize,
     ) -> Result<Vec<JiraIssueDetail>, String> {
         search_jira_by_project(self, auth, project_key, limit).await
+    }
+
+    async fn list_jira_boards(
+        &self,
+        auth: &AtlassianAuthContext,
+        project_key: &str,
+    ) -> Result<Vec<JiraBoardSummary>, String> {
+        list_jira_boards(self, auth, project_key).await
+    }
+
+    async fn get_jira_board_configuration(
+        &self,
+        auth: &AtlassianAuthContext,
+        board_id: &str,
+    ) -> Result<JiraBoardConfiguration, String> {
+        get_jira_board_configuration(self, auth, board_id).await
+    }
+
+    async fn list_jira_active_sprints(
+        &self,
+        auth: &AtlassianAuthContext,
+        board_id: &str,
+    ) -> Result<Vec<JiraSprintSummary>, String> {
+        list_jira_active_sprints(self, auth, board_id).await
     }
 
     async fn exchange_oauth_code(
@@ -1295,9 +1334,8 @@ fn jira_ticket_from_issue_value(issue: &Value, site_url: &str) -> Option<JiraIss
         .and_then(|status| status.get("name"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let status_category = status.map(|status| {
-        jira_status_category(status, status_name.as_deref().unwrap_or_default())
-    });
+    let status_category = status
+        .map(|status| jira_status_category(status, status_name.as_deref().unwrap_or_default()));
     let assignee = fields.get("assignee").filter(|value| !value.is_null());
     let assignee_name = jira_user_display_name(assignee);
     let assignee_avatar = assignee
@@ -1906,11 +1944,10 @@ mod tests {
             _auth: RequestAuth<'_>,
             body: Option<Value>,
         ) -> Result<Value, String> {
-            self.recorded.lock().unwrap().push(RecordedRequest {
-                method,
-                url,
-                body,
-            });
+            self.recorded
+                .lock()
+                .unwrap()
+                .push(RecordedRequest { method, url, body });
             let mut responses = self.responses.lock().unwrap();
             if responses.len() > 1 {
                 responses.remove(0)
@@ -1956,13 +1993,23 @@ mod tests {
     fn jira_status_category_maps_done_variants() {
         for key in ["done", "complete", "Closed", "RESOLVED"] {
             let status = serde_json::json!({ "statusCategory": { "key": key } });
-            assert_eq!(jira_status_category(&status, "fallback"), "done", "key={key}");
+            assert_eq!(
+                jira_status_category(&status, "fallback"),
+                "done",
+                "key={key}"
+            );
         }
     }
 
     #[test]
     fn jira_status_category_maps_in_progress_variants() {
-        for key in ["indeterminate", "In Progress", "review", "started", "active"] {
+        for key in [
+            "indeterminate",
+            "In Progress",
+            "review",
+            "started",
+            "active",
+        ] {
             let status = serde_json::json!({ "statusCategory": { "key": key } });
             assert_eq!(
                 jira_status_category(&status, "fallback"),
@@ -1976,7 +2023,11 @@ mod tests {
     fn jira_status_category_maps_todo_variants() {
         for key in ["new", "To Do", "todo", "backlog"] {
             let status = serde_json::json!({ "statusCategory": { "key": key } });
-            assert_eq!(jira_status_category(&status, "fallback"), "todo", "key={key}");
+            assert_eq!(
+                jira_status_category(&status, "fallback"),
+                "todo",
+                "key={key}"
+            );
         }
     }
 
@@ -2281,7 +2332,9 @@ mod tests {
         let recorded = requester.recorded();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].method, Method::PUT);
-        assert!(recorded[0].url.contains("/rest/api/3/issue/PROJ-1/assignee"));
+        assert!(recorded[0]
+            .url
+            .contains("/rest/api/3/issue/PROJ-1/assignee"));
         let body = recorded[0].body.as_ref().expect("request body");
         assert!(body["accountId"].is_null());
     }
