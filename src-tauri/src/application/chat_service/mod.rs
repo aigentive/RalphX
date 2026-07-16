@@ -24,6 +24,7 @@ mod chat_service_recovery;
 pub use chat_service_recovery::attempt_session_recovery;
 mod chat_service_replay;
 mod chat_service_repository;
+mod chat_service_selection_snapshot;
 mod chat_service_send_background;
 mod chat_service_streaming;
 mod chat_service_types;
@@ -89,8 +90,8 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, MessageQueue, QueueKey, QueuedMessage, RunningAgentInfo,
-    RunningAgentKey, RunningAgentRegistry,
+    ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, QueueKey, QueuedMessage,
+    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
@@ -398,6 +399,7 @@ fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     if options.composer_project_references.is_empty()
         && options.composer_integration_references.is_empty()
         && options.composer_artifact_references.is_empty()
+        && options.composer_selection_snapshot.is_none()
     {
         return metadata;
     }
@@ -424,6 +426,13 @@ fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     if !options.composer_artifact_references.is_empty() {
         let references = serde_json::to_value(&options.composer_artifact_references).ok()?;
         object.insert("composer_artifact_references".to_string(), references);
+    }
+    if let Some(snapshot) = options.composer_selection_snapshot.as_ref() {
+        let snapshot = serde_json::to_value(snapshot).ok()?;
+        object.insert(
+            chat_service_selection_snapshot::SELECTION_SNAPSHOT_METADATA_KEY.to_string(),
+            snapshot,
+        );
     }
     Some(value.to_string())
 }
@@ -1130,6 +1139,8 @@ pub struct SendMessageOptions {
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
     /// Structured composer artifact references for runtime-only prompt expansion.
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Immutable whole-line artifact or ticket excerpt selected for this user turn.
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
     /// Chat attachment IDs explicitly selected by the composer for this user turn.
     pub attachment_ids: Vec<ChatAttachmentId>,
     /// Optional native team-mode overlay request.
@@ -1780,6 +1791,7 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_project_references.clone(),
                 options.composer_integration_references.clone(),
                 options.composer_artifact_references.clone(),
+                options.composer_selection_snapshot.clone(),
                 options.attachment_ids.clone(),
             );
         let key = Self::queued_key(context_type, context_id);
@@ -3881,6 +3893,7 @@ impl<R: Runtime> AppChatService<R> {
         project_references: &[ComposerProjectReference],
         integration_references: &[ComposerIntegrationReference],
         artifact_references: &[ComposerArtifactReference],
+        selection_snapshot: Option<&ComposerSelectionSnapshot>,
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
     ) -> Result<String, ChatServiceError> {
@@ -4008,9 +4021,15 @@ impl<R: Runtime> AppChatService<R> {
                 &with_integration_references,
                 artifact_references,
             );
+        let with_selection_snapshot =
+            chat_service_selection_snapshot::append_selection_snapshot_for_prompt(
+                &with_artifact_references,
+                selection_snapshot,
+            )
+            .map_err(|error| ChatServiceError::InvalidInput(error.to_string()))?;
 
         let with_persona_builder = persona_builder_runtime_message(
-            with_artifact_references,
+            with_selection_snapshot,
             builder_conversation.as_ref(),
             builder_draft.as_ref(),
         );
@@ -4198,6 +4217,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         message: &str,
         options: SendMessageOptions,
     ) -> Result<SendResult, ChatServiceError> {
+        if let Some(snapshot) = options.composer_selection_snapshot.as_ref() {
+            chat_service_selection_snapshot::validate_selection_snapshot(snapshot)
+                .map_err(|error| ChatServiceError::InvalidInput(error.to_string()))?;
+        }
         tracing::info!(
             %context_type,
             context_id,
@@ -4266,7 +4289,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         .ideation_session_repo
                         .set_pending_initial_prompt_if_unset(
                             context_id,
-                            encode_pending_initial_prompt(message, options.metadata.as_deref()),
+                            encode_pending_initial_prompt(
+                                message,
+                                persisted_user_metadata(&options).as_deref(),
+                            ),
                         )
                         .await
                     {
@@ -4626,6 +4652,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     &options.composer_project_references,
                     &options.composer_integration_references,
                     &options.composer_artifact_references,
+                    options.composer_selection_snapshot.as_ref(),
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
@@ -5271,7 +5298,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                     context_id,
                                     encode_pending_initial_prompt(
                                         message,
-                                        options.metadata.as_deref(),
+                                        persisted_user_metadata(&options).as_deref(),
                                     ),
                                 )
                                 .await
@@ -6066,6 +6093,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 &options.composer_project_references,
                 &options.composer_integration_references,
                 &options.composer_artifact_references,
+                options.composer_selection_snapshot.as_ref(),
                 Some(&conversation_id),
                 Some(&working_directory),
             )
@@ -6616,6 +6644,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             composer_project_references: queued_msg.composer_project_references.clone(),
             composer_integration_references: queued_msg.composer_integration_references.clone(),
             composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+            composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
             attachment_ids: queued_msg.attachment_ids.clone(),
             ..Default::default()
         };

@@ -52,6 +52,16 @@ vi.mock("@/api/recovery", () => ({
   recoverTaskExecution: (...args: unknown[]) => mockRecoverTaskExecution(...args),
 }));
 
+const selectionSnapshot = {
+  sourceType: "artifact" as const,
+  sourceKind: "plan" as const,
+  sourceId: "plan-v3",
+  artifactVersion: 3,
+  startLine: 7,
+  endLine: 8,
+  content: "first\nsecond",
+};
+
 const mockSpawnSessionNamer = vi.fn();
 vi.mock("@/api/ideation", () => ({
   ideationApi: {
@@ -658,6 +668,35 @@ describe("useChatActions", () => {
         ["att-1"]
       );
     });
+
+    it("keeps the frozen selection on a queued send-now replacement", async () => {
+      mockSendQueuedAgentMessageNow.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-replacement",
+      });
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow(
+          "queued-1",
+          "send when possible",
+          undefined,
+          selectionSnapshot,
+        );
+      });
+
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "send when possible",
+        "queued-replacement",
+        undefined,
+        selectionSnapshot,
+      );
+    });
   });
 
   // ── handleEditQueuedMessage ─────────────────────────────────────
@@ -735,6 +774,42 @@ describe("useChatActions", () => {
         "updated content",
         "q-edited-with-file",
         ["att-1"]
+      );
+    });
+
+    it("keeps the frozen selection when editing a queued message", async () => {
+      mockSendAgentMessage.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedMessageId: "q-edited-with-selection",
+      });
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleEditQueuedMessage(
+          "old-id",
+          "updated content",
+          undefined,
+          selectionSnapshot,
+        );
+      });
+
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "task",
+        "task-1",
+        "updated content",
+        undefined,
+        undefined,
+        { composerSelectionSnapshot: selectionSnapshot },
+      );
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "updated content",
+        "q-edited-with-selection",
+        undefined,
+        selectionSnapshot,
       );
     });
 

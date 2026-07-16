@@ -32,6 +32,7 @@ import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
+import { clickupApi } from "@/api/clickup";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import {
@@ -119,6 +120,7 @@ import {
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
+import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -324,6 +326,11 @@ const LazyAgentsLinearIssuePanel = lazy(() =>
     default: module.AgentsLinearIssuePanel,
   })),
 );
+const LazyAgentsClickUpIssuePanel = lazy(() =>
+  import("@/components/agents/AgentsClickUpIssuePanel").then((module) => ({
+    default: module.AgentsClickUpIssuePanel,
+  })),
+);
 const LazyAgentsGranolaNotePanel = lazy(() =>
   import("@/components/agents/AgentsGranolaNotePanel").then((module) => ({
     default: module.AgentsGranolaNotePanel,
@@ -385,6 +392,12 @@ const LINEAR_TAB = {
   icon: Ticket,
 };
 
+const CLICKUP_TAB = {
+  id: "clickup" as const,
+  label: "ClickUp",
+  icon: Ticket,
+};
+
 const GRANOLA_TAB = {
   id: "granola" as const,
   label: "Granola",
@@ -403,6 +416,7 @@ const ALL_ARTIFACT_TAB_DEFINITIONS = [
   PR_TAB,
   JIRA_TAB,
   LINEAR_TAB,
+  CLICKUP_TAB,
   GRANOLA_TAB,
   REVIEW_TAB,
   PUBLISH_TAB,
@@ -417,6 +431,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   pr: "Appears when this workspace has a pull request.",
   jira: "Appears when Jira is connected and a ticket is attached.",
   linear: "Appears when Linear is connected and a ticket is attached.",
+  clickup: "Connect ClickUp in Settings to make it available.",
   granola: "Appears when Granola is connected and a note is attached.",
   review: "Appears when a review is created.",
   publish: "Appears when this conversation has an editable workspace.",
@@ -447,6 +462,7 @@ function baseTabDefinition(id: AgentArtifactTab): Omit<
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
+    CLICKUP_TAB,
     GRANOLA_TAB,
     PR_TAB,
   ].find((candidate) => candidate.id === id);
@@ -700,6 +716,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   });
   const showLinearTab = Boolean(
     linearIntegrationAvailable && linearIssueQuery.data,
+  );
+  const clickupSettingsQuery = useQuery({
+    queryKey: ["clickup-integration", "settings"],
+    queryFn: () => clickupApi.getSettings(),
+    staleTime: 30_000,
+  });
+  const showClickUpTab = Boolean(
+    clickupSettingsQuery.data?.enabled &&
+      clickupSettingsQuery.data.hasApiToken &&
+      clickupSettingsQuery.data.validationStatus === "valid" &&
+      clickupSettingsQuery.data.taskSearchAvailable,
   );
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],
@@ -1121,6 +1148,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
             ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
             ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
             ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
             ...(availableArtifactTabIds.includes("review")
               ? [visibleTab(REVIEW_TAB)]
@@ -1132,6 +1160,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
+      showClickUpTab,
       showGranolaTab,
       showJiraTab,
       showLinearTab,
@@ -1182,6 +1211,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ? "jira"
             : showLinearTab
               ? "linear"
+              : showClickUpTab
+                ? "clickup"
               : showGranolaTab
                 ? "granola"
                 : shownTabs.some((tab) => tab.id === "plan")
@@ -2040,6 +2071,14 @@ function ArtifactContent({
     );
   }
 
+  if (activeTab === "clickup") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading ClickUp..." />}>
+        <LazyAgentsClickUpIssuePanel conversationId={conversationId} />
+      </Suspense>
+    );
+  }
+
   if (activeTab === "granola") {
     return (
       <Suspense fallback={<EmptyArtifactState title="Loading Granola..." />}>
@@ -2125,6 +2164,7 @@ function ArtifactContent({
     }
     return (
       <AgentPlanPanel
+        conversationId={conversationId}
         workspace={workspace}
         activeWorkspaceFreshness={activeWorkspaceFreshness}
         session={session}
@@ -2176,6 +2216,7 @@ function ArtifactContent({
 }
 
 function AgentPlanPanel({
+  conversationId,
   workspace,
   activeWorkspaceFreshness,
   session,
@@ -2196,6 +2237,7 @@ function AgentPlanPanel({
   onFocusIdeationSessionForConversation,
   onOpenTasks,
 }: {
+  conversationId: string | null;
   workspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   session: IdeationSession | null;
@@ -3049,6 +3091,20 @@ function AgentPlanPanel({
               >
                 RalphX continues this run automatically after approval.
               </div>
+            ) : null}
+            {planArtifact.content.type === "inline" ? (
+              <ArtifactSelectionSource
+                conversationId={conversationId}
+                source={{
+                  sourceType: "artifact",
+                  sourceKind: "plan",
+                  sourceId: planArtifact.id,
+                  sourceTitle: planArtifact.name,
+                  artifactVersion: planArtifact.metadata.version,
+                }}
+                content={planArtifact.content.text}
+                className="my-3 overflow-hidden rounded-md"
+              />
             ) : null}
             <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
               <LazyPlanDisplay

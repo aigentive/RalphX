@@ -293,6 +293,7 @@ impl ChatService for MockChatService {
                 composer_project_references: queued_msg.composer_project_references.clone(),
                 composer_integration_references: queued_msg.composer_integration_references.clone(),
                 composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+                composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
                 attachment_ids: queued_msg.attachment_ids.clone(),
                 ..Default::default()
             },
