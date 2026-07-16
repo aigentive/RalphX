@@ -589,6 +589,26 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("omits picker overrides when starting from the untouched role default", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({ lastRuntimeByProjectId: {} });
+    renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "use the current role default" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("providerHarness");
+    expect(startInput).not.toHaveProperty("modelId");
+    expect(startInput).not.toHaveProperty("logicalEffort");
+    expect(startInput).not.toHaveProperty("codexFastMode");
+    expect(startInput).not.toHaveProperty("capabilityIntent");
+    expect(startInput).not.toHaveProperty("personaId");
+  });
+
   it("starts a new conversation with Team enabled", async () => {
     mockAgentViewData();
 

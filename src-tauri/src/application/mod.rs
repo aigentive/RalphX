@@ -16,6 +16,8 @@ pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
@@ -247,8 +249,8 @@ pub use granola_integration_service::{
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
-    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    resolve_lane_harness_config, resolve_primary_ideation_harness_availability_for_state,
+    team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
     IDEATION_LANES,
 };
@@ -342,6 +344,10 @@ mod agent_workspace_continuation_tests;
 mod agent_issue_report_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
+#[cfg(test)]
+mod manual_role_default_service_tests;
+#[cfg(test)]
+mod manual_router_config_tests;
 #[cfg(test)]
 mod agent_planning_session_titles_tests;
 #[cfg(test)]
