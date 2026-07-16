@@ -2831,6 +2831,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     );
 
@@ -2846,6 +2856,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     });
   });
@@ -2857,6 +2877,16 @@ describe("chat api", () => {
         content: "queued",
         created_at: "2026-01-24T10:00:00Z",
         is_editing: false,
+        composer_selection_snapshot: {
+          sourceType: "ticket",
+          sourceKind: "clickup",
+          sourceId: "task-1",
+          sourceKey: "CU-1",
+          provider: "clickup",
+          startLine: 3,
+          endLine: 3,
+          content: "selected line",
+        },
         attachment_ids: ["att-1"],
       },
     ]);
@@ -2865,6 +2895,7 @@ describe("chat api", () => {
 
     expect(list).toHaveLength(1);
     expect(list[0].attachmentIds).toEqual(["att-1"]);
+    expect(list[0].composerSelectionSnapshot?.sourceKey).toBe("CU-1");
   });
 
   it("deletes queued message", async () => {
