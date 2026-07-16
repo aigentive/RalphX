@@ -396,6 +396,8 @@ mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
 #[cfg(test)]
+mod task_cleanup_service_tests;
+#[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
