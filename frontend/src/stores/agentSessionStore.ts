@@ -35,6 +35,7 @@ export type AgentArtifactTab =
   | "pr"
   | "jira"
   | "linear"
+  | "clickup"
   | "granola"
   | "publish";
 export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [

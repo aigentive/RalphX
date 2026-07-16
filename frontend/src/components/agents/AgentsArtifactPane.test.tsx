@@ -41,6 +41,12 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
+vi.mock("./AgentsClickUpTicketPanel", () => ({
+  AgentsClickUpTicketPanel: () => (
+    <div data-testid="agents-clickup-ticket-panel">ClickUp ticket details</div>
+  ),
+}));
+
 const deferredHydrationTimeout = { timeout: 3_000 };
 const initialPlanStoreActions = {
   loadActivePlan: usePlanStore.getState().loadActivePlan,
@@ -1602,6 +1608,17 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it("keeps a linked ClickUp tab visible and lazy-loads its ticket panel", async () => {
+    renderControlledPane("clickup");
+
+    expect(
+      screen.getByTestId("agents-artifact-tab-clickup"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-clickup-ticket-panel"),
+    ).toBeInTheDocument();
+  });
+
   it("filters hidden tabs and exposes the right-click hide action", async () => {
     const onHideTab = vi.fn();
     renderPane(
@@ -1614,7 +1631,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     const planTab = await screen.findByTestId("agents-artifact-tab-plan");
-    expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-verification"),
+    ).not.toBeInTheDocument();
 
     fireEvent.contextMenu(planTab);
     await userEvent.click(await screen.findByText("Hide “Plan”"));
@@ -1638,6 +1657,7 @@ describe("AgentsArtifactPane", () => {
           "pr",
           "jira",
           "linear",
+          "clickup",
           "granola",
           "review",
           "publish",
@@ -1646,7 +1666,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByText("All tabs are hidden")).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "Customize tabs" })).not.toHaveLength(0);
+    expect(
+      screen.getAllByRole("button", { name: "Customize tabs" }),
+    ).not.toHaveLength(0);
   });
 
   it("hides the Issues tab when a project conversation has no open issues", async () => {

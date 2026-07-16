@@ -59,6 +59,7 @@ use crate::application::persona_resolver::{resolve_persona_for_send, PersonaReso
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::ClickUpIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
@@ -1330,6 +1331,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
+    clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
@@ -1424,6 +1426,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_provider_settings_repo: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
+            clickup_integration_service: None,
             granola_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
@@ -1727,6 +1730,14 @@ impl<R: Runtime> AppChatService<R> {
         service: Arc<LinearIntegrationService>,
     ) -> Self {
         self.linear_integration_service = Some(service);
+        self
+    }
+
+    pub fn with_clickup_integration_service(
+        mut self,
+        service: Arc<ClickUpIntegrationService>,
+    ) -> Self {
+        self.clickup_integration_service = Some(service);
         self
     }
 
@@ -3998,6 +4009,7 @@ impl<R: Runtime> AppChatService<R> {
             &merged_integration_references,
             self.atlassian_integration_service.clone(),
             self.linear_integration_service.clone(),
+            self.clickup_integration_service.clone(),
             self.granola_integration_service.clone(),
         )
         .await;

@@ -426,9 +426,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     if (!linkedTicket) {
       return;
     }
-    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // Open the linked issue in the provider-specific right-hand artifact tab
     // rather than navigating away to the ticketing dashboard.
-    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+    onSelectArtifact(linkedTicket.ticketRef.provider);
   }, [linkedTicket, onSelectArtifact]);
 
   return (

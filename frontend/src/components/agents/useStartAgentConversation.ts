@@ -26,6 +26,7 @@ import {
   invalidateConversationDataQueries,
 } from "@/hooks/useChat";
 import { invalidateAutomationQueries } from "@/hooks/useAutomations";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
 import {
@@ -68,7 +69,7 @@ import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
 type SupportedStartIntegrationTab = Extract<
   AgentArtifactTab,
-  "jira" | "linear" | "granola"
+  "jira" | "linear" | "clickup" | "granola"
 >;
 
 interface HandleAutoManagedTitleArgs {
@@ -560,6 +561,11 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
+        if (startIntegrationTab === "clickup") {
+          await queryClient.invalidateQueries({
+            queryKey: ticketingKeys.conversationTicket(resolvedConversationId),
+          });
+        }
         if (hasGranolaIntegrationReference(composerIntegrationReferences)) {
           if (startIntegrationTab === "granola") {
             onGranolaLinked?.(resolvedConversationId);
@@ -672,6 +678,9 @@ function getSupportedStartIntegrationTab(
     }
     if (reference.kind === "linear") {
       return "linear";
+    }
+    if (reference.provider === "clickup" && reference.kind === "clickup") {
+      return "clickup";
     }
     if (reference.provider === "granola" && reference.kind === "note") {
       return "granola";

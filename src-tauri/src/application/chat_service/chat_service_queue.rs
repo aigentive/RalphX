@@ -1451,6 +1451,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.linear_integration_service)
             });
+            let clickup_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.clickup_integration_service)
+            });
             let granola_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.granola_integration_service)
@@ -1545,6 +1549,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 &merged_integration_references,
                 atlassian_integration_service,
                 linear_integration_service,
+                clickup_integration_service,
                 granola_integration_service,
             )
             .await;

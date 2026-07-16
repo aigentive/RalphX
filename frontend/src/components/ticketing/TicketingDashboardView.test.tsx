@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
+import { ticketingApi } from "@/api/ticketing";
 import * as chatHooks from "@/hooks/useChat";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import * as ticketingHooks from "@/hooks/useTicketing";
@@ -27,6 +28,19 @@ vi.mock("@/api/linear", () => ({
     assignAgentConversationLinearIssue: vi.fn().mockResolvedValue(null),
   },
 }));
+
+vi.mock("@/api/ticketing", async () => {
+  const actual = await vi.importActual<typeof import("@/api/ticketing")>(
+    "@/api/ticketing",
+  );
+  return {
+    ...actual,
+    ticketingApi: {
+      ...actual.ticketingApi,
+      linkTicketToConversation: vi.fn().mockResolvedValue(undefined),
+    },
+  };
+});
 
 vi.mock("@/hooks/usePullRequestDetail", () => ({
   prKeys: {
@@ -2013,6 +2027,12 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+    vi.mocked(chatHooks.useConversations).mockReturnValue({
+      data: [{ id: "conv-clickup", title: "Investigate ClickUp context" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof chatHooks.useConversations>);
 
     renderDashboard();
 
@@ -2025,8 +2045,20 @@ describe("TicketingDashboardView", () => {
     fireEvent.click(screen.getByRole("button", { name: /CU-1001/ }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
 
-    // Starting new RalphX work is provider-neutral; binding an existing
-    // conversation stays hidden until ClickUp link persistence exists.
+    fireEvent.click(screen.getByRole("button", { name: "Bind existing conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate ClickUp context" }));
+    await waitFor(() => {
+      expect(ticketingApi.linkTicketToConversation).toHaveBeenCalledWith({
+        conversationId: "conv-clickup",
+        projectId: "project-1",
+        ticketRef: clickupTicket.ref,
+        title: "Demo ClickUp dashboard task",
+        url: "https://app.clickup.com/t/CU-1001",
+      });
+    });
+    expect(linearApi.assignAgentConversationLinearIssue).not.toHaveBeenCalled();
+
+    // Starting new RalphX work remains provider-neutral after manual binding.
     fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
     expect(await screen.findByRole("dialog", { name: "Start Conversation" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
@@ -2045,9 +2077,6 @@ describe("TicketingDashboardView", () => {
         },
       ],
     });
-    expect(
-      screen.queryByRole("button", { name: /bind existing conversation/i }),
-    ).not.toBeInTheDocument();
   });
 
   it("navigates to the starter composer without selecting a conversation", async () => {

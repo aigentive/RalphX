@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::application::{
-    AtlassianIntegrationService, GranolaIntegrationService, LinearIntegrationService,
+    AtlassianIntegrationService, ClickUpIntegrationService, GranolaIntegrationService,
+    LinearIntegrationService,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -70,6 +71,7 @@ pub async fn expand_integration_references_for_prompt(
     integration_references: &[ComposerIntegrationReference],
     atlassian_service: Option<Arc<AtlassianIntegrationService>>,
     linear_service: Option<Arc<LinearIntegrationService>>,
+    clickup_service: Option<Arc<ClickUpIntegrationService>>,
     granola_service: Option<Arc<GranolaIntegrationService>>,
 ) -> IntegrationReferenceExpansion {
     if integration_references.is_empty() {
@@ -111,6 +113,23 @@ pub async fn expand_integration_references_for_prompt(
                     &rewritten_prompt,
                     integration_references,
                     linear_budget,
+                )
+                .await;
+        }
+    }
+
+    if integration_references
+        .iter()
+        .any(|reference| reference.provider == "clickup")
+    {
+        if let Some(service) = clickup_service {
+            let clickup_budget =
+                remaining_budget_after_prior_expansions(runtime_content, &rewritten_prompt);
+            rewritten_prompt = service
+                .expand_references_for_prompt_with_budget(
+                    &rewritten_prompt,
+                    integration_references,
+                    clickup_budget,
                 )
                 .await;
         }
