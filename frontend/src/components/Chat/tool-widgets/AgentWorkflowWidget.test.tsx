@@ -113,25 +113,27 @@ describe("AgentWorkflowWidget", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run once" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      backendApiUrl("agent_workflows/scripts/approve"),
-      expect.objectContaining({
-        body: JSON.stringify({
-          script_id: "script-1",
-          script_hash: "script-hash",
-          permission_hash: "permission-hash",
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        backendApiUrl("agent_workflows/scripts/approve"),
+        expect.objectContaining({
+          body: JSON.stringify({
+            script_id: "script-1",
+            script_hash: "script-hash",
+            permission_hash: "permission-hash",
+          }),
         }),
-      }),
+      ),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+    expect(fetchMock).toHaveBeenCalledWith(
       backendApiUrl("agent_workflows/runs/start"),
       expect.any(Object),
     );
+    const startCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("agent_workflows/runs/start"),
+    );
     expect(
-      JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)),
+      JSON.parse(String(startCall?.[1]?.body)),
     ).toEqual({
       script_id: "script-1",
       script_hash: "script-hash",

@@ -1050,7 +1050,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? null
     : activeConversation.coordinationMode === "codex_native_ultra"
       ? "Codex Ultra is unavailable for the selected model or account. Switch to Defaults or choose a supported Codex runtime."
-      : "This conversation's capability is disabled. Enable it in Settings > Capabilities or switch to Defaults."
+      : "This conversation's capability is disabled. Enable it in Settings > Capabilities or switch to Defaults.";
   const capabilityOptions = (() => {
     const options: Array<{
       id: string;
