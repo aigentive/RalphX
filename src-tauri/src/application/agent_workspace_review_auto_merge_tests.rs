@@ -2175,6 +2175,7 @@ async fn workspace_delta_restore_accepts_refreshed_workspace_delta_after_publish
         "pub fn refreshed() {}\n",
     )
     .expect("refreshed workspace content should be written");
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health("workspace", "head")));
 
     restore_guarded_auto_merge_after_publish(&state, &workspace)
         .await
@@ -2279,7 +2280,7 @@ async fn workspace_delta_restore_repauses_auto_merge_when_supervision_turns_off_
 }
 
 #[tokio::test]
-async fn workspace_delta_restore_repauses_auto_merge_when_the_review_target_changes_during_enable()
+async fn workspace_delta_restore_keeps_publish_proof_when_the_review_target_changes_during_enable()
 {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let mut state = AppState::new_test();
@@ -2345,7 +2346,7 @@ async fn workspace_delta_restore_repauses_auto_merge_when_the_review_target_chan
         .expect("restore task should join")
         .expect("restore should settle safely");
 
-    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 0);
     assert_eq!(
         state
             .agent_conversation_workspace_repo
@@ -2354,7 +2355,7 @@ async fn workspace_delta_restore_repauses_auto_merge_when_the_review_target_chan
             .expect("workspace lookup should succeed")
             .expect("workspace should exist")
             .pr_auto_merge_current,
-        Some(false)
+        Some(true)
     );
     assert!(state
         .agent_conversation_workspace_repo
