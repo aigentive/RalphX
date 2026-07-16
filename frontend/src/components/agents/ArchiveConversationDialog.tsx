@@ -17,6 +17,7 @@ import type {
   AgentConversation,
   AgentConversationArchiveOptions,
 } from "./agentConversations";
+import { hasPotentialOpenPullRequest } from "./bulkConversationArchive";
 
 export interface ArchiveConversationDialogTarget {
   conversation: AgentConversation;
@@ -30,20 +31,6 @@ interface ArchiveConversationDialogProps {
     options: AgentConversationArchiveOptions
   ) => void;
   onClose: () => void;
-}
-
-function hasPotentialOpenPullRequest(workspace: AgentConversationWorkspace | null): boolean {
-  if (!workspace) {
-    return false;
-  }
-  if (workspace.linkedPlanBranchId) {
-    return true;
-  }
-  if (workspace.publicationPrNumber == null) {
-    return false;
-  }
-  const status = workspace.publicationPrStatus?.trim().toLowerCase();
-  return status !== "closed" && status !== "merged";
 }
 
 export function ArchiveConversationDialog({

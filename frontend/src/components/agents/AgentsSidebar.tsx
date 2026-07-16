@@ -86,7 +86,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
-import type { AgentSidebarConversationRow } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentSidebarConversationRow,
+} from "@/api/chat";
 import {
   useAgentSessionStore,
   type AgentProjectSort,
@@ -122,6 +125,19 @@ import {
   type ArchiveConversationDialogTarget,
 } from "./ArchiveConversationDialog";
 import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
+import { BulkArchiveConversationControls } from "./BulkArchiveConversationControls";
+import { BulkArchiveConversationCheckbox } from "./BulkArchiveConversationCheckbox";
+import {
+  type BulkArchiveConversationHandler,
+} from "./bulkConversationArchive";
+import {
+  useBulkConversationArchiveController,
+  useRegisterBulkArchiveRows,
+} from "./useBulkConversationArchiveSelection";
+import {
+  BulkArchiveSelectionContext,
+  useBulkArchiveSelection,
+} from "./bulkConversationArchiveSelectionContext";
 
 const PERSONA_BUILDER_MODE_META = {
   label: "Persona Builder",
@@ -794,6 +810,7 @@ interface AgentsSidebarProps {
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
+  onBulkArchiveConversations: BulkArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   showArchived: boolean;
@@ -815,6 +832,7 @@ export function AgentsSidebar({
   onAutoRenameConversation,
   onRenameConversation,
   onArchiveConversation,
+  onBulkArchiveConversations,
   onRestoreConversation,
   onForkConversation,
   showArchived,
@@ -826,6 +844,10 @@ export function AgentsSidebar({
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const bulkArchive = useBulkConversationArchiveController(
+    onBulkArchiveConversations
+  );
+  const cancelBulkArchive = bulkArchive.cancel;
   const normalizedSearchInput = searchQuery.trim().toLowerCase();
   const normalizedSearch = useDebouncedValue(
     normalizedSearchInput,
@@ -1005,7 +1027,14 @@ export function AgentsSidebar({
   ]);
   const fillFilteredProjectSidebar = expandedProjectIdForFill !== null;
 
+  useEffect(() => {
+    if (showArchived) {
+      cancelBulkArchive();
+    }
+  }, [cancelBulkArchive, showArchived]);
+
   return (
+    <BulkArchiveSelectionContext.Provider value={bulkArchive.contextValue}>
     <aside
       className="w-full h-full flex flex-col border-r overflow-hidden"
       style={{
@@ -1146,6 +1175,20 @@ export function AgentsSidebar({
           toggleSidebarPublicationStateFilter={toggleSidebarPublicationStateFilter}
           totalArchivedCount={totalArchivedCount}
           onShowArchivedChange={onShowArchivedChange}
+          bulkArchiveActive={bulkArchive.active}
+          onEnterBulkArchive={bulkArchive.enter}
+        />
+      )}
+
+      {bulkArchive.active && (
+        <BulkArchiveConversationControls
+          confirmationOpen={bulkArchive.confirmationOpen}
+          onCancel={bulkArchive.cancel}
+          onCloseConfirmation={bulkArchive.closeConfirmation}
+          onConfirm={bulkArchive.confirm}
+          onOpenConfirmation={bulkArchive.openConfirmation}
+          pending={bulkArchive.pending}
+          selectedCount={bulkArchive.selectedCount}
         />
       )}
 
@@ -1266,10 +1309,12 @@ export function AgentsSidebar({
       </div>
       <ConfirmationDialog {...confirmationDialogProps} />
     </aside>
+    </BulkArchiveSelectionContext.Provider>
   );
 }
 
 interface AgentsSidebarToolbarProps {
+  bulkArchiveActive: boolean;
   projects: Project[];
   focusedProjectId: string | null;
   projectSort: AgentProjectSort;
@@ -1288,9 +1333,11 @@ interface AgentsSidebarToolbarProps {
   ) => void;
   totalArchivedCount: number;
   onShowArchivedChange: (showArchived: boolean) => void;
+  onEnterBulkArchive: () => void;
 }
 
 function AgentsSidebarToolbar({
+  bulkArchiveActive,
   projects,
   focusedProjectId,
   projectSort,
@@ -1307,6 +1354,7 @@ function AgentsSidebarToolbar({
   toggleSidebarPublicationStateFilter,
   totalArchivedCount,
   onShowArchivedChange,
+  onEnterBulkArchive,
 }: AgentsSidebarToolbarProps) {
   const sortTarget =
     sidebarGroupBy === "project"
@@ -1568,6 +1616,26 @@ function AgentsSidebarToolbar({
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      {!showArchived && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-[4px] border border-transparent bg-transparent p-0 text-[var(--text-muted)] transition-colors duration-[120ms] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px] disabled:opacity-50"
+              aria-label="Bulk archive sessions"
+              aria-pressed={bulkArchiveActive}
+              data-testid="agents-bulk-archive-trigger"
+              disabled={bulkArchiveActive}
+              onClick={onEnterBulkArchive}
+            >
+              <Archive className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">
+            Bulk archive sessions
+          </TooltipContent>
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -1741,6 +1809,7 @@ function AgentSidebarConversationRowsPanel({
   const [visibleEffectRows, setVisibleEffectRows] = useState<
     AgentSidebarConversationRow[]
   >([]);
+  useRegisterBulkArchiveRows(scrollKey, rows);
 
   const visibleEffectConversations = useMemo(
     () => visibleEffectRows.map((row) => toProjectAgentConversation(row.conversation)),
@@ -1829,6 +1898,7 @@ function AgentSidebarConversationRowsPanel({
       return (
         <MemoizedAgentSessionRow
           conversation={conversation}
+          workspace={row.workspace}
           projectName={project?.name ?? conversation.projectId}
           showProjectNameInMeta={showProjectNameInMeta}
           refKind={row.refKind}
@@ -2568,6 +2638,7 @@ function PublicationStateGroupIcon({
 
 interface AgentSessionRowProps {
   conversation: AgentConversation;
+  workspace: AgentConversationWorkspace | null;
   projectName: string | null;
   showProjectNameInMeta: boolean;
   refKind: AgentSidebarConversationRow["refKind"];
@@ -2592,6 +2663,7 @@ interface AgentSessionRowProps {
 
 function AgentSessionRow({
   conversation,
+  workspace,
   projectName,
   showProjectNameInMeta,
   refKind,
@@ -2613,6 +2685,7 @@ function AgentSessionRow({
   setActionsTriggerRef,
   onActionsOpenChange,
 }: AgentSessionRowProps) {
+  const bulkArchiveSelection = useBulkArchiveSelection();
   const title = conversation.title || "Untitled agent";
   const modeMeta =
     conversation.agentMode === "persona_builder"
@@ -2626,9 +2699,15 @@ function AgentSessionRow({
       className="group/session relative"
       data-testid={`agents-session-${conversation.id}`}
     >
+      <BulkArchiveConversationCheckbox
+        conversation={conversation}
+        workspace={workspace}
+      />
       <button
         type="button"
-        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+        className={`agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] ${
+          bulkArchiveSelection.active ? "pl-9 pr-2.5" : "px-2.5"
+        }`}
         onClick={onSelect}
         aria-current={isSelected ? "true" : undefined}
         style={{
@@ -2899,6 +2978,7 @@ function ProjectSessionGroup({
   const agentStatuses = useChatStore((s) => s.agentStatus);
   const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
   const visibleRows = groupQuery.group.rows;
+  useRegisterBulkArchiveRows(projectScrollKey, visibleRows);
   const visibleConversations = useMemo(
     () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
     [visibleRows]
@@ -3027,6 +3107,7 @@ function ProjectSessionGroup({
       return (
         <MemoizedAgentSessionRow
           conversation={conversation}
+          workspace={row.workspace}
           projectName={project.name}
           showProjectNameInMeta={showProjectNameInMeta}
           refKind={row.refKind}
