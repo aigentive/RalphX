@@ -434,9 +434,19 @@ mod v20260715170000_automation_authoring_state_tests;
 mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
 mod v20260715172058_persona_update_draft_provenance_tests;
+mod v20260715181627_agent_conversation_capabilities;
+#[cfg(test)]
+mod v20260715181627_agent_conversation_capabilities_tests;
 mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
 mod v20260715183000_automation_ideation_signal_tests;
+mod v20260715194617_scripted_agent_workflows;
+#[cfg(test)]
+mod v20260715194617_scripted_agent_workflows_tests;
+#[cfg(test)]
+pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
+    v20260715194617_scripted_agent_workflows::migrate(conn)
+}
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -557,7 +567,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260715183000;
+pub const SCHEMA_VERSION: i64 = 20260715194617;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1543,9 +1553,19 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260715172058_persona_update_draft_provenance::migrate,
     },
     Migration {
+        version: 20260715181627,
+        name: "agent_conversation_capabilities",
+        migrate: v20260715181627_agent_conversation_capabilities::migrate,
+    },
+    Migration {
         version: 20260715183000,
         name: "automation_ideation_signal",
         migrate: v20260715183000_automation_ideation_signal::migrate,
+    },
+    Migration {
+        version: 20260715194617,
+        name: "scripted_agent_workflows",
+        migrate: v20260715194617_scripted_agent_workflows::migrate,
     },
 ];
 

@@ -15,6 +15,8 @@ fn coordination_mode_display_and_from_str_cover_all_modes() {
         (CoordinationMode::Solo, "solo"),
         (CoordinationMode::LegacyClaudeTeam, "legacy_claude_team"),
         (CoordinationMode::RxNativeTeam, "rx_native_team"),
+        (CoordinationMode::RxNativeWorkflow, "rx_native_workflow"),
+        (CoordinationMode::CodexNativeUltra, "codex_native_ultra"),
     ] {
         assert_eq!(mode.to_string(), value);
         assert_eq!(value.parse::<CoordinationMode>().unwrap(), mode);

@@ -102,6 +102,11 @@ const LazyPersonasSection = lazy(() =>
     default: module.PersonasSection,
   })),
 );
+const LazyCapabilitiesSection = lazy(() =>
+  import("./CapabilitiesSection").then((module) => ({
+    default: module.CapabilitiesSection,
+  })),
+);
 
 function SettingsSectionLoading() {
   return (
@@ -156,6 +161,7 @@ export function SettingsSectionContent({
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "personas" && <LazyPersonasSection />}
+      {section === "capabilities" && <LazyCapabilitiesSection />}
       {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "autonomy" && <LazyAutonomyPolicySection />}

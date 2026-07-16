@@ -37,7 +37,7 @@ impl AppPaths {
         self.database_path_for_profile(cfg!(debug_assertions))
     }
 
-    fn database_path_for_profile(&self, debug_assertions: bool) -> AppResult<PathBuf> {
+    pub(crate) fn database_path_for_profile(&self, debug_assertions: bool) -> AppResult<PathBuf> {
         if debug_assertions {
             Ok(get_default_db_path())
         } else {
@@ -52,56 +52,22 @@ impl AppPaths {
     pub fn app_data_dir(&self) -> &Path {
         &self.app_data_dir
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attachment_storage_path_uses_app_data_dir() {
-        let app_data_dir = PathBuf::from("/tmp/ralphx-app-paths-test");
-        let paths = AppPaths::new(app_data_dir.clone(), None);
-
-        assert_eq!(
-            paths.attachment_storage_path(),
-            app_data_dir.join("attachments")
-        );
+    pub fn workflow_runtime_dir(&self) -> PathBuf {
+        self.app_data_dir.join("workflow-runtime")
     }
 
-    #[test]
-    fn for_tests_uses_temp_app_data_dir_without_resources() {
-        let paths = AppPaths::for_tests();
-
-        assert!(paths.app_data_dir().ends_with("ralphx-test-app-data"));
-        assert_eq!(paths.resource_dir, None);
-    }
-
-    #[test]
-    fn database_path_uses_default_db_path_for_debug_profile() {
-        let paths = AppPaths::new("/tmp/ralphx-app-data", None);
-
-        assert_eq!(
-            paths.database_path_for_profile(true).expect("debug path"),
-            get_default_db_path()
-        );
-        assert_eq!(
-            paths.database_path().expect("current profile path"),
-            get_default_db_path()
-        );
-    }
-
-    #[test]
-    fn database_path_uses_app_data_dir_for_release_profile() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let app_data_dir = temp_dir.path().join("app-data");
-        let paths = AppPaths::new(app_data_dir.clone(), None);
-
-        let db_path = paths
-            .database_path_for_profile(false)
-            .expect("release profile path");
-
-        assert!(app_data_dir.exists());
-        assert_eq!(db_path, app_data_dir.join("ralphx.db"));
+    pub fn workflow_runner_path(&self) -> AppResult<PathBuf> {
+        let executable = std::env::current_exe().map_err(|error| {
+            AppError::Infrastructure(format!("Failed to resolve RalphX executable: {error}"))
+        })?;
+        let parent = executable.parent().ok_or_else(|| {
+            AppError::Infrastructure("RalphX executable has no parent directory".into())
+        })?;
+        Ok(parent.join(if cfg!(windows) {
+            "ralphx-workflow-runner.exe"
+        } else {
+            "ralphx-workflow-runner"
+        }))
     }
 }

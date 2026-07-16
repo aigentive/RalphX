@@ -188,6 +188,36 @@ describe("AgentComposerSurface", () => {
     });
   });
 
+  it("sends the selected capability as the provider-neutral intent", async () => {
+    const onSend = vi.fn();
+    const onValueChange = vi.fn();
+    renderComposer({
+      onSend,
+      capability: {
+        value: "rx_native_workflow",
+        onValueChange,
+        options: [
+          { id: "solo", label: "Defaults" },
+          { id: "rx_native_workflow", label: "Workflow" },
+        ],
+        testId: "agent-composer-capability",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-capability"));
+    fireEvent.click(screen.getByTestId("agent-composer-capability-solo"));
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledWith("solo"));
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Run the migration workflow" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Run the migration workflow", {
+      capabilityIntent: { coordinationMode: "rx_native_workflow" },
+    });
+  });
+
   it("hides the runtime pill when no model is available to show or select", () => {
     renderComposer({
       model: {

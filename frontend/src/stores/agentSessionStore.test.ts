@@ -112,7 +112,7 @@ describe("agentSessionStore", () => {
     });
   });
 
-  it("preserves remembered GPT-5.6 runtimes during migration", () => {
+  it("normalizes remembered Ultra preferences to ordinary Max", () => {
     expect(
       migrateAgentSessionStore(
         {
@@ -138,7 +138,7 @@ describe("agentSessionStore", () => {
         "conversation-1": {
           provider: "codex",
           modelId: "gpt-5.6-terra",
-          effort: "ultra",
+          effort: "max",
         },
       },
       lastRuntimeByProjectId: {
@@ -699,16 +699,16 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().runtimeByConversationId.c2).toEqual({
         provider: "codex",
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
       });
       expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p3).toEqual({
         provider: "codex",
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
       });
       expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
       });
     });
 

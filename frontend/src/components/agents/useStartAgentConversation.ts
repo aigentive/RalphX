@@ -13,6 +13,7 @@ import {
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
+  type CapabilityIntent,
   type TeamIntent,
 } from "@/api/chat";
 import { automationsApi } from "@/api/automations";
@@ -152,6 +153,7 @@ export function useStartAgentConversation({
       files,
       codexFastMode,
       personaId,
+      capabilityIntent,
       teamIntent,
       composerArtifactReferences,
       composerIntegrationReferences,
@@ -167,6 +169,7 @@ export function useStartAgentConversation({
       files: File[];
       codexFastMode?: boolean | null;
       personaId?: string | null;
+      capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -305,7 +308,7 @@ export function useStartAgentConversation({
         artifactReferences: composerArtifactReferences,
       });
       const optimisticCoordinationMode =
-        teamIntent?.coordinationMode ?? "solo";
+        capabilityIntent?.coordinationMode ?? teamIntent?.coordinationMode ?? "solo";
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
         contextType: "project",
@@ -470,6 +473,7 @@ export function useStartAgentConversation({
             : {}),
           ...(personaId ? { personaId } : {}),
           mode,
+          ...(capabilityIntent ? { capabilityIntent } : {}),
           ...(teamIntent ? { teamIntent } : {}),
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
@@ -591,6 +595,7 @@ export function useStartAgentConversation({
               mode,
               base,
               codexFastMode,
+              capabilityIntent,
               teamIntent,
               composerArtifactReferences,
               composerIntegrationReferences,

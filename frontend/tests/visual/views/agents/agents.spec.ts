@@ -193,6 +193,7 @@ function makeConversation({
     upstreamProvider: "openai",
     providerProfile: null,
     agentMode: mode,
+    coordinationMode: "solo",
     title,
     messageCount: 0,
     lastMessageAt: null,
