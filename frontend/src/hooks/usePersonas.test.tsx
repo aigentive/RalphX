@@ -15,6 +15,7 @@ import {
   useDeletePersonaDraft,
   useSwitchConversationPersona,
   useUpdatePersona,
+  useUpdatePersonaDraft,
 } from "./usePersonas";
 
 const personaResponse = {
@@ -146,6 +147,24 @@ describe("persona mutations", () => {
       input: { id: "persona-1", content: "updated content" },
       command: "update_persona",
       args: { input: { id: "persona-1", content: "updated content" } },
+      response: personaResponse,
+    },
+    {
+      name: "update draft",
+      useHook: useUpdatePersonaDraft,
+      input: {
+        id: "persona-1",
+        content: "updated draft content",
+        expectedContentHash: "hash-1",
+      },
+      command: "update_persona_draft",
+      args: {
+        input: {
+          id: "persona-1",
+          content: "updated draft content",
+          expectedContentHash: "hash-1",
+        },
+      },
       response: personaResponse,
     },
     {

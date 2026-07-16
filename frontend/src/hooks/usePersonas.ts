@@ -46,6 +46,11 @@ export type UpdatePersonaInput = {
   description?: string;
   body?: string;
 };
+export type UpdatePersonaDraftInput = {
+  id: string;
+  content: string;
+  expectedContentHash: string;
+};
 export type { IngestPersonaContextInput } from "@/types/persona";
 export type SwitchConversationPersonaInput = {
   conversationId: string;
@@ -88,6 +93,13 @@ export async function createPersonaDraft(
 
 export async function updatePersona(input: UpdatePersonaInput): Promise<Persona> {
   const raw = await invoke<unknown>("update_persona", { input });
+  return parsePersona(raw);
+}
+
+export async function updatePersonaDraft(
+  input: UpdatePersonaDraftInput,
+): Promise<Persona> {
+  const raw = await invoke<unknown>("update_persona_draft", { input });
   return parsePersona(raw);
 }
 
@@ -171,6 +183,14 @@ export function useUpdatePersona() {
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, UpdatePersonaInput>({
     mutationFn: updatePersona,
+    onSuccess: invalidateList,
+  });
+}
+
+export function useUpdatePersonaDraft() {
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, UpdatePersonaDraftInput>({
+    mutationFn: updatePersonaDraft,
     onSuccess: invalidateList,
   });
 }

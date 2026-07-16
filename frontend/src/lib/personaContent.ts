@@ -13,3 +13,22 @@ export function splitPersonaBody(content: string): string {
     .join("\n")
     .replace(/^\n/, "");
 }
+
+/** Composes the canonical persona document required by the draft-update command. */
+export function composePersonaContent(
+  slug: string,
+  description: string,
+  body: string,
+): string {
+  const normalizedDescription = description.trim().split(/\s+/).join(" ");
+  return [
+    "---",
+    `name: ${slug}`,
+    "kind: persona",
+    `description: ${JSON.stringify(normalizedDescription)}`,
+    "---",
+    "",
+    body.trim(),
+    "",
+  ].join("\n");
+}

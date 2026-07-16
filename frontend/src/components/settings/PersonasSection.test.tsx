@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { describe, expect, it, vi } from "vitest";
 
 import { splitPersonaBody } from "@/lib/personaContent";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useProjectStore } from "@/stores/projectStore";
 import type { Project } from "@/types/project";
 
@@ -27,7 +28,7 @@ type RawPersona = {
   version: number;
   project_id: string | null;
   content_hash: string;
-  source_session_id: null;
+  source_session_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -128,6 +129,31 @@ function mockPersonaCommands(personas: RawPersona[]) {
     }
     if (command === "update_persona") {
       return { ...activePersona, content: input?.content ?? activePersona.content };
+    }
+    if (command === "update_persona_draft") {
+      const persona = store.find((item) => item.id === input?.id);
+      if (!persona) throw new Error("persona missing");
+      persona.content = typeof input?.content === "string" ? input.content : persona.content;
+      persona.content_hash = "updated-draft-hash";
+      return persona;
+    }
+    if (command === "get_persona") {
+      const persona = store.find((item) => item.id === input?.id);
+      if (!persona) throw new Error("persona missing");
+      return persona;
+    }
+    if (command === "get_agent_conversation_summary") {
+      return {
+        id: "builder-conversation",
+        context_type: "project",
+        context_id: "project-ralphx",
+        claude_session_id: null,
+        title: "Persona builder",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-07-10T10:00:00Z",
+        updated_at: "2026-07-10T10:00:00Z",
+      };
     }
     if (command === "approve_persona") {
       const persona = store.find((item) => item.id === input?.id);
@@ -421,7 +447,7 @@ describe("PersonasManagementSection", () => {
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("update_persona", expect.anything());
   });
 
-  it("opens drafts read-only with the builder-only explanation", async () => {
+  it("edits and saves a draft with the current content hash CAS token", async () => {
     const user = userEvent.setup();
     mockPersonaCommands([draftPersona]);
     renderSection();
@@ -429,9 +455,127 @@ describe("PersonasManagementSection", () => {
     await screen.findByText("Terse Architect");
     await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
 
-    expect(screen.getByText("Drafts are iterated with the builder agent")).toBeInTheDocument();
-    expect(screen.getByLabelText("Instructions")).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Description")).toBeEnabled();
+    expect(screen.getByLabelText("Instructions")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("Instructions"), {
+      target: { value: "Updated draft body" },
+    });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("update_persona_draft", {
+        input: {
+          id: "persona-draft",
+          content:
+            "---\nname: terse-arch\nkind: persona\ndescription: \"A careful reviewer.\"\n---\n\nUpdated draft body\n",
+          expectedContentHash: "draft-hash",
+        },
+      }),
+    );
+    expect(screen.getByText("Terse Architect")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Instructions")).not.toBeInTheDocument();
+  });
+
+  it("reloads a conflicting draft and discards stale local edits", async () => {
+    const user = userEvent.setup();
+    const freshDraft: RawPersona = {
+      ...draftPersona,
+      description: "Fresh description.",
+      content:
+        "---\nname: terse-arch\nkind: persona\ndescription: Fresh description.\n---\n\nFresh builder body.\n",
+      content_hash: "fresh-hash",
+      version: 2,
+    };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_personas") return [draftPersona];
+      if (command === "update_persona_draft") {
+        throw new Error(
+          "PERSONA_DRAFT_CONFLICT: expected content hash `draft-hash` but current hash is `fresh-hash`",
+        );
+      }
+      if (command === "get_persona") return freshDraft;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderSection();
+
+    await screen.findByText("Terse Architect");
+    await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
+    await user.clear(screen.getByLabelText("Instructions"));
+    await user.type(screen.getByLabelText("Instructions"), "Stale local edit");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(
+      await screen.findByText("This draft changed since you loaded it."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Save failed:/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reload draft" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Instructions")).toHaveValue("Fresh builder body.\n"),
+    );
+    expect(screen.getByLabelText("Description")).toHaveValue("Fresh description.");
+    expect(screen.getByLabelText("Instructions")).not.toHaveValue("Stale local edit");
+    expect(screen.queryByText("This draft changed since you loaded it.")).not.toBeInTheDocument();
+  });
+
+  it("keeps non-conflict draft save failures on the generic error path", async () => {
+    const user = userEvent.setup();
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_personas") return [draftPersona];
+      if (command === "update_persona_draft") throw new Error("invalid persona body");
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderSection();
+
+    await screen.findByText("Terse Architect");
+    await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Save failed: invalid persona body")).toBeInTheDocument();
+    expect(screen.queryByText("This draft changed since you loaded it.")).not.toBeInTheDocument();
+  });
+
+  it("shows the builder-conversation link only for drafts with a source session", async () => {
+    const user = userEvent.setup();
+    const builderDraft: RawPersona = {
+      ...draftPersona,
+      source_session_id: "builder-conversation",
+    };
+    const manualDraft: RawPersona = {
+      ...draftPersona,
+      id: "manual-draft",
+      slug: "manual-draft",
+      name: "Manual Draft",
+      source_session_id: null,
+    };
+    mockPersonaCommands([builderDraft, manualDraft]);
+    renderSection();
+
+    await screen.findByText("Terse Architect");
+    await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
+    expect(screen.getByText("Draft — building with agent")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open builder conversation/ }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_agent_conversation_summary", {
+        conversationId: "builder-conversation",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /Open builder conversation/ }));
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+        "builder-conversation",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to personas" }));
+    await user.click(screen.getByRole("button", { name: "Edit Manual Draft" }));
+    expect(screen.queryByRole("button", { name: /Open builder conversation/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Draft — building with agent")).not.toBeInTheDocument();
   });
 
   it("archives active personas and hard-deletes drafts through confirmation", async () => {
