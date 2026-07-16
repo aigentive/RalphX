@@ -8,6 +8,7 @@
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{ChatAttachmentId, ChatContextType, PersonaDirective, TaskId};
+use crate::domain::services::ComposerSelectionSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -147,6 +148,9 @@ pub struct QueuedMessage {
     /// Optional artifact references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional immutable artifact/ticket excerpt used for this queued turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
     /// Optional chat attachments selected by the composer for this queued turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<ChatAttachmentId>,
@@ -172,6 +176,7 @@ impl QueuedMessage {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             attachment_ids: Vec::new(),
         }
     }
@@ -196,6 +201,7 @@ impl QueuedMessage {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             attachment_ids: Vec::new(),
         }
     }
@@ -346,6 +352,7 @@ impl MessageQueue {
             composer_project_references,
             composer_integration_references,
             composer_artifact_references,
+            None,
             attachment_ids,
         )
     }
@@ -369,6 +376,7 @@ impl MessageQueue {
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
         composer_artifact_references: Vec<ComposerArtifactReference>,
+        composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
@@ -385,6 +393,7 @@ impl MessageQueue {
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;
         message.composer_artifact_references = composer_artifact_references;
+        message.composer_selection_snapshot = composer_selection_snapshot;
         message.attachment_ids = attachment_ids;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());

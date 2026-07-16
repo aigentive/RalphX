@@ -935,6 +935,7 @@ pub struct TeamArtifactCreatedPayload {
 
 #[derive(Debug, Clone)]
 pub enum ChatServiceError {
+    InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
     CommunicationFailed(String),
@@ -949,6 +950,7 @@ pub enum ChatServiceError {
 impl std::fmt::Display for ChatServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
             Self::CommunicationFailed(msg) => write!(f, "Communication failed: {}", msg),

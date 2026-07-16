@@ -9,6 +9,10 @@ use crate::domain::entities::{ChatContextType, ChatConversationId, MessageRole};
 use crate::domain::repositories::ChatMessageRepository;
 use crate::error::AppResult;
 
+use super::chat_service_selection_snapshot::{
+    append_selection_snapshot_for_prompt, selection_snapshot_from_metadata,
+};
+
 /// Metadata for enriching recovery prompts with ideation-specific state.
 ///
 /// When recovering an ideation session, this metadata provides context about
@@ -117,9 +121,18 @@ impl ReplayBuilder {
             vec![]
         };
 
+        let content = if msg.role == MessageRole::User {
+            let snapshot = selection_snapshot_from_metadata(msg.metadata.as_deref())
+                .map_err(|error| crate::error::AppError::Validation(error.to_string()))?;
+            append_selection_snapshot_for_prompt(&msg.content, snapshot.as_ref())
+                .map_err(|error| crate::error::AppError::Validation(error.to_string()))?
+        } else {
+            msg.content.clone()
+        };
+
         Ok(Turn {
             role: msg.role,
-            content: msg.content.clone(),
+            content,
             tool_calls,
             tool_results: vec![], // extracted from content_blocks if needed
         })

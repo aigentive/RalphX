@@ -328,6 +328,7 @@ fn queued_persisted_metadata(
     if queued_msg.composer_project_references.is_empty()
         && queued_msg.composer_integration_references.is_empty()
         && queued_msg.composer_artifact_references.is_empty()
+        && queued_msg.composer_selection_snapshot.is_none()
     {
         return metadata;
     }
@@ -354,6 +355,13 @@ fn queued_persisted_metadata(
     if !queued_msg.composer_artifact_references.is_empty() {
         let references = serde_json::to_value(&queued_msg.composer_artifact_references).ok()?;
         object.insert("composer_artifact_references".to_string(), references);
+    }
+    if let Some(snapshot) = queued_msg.composer_selection_snapshot.as_ref() {
+        let snapshot = serde_json::to_value(snapshot).ok()?;
+        object.insert(
+            super::chat_service_selection_snapshot::SELECTION_SNAPSHOT_METADATA_KEY.to_string(),
+            snapshot,
+        );
     }
     Some(value.to_string())
 }
@@ -405,6 +413,7 @@ fn provider_switch_send_options_for_queued_message(
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+        composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
         team_intent,
         force_new_provider_session,
@@ -1555,6 +1564,34 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &runtime_content,
                     &queued_msg.composer_artifact_references,
                 );
+            let runtime_content =
+                match super::chat_service_selection_snapshot::append_selection_snapshot_for_prompt(
+                    &runtime_content,
+                    queued_msg.composer_selection_snapshot.as_ref(),
+                ) {
+                    Ok(runtime_content) => runtime_content,
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::warn!(
+                            error = %error_string,
+                            %context_type,
+                            context_id,
+                            "queue selection snapshot validation failed"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                };
             let runtime_content = super::plan_mode_runtime_message(
                 runtime_content,
                 queued_agent_context.workspace.as_ref(),
@@ -2313,6 +2350,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
             Vec::new(),
         );
 

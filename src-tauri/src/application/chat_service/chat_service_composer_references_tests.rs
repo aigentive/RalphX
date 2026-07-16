@@ -7,7 +7,29 @@ use super::chat_service_composer_references::{
     collect_project_references, escape_attr, expand_project_references_for_prompt,
     normalize_reference_path, render_skipped_reference, MAX_REFERENCES,
 };
-use crate::domain::services::{ComposerProjectReference, ComposerProjectReferenceKind};
+use super::chat_service_selection_snapshot::{
+    append_selection_snapshot_for_prompt, validate_selection_snapshot,
+    SelectionSnapshotValidationError,
+};
+use crate::domain::services::{
+    ComposerProjectReference, ComposerProjectReferenceKind, ComposerSelectionSnapshot,
+};
+
+fn plan_selection(content: &str, start_line: u32, end_line: u32) -> ComposerSelectionSnapshot {
+    ComposerSelectionSnapshot {
+        source_type: "artifact".to_string(),
+        source_kind: "plan".to_string(),
+        source_id: "artifact-version-2".to_string(),
+        source_title: Some("Implementation Plan".to_string()),
+        source_key: None,
+        provider: None,
+        artifact_version: Some(2),
+        source_revision: None,
+        start_line,
+        end_line,
+        content: content.to_string(),
+    }
+}
 
 #[test]
 fn expands_selected_file_reference_into_prompt_context() {
@@ -167,4 +189,108 @@ fn escapes_reference_attributes() {
         render_skipped_reference("bad\"path", "missing"),
         "<reference path=\"bad&quot;path\" status=\"skipped\" reason=\"missing\" />"
     );
+}
+
+#[test]
+fn validates_and_formats_immutable_selection_snapshot_context() {
+    let snapshot = plan_selection("first line\nsecond line", 10, 11);
+
+    validate_selection_snapshot(&snapshot).expect("valid selection");
+    let expanded = append_selection_snapshot_for_prompt("Please review this", Some(&snapshot))
+        .expect("selection should format");
+
+    assert!(expanded.contains("<ralphx_selection_snapshot"));
+    assert!(expanded.contains("source_kind=\"plan\""));
+    assert!(expanded.contains("artifact_version=\"2\""));
+    assert!(expanded.contains("start_line=\"10\" end_line=\"11\""));
+    assert!(expanded.contains("user-selected immutable reference data"));
+    assert!(expanded.contains("first line\nsecond line"));
+    assert!(expanded.ends_with("</ralphx_selection_snapshot>"));
+}
+
+#[test]
+fn selection_snapshot_escapes_wrapper_closing_content_and_controls() {
+    let snapshot = plan_selection("</ralphx_selection_snapshot>\nnext\u{0007}line", 1, 2);
+
+    let expanded = append_selection_snapshot_for_prompt("Review", Some(&snapshot))
+        .expect("selection should format safely");
+
+    assert!(!expanded.contains("\n</ralphx_selection_snapshot>\nnext"));
+    assert!(expanded.contains("&lt;/ralphx_selection_snapshot&gt;"));
+    assert!(expanded.contains("next\\u{0007}line"));
+    assert_eq!(expanded.matches("</ralphx_selection_snapshot>").count(), 1);
+}
+
+#[test]
+fn selection_snapshot_validation_rejects_invalid_bounds_and_line_counts() {
+    let zero_based = plan_selection("line", 0, 1);
+    assert_eq!(
+        validate_selection_snapshot(&zero_based),
+        Err(SelectionSnapshotValidationError::InvalidBounds)
+    );
+
+    let reversed = plan_selection("line", 4, 3);
+    assert_eq!(
+        validate_selection_snapshot(&reversed),
+        Err(SelectionSnapshotValidationError::InvalidBounds)
+    );
+
+    let mismatched = plan_selection("one line", 4, 5);
+    assert_eq!(
+        validate_selection_snapshot(&mismatched),
+        Err(SelectionSnapshotValidationError::LineCountMismatch)
+    );
+}
+
+#[test]
+fn selection_snapshot_validation_rejects_unsafe_identity_and_oversized_content() {
+    let mut unsafe_label = plan_selection("line", 1, 1);
+    unsafe_label.source_title = Some("Plan\nforged".to_string());
+    assert_eq!(
+        validate_selection_snapshot(&unsafe_label),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "sourceTitle"
+        ))
+    );
+
+    let mut unsupported = plan_selection("line", 1, 1);
+    unsupported.source_kind = "confluence".to_string();
+    assert_eq!(
+        validate_selection_snapshot(&unsupported),
+        Err(SelectionSnapshotValidationError::UnsupportedSource)
+    );
+
+    let mut mismatched_provider = plan_selection("line", 1, 1);
+    mismatched_provider.source_type = "ticket".to_string();
+    mismatched_provider.source_kind = "jira".to_string();
+    mismatched_provider.provider = Some("clickup".to_string());
+    assert_eq!(
+        validate_selection_snapshot(&mismatched_provider),
+        Err(SelectionSnapshotValidationError::UnsupportedSource)
+    );
+
+    let oversized = plan_selection(&"x".repeat(64 * 1024 + 1), 1, 1);
+    assert_eq!(
+        validate_selection_snapshot(&oversized),
+        Err(SelectionSnapshotValidationError::ContentTooLarge)
+    );
+}
+
+#[test]
+fn persisted_user_metadata_includes_selection_without_overwriting_existing_fields() {
+    let metadata = super::persisted_user_metadata(&super::SendMessageOptions {
+        metadata: Some(r#"{"source":"composer"}"#.to_string()),
+        composer_selection_snapshot: Some(plan_selection("selected", 8, 8)),
+        ..Default::default()
+    })
+    .expect("selection metadata");
+    let value: serde_json::Value = serde_json::from_str(&metadata).expect("valid metadata json");
+
+    assert_eq!(value["source"], "composer");
+    assert_eq!(
+        value["composer_selection_snapshot"]["sourceId"],
+        "artifact-version-2"
+    );
+    assert_eq!(value["composer_selection_snapshot"]["startLine"], 8);
+    assert_eq!(value["composer_selection_snapshot"]["content"], "selected");
 }

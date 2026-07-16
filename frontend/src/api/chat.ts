@@ -421,6 +421,7 @@ export interface QueuedMessageResponse {
   content: string;
   createdAt: string;
   isEditing: boolean;
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
   attachmentIds: string[];
 }
 
@@ -1622,22 +1623,61 @@ export async function getAgentRunStatus(
 // Namespace Export for Alternative Usage Pattern
 // ============================================================================
 
+const ComposerSelectionSnapshotSchema = z.object({
+  sourceType: z.enum(["artifact", "ticket"]),
+  sourceKind: z.enum(["plan", "jira", "linear", "clickup"]),
+  sourceId: z.string(),
+  sourceTitle: z.string().optional(),
+  sourceKey: z.string().optional(),
+  provider: z.enum(["atlassian", "linear", "clickup"]).optional(),
+  artifactVersion: z.number().int().positive().optional(),
+  sourceRevision: z.string().optional(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  content: z.string(),
+});
+
 const QueuedMessageResponseSchema = z.object({
   id: z.string(),
   content: z.string(),
   created_at: z.string(),
   is_editing: z.boolean(),
+  composer_selection_snapshot: ComposerSelectionSnapshotSchema.optional(),
   attachment_ids: z.array(z.string()).optional().default([]),
 });
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
 
 function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
+  const selection = raw.composer_selection_snapshot;
   return {
     id: raw.id,
     content: raw.content,
     createdAt: raw.created_at,
     isEditing: raw.is_editing,
+    ...(selection
+      ? {
+          composerSelectionSnapshot: {
+            sourceType: selection.sourceType,
+            sourceKind: selection.sourceKind,
+            sourceId: selection.sourceId,
+            ...(selection.sourceTitle
+              ? { sourceTitle: selection.sourceTitle }
+              : {}),
+            ...(selection.sourceKey ? { sourceKey: selection.sourceKey } : {}),
+            ...(selection.provider ? { provider: selection.provider } : {}),
+            ...(selection.artifactVersion
+              ? { artifactVersion: selection.artifactVersion }
+              : {}),
+            ...(selection.sourceRevision
+              ? { sourceRevision: selection.sourceRevision }
+              : {}),
+            startLine: selection.startLine,
+            endLine: selection.endLine,
+            content: selection.content,
+          },
+        }
+      : {}),
     attachmentIds: raw.attachment_ids,
   };
 }
@@ -1761,6 +1801,20 @@ export interface ComposerArtifactReference {
   status?: string;
 }
 
+export interface ComposerSelectionSnapshot {
+  sourceType: "artifact" | "ticket";
+  sourceKind: "plan" | "jira" | "linear" | "clickup";
+  sourceId: string;
+  sourceTitle?: string;
+  sourceKey?: string;
+  provider?: "atlassian" | "linear" | "clickup";
+  artifactVersion?: number;
+  sourceRevision?: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
 export type TeamIntentStrategy = "research" | "debate" | "execution";
 
 export interface CapabilityIntent {
@@ -1792,6 +1846,7 @@ export interface SendAgentMessageOptions {
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -1878,6 +1933,7 @@ export interface StartAgentConversationInput {
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export interface StartAgentConversationResult {
@@ -2838,6 +2894,9 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.composerArtifactReferences?.length
       ? { composerArtifactReferences: input.composerArtifactReferences }
+      : {}),
+    ...(input.composerSelectionSnapshot
+      ? { composerSelectionSnapshot: input.composerSelectionSnapshot }
       : {}),
     ...(input.base
       ? {
@@ -4031,6 +4090,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.composerArtifactReferences?.length
           ? { composerArtifactReferences: options.composerArtifactReferences }
+          : {}),
+        ...(options?.composerSelectionSnapshot
+          ? { composerSelectionSnapshot: options.composerSelectionSnapshot }
           : {}),
       },
     },

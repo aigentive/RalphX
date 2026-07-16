@@ -34,7 +34,11 @@ import {
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
-import type { CapabilityIntent, TeamIntent } from "@/api/chat";
+import type {
+  CapabilityIntent,
+  ComposerSelectionSnapshot,
+  TeamIntent,
+} from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -227,6 +231,7 @@ export interface AgentComposerSendOptions {
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
   capabilityIntent?: CapabilityIntent | null;
+  selectionSnapshot?: ComposerSelectionSnapshot;
   teamIntent?: TeamIntent | null;
 }
 
@@ -278,6 +283,8 @@ export interface AgentComposerSurfaceProps {
   initialProjectReferences?: AgentComposerProjectReference[];
   initialIntegrationReferences?: AgentComposerIntegrationReference[];
   initialArtifactReferences?: AgentComposerArtifactReference[];
+  selectionSnapshot?: ComposerSelectionSnapshot | null;
+  onClearSelectionSnapshot?: () => void;
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   capability?: CapabilityFieldConfig;
@@ -340,6 +347,8 @@ export function AgentComposerSurface({
   initialProjectReferences = EMPTY_PROJECT_REFERENCES,
   initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
   initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
+  selectionSnapshot = null,
+  onClearSelectionSnapshot,
   onIntegrationReferencesChange,
   mode,
   capability,
@@ -758,6 +767,7 @@ export function AgentComposerSurface({
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
+  const hasSelectionSnapshot = Boolean(selectionSnapshot);
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
   // is focused (cursor active, even with no text yet) or when there is real
@@ -772,6 +782,7 @@ export function AgentComposerSurface({
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
+    hasSelectionSnapshot ||
     hasQueuedMessages ||
     Boolean(questionMode) ||
     isReadOnly;
@@ -1150,6 +1161,7 @@ export function AgentComposerSurface({
       }
       if (item.detail === "clear") {
         clearValue();
+        onClearSelectionSnapshot?.();
         return;
       }
       if (item.detail === "plan:refine") {
@@ -1226,6 +1238,7 @@ export function AgentComposerSurface({
       isReadOnly,
       isSubmitting,
       mode,
+      onClearSelectionSnapshot,
       onSend,
       planReferenceByMenuId,
       sendDisabledReason,
@@ -1240,7 +1253,12 @@ export function AgentComposerSurface({
       message: string,
     ): { message: string; options?: AgentComposerSendOptions } => {
       if (questionMode) {
-        return { message };
+        return {
+          message,
+          ...(selectionSnapshot
+            ? { options: { selectionSnapshot } }
+            : {}),
+        };
       }
       const tokens = new Set(extractComposerSlashSkillTokens(message));
       const internalNames = new Set(selectedInternalSkillNames);
@@ -1304,7 +1322,9 @@ export function AgentComposerSurface({
         ...(projectReferences.length > 0 ||
         normalizedIntegrationReferences.length > 0 ||
         normalizedArtifactReferences.length > 0 ||
-        capabilityIntent || teamIntent
+        selectionSnapshot ||
+        capabilityIntent ||
+        teamIntent
           ? {
               options: {
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
@@ -1315,6 +1335,7 @@ export function AgentComposerSurface({
                   ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
                 ...(capabilityIntent ? { capabilityIntent } : {}),
+                ...(selectionSnapshot ? { selectionSnapshot } : {}),
                 ...(teamIntent ? { teamIntent } : {}),
               },
             }
@@ -1327,6 +1348,7 @@ export function AgentComposerSurface({
       selectedIntegrationReferenceList,
       selectedInternalSkillNames,
       selectedProjectReferenceList,
+      selectionSnapshot,
       skills,
       capability,
       team?.enabled,
@@ -1420,17 +1442,23 @@ export function AgentComposerSurface({
         : onSend(outgoing.message);
 
     if (questionMode || isControlled) {
-      await sendOutgoing();
+      try {
+        await sendOutgoing();
+      } catch {
+        return;
+      }
       setSelectedInternalSkillNames(new Set());
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());
+      onClearSelectionSnapshot?.();
       return;
     }
 
     clearValue();
     try {
       await sendOutgoing();
+      onClearSelectionSnapshot?.();
     } catch {
       // Errors surface through the parent; preserve the current interaction model.
     }
@@ -1443,6 +1471,7 @@ export function AgentComposerSurface({
     isReadOnly,
     isSubmitting,
     onSend,
+    onClearSelectionSnapshot,
     onStop,
     prepareMessageForSend,
     questionMode,
@@ -1721,6 +1750,7 @@ export function AgentComposerSurface({
 
         {(attachments.length > 0 ||
           hasSelectedReferences ||
+          hasSelectionSnapshot ||
           attachmentsUploading) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
@@ -1749,6 +1779,14 @@ export function AgentComposerSurface({
                 />
               </div>
             )}
+            {selectionSnapshot ? (
+              <ComposerSelectionPill
+                snapshot={selectionSnapshot}
+                {...(onClearSelectionSnapshot
+                  ? { onClear: onClearSelectionSnapshot }
+                  : {})}
+              />
+            ) : null}
           </div>
         )}
 
@@ -2154,6 +2192,50 @@ function ComposerActionMenu({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ComposerSelectionPill({
+  snapshot,
+  onClear,
+}: {
+  snapshot: ComposerSelectionSnapshot;
+  onClear?: () => void;
+}) {
+  const label =
+    snapshot.sourceKey ??
+    snapshot.sourceTitle ??
+    (snapshot.sourceKind === "plan" ? "Plan" : snapshot.sourceKind);
+  const lineLabel =
+    snapshot.startLine === snapshot.endLine
+      ? `L${snapshot.startLine}`
+      : `L${snapshot.startLine}–${snapshot.endLine}`;
+
+  return (
+    <div
+      className="flex min-h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-xs"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--accent-border)",
+        borderStyle: "solid",
+        borderWidth: 1,
+        color: "var(--text-primary)",
+      }}
+      data-testid="agent-composer-selection-snapshot"
+    >
+      <ScrollText className="h-3.5 w-3.5 shrink-0" />
+      <span className="min-w-0 truncate font-medium">{`Selection: ${label} · ${lineLabel}`}</span>
+      {onClear ? (
+        <button
+          type="button"
+          className="ml-auto shrink-0 rounded px-1.5 py-1 text-[0.6875rem] font-medium hover:bg-[var(--bg-hover)]"
+          aria-label="Clear selected artifact lines"
+          onClick={onClear}
+        >
+          Clear
+        </button>
+      ) : null}
+    </div>
   );
 }
 

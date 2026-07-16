@@ -11,6 +11,7 @@ import { immer } from "zustand/middleware/immer";
 import type { ChatMessage } from "@/types/ideation";
 import type { ChatContext } from "@/types/chat";
 import type { ModelDisplay } from "@/types/chat-conversation";
+import type { ComposerSelectionSnapshot } from "@/api/chat";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 
 // ============================================================================
@@ -47,6 +48,8 @@ export interface QueuedMessage {
   isEditing: boolean;
   /** Chat attachment IDs selected when the message was queued */
   attachmentIds: string[];
+  /** Frozen artifact/ticket excerpt carried by the queued turn. */
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export interface ChatComposerAttachment {
@@ -143,7 +146,8 @@ interface ChatActions {
     contextKey: string,
     content: string,
     clientId?: string,
-    attachmentIds?: string[]
+    attachmentIds?: string[],
+    composerSelectionSnapshot?: ComposerSelectionSnapshot,
   ) => void;
   /** Replace a context queue with backend-owned queued messages */
   setQueuedMessages: (contextKey: string, messages: QueuedMessage[]) => void;
@@ -199,6 +203,8 @@ function queuedMessageListsEqual(
       message.content === other.content &&
       message.createdAt === other.createdAt &&
       message.isEditing === other.isEditing &&
+      JSON.stringify(message.composerSelectionSnapshot) ===
+        JSON.stringify(other.composerSelectionSnapshot) &&
       message.attachmentIds.length === other.attachmentIds.length &&
       message.attachmentIds.every(
         (attachmentId, attachmentIndex) =>
@@ -388,7 +394,13 @@ export const useChatStore = create<ChatState & ChatActions>()(
         });
       }),
 
-    queueMessage: (contextKey, content, clientId, attachmentIds) =>
+    queueMessage: (
+      contextKey,
+      content,
+      clientId,
+      attachmentIds,
+      composerSelectionSnapshot,
+    ) =>
       set((state) => {
         const id = clientId ?? `queued-${Date.now()}-${Math.random()}`;
         if (!state.queuedMessages[contextKey]) {
@@ -407,6 +419,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
           ) {
             existingMessage.attachmentIds = [...attachmentIds];
           }
+          if (
+            !existingMessage.composerSelectionSnapshot &&
+            composerSelectionSnapshot
+          ) {
+            existingMessage.composerSelectionSnapshot = composerSelectionSnapshot;
+          }
           return;
         }
         const queuedMessage: QueuedMessage = {
@@ -415,6 +433,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           createdAt: new Date().toISOString(),
           isEditing: false,
           attachmentIds: [...(attachmentIds ?? [])],
+          ...(composerSelectionSnapshot ? { composerSelectionSnapshot } : {}),
         };
         state.queuedMessages[contextKey].push(queuedMessage);
       }),

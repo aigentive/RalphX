@@ -33,6 +33,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      composer_selection_snapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first selected line\nsecond selected line",
+      },
     });
 
     expect(parsed).toEqual({
@@ -57,6 +67,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first selected line\nsecond selected line",
+      },
     });
   });
 
@@ -82,6 +102,18 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "jira",
+        sourceId: "10042",
+        sourceTitle: "Queue recovery",
+        sourceKey: "RX-42",
+        provider: "atlassian",
+        sourceRevision: "2026-07-16T09:00:00Z",
+        startLine: 4,
+        endLine: 5,
+        content: "saved first line\nsaved second line",
+      },
     });
 
     expect(metadata).toBeTruthy();
@@ -106,6 +138,18 @@ describe("parseComposerReferencesFromMetadata", () => {
           status: "approved",
         },
       ],
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "jira",
+        sourceId: "10042",
+        sourceTitle: "Queue recovery",
+        sourceKey: "RX-42",
+        provider: "atlassian",
+        sourceRevision: "2026-07-16T09:00:00Z",
+        startLine: 4,
+        endLine: 5,
+        content: "saved first line\nsaved second line",
+      },
     });
   });
 
@@ -123,9 +167,53 @@ describe("parseComposerReferencesFromMetadata", () => {
       }),
     ).toBeNull();
   });
+
+  it("rejects a selection whose explicit provider conflicts with its source", () => {
+    expect(
+      parseComposerReferencesFromMetadata({
+        composer_selection_snapshot: {
+          sourceType: "ticket",
+          sourceKind: "jira",
+          sourceId: "10042",
+          provider: "clickup",
+          startLine: 1,
+          endLine: 1,
+          content: "mismatched provider",
+        },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("MessageReferences", () => {
+  it("renders a compact frozen selection and views its saved content without fetching", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        selectionSnapshot={{
+          sourceType: "ticket",
+          sourceKind: "clickup",
+          sourceId: "task-1",
+          sourceTitle: "Release task",
+          sourceKey: "CU-17",
+          provider: "clickup",
+          startLine: 10,
+          endLine: 45,
+          content: "frozen line one\nfrozen line two",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Selection · CU-17 · L10–45")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View selection snapshot" }));
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("frozen line one")).toBeTruthy();
+    expect(screen.getByText("frozen line two")).toBeTruthy();
+  });
+
   it("renders artifact reference status, version, and fallback labels", () => {
     render(
       <MessageReferences

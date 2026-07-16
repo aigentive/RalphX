@@ -2,22 +2,26 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  ComposerSelectionSnapshot,
 } from "@/api/chat";
 
 export interface MessageComposerReferences {
   projectReferences: ComposerProjectReference[];
   integrationReferences: ComposerIntegrationReference[];
   artifactReferences: ComposerArtifactReference[];
+  selectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export function serializeComposerReferencesMetadata({
   projectReferences,
   integrationReferences,
   artifactReferences,
+  selectionSnapshot,
 }: {
   projectReferences?: ComposerProjectReference[] | null | undefined;
   integrationReferences?: ComposerIntegrationReference[] | null | undefined;
   artifactReferences?: ComposerArtifactReference[] | null | undefined;
+  selectionSnapshot?: ComposerSelectionSnapshot | null | undefined;
 }): string | null {
   const normalizedProjectReferences = parseProjectReferences(projectReferences);
   const normalizedIntegrationReferences = parseIntegrationReferences(
@@ -25,11 +29,13 @@ export function serializeComposerReferencesMetadata({
   );
   const normalizedArtifactReferences =
     parseArtifactReferences(artifactReferences);
+  const normalizedSelectionSnapshot = parseSelectionSnapshot(selectionSnapshot);
 
   if (
     normalizedProjectReferences.length === 0 &&
     normalizedIntegrationReferences.length === 0 &&
-    normalizedArtifactReferences.length === 0
+    normalizedArtifactReferences.length === 0 &&
+    !normalizedSelectionSnapshot
   ) {
     return null;
   }
@@ -43,6 +49,9 @@ export function serializeComposerReferencesMetadata({
       : {}),
     ...(normalizedArtifactReferences.length > 0
       ? { composer_artifact_references: normalizedArtifactReferences }
+      : {}),
+    ...(normalizedSelectionSnapshot
+      ? { composer_selection_snapshot: normalizedSelectionSnapshot }
       : {}),
   });
 }
@@ -65,16 +74,119 @@ export function parseComposerReferencesFromMetadata(
     metadata.composer_artifact_references ??
       metadata.composerArtifactReferences,
   );
+  const selectionSnapshot = parseSelectionSnapshot(
+    metadata.composer_selection_snapshot ?? metadata.composerSelectionSnapshot,
+  );
 
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
-    artifactReferences.length === 0
+    artifactReferences.length === 0 &&
+    !selectionSnapshot
   ) {
     return null;
   }
 
-  return { projectReferences, integrationReferences, artifactReferences };
+  return {
+    projectReferences,
+    integrationReferences,
+    artifactReferences,
+    ...(selectionSnapshot ? { selectionSnapshot } : {}),
+  };
+}
+
+function parseSelectionSnapshot(raw: unknown): ComposerSelectionSnapshot | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const sourceType = readString(record, "sourceType", "source_type");
+  const sourceKind = readString(record, "sourceKind", "source_kind");
+  const sourceId = readString(record, "sourceId", "source_id");
+  const startLine = readNumber(record, "startLine", "start_line");
+  const endLine = readNumber(record, "endLine", "end_line");
+  const content = record.content;
+  const sourcePairSupported =
+    (sourceType === "artifact" && sourceKind === "plan") ||
+    (sourceType === "ticket" &&
+      (sourceKind === "jira" ||
+        sourceKind === "linear" ||
+        sourceKind === "clickup"));
+  if (
+    !sourcePairSupported ||
+    !sourceId?.trim() ||
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    !startLine ||
+    !endLine ||
+    startLine < 1 ||
+    endLine < startLine ||
+    typeof content !== "string" ||
+    content.includes("\0") ||
+    content.includes("\r") ||
+    content.endsWith("\n") ||
+    content.split("\n").length !== endLine - startLine + 1 ||
+    new TextEncoder().encode(content).byteLength > 64 * 1024
+  ) {
+    return null;
+  }
+
+  const sourceTitle = readString(record, "sourceTitle", "source_title");
+  const sourceKey = readString(record, "sourceKey", "source_key");
+  const provider = readString(record, "provider", "provider");
+  const artifactVersion = readNumber(
+    record,
+    "artifactVersion",
+    "artifact_version",
+  );
+  const sourceRevision = readString(
+    record,
+    "sourceRevision",
+    "source_revision",
+  );
+  const supportedProvider =
+    (sourceKind === "jira" && provider === "atlassian") ||
+    (sourceKind === "linear" && provider === "linear") ||
+    (sourceKind === "clickup" && provider === "clickup")
+      ? provider
+      : undefined;
+  if (provider !== undefined && supportedProvider === undefined) {
+    return null;
+  }
+
+  return {
+    sourceType,
+    sourceKind,
+    sourceId,
+    ...(sourceTitle?.trim() ? { sourceTitle } : {}),
+    ...(sourceKey?.trim() ? { sourceKey } : {}),
+    ...(supportedProvider ? { provider: supportedProvider } : {}),
+    ...(artifactVersion && Number.isInteger(artifactVersion) && artifactVersion > 0
+      ? { artifactVersion }
+      : {}),
+    ...(sourceRevision?.trim() ? { sourceRevision } : {}),
+    startLine,
+    endLine,
+    content,
+  };
+}
+
+function readString(
+  record: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+): string | undefined {
+  const value = record[camelKey] ?? record[snakeKey];
+  return typeof value === "string" ? value : undefined;
+}
+
+function readNumber(
+  record: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+): number | undefined {
+  const value = record[camelKey] ?? record[snakeKey];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function parseProjectReferences(raw: unknown): ComposerProjectReference[] {
