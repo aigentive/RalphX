@@ -6,11 +6,11 @@ use chrono::Utc;
 
 use crate::application::{PendingPermissionInfo, QuestionOption};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
-    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
-    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSession, Project, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrReviewMonitor, Automation, AutomationId, AutomationJudgeState,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, ChatConversation, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, Project, Task,
 };
 use crate::domain::repositories::{PlanApprovalActor, PlanArtifactApprovalRepository};
 use crate::domain::state_machine::Blocker;
@@ -558,6 +558,88 @@ async fn attention_items_resolve_permission_and_question_projects_and_keep_unkno
     assert!(!other_items
         .iter()
         .any(|item| item.id == "permission:project-permission"));
+}
+
+#[tokio::test]
+async fn attention_items_exclude_archived_chat_and_workspace_conversation_targets() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "archived-attention").await;
+
+    let active_conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(active_conversation.clone())
+        .await
+        .unwrap();
+    let archived_chat_conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(archived_chat_conversation.clone())
+        .await
+        .unwrap();
+    state
+        .chat_conversation_repo
+        .archive(&archived_chat_conversation.id)
+        .await
+        .unwrap();
+    let archived_workspace_conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(archived_workspace_conversation.clone())
+        .await
+        .unwrap();
+    let mut archived_workspace = AgentConversationWorkspace::new(
+        archived_workspace_conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/test/archived-attention".to_string(),
+        "/tmp/ralphx-test-archived-attention".to_string(),
+    );
+    archived_workspace.status = AgentConversationWorkspaceStatus::Archived;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(archived_workspace)
+        .await
+        .unwrap();
+
+    for (request_id, conversation_id) in [
+        ("active-question", active_conversation.id.to_string()),
+        (
+            "archived-chat-question",
+            archived_chat_conversation.id.to_string(),
+        ),
+        (
+            "archived-workspace-question",
+            archived_workspace_conversation.id.to_string(),
+        ),
+    ] {
+        state
+            .question_state
+            .register(
+                request_id.to_string(),
+                conversation_id,
+                "Continue?".to_string(),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await;
+    }
+
+    let items = attention_items(&state, Some(&project.id)).await;
+    assert!(items
+        .iter()
+        .any(|item| item.id == "question:active-question"));
+    assert!(!items
+        .iter()
+        .any(|item| item.id == "question:archived-chat-question"));
+    assert!(!items
+        .iter()
+        .any(|item| item.id == "question:archived-workspace-question"));
 }
 
 #[tokio::test]
