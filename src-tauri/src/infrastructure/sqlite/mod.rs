@@ -108,6 +108,8 @@ pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
 pub mod sqlite_ui_feature_flag_overrides_repo;
+#[cfg(test)]
+mod sqlite_ui_feature_flag_overrides_repo_tests;
 pub mod sqlite_team_message_repo;
 #[cfg(test)]
 mod sqlite_team_message_repo_tests;

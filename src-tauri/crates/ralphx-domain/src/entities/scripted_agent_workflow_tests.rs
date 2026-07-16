@@ -62,3 +62,40 @@ fn workflow_statuses_round_trip_and_terminal_classification_is_explicit() {
     assert!(AgentWorkflowRunStatus::Completed.is_terminal());
     assert!(!AgentWorkflowRunStatus::Disabled.is_terminal());
 }
+
+#[test]
+fn workflow_defaults_and_invalid_values_are_explicit() {
+    let generated_id = AgentWorkflowRunId::default();
+    assert!(!generated_id.as_str().is_empty());
+    assert_eq!(generated_id.to_string(), generated_id.as_str());
+
+    let parse_error = "unknown"
+        .parse::<AgentWorkflowRunStatus>()
+        .expect_err("unknown status must fail");
+    assert_eq!(parse_error, "Invalid AgentWorkflowRunStatus: unknown");
+
+    let decoded: AgentWorkflowMeta =
+        serde_json::from_str(r#"{"name":"Defaults"}"#).expect("deserialize default limits");
+    assert_eq!(decoded.max_concurrency, 4);
+    assert_eq!(decoded.max_invocations, 64);
+
+    let mut missing_name = meta();
+    missing_name.name = "  ".to_string();
+    assert_eq!(
+        missing_name.validate(),
+        Err("Workflow name is required".to_string())
+    );
+
+    let empty_source = AgentWorkflowScript::new(
+        ChatConversationId::from_string("conversation-1"),
+        ProjectId::from_string("project-1".to_string()),
+        "  ".to_string(),
+        meta(),
+        "{}".to_string(),
+        0,
+    );
+    assert_eq!(
+        empty_source.expect_err("empty source must fail"),
+        "Workflow script source is required"
+    );
+}
