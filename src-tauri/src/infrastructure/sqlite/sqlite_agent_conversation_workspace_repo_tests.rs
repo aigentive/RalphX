@@ -914,6 +914,7 @@ async fn workspace_review_approval_cas_and_audit_event_commit_exactly_once() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "workspace_review_approved_anyway");
+    assert!(events[0].summary.contains("diff-current"));
     assert_eq!(
         events[0].classification.as_deref(),
         Some("workspace_review_approved_anyway")

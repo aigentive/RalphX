@@ -90,6 +90,7 @@ const {
   getAgentConversationRuntimeStatusesMock,
   startWorkspaceReviewMock,
   startWorkspaceReviewFixerMock,
+  approveWorkspaceReviewAnywayMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -156,6 +157,7 @@ const {
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   startWorkspaceReviewMock: vi.fn(),
   startWorkspaceReviewFixerMock: vi.fn(),
+  approveWorkspaceReviewAnywayMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -222,6 +224,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         startWorkspaceReviewMock(...args),
       startAgentWorkspaceReviewFixer: (...args: unknown[]) =>
         startWorkspaceReviewFixerMock(...args),
+      approveAgentWorkspaceReviewAnyway: (...args: unknown[]) =>
+        approveWorkspaceReviewAnywayMock(...args),
       listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
         listPublicationEventsMock(...args),
       getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
@@ -1604,6 +1608,7 @@ describe("AgentsArtifactPane", () => {
       started: false,
       skippedReason: null,
     });
+    approveWorkspaceReviewAnywayMock.mockReset();
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -3198,6 +3203,82 @@ describe("AgentsArtifactPane", () => {
     expect(invalidateQueriesSpy).toHaveBeenCalledWith({
       queryKey: chatKeys.conversationTimeline("conversation-1"),
     });
+  });
+
+  it("approves the exact blocking Review snapshot and updates the shared cache", async () => {
+    const user = userEvent.setup();
+    const queryClient = createTestQueryClient();
+    const initialContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "blocking",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "A human must accept this blocker.",
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    const approvedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "passed",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "A human must accept this blocker.",
+      reviewGateBypassedAt: "2026-07-10T00:05:00.000Z",
+      reviewGateBypassedTargetScope: "selected_source",
+      reviewGateBypassedDiffFingerprint: "fingerprint-351",
+      reviewGateBypassedArtifactId: "review-artifact-1",
+      reviewGateBypassedArtifactVersion: 2,
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValue(approvedContext);
+    approveWorkspaceReviewAnywayMock.mockResolvedValue({
+      success: true,
+      monitor: approvedContext.monitor,
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByText("Review blocking")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    await user.click(screen.getByRole("button", { name: "Approve anyway" }));
+
+    await waitFor(() =>
+      expect(approveWorkspaceReviewAnywayMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          targetScope: "selected_source",
+          diffFingerprint: "fingerprint-351",
+          artifactId: "review-artifact-1",
+          artifactVersion: 2,
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData<AgentWorkspaceReviewContext>(
+          agentWorkspaceKeys.workspaceReview("conversation-1"),
+        )?.monitor.reviewGateBypassedDiffFingerprint,
+      ).toBe("fingerprint-351"),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Review approved anyway for the current changes",
+    );
   });
 
   it("shows Fixing instead of Fix Issues while the review fixer is active", async () => {

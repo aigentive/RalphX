@@ -7349,60 +7349,7 @@ mod coordination_mode_send_tests {
         ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
         TeamIntent,
     };
-    use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER;
-
     use super::SendMessageOptions;
-
-    const CANONICAL_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
-
-    #[tokio::test]
-    async fn parented_specialist_override_persists_bound_agent_before_spawn() {
-        let state = AppState::new_test();
-        let project_id = ProjectId::from_string("project-bound-reviewer-send".to_string());
-        let parent = state
-            .chat_conversation_repo
-            .create(ChatConversation::new_project(project_id.clone()))
-            .await
-            .expect("parent conversation should persist");
-        let mut child = ChatConversation::new_project(project_id.clone());
-        child.parent_conversation_id = Some(parent.id.as_str());
-        let child_id = child.id;
-        state
-            .chat_conversation_repo
-            .create(child)
-            .await
-            .expect("child conversation should persist");
-        let service = state.build_chat_service();
-
-        let (resolved, created) = service
-            .get_or_create_conversation_for_send(
-                ChatContextType::Project,
-                project_id.as_str(),
-                &SendMessageOptions {
-                    conversation_id_override: Some(child_id),
-                    agent_name_override: Some(AGENT_WORKSPACE_REVIEWER.to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("conversation should resolve");
-
-        assert!(!created);
-        assert_eq!(
-            resolved.bound_agent_name.as_deref(),
-            Some(CANONICAL_WORKSPACE_REVIEWER)
-        );
-        let stored = state
-            .chat_conversation_repo
-            .get_by_id(&child_id)
-            .await
-            .expect("conversation should load")
-            .expect("conversation should exist");
-        assert_eq!(
-            stored.bound_agent_name.as_deref(),
-            Some(CANONICAL_WORKSPACE_REVIEWER)
-        );
-    }
 
     #[tokio::test]
     async fn explicit_team_intent_persists_coordination_mode_for_existing_conversation() {

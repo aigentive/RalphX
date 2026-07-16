@@ -39,6 +39,10 @@
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
         PrSyncState,
     };
+    use crate::http_server::handlers::agent_workspace_review_approval::{
+        approve_agent_workspace_review_anyway_handler,
+        ApproveAgentWorkspaceReviewAnywayRequest,
+    };
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
     use futures::{stream, Stream};
@@ -2596,6 +2600,78 @@
             .unwrap()
             .unwrap();
         assert_eq!(persisted.publication_pr_number, Some(918));
+    }
+
+    #[tokio::test]
+    async fn human_bypass_resumes_armed_initial_publish_for_the_exact_blocking_snapshot() {
+        let fixture = setup_workspace_for_review_completion("bypass-armed", true, false).await;
+        let completion_state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let _ = complete_agent_workspace_review_run(
+            State(completion_state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("blocking".to_string()),
+                summary: "Review found a blocker".to_string(),
+                blocker: Some("A human must accept this invariant risk".to_string()),
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("blocking workspace review should complete");
+        assert_eq!(fixture.github.state().create_draft_pr_calls, 0);
+
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let context = load_agent_workspace_review_context(fixture.app_state.as_ref(), &workspace)
+            .await
+            .expect("blocking review context should load");
+        let target = context.target.expect("review target should remain current");
+        let artifact_id = context
+            .monitor
+            .review_artifact_id
+            .expect("blocking review artifact should remain linked");
+        let artifact_version = context
+            .monitor
+            .review_artifact_version
+            .expect("blocking review artifact version should remain linked");
+
+        let Json(response) = approve_agent_workspace_review_anyway_handler(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(ApproveAgentWorkspaceReviewAnywayRequest {
+                target_scope: target.scope.to_string(),
+                diff_fingerprint: target.diff_fingerprint,
+                artifact_id: artifact_id.as_str().to_string(),
+                artifact_version,
+            }),
+        )
+        .await
+        .expect("exact blocking snapshot should be human-approved");
+
+        assert_eq!(response.monitor.review_outcome, "blocking");
+        assert_eq!(response.monitor.review_gate_status, "passed");
+        assert!(response.monitor.review_gate_bypassed_at.is_some());
+        assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.step == "workspace_review_approved_anyway"
+                && event.classification.as_deref() == Some("human_override")
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "initial_auto_publish_workspace_review_passed"
+                && event.classification.as_deref() == Some("workspace_review_approved_anyway")
+        }));
     }
 
     #[tokio::test]

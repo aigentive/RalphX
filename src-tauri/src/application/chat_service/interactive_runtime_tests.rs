@@ -1,3 +1,5 @@
+use super::chat_service_context::noninteractive_agent_name;
+use super::SendMessageOptions;
 use super::{
     agent_conversation_mode_for_send, canonical_parented_agent_binding,
     conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
@@ -9,12 +11,14 @@ use super::{
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::application::persona_prompt::ResolvedPersona;
+use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
     ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, Persona, PersonaId, PersonaStatus, ProjectId, TaskId,
 };
+use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER;
 use chrono::Utc;
 use std::path::PathBuf;
 
@@ -44,6 +48,22 @@ fn explicit_agent_override_precedes_persisted_child_binding() {
 }
 
 #[test]
+fn noninteractive_specialist_override_drives_runtime_settings_resolution() {
+    assert_eq!(
+        noninteractive_agent_name(
+            ChatContextType::Project,
+            None,
+            Some("ralphx-workspace-reviewer"),
+        ),
+        "ralphx-workspace-reviewer"
+    );
+    assert_eq!(
+        noninteractive_agent_name(ChatContextType::Project, None, None),
+        "ralphx-general-worker"
+    );
+}
+
+#[test]
 fn only_parented_conversations_bind_successfully_resolved_canonical_agents() {
     let plugin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -66,6 +86,55 @@ fn only_parented_conversations_bind_successfully_resolved_canonical_agents() {
     assert_eq!(
         canonical_parented_agent_binding(&plugin_dir, &child, Some("ralphx-workspace-reviewer"),),
         None
+    );
+}
+
+#[tokio::test]
+async fn parented_specialist_override_persists_bound_agent_before_spawn() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-bound-reviewer-send".to_string());
+    let parent = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("parent conversation should persist");
+    let mut child = ChatConversation::new_project(project_id.clone());
+    child.parent_conversation_id = Some(parent.id.as_str());
+    let child_id = child.id;
+    state
+        .chat_conversation_repo
+        .create(child)
+        .await
+        .expect("child conversation should persist");
+    let service = state.build_chat_service();
+
+    let (resolved, created) = service
+        .get_or_create_conversation_for_send(
+            ChatContextType::Project,
+            project_id.as_str(),
+            &SendMessageOptions {
+                conversation_id_override: Some(child_id),
+                agent_name_override: Some(AGENT_WORKSPACE_REVIEWER.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("conversation should resolve");
+
+    assert!(!created);
+    assert_eq!(
+        resolved.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&child_id)
+        .await
+        .expect("conversation should load")
+        .expect("conversation should exist");
+    assert_eq!(
+        stored.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
     );
 }
 use crate::infrastructure::agents::claude::agent_names::{

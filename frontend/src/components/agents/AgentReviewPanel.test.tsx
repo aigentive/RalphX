@@ -201,6 +201,43 @@ describe("AgentReviewPanel", () => {
     expect(onApproveAnyway).toHaveBeenCalledOnce();
   });
 
+  it("cancels cleanly and prevents duplicate approval while confirmation is pending", async () => {
+    const user = userEvent.setup();
+    let finishApproval: (() => void) | undefined;
+    const onApproveAnyway = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishApproval = resolve;
+        }),
+    );
+    renderPanel({
+      onApproveAnyway,
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+        }),
+      }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onApproveAnyway).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    const confirmButton = screen.getByRole("button", {
+      name: "Approve anyway",
+    });
+    await user.click(confirmButton);
+
+    expect(onApproveAnyway).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Approving..." })).toBeDisabled();
+    finishApproval?.();
+  });
+
   it("keeps runtime-blocked Review reasons in the disabled action tooltip only", async () => {
     const user = userEvent.setup();
 

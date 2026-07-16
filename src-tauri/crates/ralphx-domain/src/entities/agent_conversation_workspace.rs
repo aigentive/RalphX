@@ -681,10 +681,11 @@ impl AgentWorkspaceReviewApprovalSnapshot {
             "workspace_review_approved_anyway",
             "succeeded",
             format!(
-                "Human approved blocking Workspace Review artifact {} v{} for {}.",
+                "Human approved blocking Workspace Review artifact {} v{} for {} at diff {}.",
                 self.artifact_id.as_str(),
                 self.artifact_version,
-                self.target_scope
+                self.target_scope,
+                self.diff_fingerprint
             ),
             Some("workspace_review_approved_anyway".to_string()),
         );
