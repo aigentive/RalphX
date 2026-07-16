@@ -13,12 +13,15 @@ import { useState, type ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import type { AgentConversationJiraIssue } from "@/api/atlassian";
 import type {
   AgentConversationRuntimeStatus,
   AgentWorkspacePrReviewContext,
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
+import type { AgentConversationGranolaNote } from "@/api/granola";
+import type { AgentConversationLinearIssue } from "@/api/linear";
 import type {
   Automation,
   AutomationDetail,
@@ -38,6 +41,9 @@ import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import type { Task } from "@/types/task";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
+import { agentGranolaNoteKeys } from "./agentGranolaNoteQueries";
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
@@ -608,6 +614,144 @@ const workspace = (
   updatedAt: "2026-04-23T09:00:00Z",
   ...overrides,
 });
+
+const linearIssue = (
+  overrides: Partial<AgentConversationLinearIssue> = {},
+): AgentConversationLinearIssue => ({
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  provider: "linear",
+  issueId: "linear-issue-1",
+  issueKey: "LIN-123",
+  issueUrl: "https://linear.app/example/issue/LIN-123",
+  title: "Keep contextual tabs focused",
+  status: "In Progress",
+  assignee: null,
+  reporter: null,
+  updatedAtRemote: "2026-07-16T12:00:00Z",
+  descriptionMarkdown: null,
+  descriptionText: null,
+  comments: [],
+  attachments: [],
+  lastRefreshedAt: "2026-07-16T12:00:00Z",
+  refreshStatus: "loaded",
+  refreshError: null,
+  assignedAt: "2026-07-16T12:00:00Z",
+  assignedFromMessageId: null,
+  manuallyAssigned: true,
+  createdAt: "2026-07-16T12:00:00Z",
+  updatedAt: "2026-07-16T12:00:00Z",
+  ...overrides,
+});
+
+const jiraIssue = (
+  overrides: Partial<AgentConversationJiraIssue> = {},
+): AgentConversationJiraIssue => ({
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  provider: "atlassian",
+  issueKey: "RX-42",
+  issueId: "jira-issue-42",
+  issueUrl: "https://jira.example.com/browse/RX-42",
+  title: "Keep contextual tabs focused",
+  status: "In Progress",
+  assignee: null,
+  reporter: null,
+  updatedAtRemote: "2026-07-16T12:00:00Z",
+  descriptionMarkdown: null,
+  descriptionText: null,
+  acceptanceCriteriaMarkdown: null,
+  acceptanceCriteriaText: null,
+  comments: [],
+  attachments: [],
+  lastRefreshedAt: "2026-07-16T12:00:00Z",
+  refreshStatus: "loaded",
+  refreshError: null,
+  assignedAt: "2026-07-16T12:00:00Z",
+  assignedFromMessageId: null,
+  manuallyAssigned: true,
+  createdAt: "2026-07-16T12:00:00Z",
+  updatedAt: "2026-07-16T12:00:00Z",
+  ...overrides,
+});
+
+const granolaNote = (
+  overrides: Partial<AgentConversationGranolaNote> = {},
+): AgentConversationGranolaNote => ({
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  provider: "granola",
+  noteId: "granola-note-1",
+  noteUrl: "https://granola.ai/notes/granola-note-1",
+  title: "Planning sync",
+  summaryMarkdown: "Discussed contextual tabs.",
+  transcript: [],
+  includeTranscript: true,
+  lastRefreshedAt: "2026-07-16T12:00:00Z",
+  refreshStatus: "loaded",
+  refreshError: null,
+  assignedAt: "2026-07-16T12:00:00Z",
+  assignedFromMessageId: null,
+  manuallyAssigned: true,
+  createdAt: "2026-07-16T12:00:00Z",
+  updatedAt: "2026-07-16T12:00:00Z",
+  ...overrides,
+});
+
+type IntegrationAttachments = Partial<{
+  jira: AgentConversationJiraIssue | null;
+  linear: AgentConversationLinearIssue | null;
+  granola: AgentConversationGranolaNote | null;
+}>;
+
+function integrationQueryClient(
+  attachments: IntegrationAttachments = {},
+): QueryClient {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(["atlassian", "settings"], {
+    enabled: true,
+    jiraAvailable: true,
+  });
+  queryClient.setQueryData(["linear", "settings"], {
+    enabled: true,
+    issueSearchAvailable: true,
+  });
+  queryClient.setQueryData(["granola", "settings"], {
+    enabled: true,
+    validationStatus: "valid",
+  });
+  queryClient.setQueryData(
+    agentJiraIssueKeys.issue("conversation-1"),
+    attachments.jira ?? null,
+  );
+  queryClient.setQueryData(
+    agentLinearIssueKeys.issue("conversation-1"),
+    attachments.linear ?? null,
+  );
+  queryClient.setQueryData(
+    agentGranolaNoteKeys.note("conversation-1"),
+    attachments.granola ?? null,
+  );
+  return queryClient;
+}
+
+const integrationTabCases = [
+  {
+    label: "Jira",
+    tab: "jira" as const,
+    attachments: { jira: jiraIssue() },
+  },
+  {
+    label: "Linear",
+    tab: "linear" as const,
+    attachments: { linear: linearIssue() },
+  },
+  {
+    label: "Granola",
+    tab: "granola" as const,
+    attachments: { granola: granolaNote() },
+  },
+];
 
 const publishedPrSupervisionWorkspace = (
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -1648,6 +1792,65 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByText("All tabs are hidden")).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Customize tabs" })).not.toHaveLength(0);
   });
+
+  it("defaults to Plan and Commit & Publish when no contextual artifact is attached", async () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      integrationQueryClient(),
+    );
+
+    await screen.findByTestId("agents-artifact-tab-plan");
+    expect(
+      artifactTabIds(screen.getByTestId("agents-artifact-tab-row")),
+    ).toEqual([
+      "agents-artifact-tab-plan",
+      "agents-artifact-tab-publish",
+    ]);
+  });
+
+  it.each(integrationTabCases)(
+    "shows $label when the integration is enabled and its resource is attached",
+    async ({ tab, attachments }) => {
+      renderPane(
+        "plan",
+        workspace({ mode: "edit" }),
+        vi.fn(),
+        false,
+        conversation(),
+        {},
+        integrationQueryClient(attachments),
+      );
+
+      expect(
+        await screen.findByTestId(`agents-artifact-tab-${tab}`),
+      ).toBeVisible();
+    },
+  );
+
+  it.each(integrationTabCases)(
+    "keeps an explicitly hidden $label tab hidden after its resource is attached",
+    async ({ tab, attachments }) => {
+      renderPane(
+        "plan",
+        workspace({ mode: "edit" }),
+        vi.fn(),
+        false,
+        conversation(),
+        { hiddenTabs: [tab] },
+        integrationQueryClient(attachments),
+      );
+
+      expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeVisible();
+      expect(
+        screen.queryByTestId(`agents-artifact-tab-${tab}`),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("hides the Issues tab when a project conversation has no open issues", async () => {
     listAgentConversationIssuesMock.mockResolvedValue([]);
