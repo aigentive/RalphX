@@ -7,6 +7,7 @@ pub mod api_key_service;
 pub mod artifact_flow_service;
 pub mod artifact_service;
 pub mod bucket_classifier;
+pub mod composer_selection_snapshot;
 pub mod gap_fingerprint;
 pub mod github_service;
 pub mod index_rewriter;
@@ -32,6 +33,7 @@ pub mod worktree_guard;
 pub use artifact_flow_service::{ArtifactFlowService, FlowExecutionResult, StepExecutionResult};
 pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;
+pub use composer_selection_snapshot::ComposerSelectionSnapshot;
 pub use gap_fingerprint::{gap_fingerprint, gap_score, jaccard_similarity};
 pub use github_service::{
     GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrSearchResult,

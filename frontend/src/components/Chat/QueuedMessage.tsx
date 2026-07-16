@@ -45,11 +45,21 @@ export interface QueuedMessageProps {
   /** The queued message to display */
   message: QueuedMessageType;
   /** Callback when edit is confirmed */
-  onEdit: (id: string, content: string, attachmentIds?: string[]) => void;
+  onEdit: (
+    id: string,
+    content: string,
+    attachmentIds?: string[],
+    selectionSnapshot?: QueuedMessageType["composerSelectionSnapshot"],
+  ) => void;
   /** Callback when delete is requested */
   onDelete: (id: string) => void;
   /** Callback when this queued message should interrupt the active run and send now */
-  onSendNow?: (id: string, content: string, attachmentIds?: string[]) => void;
+  onSendNow?: (
+    id: string,
+    content: string,
+    attachmentIds?: string[],
+    selectionSnapshot?: QueuedMessageType["composerSelectionSnapshot"],
+  ) => void;
 }
 
 // ============================================================================
@@ -77,10 +87,19 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
 
   const handleSaveEdit = useCallback(() => {
     if (editContent.trim()) {
-      onEdit(message.id, editContent.trim(), attachmentIds);
+      if (message.composerSelectionSnapshot) {
+        onEdit(
+          message.id,
+          editContent.trim(),
+          attachmentIds,
+          message.composerSelectionSnapshot,
+        );
+      } else {
+        onEdit(message.id, editContent.trim(), attachmentIds);
+      }
       setIsEditing(false);
     }
-  }, [message.id, attachmentIds, editContent, onEdit]);
+  }, [message.id, message.composerSelectionSnapshot, attachmentIds, editContent, onEdit]);
 
   const handleCancelEdit = useCallback(() => {
     setIsEditing(false);
@@ -105,8 +124,23 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
   }, [message.id, onDelete]);
 
   const handleSendNow = useCallback(() => {
-    onSendNow?.(message.id, message.content, attachmentIds);
-  }, [message.content, message.id, attachmentIds, onSendNow]);
+    if (message.composerSelectionSnapshot) {
+      onSendNow?.(
+        message.id,
+        message.content,
+        attachmentIds,
+        message.composerSelectionSnapshot,
+      );
+    } else {
+      onSendNow?.(message.id, message.content, attachmentIds);
+    }
+  }, [
+    message.content,
+    message.id,
+    message.composerSelectionSnapshot,
+    attachmentIds,
+    onSendNow,
+  ]);
 
   return (
     <div

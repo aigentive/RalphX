@@ -1848,6 +1848,7 @@ async fn send_queued_message_now_preserves_suppress_directive_and_agent_override
             version: Some(2),
             status: Some("approved".to_string()),
         }],
+        None,
         Vec::new(),
     );
 

@@ -10,6 +10,7 @@ import {
   type GranolaNoteSummary,
 } from "@/api/granola";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useArtifactSelectionStore } from "@/stores/artifactSelectionStore";
 
 import { AgentsGranolaNotePanel } from "./AgentsGranolaNotePanel";
 
@@ -67,7 +68,7 @@ function boundNote(): AgentConversationGranolaNote {
     noteUrl: "https://granola.ai/notes/not_1234567890ABCD",
     title: "Planning sync",
     summaryMarkdown: "Discussed the plan",
-    transcript: [],
+    transcript: [{ speaker: "Alex", text: "Ship it", startMs: 10, endMs: 20 }],
     includeTranscript: true,
     lastRefreshedAt: "2026-06-20T13:00:00Z",
     refreshStatus: "loaded",
@@ -101,6 +102,7 @@ function renderPanel() {
 describe("AgentsGranolaNotePanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useArtifactSelectionStore.getState().clearAllSelections();
     getNoteMock.mockResolvedValue(null);
     listNotesMock.mockResolvedValue({
       notes: [noteSummary()],
@@ -144,5 +146,32 @@ describe("AgentsGranolaNotePanel", () => {
     expect(
       within(markdown).getByRole("heading", { name: "Progress" }),
     ).toBeInTheDocument();
+  });
+
+  it("selects frozen lines from the bound Granola note", async () => {
+    getNoteMock.mockResolvedValue(boundNote());
+
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Select Granola note lines" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Line 9: Alex: Ship it" }),
+    );
+
+    expect(
+      useArtifactSelectionStore.getState().selections["conversation-1"],
+    ).toEqual({
+      sourceType: "note",
+      sourceKind: "granola",
+      sourceId: "not_1234567890ABCD",
+      sourceTitle: "Planning sync",
+      provider: "granola",
+      sourceRevision: "2026-06-20T13:00:00Z",
+      startLine: 9,
+      endLine: 9,
+      content: "Alex: Ship it",
+    });
   });
 });
