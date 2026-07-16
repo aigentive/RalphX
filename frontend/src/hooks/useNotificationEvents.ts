@@ -1,7 +1,10 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { notificationsApi } from "@/api/notifications";
+import { navigateNotification } from "@/components/notifications/notificationNavigation";
 import { useEventBus } from "@/providers/EventProvider";
+import { NotificationSchema } from "@/types/notifications";
 import { attentionKeys } from "./useAttentionItems";
 import { notificationKeys } from "./useNotificationHistory";
 
@@ -23,6 +26,17 @@ export function useNotificationEvents() {
     unsubscribes.push(
       bus.subscribe("notification:created", invalidateNotificationHistory),
       bus.subscribe("notification:updated", invalidateNotificationHistory),
+      bus.subscribe<unknown>("notification:desktop_activated", (payload) => {
+        const parsed = NotificationSchema.safeParse(payload);
+        if (!parsed.success) return;
+        const notification = parsed.data;
+        void navigateNotification(notification, queryClient).then((navigated) => {
+          if (!navigated) return;
+          void notificationsApi.markRead(notification.id)
+            .catch(() => undefined)
+            .finally(invalidateNotificationHistory);
+        });
+      }),
     );
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [bus, queryClient]);
