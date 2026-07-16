@@ -1938,7 +1938,35 @@ impl<R: Runtime> AppChatService<R> {
             }
         }
 
+        self.persist_parented_agent_binding_for_send(
+            &mut conversation,
+            options.agent_name_override.as_deref(),
+        )
+        .await?;
+
         Ok((conversation, created))
+    }
+
+    async fn persist_parented_agent_binding_for_send(
+        &self,
+        conversation: &mut ChatConversation,
+        explicit_agent_name: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(bound_agent_name) =
+            canonical_parented_agent_binding(&self.plugin_dir, conversation, explicit_agent_name)
+        else {
+            return Ok(());
+        };
+        if conversation.bound_agent_name.as_deref() == Some(bound_agent_name.as_str()) {
+            return Ok(());
+        }
+
+        self.conversation_repo
+            .update_bound_agent_name(&conversation.id, Some(bound_agent_name.as_str()))
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        conversation.bound_agent_name = Some(bound_agent_name);
+        Ok(())
     }
 
     pub fn with_question_state(mut self, state: Arc<QuestionState>) -> Self {
@@ -6147,27 +6175,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Err(error) => cleanup_and_err!(error),
             };
 
-        if let Some(bound_agent_name) = canonical_parented_agent_binding(
-            &self.plugin_dir,
-            &conversation,
-            options.agent_name_override.as_deref(),
-        ) {
-            if conversation.bound_agent_name.as_deref() != Some(bound_agent_name.as_str()) {
-                match self
-                    .conversation_repo
-                    .update_bound_agent_name(&conversation.id, Some(bound_agent_name.as_str()))
-                    .await
-                {
-                    Ok(()) => conversation.bound_agent_name = Some(bound_agent_name),
-                    Err(error) => tracing::error!(
-                        conversation_id = %conversation.id,
-                        error = %error,
-                        "Failed to persist the launched child runtime's canonical agent binding"
-                    ),
-                }
-            }
-        }
-
         // Register verification child PID for explicit cleanup after reconciliation (Fix A).
         // Only for Ideation sessions with SessionPurpose::Verification.
         if context_type == ChatContextType::Ideation {
@@ -7342,8 +7349,60 @@ mod coordination_mode_send_tests {
         ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
         TeamIntent,
     };
+    use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER;
 
     use super::SendMessageOptions;
+
+    const CANONICAL_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
+
+    #[tokio::test]
+    async fn parented_specialist_override_persists_bound_agent_before_spawn() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-bound-reviewer-send".to_string());
+        let parent = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("parent conversation should persist");
+        let mut child = ChatConversation::new_project(project_id.clone());
+        child.parent_conversation_id = Some(parent.id.as_str());
+        let child_id = child.id;
+        state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child conversation should persist");
+        let service = state.build_chat_service();
+
+        let (resolved, created) = service
+            .get_or_create_conversation_for_send(
+                ChatContextType::Project,
+                project_id.as_str(),
+                &SendMessageOptions {
+                    conversation_id_override: Some(child_id),
+                    agent_name_override: Some(AGENT_WORKSPACE_REVIEWER.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("conversation should resolve");
+
+        assert!(!created);
+        assert_eq!(
+            resolved.bound_agent_name.as_deref(),
+            Some(CANONICAL_WORKSPACE_REVIEWER)
+        );
+        let stored = state
+            .chat_conversation_repo
+            .get_by_id(&child_id)
+            .await
+            .expect("conversation should load")
+            .expect("conversation should exist");
+        assert_eq!(
+            stored.bound_agent_name.as_deref(),
+            Some(CANONICAL_WORKSPACE_REVIEWER)
+        );
+    }
 
     #[tokio::test]
     async fn explicit_team_intent_persists_coordination_mode_for_existing_conversation() {
