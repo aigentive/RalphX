@@ -6,6 +6,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { describe, expect, it, vi } from "vitest";
 
 import { splitPersonaBody } from "@/lib/personaContent";
+import { useProjectStore } from "@/stores/projectStore";
+import type { Project } from "@/types/project";
 
 import { PersonasManagementSection } from "./PersonasManagementSection";
 
@@ -23,6 +25,7 @@ type RawPersona = {
   content: string;
   status: "draft" | "active" | "archived";
   version: number;
+  project_id: string | null;
   content_hash: string;
   source_session_id: null;
   created_at: string;
@@ -37,6 +40,7 @@ const activePersona: RawPersona = {
   content: "---\nname: reviewer-voice\n---\nReview carefully.",
   status: "active",
   version: 3,
+  project_id: null,
   content_hash: "active-hash",
   source_session_id: null,
   created_at: "2026-07-10T10:00:00Z",
@@ -61,6 +65,30 @@ const archivedPersona: RawPersona = {
   status: "archived",
 };
 
+const ralphxProject: Project = {
+  id: "project-ralphx",
+  name: "RalphX",
+  workingDirectory: "/projects/ralphx",
+  gitMode: "worktree",
+  baseBranch: "main",
+  worktreeParentDirectory: null,
+  useFeatureBranches: true,
+  mergeValidationMode: "block",
+  detectedAnalysis: null,
+  customAnalysis: null,
+  analyzedAt: null,
+  githubPrEnabled: false,
+  createdAt: "2026-07-01T00:00:00Z",
+  updatedAt: "2026-07-01T00:00:00Z",
+};
+
+const atlasProject: Project = {
+  ...ralphxProject,
+  id: "project-atlas",
+  name: "Atlas",
+  workingDirectory: "/projects/atlas",
+};
+
 function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -71,6 +99,7 @@ function createQueryClient() {
 }
 
 function renderSection() {
+  useProjectStore.getState().setProjects([ralphxProject, atlasProject]);
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <TooltipProvider delayDuration={0}>
@@ -83,15 +112,16 @@ function renderSection() {
 function mockPersonaCommands(personas: RawPersona[]) {
   const store = personas.map((persona) => ({ ...persona }));
   vi.mocked(invoke).mockImplementation(async (command, args) => {
-    const input = (args as { input?: Record<string, string> } | undefined)?.input;
+    const input = (args as { input?: Record<string, unknown> } | undefined)?.input;
     if (command === "list_personas") return store;
     if (command === "create_persona_draft") {
       const created: RawPersona = {
         ...draftPersona,
         id: "persona-new",
-        slug: input?.slug ?? "new-persona",
+        slug: typeof input?.slug === "string" ? input.slug : "new-persona",
         name: "New Persona",
-        content: input?.content ?? "",
+        project_id: typeof input?.projectId === "string" ? input.projectId : null,
+        content: typeof input?.content === "string" ? input.content : "",
       };
       store.push(created);
       return created;
@@ -132,6 +162,54 @@ describe("PersonasManagementSection", () => {
     expect(screen.getByText(/delegated, subagent, or pipeline work/i)).toBeInTheDocument();
   });
 
+  it("filters all, global, and project scopes in both directions and renders scope badges", async () => {
+    const user = userEvent.setup();
+    const globalPersona = activePersona;
+    const projectPersona: RawPersona = {
+      ...draftPersona,
+      project_id: "project-ralphx",
+    };
+    const deletedProjectPersona: RawPersona = {
+      ...activePersona,
+      id: "persona-deleted-project",
+      name: "Orphan Voice",
+      project_id: "project-deleted",
+    };
+    mockPersonaCommands([globalPersona, projectPersona, deletedProjectPersona]);
+    renderSection();
+
+    expect(await screen.findByText("Reviewer Voice")).toBeInTheDocument();
+    expect(screen.getByText("Terse Architect")).toBeInTheDocument();
+    expect(screen.getByText("Orphan Voice")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-scope-persona-active")).toHaveTextContent("Global");
+    expect(screen.getByTestId("persona-scope-persona-draft")).toHaveTextContent("RalphX");
+    expect(screen.getByTestId("persona-scope-persona-deleted-project")).toHaveTextContent(
+      "project-deleted",
+    );
+
+    await user.selectOptions(screen.getByLabelText("Scope filter"), "global");
+    expect(screen.getByText("Reviewer Voice")).toBeInTheDocument();
+    expect(screen.queryByText("Terse Architect")).not.toBeInTheDocument();
+    expect(screen.queryByText("Orphan Voice")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Scope filter"), "project-ralphx");
+    expect(screen.getByText("Terse Architect")).toBeInTheDocument();
+    expect(screen.queryByText("Reviewer Voice")).not.toBeInTheDocument();
+    expect(screen.queryByText("Orphan Voice")).not.toBeInTheDocument();
+  });
+
+  it("keeps the filtered empty treatment and names the active project", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.selectOptions(screen.getByLabelText("Scope filter"), "project-atlas");
+
+    expect(screen.getByText("No personas for Atlas.")).toBeInTheDocument();
+    expect(screen.queryByText("Reviewer Voice")).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when every persona is archived", async () => {
     mockPersonaCommands([archivedPersona]);
     renderSection();
@@ -170,6 +248,7 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "New persona" }));
+    expect(screen.getByLabelText("Scope")).toHaveValue("global");
     await user.type(screen.getByLabelText("Name"), "New Persona");
     expect(screen.getByLabelText("Slug")).toHaveValue("new-persona");
     await user.type(screen.getByLabelText("Description"), "A crisp design voice");
@@ -179,6 +258,7 @@ describe("PersonasManagementSection", () => {
     await screen.findByText("New Persona");
     expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
       input: {
+        projectId: null,
         slug: "new-persona",
         description: "A crisp design voice",
         body: "Prefer concrete language.",
@@ -189,6 +269,31 @@ describe("PersonasManagementSection", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("approve_persona", {
         input: { id: "persona-new" },
+      }),
+    );
+  });
+
+  it("stamps the selected project scope when creating a persona", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "New persona" }));
+    await user.selectOptions(screen.getByLabelText("Scope"), "project-ralphx");
+    await user.type(screen.getByLabelText("Name"), "Project Voice");
+    await user.type(screen.getByLabelText("Description"), "Scoped to RalphX");
+    await user.type(screen.getByLabelText("Instructions"), "Use project context.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
+        input: {
+          projectId: "project-ralphx",
+          slug: "project-voice",
+          description: "Scoped to RalphX",
+          body: "Use project context.",
+        },
       }),
     );
   });
@@ -225,6 +330,7 @@ describe("PersonasManagementSection", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
         input: {
+          projectId: null,
           slug: "pasted-persona",
           content:
             "---\nname: pasted-persona\nkind: persona\ndescription: Pasted\n---\nUse the pasted document.",
@@ -264,6 +370,8 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
+    expect(screen.getByText("Scope")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-editor-scope")).toHaveTextContent("Global");
     const instructions = screen.getByLabelText("Instructions");
     fireEvent.change(instructions, { target: { value: "<blocked-tag>" } });
     await user.click(screen.getByRole("button", { name: "Save" }));

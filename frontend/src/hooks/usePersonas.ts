@@ -16,7 +16,10 @@ import {
 
 export const personaKeys = {
   all: ["personas"] as const,
-  list: () => [...personaKeys.all, "list"] as const,
+  list: (scope?: PersonaScope) =>
+    scope
+      ? ([...personaKeys.all, "list", scope] as const)
+      : ([...personaKeys.all, "list"] as const),
   detail: (id: string) => [...personaKeys.all, "detail", id] as const,
   ingestManifest: (conversationId: string) =>
     [...personaKeys.all, "ingest-manifest", conversationId] as const,
@@ -26,11 +29,16 @@ export const personaKeys = {
 
 export type CreatePersonaDraftInput = {
   slug: string;
+  projectId?: string | null;
   content?: string;
   description?: string;
   body?: string;
   sourceSessionId?: string;
 };
+export type PersonaScope =
+  | { type: "all" }
+  | { type: "globalOnly" }
+  | { type: "globalAndProject"; projectId: string };
 
 export type UpdatePersonaInput = {
   id: string;
@@ -48,8 +56,10 @@ function parsePersona(raw: unknown): Persona {
   return transformPersona(PersonaResponseSchema.parse(raw));
 }
 
-export async function fetchPersonas(): Promise<Persona[]> {
-  const raw = await invoke<unknown>("list_personas", { input: {} });
+export async function fetchPersonas(scope?: PersonaScope): Promise<Persona[]> {
+  const raw = await invoke<unknown>("list_personas", {
+    input: { ...(scope !== undefined && { scope }) },
+  });
   return z.array(PersonaResponseSchema).parse(raw).map(transformPersona);
 }
 
@@ -64,6 +74,7 @@ export async function createPersonaDraft(
   const raw = await invoke<unknown>("create_persona_draft", {
     input: {
       slug: input.slug,
+      ...(input.projectId !== undefined && { projectId: input.projectId }),
       ...(input.content !== undefined && { content: input.content }),
       ...(input.description !== undefined && { description: input.description }),
       ...(input.body !== undefined && { body: input.body }),
@@ -118,10 +129,10 @@ export async function switchConversationPersona(
   await invoke<unknown>("switch_agent_conversation_persona", { input });
 }
 
-export function usePersonas() {
+export function usePersonas(scope?: PersonaScope) {
   return useQuery<Persona[], Error>({
-    queryKey: personaKeys.list(),
-    queryFn: fetchPersonas,
+    queryKey: personaKeys.list(scope),
+    queryFn: () => fetchPersonas(scope),
   });
 }
 

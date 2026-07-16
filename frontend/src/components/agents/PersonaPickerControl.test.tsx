@@ -23,6 +23,7 @@ const personas: Persona[] = [
     content: "# Reviewer",
     status: "active",
     version: 1,
+    projectId: null,
     contentHash: "hash-reviewer",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -36,6 +37,7 @@ const personas: Persona[] = [
     content: "# Architect",
     status: "active",
     version: 1,
+    projectId: "project-current",
     contentHash: "hash-architect",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -49,6 +51,7 @@ const personas: Persona[] = [
     content: "# Draft",
     status: "draft",
     version: 1,
+    projectId: "project-current",
     contentHash: "hash-draft",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -65,6 +68,8 @@ function renderControl(overrides: Partial<React.ComponentProps<typeof PersonaPic
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
         <PersonaPickerControl
+          currentProjectId="project-current"
+          currentProjectName="RalphX"
           personaId={null}
           onValueChange={onValueChange}
           onOpenPersonas={onOpenPersonas}
@@ -108,6 +113,34 @@ describe("PersonaPickerControl", () => {
     expect(screen.getByRole("menuitemradio", { name: "Reviewer Voice" })).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: "Terse Architect" })).toBeInTheDocument();
     expect(screen.queryByText("Not ready")).not.toBeInTheDocument();
+  });
+
+  it("groups global and current-project personas and excludes other projects", () => {
+    const otherProjectPersona: Persona = {
+      ...personas[1],
+      id: "other-project",
+      name: "Other Project Voice",
+      projectId: "project-other",
+    };
+    vi.mocked(usePersonas).mockReturnValue({
+      data: [...personas, otherProjectPersona],
+      isLoading: false,
+    } as ReturnType<typeof usePersonas>);
+
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByRole("group", { name: "Global" })).toHaveTextContent(
+      "Reviewer Voice",
+    );
+    expect(screen.getByRole("group", { name: "RalphX" })).toHaveTextContent(
+      "Terse Architect",
+    );
+    expect(screen.queryByText("Other Project Voice")).not.toBeInTheDocument();
+    expect(usePersonas).toHaveBeenCalledWith({
+      type: "globalAndProject",
+      projectId: "project-current",
+    });
   });
 
   it("changes selection and opens persona settings from the popover", () => {

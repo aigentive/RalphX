@@ -19,12 +19,13 @@ describe("PersonaSchema", () => {
         content: "persona content",
         status: "active",
         version: 2,
+        projectId: null,
         contentHash: "hash-2",
         sourceSessionId: null,
         createdAt: "2026-07-12T10:00:00Z",
         updatedAt: "2026-07-12T10:01:00Z",
       }),
-    ).toMatchObject({ contentHash: "hash-2", status: "active" });
+    ).toMatchObject({ contentHash: "hash-2", projectId: null, status: "active" });
   });
 });
 

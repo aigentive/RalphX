@@ -245,6 +245,7 @@ const personas = vi.hoisted(() => [
     content: "# Reviewer",
     status: "active" as const,
     version: 1,
+    projectId: null,
     contentHash: "hash-reviewer",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -258,6 +259,7 @@ const personas = vi.hoisted(() => [
     content: "# Draft",
     status: "draft" as const,
     version: 1,
+    projectId: null,
     contentHash: "hash-draft",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -393,7 +395,13 @@ describe("agent personas A18 icon-only controls", () => {
   it("gives every persona icon-only control an aria-label and an app tooltip", async () => {
     const user = userEvent.setup();
     const picker = renderWithProviders(
-      <PersonaPickerControl personaId="reviewer" onValueChange={vi.fn()} onOpenPersonas={vi.fn()} />,
+      <PersonaPickerControl
+        currentProjectId="project-1"
+        currentProjectName="Project One"
+        personaId="reviewer"
+        onValueChange={vi.fn()}
+        onOpenPersonas={vi.fn()}
+      />,
     );
     const pickerTrigger = screen.getByRole("button", { name: "Choose persona" });
     expect(pickerTrigger).toHaveAttribute("aria-label", "Choose persona");

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ArrowLeft, Info, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowLeft, Info } from "lucide-react";
 
 import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import { Button } from "@/components/ui/button";
@@ -23,9 +23,13 @@ import { useProjectStore } from "@/stores/projectStore";
 import type { Persona } from "@/types/persona";
 import { splitPersonaBody } from "@/lib/personaContent";
 
+import { PersonaRow, ScopeBadge } from "./PersonaManagementRows";
+
 type EditorState =
   | { kind: "create" }
   | { kind: "edit"; persona: Persona };
+
+type ProjectOption = { id: string; name: string };
 
 export interface PersonasManagementSectionProps {
   /** Controls whether the builder entry is available in the management UI. */
@@ -43,29 +47,6 @@ function errorMessage(error: unknown): string {
   return message || "Unable to save persona.";
 }
 
-function relativeUpdatedAt(updatedAt: string): string {
-  const elapsedMs = Date.now() - new Date(updatedAt).getTime();
-  const hours = Math.round(elapsedMs / (60 * 60 * 1000));
-  if (hours < 1) return "Updated just now";
-  if (hours < 24) return `Updated ${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return days === 1 ? "Updated yesterday" : `Updated ${days}d ago`;
-}
-
-function StatusChip({ status }: { status: Persona["status"] }) {
-  const active = status === "active";
-  return (
-    <span
-      className={
-        active
-          ? "rounded-sm border border-[var(--accent-border)] bg-[var(--accent-muted)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--accent-primary)]"
-          : "rounded-sm border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--text-muted)]"
-      }
-    >
-      {status.toUpperCase()}
-    </span>
-  );
-}
 
 function kebabCasePersonaName(name: string): string {
   return name
@@ -78,15 +59,20 @@ function kebabCasePersonaName(name: string): string {
 
 function PersonaEditor({
   editor,
+  projects,
+  projectNames,
   onBack,
 }: {
   editor: EditorState;
+  projects: ProjectOption[];
+  projectNames: Record<string, string>;
   onBack: () => void;
 }) {
   const editingDraft = editor.kind === "edit" && editor.persona.status === "draft";
   const [name, setName] = useState("");
   const [slug, setSlug] = useState(editor.kind === "create" ? "" : editor.persona.slug);
   const [slugTouched, setSlugTouched] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [description, setDescription] = useState(
     editor.kind === "create" ? "" : editor.persona.description,
   );
@@ -109,8 +95,8 @@ function PersonaEditor({
       if (editor.kind === "create") {
         await createDraft.mutateAsync(
           pastedPersonaDocument
-            ? { slug, content: instructions }
-            : { slug, description, body: instructions },
+            ? { slug, projectId, content: instructions }
+            : { slug, projectId, description, body: instructions },
         );
       } else {
         await updatePersona.mutateAsync(
@@ -128,16 +114,21 @@ function PersonaEditor({
   return (
     <section aria-label="Persona editor" className="space-y-5">
       <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Back to personas"
-          onClick={onBack}
-          className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
-          <ArrowLeft aria-hidden="true" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Back to personas"
+              onClick={onBack}
+              className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
+              <ArrowLeft aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Back to personas</TooltipContent>
+        </Tooltip>
         <div>
           <h3 className="text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
             {editor.kind === "create" ? "New persona" : `Edit persona: ${editor.persona.name}`}
@@ -152,6 +143,27 @@ function PersonaEditor({
 
       {editor.kind === "create" && (
         <>
+          <div className="space-y-1.5">
+            <Label htmlFor="persona-scope" className="text-xs text-[var(--text-secondary)]">
+              Scope
+            </Label>
+            <select
+              id="persona-scope"
+              value={projectId ?? "global"}
+              onChange={(event) =>
+                setProjectId(event.target.value === "global" ? null : event.target.value)
+              }
+              disabled={isSaving}
+              className="settings-input h-9 max-w-md rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)]"
+            >
+              <option value="global">Global</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="persona-name" className="text-xs text-[var(--text-secondary)]">
               Name
@@ -189,6 +201,15 @@ function PersonaEditor({
             </p>
           </div>
         </>
+      )}
+
+      {editor.kind === "edit" && (
+        <div className="space-y-1.5">
+          <Label className="text-xs text-[var(--text-secondary)]">Scope</Label>
+          <div data-testid="persona-editor-scope">
+            <ScopeBadge projectId={editor.persona.projectId} projectNames={projectNames} />
+          </div>
+        </div>
       )}
 
       {editingDraft && (
@@ -253,94 +274,40 @@ function PersonaEditor({
   );
 }
 
-function PersonaRow({
-  persona,
-  onEdit,
-  onActivate,
-  onRemove,
-}: {
-  persona: Persona;
-  onEdit: (persona: Persona) => void;
-  onActivate: (persona: Persona) => void;
-  onRemove: (persona: Persona) => void;
-}) {
-  const active = persona.status === "active";
-  const actionLabel = active ? "Archive" : "Delete";
-  return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-      <span
-        aria-label={active ? "Active persona" : "Draft persona"}
-        className={
-          active
-            ? "h-2.5 w-2.5 rounded-full bg-[var(--accent-primary)]"
-            : "h-2.5 w-2.5 rounded-full border border-[var(--text-muted)]"
-        }
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium text-[var(--text-primary)]">{persona.name}</span>
-          <code className="text-xs text-[var(--text-muted)]">{persona.slug}</code>
-          <StatusChip status={persona.status} />
-          <span className="text-xs text-[var(--text-muted)]">v{persona.version}</span>
-        </div>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">{relativeUpdatedAt(persona.updatedAt)}</p>
-      </div>
-      <div className="flex items-center gap-1">
-        {!active && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={`Activate ${persona.name}`}
-            onClick={() => onActivate(persona)}
-            className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-          >
-            Activate
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label={`Edit ${persona.name}`}
-          onClick={() => onEdit(persona)}
-          className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
-          Edit
-        </Button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`${actionLabel} ${persona.name}`}
-              onClick={() => onRemove(persona)}
-              className="text-[var(--text-muted)] hover:bg-[var(--status-error-muted)] hover:text-[var(--status-error)]"
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{actionLabel} {persona.name}</TooltipContent>
-        </Tooltip>
-      </div>
-    </li>
-  );
-}
 
 export function PersonasManagementSection({
   showBuilderEntry = true,
 }: PersonasManagementSectionProps) {
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [scopeFilter, setScopeFilter] = useState("all");
   const [showBuilder, setShowBuilder] = useState(false);
   const [builderEntryError, setBuilderEntryError] = useState<string | null>(null);
   const activeProjectId = useProjectStore((state) => state.activeProjectId);
-  const { data: personas = [], error, isLoading } = usePersonas();
+  const projectsById = useProjectStore((state) => state.projects);
+  const projects = useMemo(
+    () =>
+      Object.values(projectsById)
+        .map(({ id, name }) => ({ id, name }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [projectsById],
+  );
+  const projectNames = useMemo(
+    () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
+    [projects],
+  );
+  const { data: personas = [], error, isLoading } = usePersonas({ type: "all" });
   const approvePersona = useApprovePersona();
   const archivePersona = useArchivePersona();
   const deleteDraft = useDeletePersonaDraft();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
-  const visiblePersonas = personas.filter((persona) => persona.status !== "archived");
+  const visiblePersonas = personas.filter(
+    (persona) =>
+      persona.status !== "archived" &&
+      (scopeFilter === "all" ||
+        (scopeFilter === "global"
+          ? persona.projectId === null
+          : persona.projectId === scopeFilter)),
+  );
 
   if (showBuilder && activeProjectId) {
     return (
@@ -383,8 +350,22 @@ export function PersonasManagementSection({
   };
 
   if (editor) {
-    return <PersonaEditor editor={editor} onBack={() => setEditor(null)} />;
+    return (
+      <PersonaEditor
+        editor={editor}
+        projects={projects}
+        projectNames={projectNames}
+        onBack={() => setEditor(null)}
+      />
+    );
   }
+
+  const emptyCaption =
+    scopeFilter === "all"
+      ? "No personas yet. Create a draft to get started."
+      : scopeFilter === "global"
+        ? "No global personas."
+        : `No personas for ${projectNames[scopeFilter] ?? scopeFilter}.`;
 
   return (
     <section aria-labelledby="personas-heading" className="space-y-4">
@@ -427,6 +408,27 @@ export function PersonasManagementSection({
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <Label htmlFor="persona-scope-filter" className="text-xs text-[var(--text-secondary)]">
+          Scope:
+        </Label>
+        <select
+          id="persona-scope-filter"
+          aria-label="Scope filter"
+          value={scopeFilter}
+          onChange={(event) => setScopeFilter(event.target.value)}
+          className="settings-input h-8 rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 text-xs text-[var(--text-primary)]"
+        >
+          <option value="all">All</option>
+          <option value="global">Global</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {error ? (
         <div role="alert" className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]">
           {errorMessage(error)}
@@ -435,7 +437,7 @@ export function PersonasManagementSection({
         <div className="h-28 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]" aria-label="Loading personas" />
       ) : visiblePersonas.length === 0 ? (
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-6 text-sm text-[var(--text-muted)]">
-          No personas yet. Create a draft to get started.
+          {emptyCaption}
         </div>
       ) : (
         <ul className="divide-y divide-[var(--border-subtle)] rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
@@ -443,6 +445,7 @@ export function PersonasManagementSection({
             <PersonaRow
               key={persona.id}
               persona={persona}
+              projectNames={projectNames}
               onEdit={handleEdit}
               onActivate={(selected) => void approvePersona.mutateAsync(selected.id)}
               onRemove={(selected) => void handleRemove(selected)}

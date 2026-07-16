@@ -15,23 +15,41 @@ import {
 } from "@/components/ui/tooltip";
 import { fetchPersonas, personaKeys, usePersonas } from "@/hooks/usePersonas";
 import { cn } from "@/lib/utils";
+import type { Persona } from "@/types/persona";
 
 export interface PersonaPickerControlProps {
+  currentProjectId: string;
+  currentProjectName: string;
   personaId: string | null;
   onValueChange: (personaId: string | null) => void;
   onOpenPersonas: () => void;
 }
 
 export function PersonaPickerControl({
+  currentProjectId,
+  currentProjectName,
   personaId,
   onValueChange,
   onOpenPersonas,
 }: PersonaPickerControlProps) {
   const queryClient = useQueryClient();
-  const { data: personas = [], isLoading } = usePersonas();
+  const scope = useMemo(
+    () => ({ type: "globalAndProject", projectId: currentProjectId }) as const,
+    [currentProjectId],
+  );
+  const { data: personas = [], isLoading } = usePersonas(scope);
   const activePersonas = useMemo(
-    () => personas.filter((persona) => persona.status === "active"),
-    [personas],
+    () =>
+      personas.filter(
+        (persona) =>
+          persona.status === "active" &&
+          (persona.projectId === null || persona.projectId === currentProjectId),
+      ),
+    [currentProjectId, personas],
+  );
+  const globalPersonas = activePersonas.filter((persona) => persona.projectId === null);
+  const projectPersonas = activePersonas.filter(
+    (persona) => persona.projectId === currentProjectId,
   );
   const selectedPersona = activePersonas.find(
     (persona) => persona.id === personaId,
@@ -41,10 +59,10 @@ export function PersonaPickerControl({
     : "Choose persona";
   const warmPersonas = useCallback(() => {
     void queryClient.prefetchQuery({
-      queryKey: personaKeys.list(),
-      queryFn: fetchPersonas,
+      queryKey: personaKeys.list(scope),
+      queryFn: () => fetchPersonas(scope),
     });
-  }, [queryClient]);
+  }, [queryClient, scope]);
 
   return (
     <Popover>
@@ -93,14 +111,20 @@ export function PersonaPickerControl({
               className="mx-2 my-2 h-7 animate-pulse rounded bg-[var(--bg-elevated)]"
             />
           ) : (
-            activePersonas.map((persona) => (
-              <PersonaOption
-                key={persona.id}
-                label={persona.name}
-                selected={persona.id === personaId}
-                onSelect={() => onValueChange(persona.id)}
+            <>
+              <PersonaOptionGroup
+                label="Global"
+                personas={globalPersonas}
+                personaId={personaId}
+                onValueChange={onValueChange}
               />
-            ))
+              <PersonaOptionGroup
+                label={currentProjectName}
+                personas={projectPersonas}
+                personaId={personaId}
+                onValueChange={onValueChange}
+              />
+            </>
           )}
         </div>
         <div className="mt-1 border-t border-[var(--border-subtle)] pt-1">
@@ -114,6 +138,35 @@ export function PersonaPickerControl({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function PersonaOptionGroup({
+  label,
+  personas,
+  personaId,
+  onValueChange,
+}: {
+  label: string;
+  personas: Persona[];
+  personaId: string | null;
+  onValueChange: (personaId: string | null) => void;
+}) {
+  if (!personas || personas.length === 0) return null;
+  return (
+    <div role="group" aria-label={label} className="pt-1">
+      <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+        {label}
+      </div>
+      {personas.map((persona) => (
+        <PersonaOption
+          key={persona.id}
+          label={persona.name}
+          selected={persona.id === personaId}
+          onSelect={() => onValueChange(persona.id)}
+        />
+      ))}
+    </div>
   );
 }
 

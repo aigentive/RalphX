@@ -25,6 +25,7 @@ const personaResponse = {
   content: "---\nname: focused-reviewer\n---",
   status: "draft",
   version: 1,
+  project_id: null,
   content_hash: "hash-1",
   source_session_id: null,
   created_at: "2026-07-12T10:00:00Z",
@@ -67,10 +68,28 @@ describe("persona fetchers", () => {
     await expect(fetchPersonas()).resolves.toEqual([
       expect.objectContaining({
         contentHash: "hash-1",
+        projectId: null,
         sourceSessionId: null,
       }),
     ]);
     expect(invoke).toHaveBeenCalledWith("list_personas", { input: {} });
+  });
+
+  it.each([
+    ["all", { type: "all" }],
+    ["global only", { type: "globalOnly" }],
+    [
+      "global and project",
+      { type: "globalAndProject", projectId: "project-1" },
+    ],
+  ] as const)("passes the exact %s scope DTO to list_personas", async (_label, scope) => {
+    vi.mocked(invoke).mockResolvedValue([personaResponse]);
+
+    await fetchPersonas(scope);
+
+    expect(invoke).toHaveBeenCalledWith("list_personas", {
+      input: { scope },
+    });
   });
 
   it("wraps get_persona input and parses its response", async () => {

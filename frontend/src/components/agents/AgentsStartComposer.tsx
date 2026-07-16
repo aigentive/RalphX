@@ -1523,10 +1523,14 @@ export function AgentsStartComposer({
                   },
                 }
               : {})}
-            {...(featureFlags.agentPersonas
+            {...(featureFlags.agentPersonas && projectId
               ? {
                   personaControl: (
                     <PersonaPickerControl
+                      currentProjectId={projectId}
+                      currentProjectName={
+                        projects.find((project) => project.id === projectId)?.name ?? projectId
+                      }
                       personaId={personaId}
                       onValueChange={(nextPersonaId) => {
                         clearStartError();

@@ -33,6 +33,7 @@ const rawPersona = {
   content: "# Reviewer Voice\n\nBe careful.",
   status: "draft",
   version: 2,
+  project_id: "project-1",
   content_hash: "fresh-hash",
   source_session_id: null,
   created_at: "2026-07-12T10:00:00Z",
