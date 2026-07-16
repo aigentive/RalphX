@@ -150,3 +150,101 @@ async fn sqlite_notification_repo_excludes_archived_conversation_targets_from_hi
     });
     assert_eq!(hidden_unread_count, 2);
 }
+
+#[tokio::test]
+async fn sqlite_notification_repo_filters_archived_targets_in_project_scoped_reads() {
+    let db = SqliteTestDb::new("sqlite-notification-project-archive-filter");
+    let repo = SqliteNotificationRepository::from_shared(db.shared_conn());
+    let project = db.seed_project("Scoped notification archive filter");
+    let other_project = db.seed_project("Other notification project");
+    let now = Utc::now();
+
+    let active_conversation =
+        db.insert_conversation(ChatConversation::new_project(project.id.clone()));
+    let mut archived_conversation = ChatConversation::new_project(project.id.clone());
+    archived_conversation.archived_at = Some(now);
+    let archived_conversation = db.insert_conversation(archived_conversation);
+
+    let cases = [
+        (
+            "scoped active conversation",
+            project.id.to_string(),
+            NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id: Some(project.id.to_string()),
+                task_id: None,
+                conversation_id: Some(active_conversation.id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+        ),
+        (
+            "scoped archived conversation",
+            project.id.to_string(),
+            NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id: Some(project.id.to_string()),
+                task_id: None,
+                conversation_id: Some(archived_conversation.id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+        ),
+        (
+            "other project notification",
+            other_project.id.to_string(),
+            NotificationTarget::none(),
+        ),
+    ];
+    for (title, project_id, target) in cases {
+        let row = NewNotification {
+            project_id: Some(project_id),
+            category: NotificationCategory::TaskFailed,
+            severity: NotificationSeverity::Warning,
+            title: title.to_string(),
+            body: None,
+            target,
+            dedupe_key: Some(title.to_string()),
+        }
+        .into_notification(now);
+        assert!(repo.create_with_dedupe(row).await.unwrap());
+    }
+
+    let page = repo
+        .list(Some(project.id.as_str()), None, 50)
+        .await
+        .unwrap();
+    let visible_titles: Vec<_> = page
+        .notifications
+        .iter()
+        .map(|notification| notification.title.as_str())
+        .collect();
+    assert_eq!(visible_titles, ["scoped active conversation"]);
+    assert_eq!(
+        repo.unread_count(Some(project.id.as_str())).await.unwrap(),
+        1
+    );
+
+    assert_eq!(
+        repo.mark_all_read(Some(project.id.as_str()), now)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.unread_count(Some(project.id.as_str())).await.unwrap(),
+        0
+    );
+    assert_eq!(repo.unread_count(None).await.unwrap(), 1);
+    let scoped_archived_is_unread: i64 = db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM notifications WHERE title = ?1 AND read_at IS NULL",
+            ["scoped archived conversation"],
+            |row| row.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(scoped_archived_is_unread, 1);
+}
