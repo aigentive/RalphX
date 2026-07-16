@@ -839,23 +839,6 @@ async fn workspace_delta_publish_proves_guard(
     {
         return Ok(false);
     }
-    let current_target = match resolve_current_target(state, workspace).await {
-        Ok(Some(target)) => target,
-        Ok(None) => return Ok(false),
-        Err(error) => {
-            warn!(
-                conversation_id = %workspace.conversation_id,
-                error = %error,
-                "Could not verify current workspace content for auto-merge restoration"
-            );
-            return Ok(false);
-        }
-    };
-    if current_target.scope != AgentWorkspaceReviewTargetScope::WorkspaceDelta
-        || current_target.diff_fingerprint != guard.diff_fingerprint
-    {
-        return Ok(false);
-    }
     let Some(marker) = workspace_delta_restore_deferred_classification(guard, monitor) else {
         return Ok(false);
     };

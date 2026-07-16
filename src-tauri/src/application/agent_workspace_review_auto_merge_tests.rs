@@ -2118,10 +2118,11 @@ async fn restore_after_publish_ignores_missing_or_non_publish_guards() {
 }
 
 #[tokio::test]
-async fn workspace_delta_restore_rejects_new_unreviewed_workspace_content() {
+async fn workspace_delta_restore_accepts_refreshed_workspace_delta_after_publish() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let mut state = AppState::new_test();
     let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health("workspace", "head")));
     state.github_service = Some(github.clone());
     let project = Project::new(
         "Workspace Review".to_string(),
@@ -2170,16 +2171,16 @@ async fn workspace_delta_restore_rejects_new_unreviewed_workspace_content() {
     append_workspace_delta_review_deferred_event(&state, conversation_id.clone()).await;
     append_successful_workspace_publish_event(&state, conversation_id).await;
     std::fs::write(
-        worktree_path.join("unreviewed.rs"),
-        "pub fn unreviewed() {}\n",
+        worktree_path.join("refreshed.rs"),
+        "pub fn refreshed() {}\n",
     )
-    .expect("new workspace content should be written");
+    .expect("refreshed workspace content should be written");
 
     restore_guarded_auto_merge_after_publish(&state, &workspace)
         .await
-        .expect("stale publication proof should be ignored");
+        .expect("refreshed publication proof should restore");
 
-    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
     assert!(state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
@@ -2187,7 +2188,7 @@ async fn workspace_delta_restore_rejects_new_unreviewed_workspace_content() {
         .expect("monitor lookup should succeed")
         .expect("monitor should exist")
         .auto_merge_guard
-        .is_some());
+        .is_none());
 }
 
 #[tokio::test]

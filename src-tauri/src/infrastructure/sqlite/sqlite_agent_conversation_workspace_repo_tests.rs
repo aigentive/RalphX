@@ -990,7 +990,7 @@ async fn complete_workspace_review_auto_merge_restore_accepts_current_selected_s
 }
 
 #[tokio::test]
-async fn complete_workspace_review_auto_merge_restore_rejects_stale_authority() {
+async fn complete_workspace_review_auto_merge_restore_accepts_refreshed_workspace_delta() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());
     workspace.pr_auto_merge_desired = true;
@@ -1015,7 +1015,7 @@ async fn complete_workspace_review_auto_merge_restore_rejects_stale_authority() 
     monitor.auto_merge_guard = Some(restoring_guard.clone());
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
 
-    assert!(!repo
+    assert!(repo
         .complete_workspace_review_auto_merge_restore(&conversation_id, restoring_guard.clone())
         .await
         .unwrap());
@@ -1025,15 +1025,14 @@ async fn complete_workspace_review_auto_merge_restore_rejects_stale_authority() 
         .await
         .unwrap()
         .expect("workspace should load");
-    assert_eq!(loaded_workspace.pr_auto_merge_current, Some(false));
-    assert_eq!(
-        repo.get_workspace_review_monitor(&conversation_id)
-            .await
-            .unwrap()
-            .expect("monitor should load")
-            .auto_merge_guard,
-        Some(restoring_guard)
-    );
+    assert_eq!(loaded_workspace.pr_auto_merge_current, Some(true));
+    assert!(repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should load")
+        .auto_merge_guard
+        .is_none());
 }
 
 #[tokio::test]

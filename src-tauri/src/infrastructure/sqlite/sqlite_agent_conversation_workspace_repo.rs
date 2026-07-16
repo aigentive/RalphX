@@ -2325,11 +2325,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND auto_merge_guard_diff_fingerprint IS ?6
                        AND auto_merge_guard_head_sha IS ?7
                        AND auto_merge_guard_last_error IS ?8
-                       AND current_target_scope IS ?5
-                       AND current_diff_fingerprint IS ?6
                        AND (
                            ?5 != 'selected_source'
                            OR (
+                               current_target_scope IS ?5
+                               AND current_diff_fingerprint IS ?6
+                               AND
                                selected_source_pull_request_number IS ?3
                                AND selected_source_head_sha IS ?7
                            )

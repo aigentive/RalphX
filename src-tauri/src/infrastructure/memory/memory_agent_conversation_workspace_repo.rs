@@ -929,13 +929,15 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let Some(monitor) = monitors.get_mut(conversation_id) else {
             return Ok(false);
         };
-        if monitor.auto_merge_guard != Some(expected.clone())
-            || monitor.current_target_scope != Some(expected.target_scope)
-            || monitor.current_diff_fingerprint.as_deref()
-                != Some(expected.diff_fingerprint.as_str())
-            || (expected.target_scope == AgentWorkspaceReviewTargetScope::SelectedSource
-                && (monitor.selected_source_pull_request_number != Some(expected.pr_number)
-                    || monitor.selected_source_head_sha != expected.head_sha))
+        if monitor.auto_merge_guard != Some(expected.clone()) {
+            return Ok(false);
+        }
+        if expected.target_scope == AgentWorkspaceReviewTargetScope::SelectedSource
+            && (monitor.current_target_scope != Some(expected.target_scope)
+                || monitor.current_diff_fingerprint.as_deref()
+                    != Some(expected.diff_fingerprint.as_str())
+                || monitor.selected_source_pull_request_number != Some(expected.pr_number)
+                || monitor.selected_source_head_sha != expected.head_sha)
         {
             return Ok(false);
         }
