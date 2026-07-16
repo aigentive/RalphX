@@ -36,6 +36,13 @@ fn integration_settings_response_reports_presence_without_leaking_token_ref() {
     assert_eq!(response.validation_status, "valid");
     assert!(response.task_search_available);
     assert_eq!(response.last_error.as_deref(), Some("previous error"));
+    assert!(!response.strict_git_naming_enabled);
+    assert_eq!(
+        response.branch_name_template,
+        ":taskId:_:taskName:_:username:"
+    );
+    assert_eq!(response.commit_subject_template, ":taskId: - :taskName:");
+    assert_eq!(response.pr_title_template, ":taskId: - :taskName:");
 
     // The keychain reference (and therefore the token) must never serialize out.
     let json = serde_json::to_string(&response).expect("response serializes");
@@ -59,6 +66,7 @@ fn integration_settings_response_handles_unconfigured_settings() {
     assert_eq!(response.validation_status, "not_configured");
     assert!(!response.task_search_available);
     assert!(response.last_error.is_none());
+    assert!(!response.strict_git_naming_enabled);
 }
 
 #[tokio::test]
@@ -83,6 +91,7 @@ async fn save_clickup_integration_settings_persists_workspace_and_hides_token() 
         SaveClickUpIntegrationSettingsInput {
             api_token: Some("pk_secret_token".to_string()),
             workspace_id: Some("9000".to_string()),
+            ..Default::default()
         },
         app.state::<AppState>(),
     )
@@ -107,6 +116,29 @@ async fn save_clickup_integration_settings_persists_workspace_and_hides_token() 
 }
 
 #[tokio::test]
+async fn save_clickup_integration_settings_round_trips_git_convention() {
+    let app = test_app();
+
+    let saved = save_clickup_integration_settings(
+        SaveClickUpIntegrationSettingsInput {
+            strict_git_naming_enabled: Some(true),
+            branch_name_template: Some("work/:taskId:_:taskName:".to_string()),
+            commit_subject_template: Some(":taskId: | :summary:".to_string()),
+            pr_title_template: Some(":taskId: | :taskName:".to_string()),
+            ..Default::default()
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("valid Git convention should save");
+
+    assert!(saved.strict_git_naming_enabled);
+    assert_eq!(saved.branch_name_template, "work/:taskId:_:taskName:");
+    assert_eq!(saved.commit_subject_template, ":taskId: | :summary:");
+    assert_eq!(saved.pr_title_template, ":taskId: | :taskName:");
+}
+
+#[tokio::test]
 async fn validate_clickup_integration_reports_missing_token() {
     let app = test_app();
 
@@ -128,6 +160,7 @@ async fn save_then_validate_enables_then_disconnect_resets() {
         SaveClickUpIntegrationSettingsInput {
             api_token: Some("pk_token".to_string()),
             workspace_id: Some("9000".to_string()),
+            ..Default::default()
         },
         app.state::<AppState>(),
     )
@@ -166,6 +199,7 @@ async fn list_clickup_workspaces_requires_enabled_then_succeeds_after_validation
         SaveClickUpIntegrationSettingsInput {
             api_token: Some("pk_token".to_string()),
             workspace_id: None,
+            ..Default::default()
         },
         app.state::<AppState>(),
     )
@@ -202,6 +236,7 @@ async fn search_clickup_tasks_requires_enabled_then_succeeds_with_workspace() {
         SaveClickUpIntegrationSettingsInput {
             api_token: Some("pk_token".to_string()),
             workspace_id: Some("9000".to_string()),
+            ..Default::default()
         },
         app.state::<AppState>(),
     )

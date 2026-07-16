@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::application::ticket_git_convention::TicketGitConventionTemplates;
 use crate::domain::integrations::{
     ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
 };
@@ -625,6 +626,16 @@ pub struct ClickUpIntegrationService {
     client: Arc<dyn ClickUpApiClient>,
 }
 
+#[derive(Debug, Default)]
+pub struct ClickUpIntegrationSettingsUpdate {
+    pub api_token: Option<String>,
+    pub workspace_id: Option<String>,
+    pub strict_git_naming_enabled: Option<bool>,
+    pub branch_name_template: Option<String>,
+    pub commit_subject_template: Option<String>,
+    pub pr_title_template: Option<String>,
+}
+
 impl ClickUpIntegrationService {
     pub fn new(
         settings_repo: Arc<dyn ClickUpIntegrationSettingsRepository>,
@@ -655,62 +666,46 @@ impl ClickUpIntegrationService {
         api_token: Option<String>,
         workspace_id: Option<String>,
     ) -> Result<ClickUpIntegrationSettings, String> {
+        self.save_settings_with_git_convention(ClickUpIntegrationSettingsUpdate {
+            api_token,
+            workspace_id,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Persist connection settings plus an optional strict Git-convention patch.
+    ///
+    /// Convention templates are validated before keychain or repository side
+    /// effects. Each `None` convention field leaves the stored value unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a template is invalid, secure token storage fails,
+    /// or the settings repository cannot persist the update.
+    pub async fn save_settings_with_git_convention(
+        &self,
+        update: ClickUpIntegrationSettingsUpdate,
+    ) -> Result<ClickUpIntegrationSettings, String> {
+        let ClickUpIntegrationSettingsUpdate {
+            api_token,
+            workspace_id,
+            strict_git_naming_enabled,
+            branch_name_template,
+            commit_subject_template,
+            pr_title_template,
+        } = update;
         let mut settings = self.get_settings().await?;
-        let mut token_changed = false;
-        if let Some(token) = api_token.map(|value| value.trim().to_string()) {
-            token_changed = true;
-            if token.is_empty() {
-                if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
-                    self.secret_store
-                        .delete_secret(secret_ref)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                settings.token_secret_ref = None;
-            } else {
-                let previous_secret_ref = settings.token_secret_ref.clone();
-                let next_secret_ref =
-                    format!("{}/{}", CLICKUP_API_TOKEN_SECRET_REF_PREFIX, Uuid::new_v4());
-                self.secret_store
-                    .put_secret(&next_secret_ref, &token)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let stored_token = self
-                    .secret_store
-                    .get_secret(&next_secret_ref)
-                    .await
-                    .map_err(|error| {
-                        format!(
-                            "ClickUp API token was saved but could not be read back from secure storage: {error}"
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        "ClickUp API token was saved but secure storage returned no value"
-                            .to_string()
-                    })?;
-                if stored_token != token {
-                    let _ = self.secret_store.delete_secret(&next_secret_ref).await;
-                    return Err(
-                        "ClickUp API token was saved but secure storage returned a different value"
-                            .to_string(),
-                    );
-                }
-                if let Some(previous_secret_ref) = previous_secret_ref.as_deref() {
-                    if previous_secret_ref != next_secret_ref {
-                        if let Err(error) =
-                            self.secret_store.delete_secret(previous_secret_ref).await
-                        {
-                            tracing::warn!(
-                                error = %error,
-                                secret_ref = previous_secret_ref,
-                                "failed to delete previous ClickUp API token secret after replacement"
-                            );
-                        }
-                    }
-                }
-                settings.token_secret_ref = Some(next_secret_ref);
-            }
-        }
+        apply_git_convention_update(
+            &mut settings,
+            strict_git_naming_enabled,
+            branch_name_template,
+            commit_subject_template,
+            pr_title_template,
+        )?;
+        let token_changed = self
+            .apply_api_token_update(&mut settings, api_token)
+            .await?;
         if let Some(workspace) = workspace_id.map(|value| value.trim().to_string()) {
             settings.workspace_id = if workspace.is_empty() {
                 None
@@ -720,6 +715,9 @@ impl ClickUpIntegrationService {
         }
         if token_changed {
             settings.enabled = false;
+            if settings.token_secret_ref.is_none() {
+                settings.strict_git_naming_enabled = false;
+            }
             settings.validation_status = pending_status_for_settings(&settings);
             settings.task_search_available = false;
             settings.last_validated_at = None;
@@ -732,6 +730,65 @@ impl ClickUpIntegrationService {
             .map_err(|error| error.to_string())
     }
 
+    async fn apply_api_token_update(
+        &self,
+        settings: &mut ClickUpIntegrationSettings,
+        api_token: Option<String>,
+    ) -> Result<bool, String> {
+        let Some(token) = api_token.map(|value| value.trim().to_string()) else {
+            return Ok(false);
+        };
+        if token.is_empty() {
+            if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
+                self.secret_store
+                    .delete_secret(secret_ref)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            settings.token_secret_ref = None;
+            return Ok(true);
+        }
+
+        let previous_secret_ref = settings.token_secret_ref.clone();
+        let next_secret_ref = format!("{}/{}", CLICKUP_API_TOKEN_SECRET_REF_PREFIX, Uuid::new_v4());
+        self.secret_store
+            .put_secret(&next_secret_ref, &token)
+            .await
+            .map_err(|error| error.to_string())?;
+        let stored_token = self
+            .secret_store
+            .get_secret(&next_secret_ref)
+            .await
+            .map_err(|error| {
+                format!(
+                    "ClickUp API token was saved but could not be read back from secure storage: {error}"
+                )
+            })?
+            .ok_or_else(|| {
+                "ClickUp API token was saved but secure storage returned no value".to_string()
+            })?;
+        if stored_token != token {
+            let _ = self.secret_store.delete_secret(&next_secret_ref).await;
+            return Err(
+                "ClickUp API token was saved but secure storage returned a different value"
+                    .to_string(),
+            );
+        }
+        if let Some(previous_secret_ref) = previous_secret_ref.as_deref() {
+            if previous_secret_ref != next_secret_ref {
+                if let Err(error) = self.secret_store.delete_secret(previous_secret_ref).await {
+                    tracing::warn!(
+                        error = %error,
+                        secret_ref = previous_secret_ref,
+                        "failed to delete previous ClickUp API token secret after replacement"
+                    );
+                }
+            }
+        }
+        settings.token_secret_ref = Some(next_secret_ref);
+        Ok(true)
+    }
+
     /// Clears the stored ClickUp API token and resets the integration to a
     /// not-configured state so the user can disconnect a valid connection.
     pub async fn disconnect(&self) -> Result<ClickUpIntegrationSettings, String> {
@@ -742,7 +799,13 @@ impl ClickUpIntegrationService {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        let cleared = ClickUpIntegrationSettings::default();
+        let cleared = ClickUpIntegrationSettings {
+            branch_name_template: settings.branch_name_template,
+            commit_subject_template: settings.commit_subject_template,
+            pr_title_template: settings.pr_title_template,
+            updated_at: chrono::Utc::now(),
+            ..Default::default()
+        };
         self.settings_repo
             .upsert(&cleared)
             .await
@@ -943,6 +1006,38 @@ impl ClickUpIntegrationService {
             .ok_or_else(|| "ClickUp API token is missing from secure storage".to_string())?;
         Ok(ClickUpAuthContext { api_token })
     }
+}
+
+fn apply_git_convention_update(
+    settings: &mut ClickUpIntegrationSettings,
+    strict_git_naming_enabled: Option<bool>,
+    branch_name_template: Option<String>,
+    commit_subject_template: Option<String>,
+    pr_title_template: Option<String>,
+) -> Result<(), String> {
+    let branch_name_template = branch_name_template
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| settings.branch_name_template.clone());
+    let commit_subject_template = commit_subject_template
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| settings.commit_subject_template.clone());
+    let pr_title_template = pr_title_template
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| settings.pr_title_template.clone());
+    let templates = TicketGitConventionTemplates::new(
+        branch_name_template,
+        commit_subject_template,
+        pr_title_template,
+    )
+    .map_err(|error| error.to_string())?;
+
+    if let Some(enabled) = strict_git_naming_enabled {
+        settings.strict_git_naming_enabled = enabled;
+    }
+    settings.branch_name_template = templates.branch_name_template().to_string();
+    settings.commit_subject_template = templates.commit_subject_template().to_string();
+    settings.pr_title_template = templates.pr_title_template().to_string();
+    Ok(())
 }
 
 fn pending_status_for_settings(

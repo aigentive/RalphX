@@ -6,9 +6,9 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::application::clickup_integration_service::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpFolder, ClickUpIntegrationService,
-    ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions,
-    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace, EmptyClickUpApiClient,
-    UnavailableClickUpApiClient,
+    ClickUpIntegrationSettingsUpdate, ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTaskContent,
+    ClickUpTaskListOptions, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
+    EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
@@ -657,6 +657,54 @@ async fn save_settings_workspace_only_preserves_valid_connection() {
 }
 
 #[tokio::test]
+async fn save_settings_with_git_convention_validates_before_secret_side_effects() {
+    let (service, repo, secret) = build_service(Arc::new(EmptyClickUpApiClient));
+    let before = repo.get().await.unwrap();
+
+    let error = service
+        .save_settings_with_git_convention(ClickUpIntegrationSettingsUpdate {
+            api_token: Some("pk_should_not_be_written".to_string()),
+            strict_git_naming_enabled: Some(true),
+            branch_name_template: Some(":taskName:".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect_err("missing taskId placeholder must fail");
+
+    assert!(error.contains("taskId"), "unexpected error: {error}");
+    assert_eq!(secret.stored_count().await, 0);
+    assert_eq!(repo.get().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn save_settings_with_git_convention_persists_valid_templates() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client);
+    service
+        .save_settings(Some("pk_valid".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let updated = service
+        .save_settings_with_git_convention(ClickUpIntegrationSettingsUpdate {
+            strict_git_naming_enabled: Some(true),
+            branch_name_template: Some("work/:taskId:_:taskName:".to_string()),
+            commit_subject_template: Some(":taskId: | :summary:".to_string()),
+            pr_title_template: Some(":taskId: | :taskName:".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(updated.strict_git_naming_enabled);
+    assert_eq!(updated.branch_name_template, "work/:taskId:_:taskName:");
+    assert_eq!(updated.commit_subject_template, ":taskId: | :summary:");
+    assert_eq!(updated.pr_title_template, ":taskId: | :taskName:");
+    assert!(updated.enabled, "template-only updates preserve validation");
+}
+
+#[tokio::test]
 async fn save_settings_read_back_mismatch_errors_and_deletes_written_ref() {
     let repo = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
     let secret = Arc::new(MismatchingSecretStore::default());
@@ -763,6 +811,16 @@ async fn disconnect_clears_secret_and_resets_settings() {
         .unwrap();
     let secret_ref = saved.token_secret_ref.unwrap();
     service.validate_and_enable().await.unwrap();
+    service
+        .save_settings_with_git_convention(ClickUpIntegrationSettingsUpdate {
+            strict_git_naming_enabled: Some(true),
+            branch_name_template: Some("ticket/:taskId:_:taskName:".to_string()),
+            commit_subject_template: Some(":taskId: :: :summary:".to_string()),
+            pr_title_template: Some(":taskId: :: :taskName:".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     let cleared = service.disconnect().await.unwrap();
 
@@ -777,6 +835,10 @@ async fn disconnect_clears_secret_and_resets_settings() {
         cleared.validation_status,
         IntegrationValidationStatus::NotConfigured
     );
+    assert!(!cleared.strict_git_naming_enabled);
+    assert_eq!(cleared.branch_name_template, "ticket/:taskId:_:taskName:");
+    assert_eq!(cleared.commit_subject_template, ":taskId: :: :summary:");
+    assert_eq!(cleared.pr_title_template, ":taskId: :: :taskName:");
     assert!(secret.deleted_keys().await.contains(&secret_ref));
     assert_eq!(repo.get().await.unwrap().token_secret_ref, None);
 }
