@@ -541,3 +541,55 @@ async fn workspace_review_auto_merge_restore_rejects_a_retargeted_publication_pr
         Some(guard)
     );
 }
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_missing_publication_pr() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-missing-pr");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("missing PR authority should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}

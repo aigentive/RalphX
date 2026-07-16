@@ -4584,21 +4584,17 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
         if crate::application::agent_workspace_review_auto_merge::auto_merge_guard_blocks_enable(
             monitor.as_ref(),
         ) {
-            github
-                .disable_pr_auto_merge(working_dir, pr_number)
-                .await
-                .map_err(|error| error.to_string())?;
-            state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(false),
-                    Some("review_paused"),
-                    Some(
-                        "GitHub auto-merge is paused while the workspace Review is authoritative.",
-                    ),
-                )
-                .await
+            let mut desired_workspace = workspace.clone();
+            desired_workspace.pr_auto_merge_desired = true;
+            desired_workspace.pr_auto_merge_method = auto_merge_method.to_string();
+            sync_agent_workspace_auto_merge_preference_for_workspace(
+                Arc::clone(github),
+                working_dir,
+                pr_number,
+                &desired_workspace,
+                Arc::clone(&state.agent_conversation_workspace_repo),
+            )
+            .await
                 .map_err(|error| error.to_string())?;
             return Ok(());
         }

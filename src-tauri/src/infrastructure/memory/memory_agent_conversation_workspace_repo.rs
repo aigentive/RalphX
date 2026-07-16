@@ -42,6 +42,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     next_pr_supervision_preference_error: Mutex<Option<String>>,
     #[cfg(test)]
     next_publication_event_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_auto_merge_restore_completion_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -61,6 +63,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             next_pr_supervision_preference_error: Mutex::new(None),
             #[cfg(test)]
             next_publication_event_error: Mutex::new(None),
+            #[cfg(test)]
+            next_auto_merge_restore_completion_error: Mutex::new(None),
         }
     }
 
@@ -72,6 +76,14 @@ impl MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     pub fn fail_next_publication_event(&self, message: impl Into<String>) {
         *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_auto_merge_restore_completion(&self, message: impl Into<String>) {
+        *self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -913,6 +925,15 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         conversation_id: &ChatConversationId,
         expected: AgentWorkspaceReviewAutoMergeGuard,
     ) -> AppResult<bool> {
+        #[cfg(test)]
+        if let Some(message) = self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap()
+            .take()
+        {
+            return Err(AppError::Infrastructure(message));
+        }
         let now = Utc::now();
         let mut workspaces = self.workspaces.write().await;
         let Some(workspace) = workspaces.get_mut(conversation_id) else {

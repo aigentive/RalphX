@@ -6,8 +6,9 @@ use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_auto_merge::{
     auto_merge_guard_blocks_enable, cancel_workspace_review_auto_merge_guard,
     handle_passing_workspace_review_auto_merge_guard, preview_manual_workspace_review_start,
-    reconcile_workspace_review_auto_merge_guards, restore_guarded_auto_merge_after_publish,
-    start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
+    reconcile_workspace_review_auto_merge_guards, restore_guarded_auto_merge,
+    restore_guarded_auto_merge_after_publish, start_guarded_agent_workspace_review,
+    WorkspaceReviewStartOrigin,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -2124,6 +2125,58 @@ async fn workspace_delta_restore_ignores_a_push_that_predates_the_passing_review
 }
 
 #[tokio::test]
+async fn workspace_delta_restore_primitive_requires_post_pass_publish_proof() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-no-publish-proof");
+    init_repo(temp.path(), "ralphx/test/workspace-review");
+    let workspace = awaiting_workspace_delta_restore_context(
+        &state,
+        conversation_id.clone(),
+        project.id,
+        temp.path(),
+    )
+    .await;
+    let guard = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .expect("guard should exist");
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("missing publication proof should remain deferred");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard
+            .expect("guard should remain active")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+    );
+}
+
+#[tokio::test]
 async fn restore_after_publish_ignores_missing_or_non_publish_guards() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::from_string("workspace-review-restore-ignored");
@@ -2593,6 +2646,71 @@ async fn post_publish_handoff_retries_a_failed_workspace_delta_restore() {
 }
 
 #[tokio::test]
+async fn periodic_reconciliation_retries_failed_workspace_delta_restore_with_publish_proof() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health("workspace", "head")));
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-periodic-retry");
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    init_repo(&worktree_path, "ralphx/test/workspace-review");
+    let workspace = awaiting_workspace_delta_restore_context(
+        &state,
+        conversation_id.clone(),
+        project.id,
+        &worktree_path,
+    )
+    .await;
+    append_workspace_delta_review_deferred_event(&state, conversation_id.clone()).await;
+    append_successful_workspace_publish_event(&state, conversation_id.clone()).await;
+    let mut monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    let guard = monitor
+        .auto_merge_guard
+        .as_mut()
+        .expect("guard should exist");
+    guard.status = AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed;
+    guard.last_error = Some("temporary GitHub failure".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("failed guard should persist");
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("periodic reconciliation should retry the restore"),
+        1
+    );
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
 async fn post_publish_restore_records_retryable_failure_when_github_does_not_confirm() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let mut state = AppState::new_test();
@@ -2643,4 +2761,74 @@ async fn post_publish_restore_records_retryable_failure_when_github_does_not_con
         Some("GitHub did not report auto-merge as enabled after restoration")
     );
     assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+}
+
+#[tokio::test]
+async fn restore_finalization_error_repauses_github_and_keeps_guard_retryable() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let mut state = AppState::new_test();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    state.agent_conversation_workspace_repo = workspace_repo.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health("workspace", "head")));
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-finalize-error");
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    init_repo(&worktree_path, "ralphx/test/workspace-review");
+    let workspace = awaiting_workspace_delta_restore_context(
+        &state,
+        conversation_id.clone(),
+        project.id,
+        &worktree_path,
+    )
+    .await;
+    append_workspace_delta_review_deferred_event(&state, conversation_id.clone()).await;
+    append_successful_workspace_publish_event(&state, conversation_id.clone()).await;
+    workspace_repo.fail_next_auto_merge_restore_completion("restore finalization unavailable");
+
+    let error = restore_guarded_auto_merge_after_publish(&state, &workspace)
+        .await
+        .expect_err("finalization failure should be reported after re-pausing GitHub");
+
+    assert!(error
+        .to_string()
+        .contains("restore finalization unavailable"));
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    let guard = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .expect("guard should remain retryable");
+    assert_eq!(
+        guard.status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    );
+    assert!(guard
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("restore finalization unavailable")));
 }

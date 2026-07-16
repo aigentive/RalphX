@@ -77,15 +77,16 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentWorkspacePrDescription, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId, AutomationRunId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
-    ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, CoordinationMode,
-    ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task, TaskId,
-    TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrDescription, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
+    ChatTimelineItemStatus, CoordinationMode, ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
+    SessionPurpose, Task, TaskId, TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -2029,6 +2030,116 @@ async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
                 .summary
                 .contains("request GitHub auto-merge when possible")
     }));
+}
+
+async fn persist_command_test_auto_merge_guard(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+) {
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "guarded-diff".to_string(),
+        head_sha: Some("guarded-head".to_string()),
+        last_error: None,
+    });
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("workspace Review monitor should persist");
+}
+
+#[tokio::test]
+async fn pr_supervision_guarded_enable_is_idempotent_when_remote_auto_merge_is_absent() {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(false)));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(255);
+    workspace.publication_pr_status = Some("open".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    persist_command_test_auto_merge_guard(&state, &workspace, 255).await;
+
+    let response = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: Some("squash".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("guarded PR supervision should preserve the desired preference");
+
+    assert!(response.pr_auto_merge_desired);
+    assert_eq!(response.pr_auto_merge_current, Some(false));
+    assert_eq!(
+        response.pr_supervision_status.as_deref(),
+        Some("review_paused")
+    );
+    let github_state = github.state();
+    assert_eq!(github_state.fetch_pr_health_calls, 1);
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+    assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
+}
+
+#[tokio::test]
+async fn pr_supervision_guarded_enable_disables_active_remote_auto_merge_once() {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(true)));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(256);
+    workspace.publication_pr_status = Some("open".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    persist_command_test_auto_merge_guard(&state, &workspace, 256).await;
+
+    let response = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: Some("squash".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("guarded PR supervision should pause active remote auto-merge");
+
+    assert!(response.pr_auto_merge_desired);
+    assert_eq!(response.pr_auto_merge_current, Some(false));
+    assert_eq!(
+        response.pr_supervision_status.as_deref(),
+        Some("review_paused")
+    );
+    let github_state = github.state();
+    assert_eq!(github_state.fetch_pr_health_calls, 1);
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+    assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(256));
+    assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
 }
 
 #[tokio::test]
