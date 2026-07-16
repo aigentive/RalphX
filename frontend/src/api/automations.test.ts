@@ -245,6 +245,24 @@ describe("automationsApi", () => {
         }),
       ],
       usage: usageResponse(),
+      pipeline: {
+        deliverable: "task_graph",
+        status: "executing",
+        ideation_session_id: "session-1",
+        plan_artifact_id: "plan-artifact-1",
+        proposal_count: 2,
+        task_total: 2,
+        task_merged: 1,
+        task_terminal: 1,
+        tasks: [
+          {
+            id: "task-2",
+            title: "Build UI",
+            status: "ready",
+            blocked_by: ["task-1"],
+          },
+        ],
+      },
     });
 
     await expect(automationsApi.get("automation-1")).resolves.toEqual(
@@ -281,6 +299,24 @@ describe("automationsApi", () => {
           cacheReadTokens: 9,
           estimatedUsd: 0.04,
         }),
+        pipeline: {
+          deliverable: "task_graph",
+          status: "executing",
+          ideationSessionId: "session-1",
+          planArtifactId: "plan-artifact-1",
+          proposalCount: 2,
+          taskTotal: 2,
+          taskMerged: 1,
+          taskTerminal: 1,
+          tasks: [
+            {
+              id: "task-2",
+              title: "Build UI",
+              status: "ready",
+              blockedBy: ["task-1"],
+            },
+          ],
+        },
       }),
     );
   });

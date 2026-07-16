@@ -275,6 +275,25 @@ fn project_root() -> PathBuf {
 
 #[test]
 fn build_codex_exec_command_sets_agent_tool_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let seeded_path = dirs::home_dir()
+        .map(|home| {
+            std::env::join_paths([
+                home.join(".cargo").join("bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ])
+            .expect("seed test PATH")
+        })
+        .unwrap_or_else(|| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"));
+    let _path = EnvGuard::set_os("PATH", seeded_path);
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
     let spawnable = build_spawnable_codex_exec_command(
         std::path::Path::new("/fake/codex"),
         "Prompt",

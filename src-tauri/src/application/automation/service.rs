@@ -7,10 +7,15 @@ use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTrans
 use serde_json::Value;
 
 use crate::application::agent_conversation_workspace::reject_persona_builder_workspace_mode;
+use crate::application::automation::decomposition_verifier::{
+    parse_authoring_state, AutomationAuthoringMode, AutomationAuthoringState,
+    AutomationDecompositionInput, AutomationGoalReplanState, AutomationGoalReplanStatus,
+};
 use crate::application::automation::judge::{
-    apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
-    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
-    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
+    apply_updated_item_statuses, automation_judge_loop_suspected, goal_items_proposal_json,
+    parse_automation_judge_verdict, revert_in_progress_goal_items_to_pending,
+    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
+    AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
@@ -47,6 +52,8 @@ const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const JUDGE_FAILED_PAUSED_REASON_CODE: &str = "judge_failed";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
 const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
+pub(crate) const IDEATION_BRIDGE_RUN_MODE: &str = "ideation";
+pub(crate) const IDEATION_FINALIZED_COMPLETION_SIGNAL: &str = "ideation_finalized";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 const SPEC_ARTIFACT_BUCKET: &str = "prd-library";
@@ -69,6 +76,7 @@ pub struct CreateAutomationDraftInput {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    pub authoring_mode: Option<AutomationAuthoringMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +193,13 @@ pub enum AutomationJudgeApplyNoopReason {
     NotCurrent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingGoalReplanApplyOutcome {
+    None,
+    Applied,
+    Stale,
+}
+
 #[derive(Clone)]
 pub struct AutomationService {
     automation_repo: Arc<dyn AutomationRepository>,
@@ -233,6 +248,18 @@ impl AutomationService {
 
     pub async fn create_draft(&self, input: CreateAutomationDraftInput) -> AppResult<Automation> {
         let now = Utc::now();
+        let authoring_state_json = match input.authoring_mode.unwrap_or_default() {
+            AutomationAuthoringMode::Reviewed => None,
+            AutomationAuthoringMode::TrustedAutoFinalize => Some(
+                serde_json::to_string(&AutomationAuthoringState::trusted_unverified()).map_err(
+                    |error| {
+                        AppError::Infrastructure(format!(
+                            "failed to serialize automation authoring state: {error}"
+                        ))
+                    },
+                )?,
+            ),
+        };
         let automation = Automation {
             id: input.id.unwrap_or_else(AutomationId::new),
             project_id: input.project_id,
@@ -263,6 +290,7 @@ impl AutomationService {
             first_run_prompt: None,
             setup_analysis_summary: None,
             spec_artifact_id: None,
+            authoring_state_json,
             created_at: now,
             updated_at: now,
         };
@@ -367,6 +395,7 @@ impl AutomationService {
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
+        let goal_items_were_updated = input.goal_items_json.is_some();
         let patch = AutomationConfigPatch {
             goal_prompt: input.goal_prompt,
             first_run_prompt: input.first_run_prompt,
@@ -383,11 +412,25 @@ impl AutomationService {
             setup_analysis_summary: input.setup_analysis_summary,
             spec_artifact_id,
         };
-        let updated = self
+        let mut updated = self
             .automation_repo
             .update_config(&input.id, patch)
             .await?
             .ok_or_else(|| automation_not_found(&input.id))?;
+        if goal_items_were_updated {
+            let mut state = parse_authoring_state(updated.authoring_state_json.as_deref())?;
+            if let Some(replan) = state.pending_goal_replan.as_mut() {
+                if replan.status == AutomationGoalReplanStatus::Pending {
+                    replan.status = AutomationGoalReplanStatus::Rejected;
+                    if self
+                        .persist_authoring_state_if_unchanged(&updated, &state)
+                        .await?
+                    {
+                        updated = self.require_automation(&updated.id).await?;
+                    }
+                }
+            }
+        }
         self.event_emitter.emit(AutomationEvent::AutomationUpdated {
             automation_id: updated.id.clone(),
         });
@@ -1010,6 +1053,15 @@ impl AutomationService {
     pub async fn finalize(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
         validate_finalizable(&automation)?;
+        let authoring_state = parse_authoring_state(automation.authoring_state_json.as_deref())?;
+        if authoring_state.mode == AutomationAuthoringMode::TrustedAutoFinalize {
+            let input = self.load_decomposition_input(&automation).await?;
+            if !authoring_state.is_verified_for(&input) {
+                return Err(AppError::Validation(
+                    "trusted auto-finalize requires a current verified decomposition".to_string(),
+                ));
+            }
+        }
         self.transition_automation_status_or_conflict(
             id,
             automation.status,
@@ -1018,6 +1070,181 @@ impl AutomationService {
             None,
         )
         .await
+    }
+
+    pub(crate) async fn load_decomposition_input(
+        &self,
+        automation: &Automation,
+    ) -> AppResult<AutomationDecompositionInput> {
+        let trusted_edit_policy = automation.run_mode == DEFAULT_RUN_MODE
+            && automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
+            && automation.chain_mode == DEFAULT_CHAIN_MODE
+            && automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic
+            && automation.pr_merge_mode == AutomationPrMergeMode::Automatic;
+        let trusted_ideation_policy = automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+            && automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL
+            && automation.chain_mode == DEFAULT_CHAIN_MODE
+            && automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic
+            && automation.pr_merge_mode == AutomationPrMergeMode::Manual
+            && automation.plan_deep_verification;
+        if !trusted_edit_policy && !trusted_ideation_policy {
+            return Err(AppError::Validation(
+                "trusted auto-finalize requires either the automatic edit/PR-merge policy or the verified ideation/task-graph policy"
+                    .to_string(),
+            ));
+        }
+        let goal_items_json = automation
+            .goal_items_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires structured goal items".to_string(),
+                )
+            })?
+            .to_string();
+        let first_run_prompt = automation
+            .first_run_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires a first run prompt".to_string(),
+                )
+            })?
+            .to_string();
+        let spec_artifact_id = automation
+            .spec_artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires a linked specification".to_string(),
+                )
+            })?
+            .to_string();
+        let artifact = self
+            .artifact_repo
+            .get_by_id(&ArtifactId::from_string(spec_artifact_id.clone()))
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "trusted auto-finalize specification {spec_artifact_id} was not found"
+                ))
+            })?;
+        let ArtifactContent::Inline { text: spec_content } = artifact.content else {
+            return Err(AppError::Validation(
+                "trusted auto-finalize requires an inline-readable specification".to_string(),
+            ));
+        };
+        Ok(AutomationDecompositionInput {
+            goal_prompt: automation.goal_prompt.trim().to_string(),
+            goal_items_json,
+            first_run_prompt,
+            spec_artifact_id,
+            spec_content,
+            provider_harness: automation.provider_harness.clone(),
+            model_id: automation.model_id.clone(),
+            logical_effort: automation.logical_effort.clone(),
+            run_mode: automation.run_mode.clone(),
+            base_ref_kind: automation.base_ref_kind.clone(),
+            base_ref: automation.base_ref.clone(),
+            chain_mode: automation.chain_mode.clone(),
+            completion_signal: automation.completion_signal.clone(),
+            plan_approval_mode: automation.plan_approval_mode.as_str().to_string(),
+            pr_merge_mode: automation.pr_merge_mode.as_str().to_string(),
+            plan_deep_verification: automation.plan_deep_verification,
+            max_runs: automation.max_runs,
+            max_consecutive_failures: automation.max_consecutive_failures,
+        })
+    }
+
+    pub(crate) async fn persist_authoring_state_if_unchanged(
+        &self,
+        automation: &Automation,
+        state: &AutomationAuthoringState,
+    ) -> AppResult<bool> {
+        let serialized = serde_json::to_string(state).map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to serialize automation authoring state: {error}"
+            ))
+        })?;
+        let changed = self
+            .automation_repo
+            .update_authoring_state_if_unchanged(
+                &automation.id,
+                automation.updated_at,
+                Some(serialized),
+            )
+            .await?;
+        if changed {
+            self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                automation_id: automation.id.clone(),
+            });
+        }
+        Ok(changed)
+    }
+
+    pub(crate) async fn apply_pending_goal_replan_for_run(
+        &self,
+        automation_id: &AutomationId,
+        run: &AutomationRun,
+    ) -> AppResult<PendingGoalReplanApplyOutcome> {
+        let Some(source_run_id) = run.base_from_run_id.as_ref() else {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        };
+        let current = self.require_automation(automation_id).await?;
+        let state = parse_authoring_state(current.authoring_state_json.as_deref())?;
+        let Some(replan) = state.pending_goal_replan.as_ref() else {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        };
+        if replan.status != AutomationGoalReplanStatus::Pending
+            || replan.source_run_id != source_run_id.as_str()
+        {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        }
+        if current.goal_items_json.as_deref() == Some(replan.proposed_goal_items_json.as_str()) {
+            self.mark_goal_replan_applied(&current, state).await?;
+            return Ok(PendingGoalReplanApplyOutcome::Applied);
+        }
+        if current.goal_items_json.as_deref() != Some(replan.base_goal_items_json.as_str()) {
+            return Ok(PendingGoalReplanApplyOutcome::Stale);
+        }
+        if !self
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                Some(replan.base_goal_items_json.clone()),
+                Some(replan.proposed_goal_items_json.clone()),
+            )
+            .await?
+        {
+            let latest = self.require_automation(automation_id).await?;
+            if latest.goal_items_json.as_deref() != Some(replan.proposed_goal_items_json.as_str()) {
+                return Ok(PendingGoalReplanApplyOutcome::Stale);
+            }
+        }
+        let latest = self.require_automation(automation_id).await?;
+        let latest_state = parse_authoring_state(latest.authoring_state_json.as_deref())?;
+        self.mark_goal_replan_applied(&latest, latest_state).await?;
+        Ok(PendingGoalReplanApplyOutcome::Applied)
+    }
+
+    async fn mark_goal_replan_applied(
+        &self,
+        automation: &Automation,
+        mut state: AutomationAuthoringState,
+    ) -> AppResult<()> {
+        if let Some(replan) = state.pending_goal_replan.as_mut() {
+            replan.status = AutomationGoalReplanStatus::Applied;
+            replan.applied_at = Some(Utc::now().to_rfc3339());
+            let _ = self
+                .persist_authoring_state_if_unchanged(automation, &state)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn create_run(&self, input: CreateAutomationRunInput) -> AppResult<AutomationRun> {
@@ -1462,6 +1689,18 @@ impl AutomationService {
 
                 let (base_ref_kind, base_ref_used) =
                     judge_successor_base(&automation, &latest, &verdict)?;
+
+                if let Some(proposed_goal_items_json) = goal_items_proposal_json(&verdict)? {
+                    self.persist_pending_goal_replan(
+                        &automation,
+                        &latest,
+                        applied_goal_items.as_deref(),
+                        proposed_goal_items_json,
+                        &verdict.reason,
+                    )
+                    .await?;
+                }
+
                 let successor = pending_successor_run(
                     automation.id.clone(),
                     &latest,
@@ -1527,6 +1766,63 @@ impl AutomationService {
                 })
             }
         }
+    }
+
+    async fn persist_pending_goal_replan(
+        &self,
+        automation: &Automation,
+        source_run: &AutomationRun,
+        base_goal_items_json: Option<&str>,
+        proposed_goal_items_json: String,
+        reason: &str,
+    ) -> AppResult<()> {
+        let base_goal_items_json = base_goal_items_json.ok_or_else(|| {
+            AppError::Validation("goalItemsProposal requires stored goal items".to_string())
+        })?;
+        let current = self.require_automation(&automation.id).await?;
+        if current.goal_items_json.as_deref() != Some(base_goal_items_json) {
+            return Err(AppError::Conflict(format!(
+                "automation {} goal items changed before re-plan proposal persistence",
+                automation.id.as_str()
+            )));
+        }
+        let mut state = parse_authoring_state(current.authoring_state_json.as_deref())?;
+        let next = AutomationGoalReplanState {
+            source_run_id: source_run.id.as_str().to_string(),
+            base_goal_items_json: base_goal_items_json.to_string(),
+            proposed_goal_items_json,
+            reason: reason.to_string(),
+            status: AutomationGoalReplanStatus::Pending,
+            created_at: Utc::now().to_rfc3339(),
+            applied_at: None,
+        };
+        if state.pending_goal_replan.as_ref().is_some_and(|stored| {
+            stored.source_run_id == next.source_run_id
+                && stored.base_goal_items_json == next.base_goal_items_json
+                && stored.proposed_goal_items_json == next.proposed_goal_items_json
+                && stored.status == AutomationGoalReplanStatus::Pending
+        }) {
+            return Ok(());
+        }
+        if state.pending_goal_replan.as_ref().is_some_and(|stored| {
+            stored.status == AutomationGoalReplanStatus::Pending
+                && stored.source_run_id != next.source_run_id
+        }) {
+            return Err(AppError::Conflict(
+                "automation already has a pending goal re-plan proposal".to_string(),
+            ));
+        }
+        state.pending_goal_replan = Some(next);
+        if !self
+            .persist_authoring_state_if_unchanged(&current, &state)
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "automation {} changed before re-plan proposal persistence",
+                automation.id.as_str()
+            )));
+        }
+        Ok(())
     }
 
     async fn create_judge_successor_run(
@@ -1926,6 +2222,7 @@ fn skip_judge_template_prompt(previous_run: &AutomationRun) -> String {
 fn completion_signal_for_run_mode(run_mode: &str) -> &'static str {
     match run_mode.trim() {
         DEFAULT_RUN_MODE => DEFAULT_COMPLETION_SIGNAL,
+        IDEATION_BRIDGE_RUN_MODE => IDEATION_FINALIZED_COMPLETION_SIGNAL,
         _ => AGENT_COMPLETED_COMPLETION_SIGNAL,
     }
 }
@@ -1959,7 +2256,7 @@ fn validate_stacked_chain_merge_mode(
     Ok(())
 }
 
-fn validate_finalizable(automation: &Automation) -> AppResult<()> {
+pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
     if automation.status != AutomationStatus::Draft {
         return Err(AppError::InvalidTransition {
             from: automation.status.as_str().to_string(),
@@ -1994,11 +2291,25 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         ));
     }
     validate_goal_items_json(automation.goal_items_json.as_deref())?;
+    if automation.run_mode == IDEATION_BRIDGE_RUN_MODE && !automation.plan_deep_verification {
+        return Err(AppError::Validation(
+            "ideation bridge automations require deep plan verification".to_string(),
+        ));
+    }
+    if automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+        && automation.completion_signal != IDEATION_FINALIZED_COMPLETION_SIGNAL
+    {
+        return Err(AppError::Validation(
+            "ideation bridge automations require ideation_finalized completion".to_string(),
+        ));
+    }
     match automation.completion_signal.as_str() {
         DEFAULT_COMPLETION_SIGNAL if automation.run_mode != DEFAULT_RUN_MODE => {
             return Err(AppError::Validation(
                 "pr_merged automations require edit run_mode".to_string(),
             ));
+        }
+        IDEATION_FINALIZED_COMPLETION_SIGNAL if automation.run_mode == IDEATION_BRIDGE_RUN_MODE => {
         }
         DEFAULT_COMPLETION_SIGNAL | AGENT_COMPLETED_COMPLETION_SIGNAL => {}
         value => {

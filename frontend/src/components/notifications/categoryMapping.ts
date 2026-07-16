@@ -32,7 +32,7 @@ export const ATTENTION_CATEGORY_MAPPING: Record<NotificationCategory, AttentionC
   provider_paused: { action: null, group: "Tasks", icon: PauseCircle, iconColor: "var(--status-warning)" },
   recovery_prompt: { action: "Open task", group: "Tasks", icon: LifeBuoy, iconColor: "var(--status-error)" },
   automation_plan_approval: { action: "Review plan", group: "Automations", icon: Bot, iconColor: "var(--accent-primary)" },
-  automation_paused: { action: "Open automation", group: "Automations", icon: Bot, iconColor: "var(--status-warning)" },
+  automation_paused: { action: "Resume", group: "Automations", icon: Bot, iconColor: "var(--status-warning)" },
   automation_run_failed: { action: "Open run", group: "Automations", icon: Bot, iconColor: "var(--status-error)" },
   automation_run_completed: { action: "Open run", group: "Automations", icon: Bot, iconColor: "var(--status-success)" },
   gh_auth: { action: "Enter code", group: "Git", icon: KeyRound, iconColor: "var(--status-warning)" },
