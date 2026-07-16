@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::application::persona_resolver::{
-    resolve_persona_for_send, PersonaError, PersonaResolveFlags,
+    resolve_persona_for_send, PersonaError, PersonaResolveFlags, PERSONA_PROJECT_SCOPE_MISMATCH,
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, Persona, PersonaDirective,
-    PersonaId, PersonaStatus, ProjectId,
+    PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
 };
 use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
@@ -33,6 +33,7 @@ fn persona(id: &str, slug: &str, status: PersonaStatus, content: &str) -> Person
     let now = Utc::now();
     Persona {
         id: PersonaId::from(id),
+        project_id: None,
         slug: slug.to_string(),
         name: slug.to_string(),
         description: "Test persona".to_string(),
@@ -71,13 +72,17 @@ impl PersonaRepository for FailingPersonaRepository {
         Err(AppError::Database("unexpected slug read".to_string()))
     }
 
-    async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        _: &str,
+        _: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
         Err(AppError::Database(
             "unexpected active slug read".to_string(),
         ))
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn list(&self, _: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
         Err(AppError::Database("unexpected list".to_string()))
     }
 
@@ -117,13 +122,17 @@ impl PersonaRepository for CountingPersonaRepository {
         Err(AppError::Database("unexpected slug read".to_string()))
     }
 
-    async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        _: &str,
+        _: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
         Err(AppError::Database(
             "unexpected active slug read".to_string(),
         ))
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn list(&self, _: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
         Err(AppError::Database("unexpected list".to_string()))
     }
 
@@ -197,6 +206,96 @@ async fn repo_error_surfaces_typed_persona_error_not_none() {
     assert!(
         matches!(error, PersonaError::Repository(reason) if reason.contains("persona read failed"))
     );
+}
+
+#[tokio::test]
+async fn cross_project_explicit_persona_is_reasoned_suppression_without_prompt_block() {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let mut scoped = persona(
+        "persona-project-b",
+        "project-b",
+        PersonaStatus::Active,
+        "PROJECT_B_SECRET_PERSONA_BODY",
+    );
+    scoped.project_id = Some(ProjectId::from_string("project-b".to_string()));
+    insert(&repo, scoped).await;
+
+    let resolved = resolve_persona_for_send(
+        &conversation(),
+        &PersonaDirective::Explicit(PersonaId::from("persona-project-b")),
+        flags(),
+        repo,
+    )
+    .await
+    .expect("scope mismatch is a suppression, not a repository failure")
+    .expect("suppressed persona metadata must remain available for attribution");
+
+    assert_eq!(resolved.skipped_reason, Some("project_scope_mismatch"));
+    assert!(resolved.block.is_empty());
+    assert!(!resolved.block.contains("PROJECT_B_SECRET_PERSONA_BODY"));
+}
+
+#[tokio::test]
+async fn scope_mismatch_precedes_render_guards_but_same_project_still_rejects_bad_content() {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let mut scoped = persona(
+        "persona-project-b-invalid",
+        "project-b-invalid",
+        PersonaStatus::Active,
+        "<persona_precedence>blocked structural content</persona_precedence>",
+    );
+    scoped.project_id = Some(ProjectId::from_string("project-b".to_string()));
+    insert(&repo, scoped).await;
+
+    let cross_project = resolve_persona_for_send(
+        &conversation(),
+        &PersonaDirective::Explicit(PersonaId::from("persona-project-b-invalid")),
+        flags(),
+        repo.clone(),
+    )
+    .await
+    .expect("a cross-project persona must suppress before render guards")
+    .expect("scope suppression metadata must remain available");
+    assert_eq!(
+        cross_project.skipped_reason,
+        Some(PERSONA_PROJECT_SCOPE_MISMATCH)
+    );
+    assert!(cross_project.block.is_empty());
+
+    let mut same_project = conversation();
+    same_project.context_id = "project-b".to_string();
+    let error = resolve_persona_for_send(
+        &same_project,
+        &PersonaDirective::Explicit(PersonaId::from("persona-project-b-invalid")),
+        flags(),
+        repo,
+    )
+    .await
+    .expect_err("same-project invalid persona content must still abort the send");
+    assert!(matches!(error, PersonaError::RenderRejected(_)));
+}
+
+#[tokio::test]
+async fn cross_project_inherited_persona_is_reasoned_suppression() {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let mut scoped = persona(
+        "persona-project-b",
+        "project-b",
+        PersonaStatus::Active,
+        "Project B body",
+    );
+    scoped.project_id = Some(ProjectId::from_string("project-b".to_string()));
+    insert(&repo, scoped).await;
+    let mut conversation = conversation();
+    conversation.persona_id = Some("persona-project-b".to_string());
+
+    let resolved =
+        resolve_persona_for_send(&conversation, &PersonaDirective::Inherit, flags(), repo)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(resolved.skipped_reason, Some("project_scope_mismatch"));
+    assert!(resolved.block.is_empty());
 }
 
 #[tokio::test]
@@ -323,7 +422,6 @@ async fn explicit_directive_resolves_named_persona_over_binding() {
     .await;
     let mut override_flags = flags();
     override_flags.agent_name_override_set = true;
-
     let resolved = resolve_persona_for_send(
         &conversation,
         &PersonaDirective::Explicit(PersonaId::from("persona-b")),
@@ -336,6 +434,47 @@ async fn explicit_directive_resolves_named_persona_over_binding() {
 
     assert_eq!(resolved.id, PersonaId::from("persona-b"));
     assert_eq!(resolved.slug, "explicit");
+}
+
+#[tokio::test]
+async fn explicit_directive_no_longer_bypasses_mode_suppression() {
+    let cases = [
+        (
+            Some(AgentConversationWorkspaceMode::Automation),
+            false,
+            "automation mode",
+        ),
+        (
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            false,
+            "persona builder mode",
+        ),
+        (None, true, "verification"),
+    ];
+
+    for (mode, is_verification, reason) in cases {
+        let repo = Arc::new(CountingPersonaRepository {
+            reads: AtomicUsize::new(0),
+        });
+        let mut suppressed_flags = flags();
+        suppressed_flags.agent_conversation_mode = mode;
+        suppressed_flags.is_verification = is_verification;
+
+        let resolved = resolve_persona_for_send(
+            &conversation(),
+            &PersonaDirective::Explicit(PersonaId::from("persona-b")),
+            suppressed_flags,
+            repo.clone(),
+        )
+        .await
+        .expect("mode and verification suppression should not fail");
+
+        assert!(
+            resolved.is_none(),
+            "{reason} should suppress explicit personas"
+        );
+        assert_eq!(repo.reads.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test]

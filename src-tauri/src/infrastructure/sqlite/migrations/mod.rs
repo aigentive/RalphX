@@ -474,6 +474,7 @@ mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
 mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
+mod v20260716170840_persona_project_scope;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
@@ -497,6 +498,8 @@ mod v20260718162852_clear_detected_validation_commands_tests;
 mod v20260718182035_add_tasks_enabled_setting;
 #[cfg(test)]
 mod v20260718182035_add_tasks_enabled_setting_tests;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1600,6 +1603,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716154318,
         name: "manual_role_defaults",
         migrate: v20260716154318_manual_role_defaults::migrate,
+    },
+    Migration {
+        version: 20260716170840,
+        name: "persona_project_scope",
+        migrate: v20260716170840_persona_project_scope::migrate,
     },
     Migration {
         version: 20260716202015,

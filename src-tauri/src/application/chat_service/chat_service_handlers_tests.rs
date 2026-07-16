@@ -3360,6 +3360,7 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     let mut conversation = ChatConversation::new_project(project_id.clone());
     let persona = Persona {
         id: PersonaId::from("handler-recovery-persona"),
+        project_id: None,
         slug: "handler-recovery-persona".to_string(),
         name: "Handler Recovery Persona".to_string(),
         description: "handler recovery attribution fixture".to_string(),
@@ -5779,6 +5780,7 @@ async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from("retry-bound-persona"),
+        project_id: None,
         slug: "retry-bound-persona".to_string(),
         name: "Retry Bound Persona".to_string(),
         description: "Retry persona fixture".to_string(),

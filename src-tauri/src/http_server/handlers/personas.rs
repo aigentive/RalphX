@@ -87,6 +87,9 @@ pub async fn save_persona_draft(
                     true,
                     &conversation.id,
                     SavePersonaDraftInput {
+                        project_id: Some(crate::domain::entities::ProjectId::from_string(
+                            conversation.context_id.clone(),
+                        )),
                         slug: request.slug,
                         content: request.content,
                         source_session_id: Some(conversation.id.as_str()),

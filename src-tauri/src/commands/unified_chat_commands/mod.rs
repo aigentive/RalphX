@@ -3311,12 +3311,14 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
 
     let persona_id = input.persona_id.map(PersonaId::from_string);
     if let Some(persona_id) = persona_id.as_ref() {
+        let conversation_project_id = ProjectId::from_string(conversation.context_id.clone());
         let persona = state
             .persona_repo
             .get_by_id(persona_id)
             .await
             .map_err(|error| error.to_string())?;
-        if !persona.is_some_and(|persona| persona.is_bindable()) {
+        if !persona.is_some_and(|persona| persona.is_bindable_to_project(&conversation_project_id))
+        {
             return Err(format!(
                 "{PERSONA_UNAVAILABLE_PREFIX} persona {persona_id} is not active]"
             ));

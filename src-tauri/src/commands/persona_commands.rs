@@ -6,12 +6,36 @@ use crate::application::personas::{
     draft_applied_payload, draft_updated_payload, PersonaService, SavePersonaDraftInput,
 };
 use crate::application::AppState;
-use crate::domain::entities::{Persona, PersonaId};
+use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, ProjectId};
 use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListPersonasInput {}
+pub struct ListPersonasInput {
+    #[serde(default)]
+    pub scope: Option<PersonaScopeInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PersonaScopeInput {
+    All,
+    GlobalOnly,
+    GlobalAndProject {
+        #[serde(rename = "projectId")]
+        project_id: String,
+    },
+}
+
+fn scope_filter(scope: Option<PersonaScopeInput>) -> PersonaScopeFilter {
+    match scope {
+        None | Some(PersonaScopeInput::All) => PersonaScopeFilter::All,
+        Some(PersonaScopeInput::GlobalOnly) => PersonaScopeFilter::GlobalOnly,
+        Some(PersonaScopeInput::GlobalAndProject { project_id }) => {
+            PersonaScopeFilter::GlobalAndProject(ProjectId::from_string(project_id))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +54,8 @@ pub struct ApprovePersonaAsNewInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePersonaDraftInput {
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub slug: String,
     pub content: Option<String>,
     #[serde(default)]
@@ -61,12 +87,12 @@ pub async fn list_personas(
 
 #[doc(hidden)]
 pub async fn list_personas_for_state(
-    _input: ListPersonasInput,
+    input: ListPersonasInput,
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Vec<Persona>, String> {
     service(state)
-        .list_personas(feature_enabled)
+        .list_personas(feature_enabled, scope_filter(input.scope))
         .await
         .map_err(to_string)
 }
@@ -111,6 +137,7 @@ pub async fn create_persona_draft_for_state(
         .create_draft(
             feature_enabled,
             SavePersonaDraftInput {
+                project_id: input.project_id.map(ProjectId::from_string),
                 slug: input.slug,
                 content,
                 source_session_id: input.source_session_id,

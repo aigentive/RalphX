@@ -74,10 +74,33 @@ async fn builder_conversation_created_only_via_flag_gated_settings_command() {
     assert_eq!(project_id.as_str(), "project-persona-builder-command");
 }
 
+#[tokio::test]
+async fn builder_conversation_rejects_blank_project_ids() {
+    let state = AppState::new_test();
+
+    for project_id in ["", "  "] {
+        let error = create_persona_builder_conversation_for_state(
+            CreatePersonaBuilderConversationInput {
+                project_id: project_id.to_string(),
+                source_persona_id: None,
+            },
+            &state,
+            true,
+        )
+        .await
+        .expect_err("blank persona builder project ids must be rejected");
+        assert_eq!(
+            error,
+            "Validation error: persona project id cannot be empty"
+        );
+    }
+}
+
 fn source_persona(id: &str, status: PersonaStatus) -> Persona {
     let now = Utc::now();
     Persona {
         id: PersonaId::from(id),
+        project_id: None,
         slug: "existing-reviewer".to_string(),
         name: "Existing Reviewer".to_string(),
         description: "Existing persona to update".to_string(),

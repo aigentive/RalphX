@@ -61,10 +61,15 @@ fn ensure_source_is_current(draft: &Persona, source: &Persona) -> AppResult<()> 
     Ok(())
 }
 
-fn active_slug_owner(conn: &rusqlite::Connection, slug: &str) -> AppResult<Option<String>> {
+fn active_slug_owner(
+    conn: &rusqlite::Connection,
+    slug: &str,
+    project_id: Option<&str>,
+) -> AppResult<Option<String>> {
     conn.query_row(
-        "SELECT id FROM personas WHERE slug = ?1 AND status = 'active' LIMIT 1",
-        [slug],
+        "SELECT id FROM personas
+         WHERE slug = ?1 AND project_id IS ?2 AND status = 'active' LIMIT 1",
+        rusqlite::params![slug, project_id],
         |row| row.get(0),
     )
     .optional()
@@ -74,13 +79,14 @@ fn active_slug_owner(conn: &rusqlite::Connection, slug: &str) -> AppResult<Optio
 fn ensure_new_slug_available(
     conn: &rusqlite::Connection,
     slug: &str,
+    project_id: Option<&str>,
     draft_id: &str,
 ) -> AppResult<()> {
     let occupied = conn
         .query_row(
             "SELECT 1 FROM personas
-             WHERE slug = ?1 AND status != 'archived' AND id != ?2 LIMIT 1",
-            rusqlite::params![slug, draft_id],
+             WHERE slug = ?1 AND project_id IS ?2 AND status != 'archived' AND id != ?3 LIMIT 1",
+            rusqlite::params![slug, project_id, draft_id],
             |_| Ok(()),
         )
         .optional()?
@@ -204,12 +210,14 @@ impl PersonaService {
                 }
 
                 let target_slug = new_slug.as_deref().unwrap_or(&draft.slug);
-                if new_slug.is_none() && active_slug_owner(conn, target_slug)?.is_some() {
+                let project_id = draft.project_id.as_ref().map(|id| id.as_str());
+                if new_slug.is_none() && active_slug_owner(conn, target_slug, project_id)?.is_some()
+                {
                     return Err(AppError::Conflict(format!(
                         "Persona slug `{target_slug}` is already in use; provide a new slug"
                     )));
                 }
-                ensure_new_slug_available(conn, target_slug, &draft_id)?;
+                ensure_new_slug_available(conn, target_slug, project_id, &draft_id)?;
 
                 let old = validate_persona_content(&draft.slug, &draft.content)?;
                 let content = if target_slug == draft.slug {

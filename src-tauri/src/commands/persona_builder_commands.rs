@@ -8,7 +8,8 @@ use crate::application::persona_ingest::{
     persona_ingest_storage_path, PersonaIngestManifest,
 };
 use crate::application::personas::{
-    PersonaService, SavePersonaDraftInput, PERSONA_FEATURE_DISABLED_PREFIX,
+    validate_persona_project_id, PersonaService, SavePersonaDraftInput,
+    PERSONA_FEATURE_DISABLED_PREFIX,
 };
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
@@ -108,6 +109,8 @@ pub async fn create_persona_builder_conversation_for_state(
         ))
         .to_string());
     }
+    let project_id = validate_persona_project_id(ProjectId::from_string(input.project_id))
+        .map_err(|error| error.to_string())?;
 
     let source = match input.source_persona_id.as_deref() {
         Some(id) if id.trim().is_empty() => {
@@ -119,7 +122,7 @@ pub async fn create_persona_builder_conversation_for_state(
                 state.persona_repo.clone(),
                 state.chat_conversation_repo.clone(),
             )
-            .ensure_bindable(true, &PersonaId::from(id))
+            .ensure_bindable(true, &PersonaId::from(id), &project_id)
             .await
             .map_err(|error| error.to_string())?,
         ),
@@ -149,7 +152,7 @@ pub async fn create_persona_builder_conversation_for_state(
         }
     }
 
-    let mut conversation = ChatConversation::new_project(ProjectId::from_string(input.project_id));
+    let mut conversation = ChatConversation::new_project(project_id.clone());
     conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
     conversation.set_title("Persona builder".to_string());
     let conversation = state
@@ -174,6 +177,7 @@ pub async fn create_persona_builder_conversation_for_state(
             true,
             &conversation.id,
             SavePersonaDraftInput {
+                project_id: source.project_id.clone(),
                 slug: source.slug,
                 content: source.content,
                 source_session_id: Some(conversation.id.as_str()),

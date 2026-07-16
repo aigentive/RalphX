@@ -43,6 +43,7 @@ use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        project_id: None,
         slug: id.to_string(),
         name: id.to_string(),
         description: "Gate-1 test persona".to_string(),

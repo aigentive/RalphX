@@ -597,6 +597,7 @@ async fn bound_project_persona() -> (
     let now = chrono::Utc::now();
     let persona = Persona {
         id: PersonaId::from("persona-bound-project"),
+        project_id: None,
         slug: "bound-project".to_string(),
         name: "Bound Project".to_string(),
         description: "test persona".to_string(),

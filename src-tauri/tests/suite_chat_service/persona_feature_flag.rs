@@ -196,6 +196,7 @@ async fn persona_builder_send_accepts_only_a_live_bound_draft_without_ingest() {
         .persona_repo
         .create(Persona {
             id: draft_id.clone(),
+            project_id: None,
             slug: "send-bound-draft".to_string(),
             name: "send-bound-draft".to_string(),
             description: "Bound send fixture".to_string(),
@@ -382,6 +383,7 @@ async fn send_persona_attribution_fixture(
 fn persona_attribution_fixture() -> Persona {
     Persona {
         id: PersonaId::from("persona-design-voice"),
+        project_id: None,
         slug: "design-voice".to_string(),
         name: "Design Voice".to_string(),
         description: "Persona attribution fixture".to_string(),

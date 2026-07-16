@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId};
 use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 
@@ -32,7 +32,9 @@ impl PersonaRepository for MemoryPersonaRepository {
         let mut personas = self.personas.write().await;
         if persona.status == PersonaStatus::Active
             && personas.values().any(|existing| {
-                existing.slug == persona.slug && existing.status == PersonaStatus::Active
+                existing.slug == persona.slug
+                    && existing.status == PersonaStatus::Active
+                    && existing.project_id == persona.project_id
             })
         {
             return Err(AppError::Validation(format!(
@@ -59,13 +61,21 @@ impl PersonaRepository for MemoryPersonaRepository {
             .cloned())
     }
 
-    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        slug: &str,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
         Ok(self
             .personas
             .read()
             .await
             .values()
-            .find(|persona| persona.slug == slug && persona.status == PersonaStatus::Active)
+            .find(|persona| {
+                persona.slug == slug
+                    && persona.status == PersonaStatus::Active
+                    && persona.project_id.as_ref() == project_id
+            })
             .cloned())
     }
 
@@ -90,12 +100,20 @@ impl PersonaRepository for MemoryPersonaRepository {
             .cloned())
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn list(&self, scope: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
         let mut personas = self
             .personas
             .read()
             .await
             .values()
+            .filter(|persona| match &scope {
+                PersonaScopeFilter::All => true,
+                PersonaScopeFilter::GlobalOnly => persona.project_id.is_none(),
+                PersonaScopeFilter::GlobalAndProject(project_id) => persona
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|persona_project_id| persona_project_id == project_id),
+            })
             .cloned()
             .collect::<Vec<_>>();
         personas.sort_by_key(|persona| std::cmp::Reverse(persona.created_at));
@@ -135,13 +153,16 @@ impl PersonaRepository for MemoryPersonaRepository {
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()> {
         let mut personas = self.personas.write().await;
         if status == PersonaStatus::Active {
-            let slug = personas
+            let target = personas
                 .get(id)
-                .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?
-                .slug
-                .clone();
+                .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?;
+            let slug = target.slug.clone();
+            let project_id = target.project_id.clone();
             if personas.values().any(|persona| {
-                &persona.id != id && persona.slug == slug && persona.status == PersonaStatus::Active
+                &persona.id != id
+                    && persona.slug == slug
+                    && persona.status == PersonaStatus::Active
+                    && persona.project_id == project_id
             }) {
                 return Err(AppError::Validation(format!(
                     "Persona slug `{slug}` is already in use"

@@ -4,7 +4,9 @@ use chrono::Utc;
 use ralphx_domain::personas::validation::validate_persona_content;
 use serde_json::{json, Value};
 
-use crate::domain::entities::{ChatConversationId, Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{
+    ChatConversationId, Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+};
 use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::{
@@ -35,11 +37,22 @@ pub fn draft_updated_payload(persona: &Persona) -> Value {
 
 #[derive(Debug, Clone)]
 pub struct SavePersonaDraftInput {
+    pub project_id: Option<ProjectId>,
     pub slug: String,
     pub content: String,
     pub source_session_id: Option<String>,
     pub source_persona_id: Option<PersonaId>,
     pub source_content_hash: Option<String>,
+}
+
+pub fn validate_persona_project_id(project_id: ProjectId) -> AppResult<ProjectId> {
+    let trimmed = project_id.as_str().trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "persona project id cannot be empty".to_string(),
+        ));
+    }
+    Ok(ProjectId::from_string(trimmed.to_string()))
 }
 
 /// Application authority for persona lifecycle changes.
@@ -101,13 +114,19 @@ impl PersonaService {
         input: SavePersonaDraftInput,
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
+        let project_id = input
+            .project_id
+            .map(validate_persona_project_id)
+            .transpose()?;
         let parsed = validate_persona_content(&input.slug, &input.content)?;
         if input.source_persona_id.is_none() {
-            self.ensure_live_slug_available(&input.slug, None).await?;
+            self.ensure_live_slug_available(&input.slug, project_id.as_ref(), None)
+                .await?;
         }
         let now = Utc::now();
         Ok(Persona {
             id: PersonaId::new(),
+            project_id,
             slug: input.slug,
             name: parsed.frontmatter.name,
             description: parsed.frontmatter.description,
@@ -155,7 +174,7 @@ impl PersonaService {
             return self.apply_seeded_draft(id).await;
         }
         let parsed = validate_persona_content(&persona.slug, &persona.content)?;
-        self.ensure_active_slug_available(&persona.slug, Some(id))
+        self.ensure_active_slug_available(&persona.slug, persona.project_id.as_ref(), Some(id))
             .await?;
         self.persona_repo
             .update_content(id, &persona.content, &parsed.content_hash)
@@ -219,9 +238,13 @@ impl PersonaService {
         self.persona_repo.delete(id).await
     }
 
-    pub async fn list_personas(&self, feature_enabled: bool) -> AppResult<Vec<Persona>> {
+    pub async fn list_personas(
+        &self,
+        feature_enabled: bool,
+        scope: PersonaScopeFilter,
+    ) -> AppResult<Vec<Persona>> {
         ensure_enabled(feature_enabled)?;
-        self.persona_repo.list().await
+        self.persona_repo.list(scope).await
     }
 
     pub async fn get_persona(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<Persona> {
@@ -236,10 +259,11 @@ impl PersonaService {
         &self,
         feature_enabled: bool,
         id: &PersonaId,
+        project_id: &ProjectId,
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let persona = self.persona_repo.get_by_id(id).await?;
-        match persona.filter(Persona::is_bindable) {
+        match persona.filter(|persona| persona.is_bindable_to_project(project_id)) {
             Some(persona) => Ok(persona),
             None => Err(AppError::PersonaUnavailable(format!(
                 "{PERSONA_UNAVAILABLE_PREFIX} persona {id} is not active]"
@@ -250,13 +274,20 @@ impl PersonaService {
     async fn ensure_live_slug_available(
         &self,
         slug: &str,
+        project_id: Option<&ProjectId>,
         excluding: Option<&PersonaId>,
     ) -> AppResult<()> {
-        let occupied = self.persona_repo.list().await?.into_iter().any(|persona| {
-            persona.slug == slug
-                && persona.status != PersonaStatus::Archived
-                && excluding.is_none_or(|id| id != &persona.id)
-        });
+        let occupied = self
+            .persona_repo
+            .list(PersonaScopeFilter::All)
+            .await?
+            .into_iter()
+            .any(|persona| {
+                persona.slug == slug
+                    && persona.project_id.as_ref() == project_id
+                    && persona.status != PersonaStatus::Archived
+                    && excluding.is_none_or(|id| id != &persona.id)
+            });
         if occupied {
             return Err(AppError::Validation(format!(
                 "Persona slug `{slug}` is already in use"
@@ -268,11 +299,12 @@ impl PersonaService {
     async fn ensure_active_slug_available(
         &self,
         slug: &str,
+        project_id: Option<&ProjectId>,
         excluding: Option<&PersonaId>,
     ) -> AppResult<()> {
         let occupied = self
             .persona_repo
-            .get_active_by_slug(slug)
+            .get_active_by_slug(slug, project_id)
             .await?
             .is_some_and(|persona| excluding.is_none_or(|id| id != &persona.id));
         if occupied {

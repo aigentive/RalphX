@@ -595,7 +595,9 @@ fn effective_resolved_persona_for_injection<'a>(
     resolved: Option<&'a ResolvedPersona>,
     injection_would_be_skipped: bool,
 ) -> Option<&'a ResolvedPersona> {
-    if injection_would_be_skipped {
+    if injection_would_be_skipped
+        || resolved.is_some_and(|persona| persona.skipped_reason.is_some())
+    {
         None
     } else {
         resolved
@@ -606,7 +608,9 @@ fn registered_persona_metadata(
     resolved_persona: Option<&ResolvedPersona>,
     injection_skipped: bool,
 ) -> (Option<String>, Option<String>) {
-    if injection_skipped {
+    if injection_skipped
+        || resolved_persona.is_some_and(|persona| persona.skipped_reason.is_some())
+    {
         return (None, None);
     }
 
@@ -666,10 +670,13 @@ pub async fn record_persona_run_attribution<R: Runtime>(
             return;
         }
     }
+    let injected = injected && persona.skipped_reason.is_none();
     let skipped_reason = if injected {
         None
     } else {
-        skipped_reason
+        persona
+            .skipped_reason
+            .or(skipped_reason)
             .filter(|reason| !reason.trim().is_empty())
             .or(Some("unknown"))
     };

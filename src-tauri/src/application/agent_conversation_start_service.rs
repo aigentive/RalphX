@@ -431,7 +431,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 Arc::clone(&self.deps.state.persona_repo),
                 Arc::clone(&self.deps.state.chat_conversation_repo),
             )
-            .ensure_bindable(agent_personas_enabled(), persona_id)
+            .ensure_bindable(agent_personas_enabled(), persona_id, &project_id)
             .await
             .map_err(|error| error.to_string())?;
         }

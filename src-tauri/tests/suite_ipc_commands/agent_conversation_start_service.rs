@@ -202,6 +202,7 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        project_id: None,
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
         description: "start service persona fixture".to_string(),
@@ -221,6 +222,29 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
         .create(persona.clone())
         .await
         .expect("persona fixture should persist");
+    persona
+}
+
+async fn seed_project_persona(state: &AppState, id: &str, project_id: &ProjectId) -> Persona {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(id),
+        project_id: Some(project_id.clone()),
+        slug: format!("{id}-slug"),
+        name: format!("{id} name"),
+        description: "scoped start service persona fixture".to_string(),
+        content: "Use the scoped project voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state.persona_repo.create(persona.clone()).await.unwrap();
     persona
 }
 
@@ -480,6 +504,48 @@ async fn start_with_draft_or_archived_persona_fails_closed_without_binding() {
             .expect("conversation should remain");
         assert!(stored.persona_id.is_none());
     }
+}
+
+#[tokio::test]
+async fn start_with_cross_project_persona_fails_closed_without_binding() {
+    let _persona_feature = enable_personas_for_test();
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(&state, "project-start-scope-a", temp.path(), temp.path()).await;
+    let other_project_id = ProjectId::from_string("project-start-scope-b".to_string());
+    let persona = seed_project_persona(&state, "cross-project-persona", &other_project_id).await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+    let mut input = service_start_input(
+        &project.id,
+        "Reject cross-project persona",
+        "chat",
+        None,
+        None,
+        Some(&conversation.id),
+        None,
+    );
+    input.persona_id = Some(persona.id.to_string());
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("cross-project persona must fail before binding");
+    assert!(error.contains("[Persona unavailable:"));
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.persona_id.is_none());
 }
 
 #[tokio::test]

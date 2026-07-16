@@ -73,13 +73,18 @@ fn persona_commands_use_struct_param_wrapping() {
 async fn list_personas_command_lists_enabled_personas_and_rejects_the_disabled_wrapper() {
     let (app, _) = command_app();
 
-    let personas =
-        list_personas_for_state(ListPersonasInput {}, app.state::<AppState>().inner(), true)
-            .await
-            .expect("enabled list command should return the current empty collection");
+    let personas = list_personas_for_state(
+        ListPersonasInput { scope: None },
+        app.state::<AppState>().inner(),
+        true,
+    )
+    .await
+    .expect("enabled list command should return the current empty collection");
     assert!(personas.is_empty());
 
-    assert_disabled(list_personas(ListPersonasInput {}, app.state::<AppState>()).await);
+    assert_disabled(
+        list_personas(ListPersonasInput { scope: None }, app.state::<AppState>()).await,
+    );
 }
 
 #[tokio::test]
@@ -88,6 +93,7 @@ async fn get_persona_command_returns_created_draft_and_maps_invalid_or_missing_i
     let state = app.state::<AppState>();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "get-persona".to_string(),
             content: Some(persona_content("get-persona", "Draft body")),
             description: None,
@@ -151,6 +157,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
     let state = app.state::<AppState>();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "create-persona".to_string(),
             content: Some(persona_content("create-persona", "secret draft body")),
             description: None,
@@ -176,6 +183,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
 
     let invalid = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "invalid-persona".to_string(),
             content: Some("not persona markdown".to_string()),
             description: None,
@@ -192,6 +200,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
     assert_disabled(
         create_persona_draft(
             CreatePersonaDraftInput {
+                project_id: None,
                 slug: "disabled-create".to_string(),
                 content: Some(persona_content("disabled-create", "Never persisted")),
                 description: None,
@@ -205,10 +214,73 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
 }
 
 #[tokio::test]
+async fn create_persona_draft_rejects_blank_project_ids_and_accepts_valid_or_absent_scope() {
+    let (app, _) = command_app();
+    let state = app.state::<AppState>();
+
+    for project_id in ["", "  "] {
+        let error = create_persona_draft_for_state(
+            CreatePersonaDraftInput {
+                project_id: Some(project_id.to_string()),
+                slug: "blank-project-id".to_string(),
+                content: Some(persona_content("blank-project-id", "Draft body")),
+                description: None,
+                body: None,
+                source_session_id: None,
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect_err("blank persona project ids must be rejected");
+        assert_eq!(
+            error,
+            "Validation error: persona project id cannot be empty"
+        );
+    }
+
+    let scoped = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: Some(" project-a ".to_string()),
+            slug: "scoped-project-id".to_string(),
+            content: Some(persona_content("scoped-project-id", "Draft body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("a valid project id should create a scoped draft");
+    assert_eq!(
+        scoped.project_id.as_ref().map(|id| id.as_str()),
+        Some("project-a")
+    );
+
+    let global = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: None,
+            slug: "absent-project-id".to_string(),
+            content: Some(persona_content("absent-project-id", "Draft body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("an absent project id should create a global draft");
+    assert!(global.project_id.is_none());
+}
+
+#[tokio::test]
 async fn persona_create_command_composes_structured_fields_before_validation() {
     let (app, _) = command_app();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "design-voice".to_string(),
             content: None,
             description: Some("Opinionated: product design".to_string()),
@@ -241,6 +313,7 @@ async fn persona_create_command_requires_content_or_complete_structured_fields()
     ] {
         let error = create_persona_draft_for_state(
             CreatePersonaDraftInput {
+                project_id: None,
                 slug: "incomplete-persona".to_string(),
                 content: None,
                 description,
@@ -266,6 +339,7 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "update-persona".to_string(),
             content: Some(persona_content("update-persona", "Draft body")),
             description: None,
@@ -340,6 +414,7 @@ async fn persona_update_command_recomposes_structured_fields_with_the_existing_s
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "immutable-slug".to_string(),
             content: Some(persona_content("immutable-slug", "Draft body")),
             description: None,
@@ -410,6 +485,7 @@ async fn approve_persona_command_promotes_a_draft_and_rejects_invalid_ids_or_fla
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "approve-persona".to_string(),
             content: Some(persona_content("approve-persona", "Draft body")),
             description: None,
@@ -456,6 +532,7 @@ async fn archive_persona_command_archives_active_personas_and_rejects_invalid_id
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "archive-persona".to_string(),
             content: Some(persona_content("archive-persona", "Draft body")),
             description: None,
@@ -511,6 +588,7 @@ async fn delete_persona_draft_command_removes_drafts_and_rejects_invalid_ids_or_
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "delete-persona".to_string(),
             content: Some(persona_content("delete-persona", "Draft body")),
             description: None,

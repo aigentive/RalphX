@@ -30,6 +30,7 @@ fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
         version: 1,
         content_hash: content_hash.to_string(),
         block: String::new(),
+        skipped_reason: None,
     }
 }
 
@@ -553,6 +554,7 @@ fn persona_builder_runtime_message_injects_bound_draft_without_leaking_content()
     let now = Utc::now();
     let draft = Persona {
         id: PersonaId::from("draft-1"),
+        project_id: None,
         slug: "existing-reviewer".to_string(),
         name: "Existing Reviewer".to_string(),
         description: "Review carefully".to_string(),

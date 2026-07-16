@@ -278,6 +278,7 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        project_id: None,
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
         description: "persona switch fixture".to_string(),
@@ -297,6 +298,33 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
         .create(persona.clone())
         .await
         .expect("persona persisted");
+    persona
+}
+
+async fn seed_scoped_persona_for_switch(
+    state: &AppState,
+    id: &str,
+    project_id: &ProjectId,
+) -> Persona {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(id),
+        project_id: Some(project_id.clone()),
+        slug: format!("{id}-slug"),
+        name: format!("{id} name"),
+        description: "scoped persona switch fixture".to_string(),
+        content: "Use the scoped project voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state.persona_repo.create(persona.clone()).await.unwrap();
     persona
 }
 
@@ -626,6 +654,52 @@ async fn persona_switch_rejects_missing_or_archived_persona() {
         service.get_stop_agent_calls().await.is_empty(),
         "invalid persona input must not stop an agent"
     );
+}
+
+#[tokio::test]
+async fn persona_switch_rejects_cross_project_persona_without_clearing_existing_binding() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_project_id =
+        ProjectId::from_string("project-persona-switch-scope-a".to_string());
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("18181818-1818-4818-8818-181818181818"),
+        conversation_project_id,
+    )
+    .await;
+    let original =
+        seed_persona_for_switch(&state, "persona-switch-global", PersonaStatus::Active).await;
+    let scoped = seed_scoped_persona_for_switch(
+        &state,
+        "persona-switch-scope-b",
+        &ProjectId::from_string("project-persona-switch-scope-b".to_string()),
+    )
+    .await;
+    state
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(original.id.as_str()))
+        .await
+        .unwrap();
+    let service = MockChatService::new();
+
+    let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, Some(&scoped.id)),
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("cross-project persona must not bind");
+
+    assert!(error.starts_with("[Persona unavailable:"));
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.persona_id.as_deref(), Some(original.id.as_str()));
+    assert!(service.get_stop_agent_calls().await.is_empty());
 }
 
 #[tokio::test]

@@ -210,6 +210,7 @@ async fn seed_bound_active_project_persona(
     let now = chrono::Utc::now();
     let persona = Persona {
         id: PersonaId::from(persona_id),
+        project_id: None,
         slug: persona_id.to_string(),
         name: "Delegation isolation persona".to_string(),
         description: "Must not reach delegated children".to_string(),

@@ -7,7 +7,8 @@ use ralphx_domain::personas::validation::compute_content_hash;
 use super::{PersonaService, SavePersonaDraftInput, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::AppState;
 use crate::domain::entities::{
-    ChatConversation, ChatConversationId, IdeationSessionId, PersonaId, PersonaStatus,
+    ChatConversation, ChatConversationId, IdeationSessionId, PersonaId, PersonaScopeFilter,
+    PersonaStatus, ProjectId,
 };
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
@@ -47,6 +48,7 @@ fn sqlite_service(db: &SqliteTestDb) -> PersonaService {
 
 fn draft_input(slug: &str, body: &str) -> SavePersonaDraftInput {
     SavePersonaDraftInput {
+        project_id: None,
         slug: slug.to_string(),
         content: persona_content(slug, body),
         source_session_id: Some("source-session".to_string()),
@@ -70,7 +72,11 @@ async fn bound_draft_creation_rolls_back_when_the_conversation_is_missing() {
         .expect_err("binding failure must roll back the inserted draft");
 
     assert!(matches!(error, AppError::NotFound(_)));
-    assert!(service.list_personas(true).await.unwrap().is_empty());
+    assert!(service
+        .list_personas(true, PersonaScopeFilter::All)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -82,6 +88,7 @@ async fn seeded_update_draft_can_share_source_slug_and_preserves_provenance() {
         .await
         .expect("source persona");
     let input = SavePersonaDraftInput {
+        project_id: source.project_id.clone(),
         slug: source.slug.clone(),
         content: persona_content(&source.slug, "Seeded update"),
         source_session_id: Some("builder-conversation".to_string()),
@@ -438,7 +445,11 @@ async fn binding_validation_rejects_draft_and_archived_personas() {
         .await
         .expect("draft should be created");
     let draft_error = service
-        .ensure_bindable(true, &draft.id)
+        .ensure_bindable(
+            true,
+            &draft.id,
+            &ProjectId::from_string("project-a".to_string()),
+        )
         .await
         .expect_err("draft should not be bindable");
     assert!(draft_error
@@ -448,16 +459,65 @@ async fn binding_validation_rejects_draft_and_archived_personas() {
         .approve_persona(true, &draft.id)
         .await
         .expect("draft should approve");
-    assert!(service.ensure_bindable(true, &draft.id).await.is_ok());
+    assert!(service
+        .ensure_bindable(
+            true,
+            &draft.id,
+            &ProjectId::from_string("project-a".to_string()),
+        )
+        .await
+        .is_ok());
     service
         .persona_repo
         .set_status(&draft.id, PersonaStatus::Archived)
         .await
         .expect("test fixture should archive the row");
     assert!(matches!(
-        service.ensure_bindable(true, &draft.id).await,
+        service
+            .ensure_bindable(
+                true,
+                &draft.id,
+                &ProjectId::from_string("project-a".to_string()),
+            )
+            .await,
         Err(AppError::PersonaUnavailable(message)) if message.starts_with(PERSONA_UNAVAILABLE_PREFIX)
     ));
+}
+
+#[tokio::test]
+async fn binding_validation_rejects_cross_project_but_accepts_global_and_same_project() {
+    let service = memory_service();
+    let global = create_active(&service, "global-bindable").await;
+    assert!(service
+        .ensure_bindable(
+            true,
+            &global,
+            &ProjectId::from_string("project-a".to_string()),
+        )
+        .await
+        .is_ok());
+
+    let mut input = draft_input("scoped-bindable", "Scoped body");
+    input.project_id = Some(ProjectId::from_string("project-a".to_string()));
+    let scoped = service.create_draft(true, input).await.unwrap();
+    service.approve_persona(true, &scoped.id).await.unwrap();
+    assert!(service
+        .ensure_bindable(
+            true,
+            &scoped.id,
+            &ProjectId::from_string("project-a".to_string()),
+        )
+        .await
+        .is_ok());
+    let mismatch = service
+        .ensure_bindable(
+            true,
+            &scoped.id,
+            &ProjectId::from_string("project-b".to_string()),
+        )
+        .await
+        .expect_err("cross-project persona must not bind");
+    assert!(matches!(mismatch, AppError::PersonaUnavailable(_)));
 }
 
 #[tokio::test]
@@ -479,9 +539,13 @@ async fn all_lifecycle_entry_points_fail_closed_when_flag_off() {
     assert_disabled(service.update_persona(false, &id, &content).await);
     assert_disabled(service.archive_persona(false, &id).await);
     assert_disabled(service.hard_delete_draft(false, &id).await);
-    assert_disabled(service.list_personas(false).await);
+    assert_disabled(service.list_personas(false, PersonaScopeFilter::All).await);
     assert_disabled(service.get_persona(false, &id).await);
-    assert_disabled(service.ensure_bindable(false, &id).await);
+    assert_disabled(
+        service
+            .ensure_bindable(false, &id, &ProjectId::from_string("project-a".to_string()))
+            .await,
+    );
 }
 
 #[tokio::test]

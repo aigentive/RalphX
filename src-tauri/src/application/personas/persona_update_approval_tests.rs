@@ -30,6 +30,7 @@ async fn create_active(service: &PersonaService, slug: &str) -> Persona {
         .create_draft(
             true,
             SavePersonaDraftInput {
+                project_id: None,
                 slug: slug.to_string(),
                 content: persona_content(slug, "Initial source body"),
                 source_session_id: None,
@@ -43,6 +44,28 @@ async fn create_active(service: &PersonaService, slug: &str) -> Persona {
         .approve_persona(true, &draft.id)
         .await
         .expect("source draft should approve")
+}
+
+async fn create_active_in_project(
+    service: &PersonaService,
+    slug: &str,
+    project_id: &ProjectId,
+) -> Persona {
+    let draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                project_id: Some(project_id.clone()),
+                slug: slug.to_string(),
+                content: persona_content(slug, "Project source body"),
+                source_session_id: None,
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+    service.approve_persona(true, &draft.id).await.unwrap()
 }
 
 async fn create_builder_conversation(service: &PersonaService) -> ChatConversation {
@@ -68,6 +91,7 @@ async fn seeded_fixture(
             true,
             &first.id,
             SavePersonaDraftInput {
+                project_id: source.project_id.clone(),
                 slug: source.slug.clone(),
                 content: persona_content(slug, "Builder revision"),
                 source_session_id: Some(first.id.as_str().to_string()),
@@ -99,6 +123,59 @@ async fn assert_bindings(
             .expect("conversation should exist");
         assert_eq!(loaded.builder_draft_id.as_deref(), expected);
     }
+}
+
+#[tokio::test]
+async fn approve_as_new_allows_global_slug_but_rejects_same_project_scope() {
+    let db = SqliteTestDb::new("approve_as_new_project_scope");
+    let service = sqlite_service(&db);
+    let project_id = ProjectId::from_string("project-a".to_string());
+    create_active(&service, "shared-approval").await;
+    let source = create_active_in_project(&service, "shared-approval", &project_id).await;
+    let draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                project_id: Some(project_id.clone()),
+                slug: source.slug.clone(),
+                content: persona_content(&source.slug, "First replacement"),
+                source_session_id: None,
+                source_persona_id: Some(source.id.clone()),
+                source_content_hash: Some(source.content_hash.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    service
+        .persona_repo
+        .set_status(&source.id, PersonaStatus::Archived)
+        .await
+        .unwrap();
+    let approved = service
+        .approve_persona_as_new(true, &draft.id, None)
+        .await
+        .expect("global same slug must not conflict with project approval");
+    assert_eq!(approved.project_id.as_ref(), Some(&project_id));
+
+    let conflicting = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                project_id: Some(project_id),
+                slug: "shared-approval".to_string(),
+                content: persona_content("shared-approval", "Second replacement"),
+                source_session_id: None,
+                source_persona_id: Some(source.id),
+                source_content_hash: Some(source.content_hash),
+            },
+        )
+        .await
+        .unwrap();
+    let error = service
+        .approve_persona_as_new(true, &conflicting.id, None)
+        .await
+        .expect_err("same project active slug must conflict");
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("already in use")));
 }
 
 #[tokio::test]
@@ -327,6 +404,7 @@ async fn approve_as_new_rejects_drafts_that_are_not_seeded_updates() {
         .create_draft(
             true,
             SavePersonaDraftInput {
+                project_id: None,
                 slug: "unseeded-draft".to_string(),
                 content: persona_content("unseeded-draft", "Standalone draft"),
                 source_session_id: None,
@@ -374,6 +452,7 @@ async fn approve_as_new_rejects_explicit_slug_used_by_another_open_draft() {
         .create_draft(
             true,
             SavePersonaDraftInput {
+                project_id: None,
                 slug: "occupied-draft-slug".to_string(),
                 content: persona_content("occupied-draft-slug", "Other draft"),
                 source_session_id: None,
