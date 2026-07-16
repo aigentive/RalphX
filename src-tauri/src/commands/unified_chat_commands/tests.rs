@@ -671,9 +671,20 @@ fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRu
         .expect("mock app should build")
 }
 
+fn enable_team_capability_for_test(state: &AppState) {
+    state.agent_capability_gate.replace(
+        crate::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+        },
+    );
+}
+
 #[tokio::test]
 async fn create_agent_conversation_persists_team_intent_coordination_mode() {
-    let app = build_send_now_command_app(AppState::new_test());
+    let state = AppState::new_test();
+    enable_team_capability_for_test(&state);
+    let app = build_send_now_command_app(state);
     let project_id = ProjectId::from_string("project-1".to_string());
 
     let response = create_agent_conversation(
@@ -702,6 +713,7 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
 #[tokio::test]
 async fn update_agent_conversation_coordination_mode_persists_idle_project_conversation() {
     let state = AppState::new_test();
+    enable_team_capability_for_test(&state);
     let project_id = ProjectId::from_string("project-1".to_string());
     let conversation = state
         .chat_conversation_repo
