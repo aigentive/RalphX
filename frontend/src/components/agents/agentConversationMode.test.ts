@@ -95,6 +95,18 @@ describe("isConversationModeLocked", () => {
     expect(isConversationModeLocked(conversation(), workspace())).toBe(false);
   });
 
+  it("locks a durable Tasks pipeline when the backend projection is absent", () => {
+    expect(
+      isConversationModeLocked(
+        conversation({ agentMode: "tasks" }),
+        workspace({
+          mode: "tasks",
+          taskPipelineSessionId: "session-1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("locks automation and persona builder conversations without workspace rows", () => {
     expect(
       isConversationModeLocked(conversation({ agentMode: "automation" }), null),
