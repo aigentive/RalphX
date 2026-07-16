@@ -2374,6 +2374,7 @@ describe("chat api", () => {
     const result = await updateAgentConversationCoordinationMode({
       conversationId: "conversation-chat",
       coordinationMode: "rx_native_team",
+      modelOverride: "gpt-5.6-sol",
     });
 
     expect(mockInvoke).toHaveBeenCalledWith(
@@ -2382,6 +2383,7 @@ describe("chat api", () => {
         input: {
           conversationId: "conversation-chat",
           coordinationMode: "rx_native_team",
+          modelOverride: "gpt-5.6-sol",
         },
       },
     );

@@ -205,13 +205,39 @@ impl AgentWorkflowRepository for SqliteAgentWorkflowRepository {
 
     async fn create_run(&self, run: AgentWorkflowRun) -> AppResult<AgentWorkflowRun> {
         self.db.run(move |conn| {
-            let approved: bool = conn.query_row(
+            let tx = conn.unchecked_transaction()?;
+            if let Some(existing) = tx
+                .query_row(
+                    "SELECT * FROM agent_workflow_runs WHERE id=?1",
+                    [run.id.as_str()],
+                    row_to_run,
+                )
+                .optional()?
+            {
+                if existing.script_id != run.script_id
+                    || existing.script_hash != run.script_hash
+                    || existing.permission_hash != run.permission_hash
+                    || existing.args_json != run.args_json
+                {
+                    return Err(AppError::Conflict(
+                        "Workflow launch id was reused with different inputs".into(),
+                    ));
+                }
+                tx.execute(
+                    "UPDATE agent_workflow_scripts SET approved_script_hash=NULL,
+                     approved_permission_hash=NULL, approved_at=NULL, updated_at=?1 WHERE id=?2",
+                    params![Utc::now().to_rfc3339(), run.script_id.as_str()],
+                )?;
+                tx.commit()?;
+                return Ok(existing);
+            }
+            let approved: bool = tx.query_row(
                 "SELECT approved_at IS NOT NULL AND approved_script_hash=?2 AND approved_permission_hash=?3
                  AND script_hash=?2 AND permission_hash=?3 FROM agent_workflow_scripts WHERE id=?1",
                 params![run.script_id.as_str(), run.script_hash, run.permission_hash], |row| row.get(0),
             ).optional()?.unwrap_or(false);
             if !approved { return Err(AppError::Validation("Workflow launch requires approval for the current script and permission hashes".into())); }
-            conn.execute(
+            tx.execute(
                 "INSERT INTO agent_workflow_runs (id, script_id, conversation_id, project_id, harness,
                  script_hash, permission_hash, args_json, status, attempt, runner_instance_id,
                  lease_expires_at, heartbeat_at, pause_requested, cancel_requested, result_json,
@@ -223,6 +249,12 @@ impl AgentWorkflowRepository for SqliteAgentWorkflowRepository {
                     run.pause_requested, run.cancel_requested, run.result_json, run.error, run.created_at.to_rfc3339(),
                     run.updated_at.to_rfc3339(), run.completed_at.map(|v| v.to_rfc3339())],
             )?;
+            tx.execute(
+                "UPDATE agent_workflow_scripts SET approved_script_hash=NULL,
+                 approved_permission_hash=NULL, approved_at=NULL, updated_at=?1 WHERE id=?2",
+                params![Utc::now().to_rfc3339(), run.script_id.as_str()],
+            )?;
+            tx.commit()?;
             Ok(run)
         }).await
     }
@@ -234,6 +266,25 @@ impl AgentWorkflowRepository for SqliteAgentWorkflowRepository {
                 conn.query_row(
                     "SELECT * FROM agent_workflow_runs WHERE id=?1",
                     [id],
+                    row_to_run,
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    async fn get_latest_run_for_script(
+        &self,
+        script_id: &AgentWorkflowScriptId,
+    ) -> AppResult<Option<AgentWorkflowRun>> {
+        let script_id = script_id.to_string();
+        self.db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT * FROM agent_workflow_runs WHERE script_id=?1
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [script_id],
                     row_to_run,
                 )
                 .optional()
@@ -347,7 +398,8 @@ impl AgentWorkflowRepository for SqliteAgentWorkflowRepository {
             .run(move |conn| {
                 Ok(conn.execute(
             "UPDATE agent_workflow_runs SET heartbeat_at=?1, lease_expires_at=?2, updated_at=?1
-             WHERE id=?3 AND attempt=?4 AND runner_instance_id=?5 AND status='running'",
+             WHERE id=?3 AND attempt=?4 AND runner_instance_id=?5
+               AND status IN ('running','pause_requested')",
             params![Utc::now().to_rfc3339(), lease_expires_at.to_rfc3339(), id, attempt, runner],
         )? == 1)
             })

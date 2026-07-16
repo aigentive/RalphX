@@ -49,7 +49,7 @@ fn team_and_workflow_capabilities_fail_closed_and_enable_independently() {
 }
 
 #[test]
-fn ultra_requires_codex_and_live_model_support_when_known() {
+fn ultra_requires_codex_and_positive_live_model_support() {
     let gate = AgentCapabilityGate::default();
 
     assert_eq!(
@@ -67,6 +67,15 @@ fn ultra_requires_codex_and_live_model_support_when_known() {
             AgentHarnessKind::Codex,
             &gate,
             Some(false),
+        ),
+        Err(AgentCapabilityError::UltraUnavailable)
+    );
+    assert_eq!(
+        validate_agent_capability(
+            CoordinationMode::CodexNativeUltra,
+            AgentHarnessKind::Codex,
+            &gate,
+            None,
         ),
         Err(AgentCapabilityError::UltraUnavailable)
     );

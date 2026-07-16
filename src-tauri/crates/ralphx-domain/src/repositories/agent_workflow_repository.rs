@@ -23,6 +23,10 @@ pub trait AgentWorkflowRepository: Send + Sync {
     ) -> AppResult<bool>;
     async fn create_run(&self, run: AgentWorkflowRun) -> AppResult<AgentWorkflowRun>;
     async fn get_run(&self, id: &AgentWorkflowRunId) -> AppResult<Option<AgentWorkflowRun>>;
+    async fn get_latest_run_for_script(
+        &self,
+        script_id: &AgentWorkflowScriptId,
+    ) -> AppResult<Option<AgentWorkflowRun>>;
     async fn get_progress(&self, id: &AgentWorkflowRunId) -> AppResult<AgentWorkflowProgress>;
     async fn claim_run(
         &self,

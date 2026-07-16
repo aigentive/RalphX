@@ -262,6 +262,10 @@ pub async fn start_http_server(
             post(get_agent_workflow_run),
         )
         .route(
+            "/api/agent_workflows/runs/latest",
+            post(get_latest_agent_workflow_run_for_script),
+        )
+        .route(
             "/api/agent_workflows/runs/pause",
             post(pause_agent_workflow_run),
         )

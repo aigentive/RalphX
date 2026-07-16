@@ -8,6 +8,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::Emitter;
 
 use super::coordination::{
     build_delegated_session_status_response, cancel_delegate_impl, start_delegate_impl,
@@ -19,12 +20,37 @@ use crate::domain::entities::{
     sha256_hex, AgentWorkflowInvocation, AgentWorkflowInvocationId, AgentWorkflowMeta,
     AgentWorkflowPhase, AgentWorkflowPhaseId, AgentWorkflowProgress, AgentWorkflowRun,
     AgentWorkflowRunId, AgentWorkflowRunStatus, AgentWorkflowScript, AgentWorkflowScriptId,
-    AgentWorkflowStepStatus, ChatContextType, ChatConversationId, CoordinationMode, ProjectId,
+    AgentWorkflowStepStatus, ChatContextType, ChatConversation, ChatConversationId,
+    CoordinationMode, ProjectId,
 };
 use crate::error::{AppError, AppResult};
 use crate::http_server::types::{DelegateStartRequest, HttpServerState};
 
 type JsonError = (StatusCode, Json<Value>);
+
+const AGENT_WORKFLOW_PROGRESS_EVENT: &str = "agent:workflow_progress";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentWorkflowProgressEvent {
+    run_id: String,
+    emitted_at: chrono::DateTime<Utc>,
+}
+
+fn emit_workflow_progress(state: &HttpServerState, run_id: &AgentWorkflowRunId) {
+    let Some(app_handle) = state.app_state.app_handle.as_ref() else {
+        return;
+    };
+    if let Err(error) = app_handle.emit(
+        AGENT_WORKFLOW_PROGRESS_EVENT,
+        AgentWorkflowProgressEvent {
+            run_id: run_id.to_string(),
+            emitted_at: Utc::now(),
+        },
+    ) {
+        tracing::warn!(%run_id, %error, "Failed to emit Workflow progress invalidation");
+    }
+}
 
 fn json_error(status: StatusCode, error: impl ToString) -> JsonError {
     (
@@ -41,6 +67,166 @@ fn app_error(error: AppError) -> JsonError {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     json_error(status, error)
+}
+
+async fn require_live_workflow_conversation(
+    state: &HttpServerState,
+    script: &AgentWorkflowScript,
+) -> Result<ChatConversation, JsonError> {
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&script.conversation_id)
+        .await
+        .map_err(app_error)?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Workflow conversation not found"))?;
+    if !is_live_workflow_conversation(&conversation, script) {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Workflow approval and execution require the owning project conversation to remain in Workflow mode",
+        ));
+    }
+    Ok(conversation)
+}
+
+fn is_live_workflow_conversation(
+    conversation: &ChatConversation,
+    script: &AgentWorkflowScript,
+) -> bool {
+    conversation.context_type == ChatContextType::Project
+        && conversation.context_id == script.project_id.to_string()
+        && conversation.coordination_mode == CoordinationMode::RxNativeWorkflow
+}
+
+pub(super) fn validate_workflow_agent_output(
+    content: &str,
+    schema: Option<&Value>,
+) -> AppResult<Value> {
+    let Some(schema) = schema else {
+        return Ok(Value::String(content.to_string()));
+    };
+    let value: Value = serde_json::from_str(content).map_err(|error| {
+        AppError::Validation(format!(
+            "Workflow agent output must be JSON when a schema is declared: {error}"
+        ))
+    })?;
+    validate_json_schema_value(&value, schema, "$")?;
+    Ok(value)
+}
+
+fn validate_json_schema_value(value: &Value, schema: &Value, path: &str) -> AppResult<()> {
+    if let Some(allowed) = schema.as_bool() {
+        return if allowed {
+            Ok(())
+        } else {
+            Err(AppError::Validation(format!(
+                "Workflow agent output is forbidden by schema at {path}"
+            )))
+        };
+    }
+    let schema = schema.as_object().ok_or_else(|| {
+        AppError::Validation("Workflow output schema must be an object or boolean".into())
+    })?;
+    if let Some(variants) = schema.get("enum").and_then(Value::as_array) {
+        if !variants.contains(value) {
+            return Err(AppError::Validation(format!(
+                "Workflow agent output at {path} is not an allowed enum value"
+            )));
+        }
+    }
+    if let Some(expected) = schema.get("type") {
+        let matches = match expected {
+            Value::String(expected) => json_value_matches_type(value, expected),
+            Value::Array(expected) => expected.iter().any(|expected| {
+                expected
+                    .as_str()
+                    .is_some_and(|expected| json_value_matches_type(value, expected))
+            }),
+            _ => false,
+        };
+        if !matches {
+            return Err(AppError::Validation(format!(
+                "Workflow agent output at {path} does not match the declared type"
+            )));
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for property in required {
+                let property = property.as_str().ok_or_else(|| {
+                    AppError::Validation(
+                        "Workflow output schema required entries must be strings".into(),
+                    )
+                })?;
+                let required_value = object.get(property).ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "Workflow agent output is missing required value {path}.{property}"
+                    ))
+                })?;
+                if required_value.is_null() {
+                    return Err(AppError::Validation(format!(
+                        "Workflow agent output required value {path}.{property} cannot be null"
+                    )));
+                }
+            }
+        }
+        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+            for property in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(property)) {
+                    return Err(AppError::Validation(format!(
+                        "Workflow agent output contains undeclared value {path}.{property}"
+                    )));
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (property, property_schema) in properties {
+                if let Some(property_value) = object.get(property) {
+                    validate_json_schema_value(
+                        property_value,
+                        property_schema,
+                        &format!("{path}.{property}"),
+                    )?;
+                }
+            }
+        }
+    }
+    if let Some(array) = value.as_array() {
+        if let Some(items) = schema.get("items") {
+            for (index, item) in array.iter().enumerate() {
+                validate_json_schema_value(item, items, &format!("{path}[{index}]"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn json_value_matches_type(value: &Value, expected: &str) -> bool {
+    match expected {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => false,
+    }
+}
+
+fn workflow_delegate_prompt(prompt: &str, schema: Option<&Value>) -> AppResult<String> {
+    let Some(schema) = schema else {
+        return Ok(prompt.to_string());
+    };
+    if !schema.is_object() && !schema.is_boolean() {
+        return Err(AppError::Validation(
+            "Workflow output schema must be an object or boolean".into(),
+        ));
+    }
+    Ok(format!(
+        "{prompt}\n\nReturn only JSON matching this JSON Schema. Do not wrap it in Markdown fences:\n{schema}"
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +251,7 @@ pub struct StartWorkflowRunRequest {
     pub script_id: String,
     pub script_hash: String,
     pub permission_hash: String,
+    pub launch_id: Option<String>,
     #[serde(default)]
     pub args: Value,
     pub harness: Option<AgentHarnessKind>,
@@ -75,6 +262,11 @@ pub struct StartWorkflowRunRequest {
 #[derive(Debug, Deserialize)]
 pub struct WorkflowRunRequest {
     pub run_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowScriptRequest {
+    pub script_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,15 +319,22 @@ pub async fn create_agent_workflow_script(
             "Workflow scripts require a Workflow-capability conversation in the same project",
         ));
     }
-    let permission_summary_json = serde_json::to_string(&request.permission_summary)
+    let permission_summary = json!({
+        "enforcement": "inherits_parent_agent_workspace",
+        "directScriptOsAccess": false,
+        "delegation": "canonical caller allowlist and global admission",
+        "projectId": request.project_id,
+    });
+    let permission_summary_json = serde_json::to_string(&permission_summary)
         .map_err(|error| json_error(StatusCode::BAD_REQUEST, error))?;
+    let invocation_ceiling = request.meta.max_invocations;
     let script = AgentWorkflowScript::new(
         conversation_id,
         ProjectId::from_string(request.project_id),
         request.script,
         request.meta,
         permission_summary_json,
-        request.estimated_fanout,
+        invocation_ceiling,
     )
     .map_err(|error| json_error(StatusCode::BAD_REQUEST, error))?;
     state
@@ -154,14 +353,19 @@ pub async fn approve_agent_workflow_script(
     if !state.app_state.agent_capability_gate.workflows_enabled() {
         return Err(json_error(StatusCode::FORBIDDEN, "Workflows are disabled"));
     }
+    let script_id = AgentWorkflowScriptId::from_string(request.script_id);
+    let script = state
+        .app_state
+        .agent_workflow_repo
+        .get_script(&script_id)
+        .await
+        .map_err(app_error)?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Workflow script not found"))?;
+    require_live_workflow_conversation(&state, &script).await?;
     let approved = state
         .app_state
         .agent_workflow_repo
-        .approve_script(
-            &AgentWorkflowScriptId::from_string(request.script_id),
-            &request.script_hash,
-            &request.permission_hash,
-        )
+        .approve_script(&script_id, &request.script_hash, &request.permission_hash)
         .await
         .map_err(app_error)?;
     if !approved {
@@ -198,13 +402,7 @@ pub async fn start_agent_workflow_run(
         ));
     }
     let now = Utc::now();
-    let conversation = state
-        .app_state
-        .chat_conversation_repo
-        .get_by_id(&script.conversation_id)
-        .await
-        .map_err(app_error)?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Workflow conversation not found"))?;
+    let conversation = require_live_workflow_conversation(&state, &script).await?;
     let harness = request
         .harness
         .or(conversation.provider_harness)
@@ -214,8 +412,17 @@ pub async fn start_agent_workflow_run(
                 "Select a provider runtime before launching this Workflow",
             )
         })?;
+    let run_id = request
+        .launch_id
+        .map(|launch_id| {
+            uuid::Uuid::parse_str(&launch_id)
+                .map(|id| AgentWorkflowRunId::from_string(id.to_string()))
+                .map_err(|_| json_error(StatusCode::BAD_REQUEST, "Invalid Workflow launch id"))
+        })
+        .transpose()?
+        .unwrap_or_else(AgentWorkflowRunId::new);
     let run = AgentWorkflowRun {
-        id: AgentWorkflowRunId::new(),
+        id: run_id,
         script_id,
         conversation_id: script.conversation_id.clone(),
         project_id: script.project_id.clone(),
@@ -243,6 +450,7 @@ pub async fn start_agent_workflow_run(
         .create_run(run)
         .await
         .map_err(app_error)?;
+    emit_workflow_progress(&state, &run.id);
     spawn_workflow_run(
         &state,
         run.clone(),
@@ -292,16 +500,33 @@ pub async fn get_agent_workflow_run(
     Ok(Json(AgentWorkflowProgressResponse { progress, usage }))
 }
 
+pub async fn get_latest_agent_workflow_run_for_script(
+    State(state): State<HttpServerState>,
+    Json(request): Json<WorkflowScriptRequest>,
+) -> Result<Json<Option<AgentWorkflowRun>>, JsonError> {
+    state
+        .app_state
+        .agent_workflow_repo
+        .get_latest_run_for_script(&AgentWorkflowScriptId::from_string(request.script_id))
+        .await
+        .map(Json)
+        .map_err(app_error)
+}
+
 pub async fn pause_agent_workflow_run(
     State(state): State<HttpServerState>,
     Json(request): Json<WorkflowRunRequest>,
 ) -> Result<Json<Value>, JsonError> {
+    let run_id = AgentWorkflowRunId::from_string(request.run_id);
     let changed = state
         .app_state
         .agent_workflow_repo
-        .request_pause(&AgentWorkflowRunId::from_string(request.run_id))
+        .request_pause(&run_id)
         .await
         .map_err(app_error)?;
+    if changed {
+        emit_workflow_progress(&state, &run_id);
+    }
     Ok(Json(json!({ "changed": changed })))
 }
 
@@ -333,6 +558,7 @@ pub async fn resume_agent_workflow_run(
         .await
         .map_err(app_error)?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Workflow script not found"))?;
+    require_live_workflow_conversation(&state, &script).await?;
     validate_run_script(&current, &script).map_err(app_error)?;
     if !state
         .app_state
@@ -353,6 +579,7 @@ pub async fn resume_agent_workflow_run(
         .await
         .map_err(app_error)?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Workflow run not found"))?;
+    emit_workflow_progress(&state, &run_id);
     spawn_workflow_run(
         &state,
         resumed.clone(),
@@ -370,17 +597,22 @@ pub async fn cancel_agent_workflow_run(
     State(state): State<HttpServerState>,
     Json(request): Json<WorkflowRunRequest>,
 ) -> Result<Json<Value>, JsonError> {
+    let run_id = AgentWorkflowRunId::from_string(request.run_id);
     let changed = state
         .app_state
         .agent_workflow_repo
-        .request_cancel(&AgentWorkflowRunId::from_string(request.run_id))
+        .request_cancel(&run_id)
         .await
         .map_err(app_error)?;
+    if changed {
+        emit_workflow_progress(&state, &run_id);
+    }
     Ok(Json(json!({ "changed": changed })))
 }
 
 struct HttpWorkflowHost {
     state: HttpServerState,
+    harness: AgentHarnessKind,
     caller_agent_name: String,
     caller_agent_profile: Option<String>,
     conversation_id: String,
@@ -389,10 +621,7 @@ struct HttpWorkflowHost {
 }
 
 fn validate_run_script(run: &AgentWorkflowRun, script: &AgentWorkflowScript) -> AppResult<()> {
-    if run.script_hash != script.script_hash
-        || run.permission_hash != script.permission_hash
-        || !script.is_approved_for_current_content()
-    {
+    if run.script_hash != script.script_hash || run.permission_hash != script.permission_hash {
         return Err(AppError::Conflict(
             "Workflow run no longer matches an approved script".into(),
         ));
@@ -409,8 +638,11 @@ fn spawn_workflow_run(
 ) -> AppResult<()> {
     validate_run_script(&run, &script)?;
     let runner = state.app_state.agent_workflow_runner()?;
+    let repository = Arc::clone(&state.app_state.agent_workflow_repo);
+    let event_state = state.clone();
     let host = Arc::new(HttpWorkflowHost {
         state: state.clone(),
+        harness: run.harness,
         caller_agent_name,
         caller_agent_profile,
         conversation_id: script.conversation_id.to_string(),
@@ -419,16 +651,18 @@ fn spawn_workflow_run(
     });
     tokio::spawn(async move {
         if let Err(error) = runner.execute(run.clone(), script, host).await {
+            let _ = repository
+                .fail_unclaimed_run(&run.id, run.status, &error.to_string())
+                .await;
             tracing::error!(run_id = %run.id, %error, "Scripted Agent workflow failed");
         }
+        emit_workflow_progress(&event_state, &run.id);
     });
     Ok(())
 }
 
 pub async fn recover_agent_workflow_runs(state: &HttpServerState) -> AppResult<usize> {
-    if !state.app_state.agent_capability_gate.workflows_enabled() {
-        return Ok(0);
-    }
+    let workflows_enabled = state.app_state.agent_capability_gate.workflows_enabled();
     let mut launched = 0;
     for candidate in state
         .app_state
@@ -455,6 +689,20 @@ pub async fn recover_agent_workflow_runs(state: &HttpServerState) -> AppResult<u
                 .get_run(&run.id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("Workflow run disappeared".into()))?;
+            emit_workflow_progress(state, &run.id);
+        }
+        if !workflows_enabled {
+            if run.status != AgentWorkflowRunStatus::Paused
+                && !state
+                    .app_state
+                    .agent_workflow_repo
+                    .request_pause(&run.id)
+                    .await?
+            {
+                tracing::warn!(run_id = %run.id, status = %run.status, "Disabled Workflow recovery could not settle run as paused");
+            }
+            emit_workflow_progress(state, &run.id);
+            continue;
         }
         if run.status == AgentWorkflowRunStatus::Paused {
             continue;
@@ -474,8 +722,30 @@ pub async fn recover_agent_workflow_runs(state: &HttpServerState) -> AppResult<u
             {
                 tracing::warn!(run_id = %run.id, "Workflow recovery failure lost its state guard");
             }
+            emit_workflow_progress(state, &run.id);
             continue;
         };
+        let conversation = state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&script.conversation_id)
+            .await?;
+        if !conversation
+            .as_ref()
+            .is_some_and(|conversation| is_live_workflow_conversation(conversation, &script))
+        {
+            let message = "Cannot recover Workflow run because its owning conversation is no longer in Workflow mode";
+            if !state
+                .app_state
+                .agent_workflow_repo
+                .fail_unclaimed_run(&run.id, run.status, message)
+                .await?
+            {
+                tracing::warn!(run_id = %run.id, "Workflow recovery mode validation lost its state guard");
+            }
+            emit_workflow_progress(state, &run.id);
+            continue;
+        }
         if let Err(error) = spawn_workflow_run(
             state,
             run.clone(),
@@ -492,8 +762,10 @@ pub async fn recover_agent_workflow_runs(state: &HttpServerState) -> AppResult<u
             {
                 tracing::warn!(run_id = %run.id, "Workflow recovery launch failure lost its state guard");
             }
+            emit_workflow_progress(state, &run.id);
             continue;
         }
+        emit_workflow_progress(state, &run.id);
         launched += 1;
     }
     Ok(launched)
@@ -534,6 +806,7 @@ impl AgentWorkflowHost for HttpWorkflowHost {
                 if entry.is_none() {
                     return Err(AppError::Conflict("Stale workflow log rejected".into()));
                 }
+                self.emit_progress(authority);
                 Ok(Value::Null)
             }
             "phase" => self.handle_phase(authority, payload).await,
@@ -548,6 +821,13 @@ impl AgentWorkflowHost for HttpWorkflowHost {
 }
 
 impl HttpWorkflowHost {
+    fn emit_progress(&self, authority: &AgentWorkflowRunAuthority) {
+        emit_workflow_progress(
+            &self.state,
+            &AgentWorkflowRunId::from_string(authority.run_id.clone()),
+        );
+    }
+
     async fn handle_parallel(
         &self,
         authority: &AgentWorkflowRunAuthority,
@@ -684,6 +964,7 @@ impl HttpWorkflowHost {
         {
             return Err(AppError::Conflict("Stale workflow phase rejected".into()));
         }
+        self.emit_progress(authority);
         Ok(json!({ "key": key, "status": status.to_string() }))
     }
 
@@ -713,12 +994,31 @@ impl HttpWorkflowHost {
                     "Workflow agent logicalKey is required for replay safety".into(),
                 )
             })?;
+        let phase_key = payload
+            .get("phaseKey")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Workflow agent calls require an active phase for durable lineage".into(),
+                )
+            })?;
         let progress = self
             .state
             .app_state
             .agent_workflow_repo
             .get_progress(&AgentWorkflowRunId::from_string(authority.run_id.clone()))
             .await?;
+        let phase_id = progress
+            .phases
+            .iter()
+            .find(|phase| {
+                phase.key == phase_key && phase.status == AgentWorkflowStepStatus::Running
+            })
+            .map(|phase| phase.id.clone())
+            .ok_or_else(|| {
+                AppError::Conflict(format!("Workflow agent phase is not active: {phase_key}"))
+            })?;
         let replay = progress
             .invocations
             .iter()
@@ -745,14 +1045,15 @@ impl HttpWorkflowHost {
                 self.max_concurrency
             )));
         }
-        let schema_hash = payload
-            .get("schema")
+        let schema = payload.get("schema").cloned();
+        let schema_hash = schema
+            .as_ref()
             .map(|schema| sha256_hex(schema.to_string().as_bytes()));
         let now = Utc::now();
         let invocation = AgentWorkflowInvocation {
             id: AgentWorkflowInvocationId::new(),
             run_id: AgentWorkflowRunId::from_string(authority.run_id.clone()),
-            phase_id: None,
+            phase_id: Some(phase_id.clone()),
             logical_key: logical_key.into(),
             agent_name: agent_name.into(),
             prompt_hash: sha256_hex(prompt.as_bytes()),
@@ -773,10 +1074,15 @@ impl HttpWorkflowHost {
             .agent_workflow_repo
             .begin_invocation(invocation)
             .await?;
-        if stored.prompt_hash != sha256_hex(prompt.as_bytes()) || stored.schema_hash != schema_hash
+        self.emit_progress(authority);
+        if stored.prompt_hash != sha256_hex(prompt.as_bytes())
+            || stored.schema_hash != schema_hash
+            || stored.agent_name != agent_name
+            || stored.phase_id.as_ref() != Some(&phase_id)
         {
             return Err(AppError::Conflict(
-                "Workflow replay key was reused with changed prompt or schema".into(),
+                "Workflow replay key was reused with changed phase, agent, prompt, or schema"
+                    .into(),
             ));
         }
         if stored.status == AgentWorkflowStepStatus::Completed {
@@ -787,7 +1093,9 @@ impl HttpWorkflowHost {
                 .map_err(|error| AppError::Validation(error.to_string()));
         }
         if stored.status == AgentWorkflowStepStatus::Running {
-            return self.reconcile_active_invocation(authority, &stored).await;
+            return self
+                .reconcile_active_invocation(authority, &stored, schema.as_ref())
+                .await;
         }
         if stored.status == AgentWorkflowStepStatus::Pending && stored.id != proposed_invocation_id
         {
@@ -801,6 +1109,7 @@ impl HttpWorkflowHost {
                 "Workflow invocation is already active and could not be reconciled".into(),
             ));
         }
+        let delegated_prompt = workflow_delegate_prompt(prompt, schema.as_ref())?;
         let snapshot = start_delegate_impl(
             &self.state,
             DelegateStartRequest {
@@ -816,13 +1125,13 @@ impl HttpWorkflowHost {
                 delegated_session_id: None,
                 child_session_id: None,
                 agent_name: agent_name.into(),
-                prompt: prompt.into(),
+                prompt: delegated_prompt,
                 title: payload
                     .get("title")
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 inherit_context: true,
-                harness: None,
+                harness: Some(self.harness),
                 model: None,
                 logical_effort: None,
                 approval_policy: None,
@@ -854,10 +1163,12 @@ impl HttpWorkflowHost {
             )
             .await?
         {
+            let _ = cancel_delegate_impl(&self.state, &snapshot.job_id).await;
             return Err(AppError::Conflict(
                 "Stale Workflow invocation start rejected".into(),
             ));
         }
+        self.emit_progress(authority);
         let mut last_heartbeat = tokio::time::Instant::now();
         loop {
             let workflow_run = self
@@ -889,6 +1200,7 @@ impl HttpWorkflowHost {
                         "Stale Workflow cancellation rejected".into(),
                     ));
                 }
+                self.emit_progress(authority);
                 return Err(AppError::ExecutionBlocked(
                     "Workflow cancelled by user".into(),
                 ));
@@ -920,30 +1232,16 @@ impl HttpWorkflowHost {
                 .ok_or_else(|| AppError::Conflict("Workflow delegated job disappeared".into()))?;
             match current.status.as_str() {
                 "completed" => {
-                    let result = json!({ "content": current.content.unwrap_or_default(),
-                        "delegatedSessionId": current.delegated_session_id,
-                        "conversationId": current.delegated_conversation_id });
-                    if !self
-                        .state
-                        .app_state
-                        .agent_workflow_repo
-                        .settle_invocation(
-                            stored.id.as_str(),
-                            authority.attempt,
-                            &authority.runner_instance_id,
-                            AgentWorkflowStepStatus::Completed,
-                            Some(current.delegated_session_id),
+                    return self
+                        .complete_invocation(
+                            authority,
+                            &stored,
+                            current.content.unwrap_or_default(),
+                            schema.as_ref(),
+                            current.delegated_session_id,
                             current.delegated_conversation_id,
-                            Some(result.to_string()),
-                            None,
                         )
-                        .await?
-                    {
-                        return Err(AppError::Conflict(
-                            "Stale Workflow completion rejected".into(),
-                        ));
-                    }
-                    return Ok(result);
+                        .await;
                 }
                 "failed" | "cancelled" => {
                     let error = current
@@ -971,6 +1269,7 @@ impl HttpWorkflowHost {
                     {
                         return Err(AppError::Conflict("Stale Workflow failure rejected".into()));
                     }
+                    self.emit_progress(authority);
                     return Err(AppError::Agent(error));
                 }
                 _ => tokio::time::sleep(Duration::from_millis(200)).await,
@@ -978,10 +1277,76 @@ impl HttpWorkflowHost {
         }
     }
 
+    async fn complete_invocation(
+        &self,
+        authority: &AgentWorkflowRunAuthority,
+        invocation: &AgentWorkflowInvocation,
+        content: String,
+        schema: Option<&Value>,
+        delegated_session_id: String,
+        child_conversation_id: Option<String>,
+    ) -> AppResult<Value> {
+        let content = match validate_workflow_agent_output(&content, schema) {
+            Ok(content) => content,
+            Err(error) => {
+                if !self
+                    .state
+                    .app_state
+                    .agent_workflow_repo
+                    .settle_invocation(
+                        invocation.id.as_str(),
+                        authority.attempt,
+                        &authority.runner_instance_id,
+                        AgentWorkflowStepStatus::Failed,
+                        Some(delegated_session_id.clone()),
+                        child_conversation_id.clone(),
+                        None,
+                        Some(error.to_string()),
+                    )
+                    .await?
+                {
+                    return Err(AppError::Conflict(
+                        "Stale Workflow schema failure rejected".into(),
+                    ));
+                }
+                self.emit_progress(authority);
+                return Err(error);
+            }
+        };
+        let result = json!({
+            "content": content,
+            "delegatedSessionId": delegated_session_id.clone(),
+            "conversationId": child_conversation_id.clone(),
+        });
+        if !self
+            .state
+            .app_state
+            .agent_workflow_repo
+            .settle_invocation(
+                invocation.id.as_str(),
+                authority.attempt,
+                &authority.runner_instance_id,
+                AgentWorkflowStepStatus::Completed,
+                Some(delegated_session_id),
+                child_conversation_id,
+                Some(result.to_string()),
+                None,
+            )
+            .await?
+        {
+            return Err(AppError::Conflict(
+                "Stale Workflow completion rejected".into(),
+            ));
+        }
+        self.emit_progress(authority);
+        Ok(result)
+    }
+
     async fn reconcile_active_invocation(
         &self,
         authority: &AgentWorkflowRunAuthority,
         invocation: &AgentWorkflowInvocation,
+        schema: Option<&Value>,
     ) -> AppResult<Value> {
         let delegated_session_id = invocation.delegated_session_id.as_ref().ok_or_else(|| {
             AppError::Conflict(
@@ -1035,6 +1400,7 @@ impl HttpWorkflowHost {
                         "Stale recovered Workflow cancellation rejected".into(),
                     ));
                 }
+                self.emit_progress(authority);
                 return Err(AppError::ExecutionBlocked(
                     "Workflow cancelled by user".into(),
                 ));
@@ -1088,32 +1454,16 @@ impl HttpWorkflowHost {
                                     .into(),
                             )
                         })?;
-                    let result = json!({
-                        "content": content,
-                        "delegatedSessionId": delegated_session_id,
-                        "conversationId": status.conversation_id,
-                    });
-                    if !self
-                        .state
-                        .app_state
-                        .agent_workflow_repo
-                        .settle_invocation(
-                            invocation.id.as_str(),
-                            authority.attempt,
-                            &authority.runner_instance_id,
-                            AgentWorkflowStepStatus::Completed,
-                            Some(delegated_session_id.to_string()),
+                    return self
+                        .complete_invocation(
+                            authority,
+                            invocation,
+                            content,
+                            schema,
+                            delegated_session_id.to_string(),
                             status.conversation_id,
-                            Some(result.to_string()),
-                            None,
                         )
-                        .await?
-                    {
-                        return Err(AppError::Conflict(
-                            "Stale recovered Workflow completion rejected".into(),
-                        ));
-                    }
-                    return Ok(result);
+                        .await;
                 }
                 "failed" | "cancelled" => {
                     let error = status
@@ -1146,6 +1496,7 @@ impl HttpWorkflowHost {
                             "Stale recovered Workflow failure rejected".into(),
                         ));
                     }
+                    self.emit_progress(authority);
                     return Err(AppError::Agent(error));
                 }
                 "running" => tokio::time::sleep(Duration::from_millis(200)).await,

@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::application::agent_capability_gate::AgentCapabilityGate;
+use crate::application::harness_runtime_registry::probe_harness;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::CoordinationMode;
 
@@ -61,9 +62,29 @@ pub fn validate_agent_capability(
         CoordinationMode::CodexNativeUltra if harness != AgentHarnessKind::Codex => {
             Err(AgentCapabilityError::UltraRequiresCodex)
         }
-        CoordinationMode::CodexNativeUltra if codex_ultra_supported == Some(false) => {
+        CoordinationMode::CodexNativeUltra if codex_ultra_supported != Some(true) => {
             Err(AgentCapabilityError::UltraUnavailable)
         }
         CoordinationMode::CodexNativeUltra => Ok(()),
     }
+}
+
+pub fn codex_ultra_support_for_model(
+    harness: AgentHarnessKind,
+    model: Option<&str>,
+) -> Option<bool> {
+    if harness != AgentHarnessKind::Codex {
+        return None;
+    }
+    let model = model?.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let probe = probe_harness(AgentHarnessKind::Codex);
+    probe.probe_succeeded.then(|| {
+        probe
+            .ultra_supported_models
+            .iter()
+            .any(|supported| supported == model)
+    })
 }

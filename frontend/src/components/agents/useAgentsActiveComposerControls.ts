@@ -284,6 +284,9 @@ export function useAgentsActiveComposerControls({
         await chatApi.updateAgentConversationCoordinationMode({
           conversationId: selectedConversationId,
           coordinationMode,
+          ...(coordinationMode === "codex_native_ultra"
+            ? { modelOverride: normalizedActiveRuntime.modelId }
+            : {}),
         });
         await Promise.all([
           invalidateProjectConversations(activeProjectId),
@@ -299,6 +302,7 @@ export function useAgentsActiveComposerControls({
       activeConversation,
       activeProjectId,
       invalidateProjectConversations,
+      normalizedActiveRuntime.modelId,
       queryClient,
       selectedConversationId,
     ],

@@ -35,6 +35,10 @@ export const WORKFLOW_TOOLS = [
                 script_id: { type: "string" },
                 script_hash: { type: "string" },
                 permission_hash: { type: "string" },
+                launch_id: {
+                    type: "string",
+                    description: "Optional UUID idempotency key for retrying the same launch.",
+                },
                 args: { type: "object" },
                 harness: {
                     type: "string",

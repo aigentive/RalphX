@@ -18,7 +18,7 @@ use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 const RUNNER_LEASE: chrono::Duration = chrono::Duration::seconds(30);
-const RUNNER_TIMEOUT: Duration = Duration::from_secs(300);
+const RUNNER_FRAME_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[async_trait]
 pub trait AgentWorkflowHost: Send + Sync {
@@ -28,6 +28,28 @@ pub trait AgentWorkflowHost: Send + Sync {
         operation: &str,
         payload: Value,
     ) -> AppResult<Value>;
+}
+
+#[async_trait]
+pub(super) trait WorkflowChildTermination {
+    async fn kill_child(&mut self);
+    async fn reap_child(&mut self);
+}
+
+#[async_trait]
+impl WorkflowChildTermination for tokio::process::Child {
+    async fn kill_child(&mut self) {
+        let _ = self.kill().await;
+    }
+
+    async fn reap_child(&mut self) {
+        let _ = self.wait().await;
+    }
+}
+
+pub(super) async fn kill_and_reap_after_drive_error(child: &mut impl WorkflowChildTermination) {
+    child.kill_child().await;
+    child.reap_child().await;
 }
 
 pub struct AgentWorkflowRunAuthority {
@@ -124,32 +146,17 @@ impl AgentWorkflowRunner {
             }
         };
 
-        let result = tokio::time::timeout(
-            RUNNER_TIMEOUT,
-            self.drive(&mut child, &run, &authority, &script, host),
-        )
-        .await;
-        match result {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => {
+        match self
+            .drive(&mut child, &run, &authority, &script, host)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                kill_and_reap_after_drive_error(&mut child).await;
                 let _ = self
                     .fail_current_attempt(&run, attempt, &runner_instance_id, &error.to_string())
                     .await;
                 Err(error)
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                let _ = self
-                    .fail_current_attempt(
-                        &run,
-                        attempt,
-                        &runner_instance_id,
-                        "Workflow runner timed out",
-                    )
-                    .await;
-                Err(AppError::ExecutionBlocked(
-                    "Workflow runner timed out".into(),
-                ))
             }
         }
     }
@@ -183,7 +190,7 @@ impl AgentWorkflowRunner {
             },
         };
         write_frame(&mut stdin, &lineage).await?;
-        let ready = read_frame(&mut stdout).await?;
+        let ready = read_frame_with_timeout(&mut stdout).await?;
         validate_lineage(&ready, &lineage)?;
         if !matches!(ready.message, AgentWorkflowProtocolMessage::Ready) {
             return self
@@ -197,7 +204,7 @@ impl AgentWorkflowRunner {
         }
 
         loop {
-            let frame = read_frame(&mut stdout).await?;
+            let frame = read_frame_with_timeout(&mut stdout).await?;
             validate_lineage(&frame, &lineage)?;
             match frame.message {
                 AgentWorkflowProtocolMessage::HostCall {
@@ -343,18 +350,47 @@ impl AgentWorkflowRunner {
                         self.repository.get_run(&run.id).await?.ok_or_else(|| {
                             AppError::NotFound(format!("Workflow run {}", run.id))
                         })?;
-                    if current.pause_requested || current.cancel_requested {
-                        return Err(AppError::Conflict(
-                            "Runner completed after a lifecycle request".into(),
-                        ));
-                    }
-                    let result_json = serde_json::to_string(&result)
-                        .map_err(|error| AppError::Validation(error.to_string()))?;
                     let status = child
                         .wait()
                         .await
                         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
                     require_successful_exit(status.success())?;
+                    if current.cancel_requested {
+                        require_transition(
+                            self.repository
+                                .transition_run(
+                                    &run.id,
+                                    authority.attempt,
+                                    &authority.runner_instance_id,
+                                    current.status,
+                                    AgentWorkflowRunStatus::Cancelled,
+                                    None,
+                                    Some("Cancelled by user".into()),
+                                )
+                                .await?,
+                            "cancellation",
+                        )?;
+                        return Ok(());
+                    }
+                    if current.pause_requested {
+                        require_transition(
+                            self.repository
+                                .transition_run(
+                                    &run.id,
+                                    authority.attempt,
+                                    &authority.runner_instance_id,
+                                    current.status,
+                                    AgentWorkflowRunStatus::Paused,
+                                    None,
+                                    None,
+                                )
+                                .await?,
+                            "pause",
+                        )?;
+                        return Ok(());
+                    }
+                    let result_json = serde_json::to_string(&result)
+                        .map_err(|error| AppError::Validation(error.to_string()))?;
                     if !self
                         .repository
                         .transition_run(
@@ -375,6 +411,38 @@ impl AgentWorkflowRunner {
                     return Ok(());
                 }
                 AgentWorkflowProtocolMessage::Failed { error } => {
+                    let current =
+                        self.repository.get_run(&run.id).await?.ok_or_else(|| {
+                            AppError::NotFound(format!("Workflow run {}", run.id))
+                        })?;
+                    if current.cancel_requested || current.pause_requested {
+                        let target = if current.cancel_requested {
+                            AgentWorkflowRunStatus::Cancelled
+                        } else {
+                            AgentWorkflowRunStatus::Paused
+                        };
+                        require_transition(
+                            self.repository
+                                .transition_run(
+                                    &run.id,
+                                    authority.attempt,
+                                    &authority.runner_instance_id,
+                                    current.status,
+                                    target,
+                                    None,
+                                    current
+                                        .cancel_requested
+                                        .then(|| "Cancelled by user".to_string()),
+                                )
+                                .await?,
+                            if current.cancel_requested {
+                                "cancellation"
+                            } else {
+                                "pause"
+                            },
+                        )?;
+                        return Ok(());
+                    }
                     if !self
                         .repository
                         .transition_run(
@@ -537,4 +605,12 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> AppResult<AgentWor
         .await
         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
     serde_json::from_slice(&payload).map_err(|error| AppError::Validation(error.to_string()))
+}
+
+async fn read_frame_with_timeout(
+    reader: &mut (impl AsyncRead + Unpin),
+) -> AppResult<AgentWorkflowFrame> {
+    tokio::time::timeout(RUNNER_FRAME_TIMEOUT, read_frame(reader))
+        .await
+        .map_err(|_| AppError::ExecutionBlocked("Workflow runner frame timed out".into()))?
 }

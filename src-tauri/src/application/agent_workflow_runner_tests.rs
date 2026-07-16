@@ -1,5 +1,35 @@
-use super::{require_successful_exit, require_transition};
+use async_trait::async_trait;
+
+use super::{
+    kill_and_reap_after_drive_error, require_successful_exit, require_transition,
+    WorkflowChildTermination,
+};
 use crate::error::AppError;
+
+#[derive(Default)]
+struct RecordingChildTermination {
+    events: Vec<&'static str>,
+}
+
+#[async_trait]
+impl WorkflowChildTermination for RecordingChildTermination {
+    async fn kill_child(&mut self) {
+        self.events.push("kill");
+    }
+
+    async fn reap_child(&mut self) {
+        self.events.push("reap");
+    }
+}
+
+#[tokio::test]
+async fn drive_error_cleanup_kills_before_reaping_the_sidecar() {
+    let mut child = RecordingChildTermination::default();
+
+    kill_and_reap_after_drive_error(&mut child).await;
+
+    assert_eq!(child.events, vec!["kill", "reap"]);
+}
 
 #[test]
 fn accepted_lifecycle_transition_allows_runner_to_finish() {

@@ -10,7 +10,7 @@ import {
   Workflow,
   XCircle,
 } from "lucide-react";
-import React, { useContext, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   agentWorkflowApi,
@@ -89,14 +89,26 @@ function WorkflowProgressBody({
 }) {
   const navigateToChild = useContext(ChildSessionNavigationContext);
   const status = progress.run.status;
+  const isReadOnly = status === "disabled";
+  const isActivelyElapsed = !isReadOnly && !isAgentWorkflowTerminal(status);
+  const [currentTimeMs, setCurrentTimeMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isActivelyElapsed) return;
+    setCurrentTimeMs(Date.now());
+    const interval = window.setInterval(() => setCurrentTimeMs(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [isActivelyElapsed]);
   const totalTokens =
     progress.usage.inputTokens +
     progress.usage.outputTokens +
     progress.usage.cacheCreationTokens +
     progress.usage.cacheReadTokens;
-  const elapsedMs =
-    new Date(progress.run.completedAt ?? progress.run.updatedAt).getTime() -
-    new Date(progress.run.createdAt).getTime();
+  const elapsedEndMs = progress.run.completedAt
+    ? new Date(progress.run.completedAt).getTime()
+    : isActivelyElapsed
+      ? currentTimeMs
+      : new Date(progress.run.updatedAt).getTime();
+  const elapsedMs = elapsedEndMs - new Date(progress.run.createdAt).getTime();
 
   return (
     <div className="space-y-3" data-testid="agent-workflow-progress">
@@ -162,7 +174,7 @@ function WorkflowProgressBody({
         <p className="text-xs text-[var(--status-error)]">{progress.run.error}</p>
       )}
 
-      {!isAgentWorkflowTerminal(status) && (
+      {!isReadOnly && !isAgentWorkflowTerminal(status) && (
         <div className="flex flex-wrap gap-2">
           {status === "paused" ? (
             <button
@@ -214,14 +226,23 @@ export const AgentWorkflowWidget = React.memo(function AgentWorkflowWidget({
   const [launchedRunId, setLaunchedRunId] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [showSource, setShowSource] = useState(false);
-  const runId = launchedRunId ?? resultRunId ?? progressRunId;
+  const launchIdRef = useRef(globalThis.crypto.randomUUID());
+  const latestRunQuery = useQuery({
+    queryKey: ["agent-workflow-latest-run", script?.id],
+    queryFn: () => agentWorkflowApi.getLatestRun(script!.id),
+    enabled: Boolean(script),
+  });
+  const runId =
+    launchedRunId ?? resultRunId ?? progressRunId ?? latestRunQuery.data?.id;
   const progressQuery = useQuery({
     queryKey: ["agent-workflow-progress", runId],
     queryFn: () => agentWorkflowApi.getProgress(runId!),
     enabled: Boolean(runId),
     refetchInterval: (query) => {
       const status = query.state.data?.run.status;
-      return status && isAgentWorkflowTerminal(status) ? false : 1_000;
+      return status && (isAgentWorkflowTerminal(status) || status === "disabled")
+        ? false
+        : 1_000;
     },
   });
   const startMutation = useMutation({
@@ -230,8 +251,17 @@ export const AgentWorkflowWidget = React.memo(function AgentWorkflowWidget({
         scriptId: script!.id,
         scriptHash: script!.script_hash,
         permissionHash: script!.permission_hash,
+        launchId: launchIdRef.current,
       }),
-    onSuccess: (run) => setLaunchedRunId(run.id),
+    onSuccess: (run) => {
+      setLaunchedRunId(run.id);
+      queryClient.setQueryData(["agent-workflow-latest-run", script?.id], run);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-workflow-latest-run", script?.id],
+      });
+    },
   });
   const actionMutation = useMutation({
     mutationFn: async (action: "pause" | "resume" | "cancel") => {
@@ -270,7 +300,13 @@ export const AgentWorkflowWidget = React.memo(function AgentWorkflowWidget({
         />
       }
     >
-      {script && !runId && !dismissed && (
+      {script && latestRunQuery.isLoading && !runId && (
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          <Loader2 size={12} className="animate-spin" /> Checking durable run state…
+        </div>
+      )}
+
+      {script && latestRunQuery.isFetched && !runId && !dismissed && (
         <div className="space-y-3" data-testid="agent-workflow-approval">
           {script.meta.description && (
             <p className="text-xs text-[var(--text-secondary)]">{script.meta.description}</p>
@@ -289,9 +325,9 @@ export const AgentWorkflowWidget = React.memo(function AgentWorkflowWidget({
               {script.source}
             </pre>
           )}
-          {(startMutation.error || progressQuery.error) && (
+          {(startMutation.error || latestRunQuery.error || progressQuery.error) && (
             <p className="text-xs text-[var(--status-error)]">
-              {(startMutation.error ?? progressQuery.error)?.message}
+              {(startMutation.error ?? latestRunQuery.error ?? progressQuery.error)?.message}
             </p>
           )}
           <div className="flex flex-wrap gap-2">

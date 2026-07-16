@@ -32,6 +32,7 @@ import { useTaskValidationEventInvalidation } from "@/hooks/useTaskValidationEve
 import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNotification";
 import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
 import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
+import { useAgentWorkflowEvents } from "@/hooks/useAgentWorkflowEvents";
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
 import { useNotificationToasts } from "@/hooks/useNotificationToasts";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
@@ -93,6 +94,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useFreshnessBlockedNotification(); // Show toast when task is freshness-blocked
   useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
   useGlobalAgentLifecycle(); // Global agent lifecycle → agentStatus for all sessions
+  useAgentWorkflowEvents(); // Refresh durable scripted workflow progress after backend mutations
 
   return <>{children}</>;
 }

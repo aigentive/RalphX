@@ -85,6 +85,37 @@ async fn launch_requires_exact_current_approval_hashes() {
 }
 
 #[tokio::test]
+async fn run_once_approval_is_consumed_but_same_launch_id_is_idempotent() {
+    let repository = repository();
+    let script = repository.save_script(script()).await.unwrap();
+    assert!(repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap());
+    let launch = run(&script);
+    let created = repository.create_run(launch.clone()).await.unwrap();
+
+    assert!(repository.create_run(run(&script)).await.is_err());
+
+    assert!(repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap());
+    let retried = repository.create_run(launch).await.unwrap();
+    assert_eq!(retried.id, created.id);
+    assert_eq!(
+        repository
+            .get_latest_run_for_script(&script.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        created.id
+    );
+    assert!(repository.create_run(run(&script)).await.is_err());
+}
+
+#[tokio::test]
 async fn stale_runner_attempt_cannot_heartbeat_or_complete() {
     let repository = repository();
     let script = repository.save_script(script()).await.unwrap();
@@ -220,6 +251,31 @@ async fn paused_run_resumes_with_cleared_runner_authority() {
     assert_eq!(resumed.status, AgentWorkflowRunStatus::Queued);
     assert!(!resumed.pause_requested);
     assert!(resumed.runner_instance_id.is_none());
+}
+
+#[tokio::test]
+async fn active_runner_can_heartbeat_while_pause_request_waits_for_child_settlement() {
+    let repository = repository();
+    let script = repository.save_script(script()).await.unwrap();
+    repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap();
+    let run = repository.create_run(run(&script)).await.unwrap();
+    assert!(repository
+        .claim_run(&run.id, 0, "runner", Utc::now() + Duration::seconds(30))
+        .await
+        .unwrap());
+    assert!(repository.request_pause(&run.id).await.unwrap());
+
+    assert!(repository
+        .heartbeat(&run.id, 1, "runner", Utc::now() + Duration::seconds(30),)
+        .await
+        .unwrap());
+    assert_eq!(
+        repository.get_run(&run.id).await.unwrap().unwrap().status,
+        AgentWorkflowRunStatus::PauseRequested
+    );
 }
 
 #[tokio::test]

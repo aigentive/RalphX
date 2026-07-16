@@ -1908,6 +1908,7 @@ export interface SwitchAgentConversationModeResult {
 export interface UpdateAgentConversationCoordinationModeInput {
   conversationId: string;
   coordinationMode: CoordinationMode;
+  modelOverride?: string;
 }
 
 export interface CopyAgentConversationPlanInput {
@@ -3782,6 +3783,7 @@ export async function updateAgentConversationCoordinationMode(
       input: {
         conversationId: input.conversationId,
         coordinationMode: input.coordinationMode,
+        ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
       },
     },
     ChatConversationResponseSchema,

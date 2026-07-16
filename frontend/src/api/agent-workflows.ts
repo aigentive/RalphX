@@ -155,6 +155,7 @@ export const agentWorkflowApi = {
     scriptId: string;
     scriptHash: string;
     permissionHash: string;
+    launchId: string;
   }): Promise<AgentWorkflowRun> {
     await postJson("agent_workflows/scripts/approve", {
       script_id: input.scriptId,
@@ -165,8 +166,15 @@ export const agentWorkflowApi = {
       script_id: input.scriptId,
       script_hash: input.scriptHash,
       permission_hash: input.permissionHash,
+      launch_id: input.launchId,
       args: {},
     });
+    return transformRun(workflowRunSchema.parse(raw));
+  },
+
+  async getLatestRun(scriptId: string): Promise<AgentWorkflowRun | null> {
+    const raw = await postJson("agent_workflows/runs/latest", { script_id: scriptId });
+    if (raw === null) return null;
     return transformRun(workflowRunSchema.parse(raw));
   },
 
