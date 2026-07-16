@@ -11202,6 +11202,12 @@ mod tests {
     }
 
     fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+        state.agent_capability_gate.replace(
+            crate::application::agent_capability_gate::AgentCapabilities {
+                team: true,
+                workflows: false,
+            },
+        );
         mock_builder()
             .manage(state)
             .manage(Arc::new(ExecutionState::new()))

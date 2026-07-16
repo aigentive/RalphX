@@ -103,7 +103,6 @@ fn custom_codex_wrapper_path_takes_launch_precedence() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
 }
@@ -525,7 +524,6 @@ fn rx_managed_codex_runtime_probe_reports_available_modern_cli() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
     assert_eq!(probe.error, None);

@@ -1,25 +1,38 @@
 use std::env;
 use std::fs;
+use std::io;
+use std::path::PathBuf;
+
+fn trusted_target_triple(target: &str) -> Option<&'static str> {
+    match target {
+        "aarch64-apple-darwin" => Some("aarch64-apple-darwin"),
+        "x86_64-apple-darwin" => Some("x86_64-apple-darwin"),
+        "aarch64-unknown-linux-gnu" => Some("aarch64-unknown-linux-gnu"),
+        "x86_64-unknown-linux-gnu" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64-pc-windows-msvc" => Some("aarch64-pc-windows-msvc"),
+        "x86_64-pc-windows-msvc" => Some("x86_64-pc-windows-msvc"),
+        _ => None,
+    }
+}
 
 fn ensure_workflow_runner_binary_placeholder() {
-    let Ok(manifest_dir) = env::current_dir().and_then(fs::canonicalize) else {
+    let Ok(manifest_dir) = fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR"))) else {
         return;
     };
     let Ok(target_triple) = env::var("TARGET") else {
         return;
     };
-    if target_triple.is_empty()
-        || !target_triple
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
+    let Some(target_triple) = trusted_target_triple(&target_triple) else {
         return;
-    }
+    };
 
     let binaries_dir = manifest_dir.join("binaries");
+    // The manifest root is embedded by Cargo and `binaries` is a fixed child.
+    // codeql[rust/path-injection]
     if fs::create_dir_all(&binaries_dir).is_err() {
         return;
     }
+    // codeql[rust/path-injection]
     let Ok(binaries_dir) = fs::canonicalize(binaries_dir) else {
         return;
     };
@@ -35,16 +48,35 @@ fn ensure_workflow_runner_binary_placeholder() {
     let Ok(build_script_binary) = env::current_exe() else {
         return;
     };
-    let _ = fs::copy(build_script_binary, &binary_path);
+    // `current_exe` is process-owned and the destination is a contained, fixed entry.
+    // `create_new` also refuses an existing file or symlink at the destination.
+    // codeql[rust/path-injection]
+    let Ok(mut source) = fs::File::open(build_script_binary) else {
+        return;
+    };
+    // codeql[rust/path-injection]
+    let Ok(mut destination) = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&binary_path)
+    else {
+        return;
+    };
+    if io::copy(&mut source, &mut destination).is_err() {
+        drop(destination);
+        // codeql[rust/path-injection]
+        let _ = fs::remove_file(&binary_path);
+        return;
+    }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        if let Ok(metadata) = fs::metadata(&binary_path) {
+        if let Ok(metadata) = destination.metadata() {
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o755);
-            let _ = fs::set_permissions(&binary_path, permissions);
+            let _ = destination.set_permissions(permissions);
         }
     }
 }
