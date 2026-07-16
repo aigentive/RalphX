@@ -865,6 +865,76 @@ async fn automated_review_keeps_an_existing_guard_when_the_start_is_already_revi
 }
 
 #[tokio::test]
+async fn automated_review_rejects_existing_guard_when_pause_reconciliation_clears_it() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-existing-guard-terminal")
+            .await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let effect = preview
+        .auto_merge
+        .expect("auto-merge effect should resolve");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: effect.pr_number,
+        merge_method: effect.merge_method,
+        target_scope: effect.target.scope,
+        diff_fingerprint: effect.target.diff_fingerprint.clone(),
+        head_sha: effect.target.head_sha,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(effect.target.diff_fingerprint);
+    monitor.auto_merge_guard = Some(guard);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    github.state().check_pr_sync_state_result = Some(Ok(PrSyncState {
+        status: PrStatus::Closed,
+        merge_state_status: None,
+        mergeable: None,
+        is_draft: false,
+        head_ref_name: "feature/review".to_string(),
+        base_ref_name: "main".to_string(),
+        head_ref_oid: Some(feature_head),
+        base_ref_oid: None,
+    }));
+    let state = Arc::new(state);
+
+    let error = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .expect_err("cleared guard should stop the reviewer start");
+
+    assert!(error.to_string().contains("no longer authoritative"));
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
 async fn automated_review_restores_guard_when_reviewer_launch_fails_after_pausing() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let (state, github, workspace, _feature_head) =

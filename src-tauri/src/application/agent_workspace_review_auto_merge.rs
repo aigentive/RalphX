@@ -174,6 +174,19 @@ pub async fn start_guarded_agent_workspace_review(
     if let Some(existing_guard) = monitor.auto_merge_guard.as_ref() {
         if guard_matches_target(existing_guard, workspace, &preview.target) {
             ensure_guarded_auto_merge_is_paused(state.as_ref(), workspace, existing_guard).await?;
+            let current_monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
+            let Some(current_guard) = current_monitor.auto_merge_guard.as_ref() else {
+                return Err(AppError::Conflict(
+                    "workspace Review auto-merge guard is no longer authoritative; refresh and retry"
+                        .to_string(),
+                ));
+            };
+            if !guard_matches_target(current_guard, workspace, &preview.target) {
+                return Err(AppError::Conflict(
+                    "workspace Review auto-merge guard changed while pausing GitHub auto-merge"
+                        .to_string(),
+                ));
+            }
             let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
             return settle_skipped_guarded_workspace_review_start(
                 state.as_ref(),

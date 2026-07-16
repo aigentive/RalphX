@@ -18,6 +18,8 @@ import type {
   AgentWorkspacePrReviewContext,
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentWorkspaceReviewAutoMergeGuardStatus,
+  AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type {
   Automation,
@@ -841,12 +843,16 @@ function workspaceReviewContext(
     reviewFixerStatus?: string | null;
     reviewFixerRunId?: string | null;
     reviewFixerConversationId?: string | null;
+    autoMergeGuardStatus?: AgentWorkspaceReviewAutoMergeGuardStatus | null;
+    autoMergeGuardPrNumber?: number | null;
+    autoMergeGuardMethod?: string | null;
+    autoMergeGuardLastError?: string | null;
     isCurrent?: boolean;
     isOutdated?: boolean;
     shouldShowTab?: boolean;
     lastError?: string | null;
   } = {},
-) {
+): AgentWorkspaceReviewContext {
   const target =
     overrides.target === undefined ? workspaceReviewTarget : overrides.target;
   const reviewArtifactId = overrides.reviewArtifactId ?? null;
@@ -859,17 +865,56 @@ function workspaceReviewContext(
     target,
     monitor: {
       conversationId,
+      projectId: "project-1",
       status: overrides.status ?? "idle",
       reviewOutcome: overrides.reviewOutcome ?? "none",
       reviewGateStatus: overrides.reviewGateStatus ?? "not_required",
+      currentTargetScope: target?.scope ?? null,
+      reviewedTargetScope:
+        overrides.reviewOutcome === "passed" ? (target?.scope ?? null) : null,
       reviewConversationId: overrides.reviewConversationId ?? null,
       reviewArtifactId,
       reviewArtifactVersion: overrides.reviewArtifactVersion ?? null,
+      reviewArtifactUpdatedAt: reviewArtifactId ? "2026-04-23T09:30:00Z" : null,
+      reviewedHeadSha:
+        overrides.reviewOutcome === "passed" ? (target?.headSha ?? null) : null,
+      reviewedDiffFingerprint:
+        overrides.reviewOutcome === "passed"
+          ? (target?.diffFingerprint ?? null)
+          : null,
+      selectedSourceBaseRef: target?.scope === "selected_source" ? target.baseRef : null,
+      selectedSourceBaseSha: target?.scope === "selected_source" ? target.baseSha : null,
+      selectedSourceHeadRef: target?.scope === "selected_source" ? target.headRef : null,
+      selectedSourceHeadSha: target?.scope === "selected_source" ? target.headSha : null,
+      selectedSourcePullRequestNumber:
+        target?.scope === "selected_source"
+          ? (target.sourcePullRequestNumber ?? null)
+          : null,
+      workspaceBaseRef: target?.scope === "workspace_delta" ? target.baseRef : null,
+      workspaceBaseSha: target?.scope === "workspace_delta" ? target.baseSha : null,
+      workspaceHeadRef: target?.scope === "workspace_delta" ? target.headRef : null,
+      workspaceHeadSha: target?.scope === "workspace_delta" ? target.headSha : null,
+      currentDiffFingerprint: target?.diffFingerprint ?? null,
+      previousVersionId: null,
       reviewBlockingSummary: overrides.reviewBlockingSummary ?? null,
+      reviewBlockingFingerprint: null,
       reviewFixerStatus: overrides.reviewFixerStatus ?? null,
       reviewFixerRunId: overrides.reviewFixerRunId ?? null,
       reviewFixerConversationId: overrides.reviewFixerConversationId ?? null,
+      lastRunId: null,
+      autoMergeGuardStatus: overrides.autoMergeGuardStatus ?? null,
+      autoMergeGuardPrNumber: overrides.autoMergeGuardPrNumber ?? null,
+      autoMergeGuardMethod: overrides.autoMergeGuardMethod ?? null,
+      autoMergeGuardTargetScope:
+        overrides.autoMergeGuardStatus == null ? null : "workspace_delta",
+      autoMergeGuardDiffFingerprint:
+        overrides.autoMergeGuardStatus == null ? null : "fingerprint-351",
+      autoMergeGuardHeadSha:
+        overrides.autoMergeGuardStatus == null ? null : "head-sha",
+      autoMergeGuardLastError: overrides.autoMergeGuardLastError ?? null,
       lastError: overrides.lastError ?? null,
+      createdAt: "2026-04-23T09:00:00Z",
+      updatedAt: "2026-04-23T09:30:00Z",
     },
     isCurrent: overrides.isCurrent ?? false,
     isOutdated: overrides.isOutdated ?? false,
@@ -1098,8 +1143,12 @@ function renderPane(
 function renderPublishPanelForWorkspaceRerender(
   initialWorkspace: AgentConversationWorkspace | null,
   queryClient: QueryClient = createTestQueryClient(),
+  initialReviewContext: AgentWorkspaceReviewContext | null = null,
 ) {
-  const pane = (paneWorkspace: AgentConversationWorkspace | null) => (
+  const pane = (
+    paneWorkspace: AgentConversationWorkspace | null,
+    reviewContext: AgentWorkspaceReviewContext | null,
+  ) => (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
         <div className="h-[480px]">
@@ -1108,16 +1157,20 @@ function renderPublishPanelForWorkspaceRerender(
             conversationTitle="Agent conversation"
             onPublishWorkspace={vi.fn()}
             isPublishingWorkspace={false}
+            reviewContext={reviewContext}
           />
         </div>
       </TooltipProvider>
     </QueryClientProvider>
   );
-  const result = render(pane(initialWorkspace));
+  const result = render(pane(initialWorkspace, initialReviewContext));
   return {
     ...result,
-    rerenderWorkspace: (nextWorkspace: AgentConversationWorkspace | null) => {
-      result.rerender(pane(nextWorkspace));
+    rerenderWorkspace: (
+      nextWorkspace: AgentConversationWorkspace | null,
+      nextReviewContext: AgentWorkspaceReviewContext | null = initialReviewContext,
+    ) => {
+      result.rerender(pane(nextWorkspace, nextReviewContext));
     },
   };
 }
@@ -9615,6 +9668,65 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByText(/latest publish attempt failed/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("surfaces workspace review auto-merge guard states in Commit & Publish", () => {
+    const paneWorkspace = workspace({
+      mode: "edit",
+      publicationPushStatus: "pushed",
+      publicationPrNumber: 78,
+      publicationPrUrl: "https://github.com/mock/project/pull/78",
+      prAutoMergeDesired: true,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting",
+    });
+    const { rerenderWorkspace } = renderPublishPanelForWorkspaceRerender(
+      paneWorkspace,
+      createTestQueryClient(),
+      workspaceReviewContext({
+        reviewGateStatus: "passed",
+        reviewOutcome: "passed",
+        autoMergeGuardStatus: "paused_for_review",
+        autoMergeGuardPrNumber: 78,
+        autoMergeGuardMethod: "squash",
+        isCurrent: true,
+      }),
+    );
+
+    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
+      "GitHub auto-merge is paused while Workspace Review is active.",
+    );
+
+    rerenderWorkspace(
+      paneWorkspace,
+      workspaceReviewContext({
+        reviewGateStatus: "passed",
+        reviewOutcome: "passed",
+        autoMergeGuardStatus: "awaiting_publish",
+        autoMergeGuardPrNumber: 78,
+        autoMergeGuardMethod: "squash",
+        isCurrent: true,
+      }),
+    );
+    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
+      "GitHub auto-merge will resume after these reviewed changes are published.",
+    );
+
+    rerenderWorkspace(
+      paneWorkspace,
+      workspaceReviewContext({
+        reviewGateStatus: "passed",
+        reviewOutcome: "passed",
+        autoMergeGuardStatus: "restore_failed",
+        autoMergeGuardPrNumber: 78,
+        autoMergeGuardMethod: "squash",
+        autoMergeGuardLastError: "Branch protection changed",
+        isCurrent: true,
+      }),
+    );
+    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
+      "Branch protection changed",
+    );
   });
 
   it("does not keep auto-merge request progress active while PR supervision is monitoring", () => {
