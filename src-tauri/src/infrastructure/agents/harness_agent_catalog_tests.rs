@@ -2697,6 +2697,114 @@ fn execution_prompts_do_not_require_default_baseline_validation() {
 }
 
 #[test]
+fn ticket_attachment_surface_is_prompted_only_for_granted_execution_agents() {
+    let root = project_root();
+    let prompted_surfaces = [
+        ("ralphx-execution-worker", AgentPromptHarness::Claude),
+        ("ralphx-execution-worker", AgentPromptHarness::Codex),
+        ("ralphx-execution-coder", AgentPromptHarness::Claude),
+        ("ralphx-execution-coder", AgentPromptHarness::Codex),
+        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
+    ];
+    let attachment_tools = ["list_ticket_attachments", "fetch_ticket_attachment"];
+    let forbidden_prompt_terms = [
+        "direct-download URL",
+        "download URL",
+        "Bearer ",
+        "bearer token",
+        "credential",
+        "cache path",
+        "source handle",
+    ];
+
+    for (agent_name, harness) in prompted_surfaces {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("missing canonical definition for {agent_name}"));
+        let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+
+        for tool in attachment_tools {
+            assert!(
+                definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|candidate| candidate == tool),
+                "{agent_name} canonical grant should include {tool}"
+            );
+            assert!(
+                prompt.contains(tool),
+                "{agent_name} {harness:?} prompt should describe {tool}"
+            );
+        }
+
+        assert!(
+            prompt.contains("opaque content pointers")
+                && prompt.contains("untrusted external context"),
+            "{agent_name} {harness:?} prompt should describe the safe attachment workflow"
+        );
+        for forbidden in forbidden_prompt_terms {
+            assert!(
+                !prompt.contains(forbidden),
+                "{agent_name} {harness:?} prompt should not expose `{forbidden}` as an attachment contract"
+            );
+        }
+    }
+}
+
+#[test]
+fn ticket_attachment_surface_stays_off_unrelated_agent_prompts_and_grants() {
+    let root = project_root();
+    let unrelated_surfaces = [
+        ("ralphx-ideation", AgentPromptHarness::Claude),
+        ("ralphx-ideation", AgentPromptHarness::Codex),
+        ("ralphx-execution-reviewer", AgentPromptHarness::Claude),
+        ("ralphx-execution-reviewer", AgentPromptHarness::Codex),
+        ("ralphx-execution-merger", AgentPromptHarness::Claude),
+        ("ralphx-execution-merger", AgentPromptHarness::Codex),
+        ("ralphx-general-worker", AgentPromptHarness::Claude),
+        ("ralphx-general-worker", AgentPromptHarness::Codex),
+    ];
+    let attachment_tools = ["list_ticket_attachments", "fetch_ticket_attachment"];
+
+    for (agent_name, harness) in unrelated_surfaces {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("missing canonical definition for {agent_name}"));
+        let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+
+        for tool in attachment_tools {
+            assert!(
+                !definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|candidate| candidate == tool),
+                "{agent_name} canonical grant must not include {tool}"
+            );
+            assert!(
+                !prompt.contains(tool),
+                "{agent_name} {harness:?} prompt must not mention off-surface {tool}"
+            );
+        }
+    }
+
+    let plan_definition =
+        load_canonical_agent_definition_for_profile(&root, "ralphx-ideation", Some("plan"))
+            .expect("missing plan profile for ralphx-ideation");
+    for tool in attachment_tools {
+        assert!(
+            !plan_definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|candidate| candidate == tool),
+            "Plan profile canonical grant must not include {tool}"
+        );
+    }
+}
+
+#[test]
 fn task_execution_agent_rule_documents_post_change_validation_policy() {
     let root = project_root();
     let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))

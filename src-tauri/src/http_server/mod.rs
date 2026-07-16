@@ -382,6 +382,14 @@ pub async fn start_http_server(
         .route("/api/request_task_changes", post(request_task_changes))
         // Review issue tools (worker + reviewer agents)
         .route("/api/task_issues/:task_id", get(get_task_issues_http))
+        .route(
+            "/api/ticket_attachments/list",
+            post(list_ticket_attachments_http),
+        )
+        .route(
+            "/api/ticket_attachments/fetch",
+            post(fetch_ticket_attachment_http),
+        )
         .route("/api/issue_progress/:task_id", get(get_issue_progress_http))
         .route(
             "/api/mark_issue_in_progress",

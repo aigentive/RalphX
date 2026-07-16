@@ -966,10 +966,7 @@ impl AtlassianIntegrationService {
         Ok(results)
     }
 
-    pub async fn assign_jira_issue_to_current_user(
-        &self,
-        issue_key: &str,
-    ) -> Result<(), String> {
+    pub async fn assign_jira_issue_to_current_user(&self, issue_key: &str) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
         self.client
             .assign_jira_issue_to_current_user(&auth, issue_key)
@@ -978,7 +975,9 @@ impl AtlassianIntegrationService {
 
     pub async fn clear_jira_issue_assignee(&self, issue_key: &str) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.clear_jira_issue_assignee(&auth, issue_key).await
+        self.client
+            .clear_jira_issue_assignee(&auth, issue_key)
+            .await
     }
 
     pub async fn list_jira_issue_transitions(
@@ -986,7 +985,9 @@ impl AtlassianIntegrationService {
         issue_key: &str,
     ) -> Result<Vec<AtlassianJiraTransition>, String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.list_jira_issue_transitions(&auth, issue_key).await
+        self.client
+            .list_jira_issue_transitions(&auth, issue_key)
+            .await
     }
 
     pub async fn transition_jira_issue(
@@ -1145,7 +1146,7 @@ impl AtlassianIntegrationService {
         )
     }
 
-    async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {
+    pub(crate) async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {
         let mut settings = self.get_settings().await?;
         if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
             return Err("Atlassian integration is not enabled".to_string());
