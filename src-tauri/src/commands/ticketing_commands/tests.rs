@@ -4185,6 +4185,7 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
         composer_project_references: Vec::new(),
         composer_integration_references: Vec::new(),
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: None,
     })
     .await
