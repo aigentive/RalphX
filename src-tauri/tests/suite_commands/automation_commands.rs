@@ -90,6 +90,7 @@ fn active_automation(id: &str) -> Automation {
         first_run_prompt: Some("Run 1 prompt".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -184,6 +185,7 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
         CreateAutomationDraftInput {
             project_id: " project-1 ".to_string(),
             name: Some("Nightly automation".to_string()),
+            authoring_mode: None,
         },
         app.state::<AppState>(),
     )

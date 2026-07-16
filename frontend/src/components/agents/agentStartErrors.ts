@@ -1,4 +1,7 @@
 import type {
+  AutomationAuthoringMode,
+} from "@/api/automations";
+import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
@@ -24,6 +27,7 @@ export interface AgentStartConversationRetryInputSource {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode | undefined;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null | undefined;
   teamIntent?: TeamIntent | null | undefined;
@@ -58,6 +62,9 @@ export function buildAgentStartConversationRetryInput(
     mode: input.mode,
     base: input.base,
   };
+  if (input.automationAuthoringMode !== undefined) {
+    retryInput.automationAuthoringMode = input.automationAuthoringMode;
+  }
   if (input.runtimeProviderContext !== undefined) {
     retryInput.runtimeProviderContext = input.runtimeProviderContext;
   }

@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { ATTENTION_CATEGORY_MAPPING } from "@/components/notifications/categoryMapping";
-import { navigateNotification } from "@/components/notifications/notificationNavigation";
+import { performNotificationPrimaryAction } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
 import { notificationKeys } from "@/hooks/useNotificationHistory";
 import { useEventBus } from "@/providers/EventProvider";
@@ -134,7 +134,7 @@ export function useNotificationToasts() {
       action: {
         label: presentation.action ?? "Open",
         onClick: () => {
-          void navigateNotification(notification, queryClient).then((navigated) => {
+          void performNotificationPrimaryAction(notification, queryClient).then((navigated) => {
             if (isAgentConversation) {
               if (navigated) {
                 acknowledgeAgentConversationToast(notification, queryClient);

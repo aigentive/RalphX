@@ -60,6 +60,7 @@ fn automation(id: &str, project_id: ProjectId, status: AutomationStatus) -> Auto
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }

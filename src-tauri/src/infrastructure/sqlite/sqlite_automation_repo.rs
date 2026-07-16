@@ -73,8 +73,9 @@ impl SqliteAutomationRepository {
             first_run_prompt: row.get(24)?,
             setup_analysis_summary: row.get(25)?,
             spec_artifact_id: row.get(26)?,
-            created_at: parse_datetime_required(row.get(27)?),
-            updated_at: parse_datetime_required(row.get(28)?),
+            authoring_state_json: row.get(27)?,
+            created_at: parse_datetime_required(row.get(28)?),
+            updated_at: parse_datetime_required(row.get(29)?),
         })
     }
 }
@@ -85,7 +86,7 @@ const SELECT_AUTOMATION: &str = "SELECT
     run_mode, base_ref_kind, base_ref, base_display_name, base_source_pull_request_json,
     goal_items_json, chain_mode, completion_signal, plan_approval_mode, pr_merge_mode,
     plan_deep_verification, max_runs, max_consecutive_failures, first_run_prompt,
-    setup_analysis_summary, spec_artifact_id, created_at, updated_at
+    setup_analysis_summary, spec_artifact_id, authoring_state_json, created_at, updated_at
 FROM automations";
 
 #[async_trait]
@@ -103,11 +104,12 @@ impl AutomationRepository for SqliteAutomationRepository {
                         completion_signal, plan_approval_mode, pr_merge_mode,
                         plan_deep_verification, max_runs, max_consecutive_failures,
                         first_run_prompt, setup_analysis_summary, spec_artifact_id,
+                        authoring_state_json,
                         created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                        ?25, ?26, ?27, ?28, ?29
+                        ?25, ?26, ?27, ?28, ?29, ?30
                     )",
                     params![
                         to_insert.id.as_str(),
@@ -141,6 +143,7 @@ impl AutomationRepository for SqliteAutomationRepository {
                         to_insert.first_run_prompt,
                         to_insert.setup_analysis_summary,
                         to_insert.spec_artifact_id,
+                        to_insert.authoring_state_json,
                         to_insert.created_at.to_rfc3339(),
                         to_insert.updated_at.to_rfc3339(),
                     ],
@@ -350,6 +353,32 @@ impl AutomationRepository for SqliteAutomationRepository {
                 conn.query_row(&sql, [id], Self::row_to_automation)
                     .optional()
                     .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn update_authoring_state_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_updated_at: DateTime<Utc>,
+        authoring_state_json: Option<String>,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automations
+                     SET authoring_state_json = ?1,
+                         updated_at = ?2
+                     WHERE id = ?3 AND updated_at = ?4",
+                    params![
+                        authoring_state_json,
+                        Utc::now().to_rfc3339(),
+                        id,
+                        expected_updated_at.to_rfc3339(),
+                    ],
+                )?;
+                Ok(affected == 1)
             })
             .await
     }
