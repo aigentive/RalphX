@@ -1,6 +1,7 @@
 use super::agent_conversation_mode_switch::{
     automation_run_mode_locked_error_message, is_automation_run_mode_switch_locked,
-    system_switch_automation_run_to_edit, AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
+    system_switch_automation_run_to_edit, system_switch_automation_run_to_ideation,
+    AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use super::AppState;
 use crate::domain::entities::{
@@ -87,6 +88,51 @@ async fn system_mode_switch_updates_plan_workspace_and_is_idempotent() {
         Some(AgentConversationWorkspaceMode::Edit)
     );
     assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+}
+
+#[tokio::test]
+async fn system_mode_switch_can_deliver_an_automation_plan_to_ideation() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.automation_run_id = Some(AutomationRunId::new());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("create conversation");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace_for(
+            &conversation,
+            project_id,
+            AgentConversationWorkspaceMode::Plan,
+        ))
+        .await
+        .expect("create workspace");
+
+    system_switch_automation_run_to_ideation(&conversation.id, &state)
+        .await
+        .expect("switch to ideation");
+
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("load conversation")
+        .expect("conversation");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("load workspace")
+        .expect("workspace");
+    assert_eq!(
+        conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::Ideation)
+    );
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Ideation);
 }
 
 #[tokio::test]

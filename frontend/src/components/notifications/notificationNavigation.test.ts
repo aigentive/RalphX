@@ -1,7 +1,8 @@
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { automationsApi } from "@/api/automations";
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
@@ -12,20 +13,27 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 
-import { navigateNotification } from "./notificationNavigation";
+import {
+  navigateNotification,
+  performNotificationPrimaryAction,
+} from "./notificationNavigation";
 
-const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+const { toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
 
 vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
+vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
   navigateToAgentPlan: vi.fn(),
   navigateToIdeationSession: vi.fn(),
 }));
-vi.mock("sonner", () => ({ toast: { error: toastError } }));
+vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 
 const target = {
   kind: "automation_run" as const,
@@ -67,6 +75,48 @@ describe("navigateNotification", () => {
       expect.objectContaining({ setupConversationId: "setup-conversation-1" }),
       expect.objectContaining({ tabHint }),
     );
+  });
+
+  it("resumes a paused automation as the notification primary action", async () => {
+    vi.mocked(automationsApi.resume).mockResolvedValue({} as never);
+    const queryClient = new QueryClient();
+    const onClose = vi.fn();
+
+    const acted = await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-1",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      queryClient,
+      { onClose },
+    );
+
+    expect(acted).toBe(true);
+    expect(automationsApi.resume).toHaveBeenCalledWith("automation-1");
+    expect(toastSuccess).toHaveBeenCalledWith("Automation resumed");
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(requestAutomationRunOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stale paused notification open when resume is rejected", async () => {
+    vi.mocked(automationsApi.resume).mockRejectedValue(new Error("not paused"));
+    const onClose = vi.fn();
+
+    const acted = await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-stale",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      new QueryClient(),
+      { onClose },
+    );
+
+    expect(acted).toBe(false);
+    expect(toastError).toHaveBeenCalledWith("Automation is no longer resumable");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(requestAutomationRunOpen).not.toHaveBeenCalled();
   });
 
   it("keeps a supplied automation detail callback when opening a complete run", () => {

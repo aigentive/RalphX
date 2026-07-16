@@ -226,6 +226,27 @@ impl AutomationRepository for MemoryAutomationRepository {
         Ok(Some(automation.clone()))
     }
 
+    async fn update_authoring_state_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_updated_at: DateTime<Utc>,
+        authoring_state_json: Option<String>,
+    ) -> AppResult<bool> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(false);
+        };
+        if automation.updated_at != expected_updated_at {
+            return Ok(false);
+        }
+        automation.authoring_state_json = authoring_state_json;
+        automation.updated_at = Utc::now();
+        Ok(true)
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,

@@ -461,9 +461,15 @@ mod v20260714184430_workspace_review_auto_merge_guard_tests;
 mod v20260715013854_model_native_plan_verification;
 #[cfg(test)]
 mod v20260715013854_model_native_plan_verification_tests;
+mod v20260715170000_automation_authoring_state;
+#[cfg(test)]
+mod v20260715170000_automation_authoring_state_tests;
 mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
 mod v20260715172058_persona_update_draft_provenance_tests;
+mod v20260715183000_automation_ideation_signal;
+#[cfg(test)]
+mod v20260715183000_automation_ideation_signal_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -554,7 +560,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260715172058;
+pub const SCHEMA_VERSION: i64 = 20260715183000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1535,9 +1541,19 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260715013854_model_native_plan_verification::migrate,
     },
     Migration {
+        version: 20260715170000,
+        name: "automation_authoring_state",
+        migrate: v20260715170000_automation_authoring_state::migrate,
+    },
+    Migration {
         version: 20260715172058,
         name: "persona_update_draft_provenance",
         migrate: v20260715172058_persona_update_draft_provenance::migrate,
+    },
+    Migration {
+        version: 20260715183000,
+        name: "automation_ideation_signal",
+        migrate: v20260715183000_automation_ideation_signal::migrate,
     },
 ];
 
