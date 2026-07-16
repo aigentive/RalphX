@@ -228,6 +228,23 @@ html[data-theme="high-contrast"] main {
   --sidebar-ring:               #FF6A35;
 }
 
+[data-theme="high-contrast"] [data-sonner-toaster] {
+  --normal-text: #FFFFFF;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] {
+  color: #FFFFFF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-description] {
+  color: #BFBFBF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-title],
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-content] {
+  color: #FFFFFF !important;
+}
+
 [data-theme="high-contrast"] [data-testid="kanban-toolbar"] {
   border-bottom-color: #555555 !important;
 }
