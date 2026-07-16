@@ -2656,6 +2656,84 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("carries trusted auto-finalize from the Automations entry into draft creation", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "",
+      mode: "automation",
+      automationAuthoringMode: "trusted_auto_finalize",
+    });
+    createAutomationDraftMock.mockResolvedValue({
+      automation: {
+        id: "automation-trusted",
+        projectId: "project-1",
+        name: "ship the trusted pipeline",
+        status: "draft",
+        pausedReasonCode: null,
+        pausedReasonDetail: null,
+        goalPrompt: "",
+        setupConversationId: "automation-trusted-conversation",
+        specArtifactId: null,
+        authoringMode: "trusted_auto_finalize",
+        decompositionVerificationStatus: "unverified",
+        decompositionVerificationVerdictJson: null,
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+        runMode: "edit",
+        baseRefKind: "project_default",
+        baseRef: "main",
+        baseDisplayName: "Project default (main)",
+        baseSourcePullRequestJson: null,
+        goalItemsJson: null,
+        chainMode: "merged_base",
+        completionSignal: "pr_merged",
+        planApprovalMode: "manual",
+        prMergeMode: "manual",
+        planDeepVerification: false,
+        maxRuns: 25,
+        maxConsecutiveFailures: 3,
+        firstRunPrompt: null,
+        setupAnalysisSummary: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      setupConversationId: "automation-trusted-conversation",
+    });
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({
+        id: "automation-trusted-conversation",
+        contextId: "project-1",
+        agentMode: "automation",
+        automationId: "automation-trusted",
+      }),
+      workspace: null,
+      sendResult: {
+        conversationId: "automation-trusted-conversation",
+        agentRunId: "run-automation-trusted",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "ship the trusted pipeline" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(createAutomationDraftMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        name: "ship the trusted pipeline",
+        authoringMode: "trusted_auto_finalize",
+      })
+    );
+  });
+
   it("blocks active conversation sends when the conversation provider is not validated", async () => {
     mockAgentViewData();
     mockHarnessProviders(

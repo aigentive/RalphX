@@ -254,6 +254,41 @@ describe("AutomationDetailView", () => {
     toastInfoMock.mockReset();
   });
 
+  it("shows ideation task-graph progress in the automation pipeline", async () => {
+    renderDetail({
+      automation: automation({
+        runMode: "ideation",
+        completionSignal: "ideation_finalized",
+      }),
+      runs: [run({ status: "completed", prNumber: null, prUrl: null })],
+      usage,
+      pipeline: {
+        deliverable: "task_graph",
+        status: "executing",
+        ideationSessionId: "session-1",
+        planArtifactId: "plan-1",
+        proposalCount: 2,
+        taskTotal: 2,
+        taskMerged: 1,
+        taskTerminal: 1,
+        tasks: [
+          {
+            id: "task-2",
+            title: "Build the detail surface",
+            status: "ready",
+            blockedBy: ["task-1"],
+          },
+        ],
+      },
+    });
+
+    const pipeline = await screen.findByTestId("automation-pipeline-progress");
+    expect(within(pipeline).getByText("Task pipeline")).toBeInTheDocument();
+    expect(within(pipeline).getByText("1 / 2 merged")).toBeInTheDocument();
+    expect(within(pipeline).getByText("Build the detail surface")).toBeInTheDocument();
+    expect(within(pipeline).getByText("1 dependency")).toBeInTheDocument();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -579,6 +614,7 @@ describe("AutomationDetailView", () => {
   });
 
   it("renders the linked spec and a Phases heading in the goal card", async () => {
+    const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
         id: "artifact-spec-1",
@@ -605,6 +641,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
 
     const specCard = screen.getByTestId("automation-spec-card");
     expect(specCard).toHaveTextContent("Migration loop spec");
@@ -617,6 +654,7 @@ describe("AutomationDetailView", () => {
   });
 
   it("shows phase progress and a collapsed expandable spec", async () => {
+    const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
         id: "artifact-spec-1",
@@ -661,6 +699,7 @@ describe("AutomationDetailView", () => {
 
     // Spec stays collapsed by default with an expand affordance; heavy markdown
     // is not mounted until the user expands it.
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
     const specCard = screen.getByTestId("automation-spec-card");
     expect(within(specCard).getByTestId("automation-spec-toggle")).toHaveTextContent(
       "Show full spec",
@@ -784,6 +823,7 @@ describe("AutomationDetailView", () => {
   });
 
   it("shows the spec fallback when no spec is linked", async () => {
+    const user = userEvent.setup();
     renderDetail({
       automation: automation({ specArtifactId: null }),
       runs: [run()],
@@ -791,10 +831,74 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
 
     expect(screen.getByTestId("automation-spec-card")).toHaveTextContent(
       "No spec linked yet.",
     );
+  });
+
+  it("defaults to Config and keeps config, spec, inputs, and paused context one click away", async () => {
+    const user = userEvent.setup();
+    renderDetail({
+      automation: automation({
+        status: "paused",
+        pausedReasonCode: "release_freeze",
+        pausedReasonDetail: "Waiting on base branch",
+        specArtifactId: null,
+        baseSourcePullRequestJson: null,
+      }),
+      runs: [run()],
+      usage,
+    });
+
+    const card = await screen.findByTestId("automation-details-card");
+    const configTab = within(card).getByRole("tab", { name: "Config" });
+    expect(configTab).toHaveAttribute("aria-selected", "true");
+    const configPanel = within(card).getByTestId("automation-config-panel");
+    expect(within(configPanel).getAllByRole("term")).toHaveLength(14);
+    expect(configPanel).toHaveTextContent("Paused: release_freeze - Waiting on base branch");
+    expect(within(card).queryByText("No spec linked yet.")).not.toBeInTheDocument();
+
+    await user.click(within(card).getByRole("tab", { name: "Spec" }));
+    expect(within(card).getByText("No spec linked yet.")).toBeInTheDocument();
+    expect(configPanel).not.toBeVisible();
+
+    await user.click(within(card).getByRole("tab", { name: "Inputs" }));
+    expect(
+      within(card).getByText("No setup input references are attached to this automation record."),
+    ).toBeInTheDocument();
+  });
+
+  it("marks populated Spec and Inputs tabs without mounting spec content before selection", async () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Migration loop spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild it.",
+        created_at: "2026-07-05T00:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    renderDetail({
+      automation: automation({ specArtifactId: "artifact-spec-1" }),
+      runs: [run()],
+      usage,
+    });
+
+    const card = await screen.findByTestId("automation-details-card");
+    expect(within(card).getByRole("tab", { name: "Spec" })).toHaveTextContent("•");
+    expect(within(card).getByRole("tab", { name: "Inputs (1)" })).toBeInTheDocument();
+    expect(useArtifactMock).not.toHaveBeenCalled();
   });
 
   it("calls pause and skip-judge controls through the automation API", async () => {
@@ -842,6 +946,7 @@ describe("AutomationDetailView", () => {
   });
 
   it("resumes paused automation and opens the setup conversation from the action menu", async () => {
+    const user = userEvent.setup();
     const onOpenRunConversation = vi.fn();
     renderDetail(
       {
@@ -858,23 +963,26 @@ describe("AutomationDetailView", () => {
       onOpenRunConversation,
     );
 
-    expect(await screen.findByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    await screen.findByTestId("automation-detail-view");
     expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
     expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
     expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("tab", { name: "Inputs" }));
+    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByLabelText("Resume automation"));
+    await user.click(screen.getByLabelText("Resume automation"));
 
     await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
 
-    await userEvent.click(screen.getByLabelText("More automation actions"));
-    await userEvent.click(screen.getByText("Edit"));
+    await user.click(screen.getByLabelText("More automation actions"));
+    await user.click(screen.getByText("Edit"));
 
     expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "setup-conversation-1");
   });
 
   it("reports run-now deferred outcomes without scheduling a run", async () => {
+    const user = userEvent.setup();
     triggerRunNowMock.mockResolvedValueOnce({
       scheduled: false,
       reason: "run in flight",
@@ -892,10 +1000,11 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
     expect(screen.getByText("Diff not recorded")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Inputs" }));
+    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByLabelText("Run now"));
+    await user.click(screen.getByLabelText("Run now"));
 
     await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
     expect(toastInfoMock).toHaveBeenCalledWith("run in flight");
@@ -1045,6 +1154,7 @@ describe("AutomationDetailView", () => {
   });
 
   it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {
+    const user = userEvent.setup();
     const onBack = vi.fn();
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -1108,21 +1218,22 @@ describe("AutomationDetailView", () => {
     await screen.findByTestId("automation-detail-view");
     expect(screen.getAllByText("Stopped").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("current_branch")).toBeInTheDocument();
-    expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Phase 1")).toBeInTheDocument();
     expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
     expect(screen.getByText("invalid-date")).toBeInTheDocument();
     expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
     expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("tab", { name: "Inputs (1)" }));
+    expect(screen.getByText("PR #41")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeDisabled();
     expect(screen.getByLabelText("Stop automation")).toBeDisabled();
 
-    await userEvent.click(screen.getByLabelText("More automation actions"));
-    await userEvent.click(screen.getByText("Delete"));
+    await user.click(screen.getByLabelText("More automation actions"));
+    await user.click(screen.getByText("Delete"));
 
     expect(await screen.findByText("Delete automation?")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted");

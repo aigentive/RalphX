@@ -11,11 +11,16 @@ use crate::application::automation::api::{
     automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
     AutomationResponse,
 };
+use crate::application::automation::decomposition_verifier::{
+    AutomationDecompositionVerdict, AutomationDecompositionVerificationOutcome,
+    AutomationDecompositionVerifier, HarnessAutomationDecompositionVerifierInvoker,
+};
 use crate::domain::entities::{
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, ChatConversationId,
 };
 use crate::error::AppError;
 use crate::http_server::types::{HttpError, HttpServerState};
+use crate::infrastructure::agents::claude::automations_config;
 
 pub const CALLER_SESSION_ID_HEADER: &str = "x-ralphx-caller-session-id";
 
@@ -190,6 +195,38 @@ pub async fn finalize_automation(
     Ok(Json(AutomationResponse::from(finalized)))
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct VerifyAutomationDecompositionResponse {
+    pub automation: AutomationResponse,
+    pub verdict: AutomationDecompositionVerdict,
+}
+
+pub async fn verify_automation_decomposition(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<VerifyAutomationDecompositionResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let service = automation_service_for_state(&state.app_state);
+    let verifier = AutomationDecompositionVerifier::new(
+        service,
+        Arc::new(HarnessAutomationDecompositionVerifierInvoker::new(
+            state.app_state.as_ref().clone(),
+        )),
+        Duration::from_secs(automations_config().judge_timeout_secs.max(1)),
+    );
+    let AutomationDecompositionVerificationOutcome {
+        automation,
+        verdict,
+    } = verifier
+        .verify_and_finalize(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(VerifyAutomationDecompositionResponse {
+        automation: AutomationResponse::from(automation),
+        verdict,
+    }))
+}
+
 fn parse_plan_approval_mode(
     value: Option<&str>,
 ) -> Result<Option<AutomationPlanApprovalMode>, AppError> {
@@ -321,3 +358,5 @@ fn map_app_err(error: AppError) -> HttpError {
 #[cfg(test)]
 #[path = "automations_tests.rs"]
 mod automations_tests;
+use std::sync::Arc;
+use std::time::Duration;

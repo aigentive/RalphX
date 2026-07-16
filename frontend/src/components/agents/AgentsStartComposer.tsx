@@ -18,6 +18,7 @@ import type {
   CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
+import type { AutomationAuthoringMode } from "@/api/automations";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
@@ -102,6 +103,7 @@ interface AgentsStartComposerSubmitInput {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   files: File[];
   codexFastMode?: boolean | null;
@@ -234,6 +236,8 @@ export function AgentsStartComposer({
   const [capabilityMode, setCapabilityMode] = useState<
     CapabilityIntent["coordinationMode"]
   >("solo");
+  const [automationAuthoringMode, setAutomationAuthoringMode] =
+    useState<AutomationAuthoringMode | null>(null);
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
@@ -494,6 +498,7 @@ export function AgentsStartComposer({
     setProjectId(draft.projectId);
     setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
     setMode(draft.mode);
+    setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
@@ -516,6 +521,7 @@ export function AgentsStartComposer({
     setModelId(retryInput.runtime.modelId);
     setEffort(retryInput.runtime.effort);
     setMode(retryInput.mode);
+    setAutomationAuthoringMode(retryInput.automationAuthoringMode ?? null);
     if (retryInput.base) {
       setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
     }
@@ -1149,6 +1155,9 @@ export function AgentsStartComposer({
       content: message.trim(),
       runtime: { provider, modelId, effort },
       mode,
+      ...(mode === "automation" && automationAuthoringMode
+        ? { automationAuthoringMode }
+        : {}),
       base,
       files: attachments.map((attachment) => attachment.file),
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
@@ -1316,7 +1325,11 @@ export function AgentsStartComposer({
               value: mode,
               onValueChange: (value) => {
                 clearStartError();
-                setMode(value as AgentConversationWorkspaceMode);
+                const nextMode = value as AgentConversationWorkspaceMode;
+                setMode(nextMode);
+                if (nextMode !== "automation") {
+                  setAutomationAuthoringMode(null);
+                }
               },
               options: AGENT_START_MODE_OPTIONS,
               testId: "agents-start-mode",

@@ -8526,6 +8526,7 @@ mod tests {
                     first_run_prompt: None,
                     setup_analysis_summary: None,
                     spec_artifact_id: None,
+                    authoring_state_json: None,
                     created_at: now,
                     updated_at: now,
                 })

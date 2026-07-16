@@ -3,7 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-import { navigateNotification } from "@/components/notifications/notificationNavigation";
+import { performNotificationPrimaryAction } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -19,7 +19,9 @@ const { preferences, subscribers, toastWarning, toastDismiss } = vi.hoisted(() =
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({ subscribe: (event: string, callback: (payload: unknown) => void) => { subscribers.set(event, callback); return vi.fn(); } }),
 }));
-vi.mock("@/components/notifications/notificationNavigation", () => ({ navigateNotification: vi.fn() }));
+vi.mock("@/components/notifications/notificationNavigation", () => ({
+  performNotificationPrimaryAction: vi.fn(),
+}));
 vi.mock("@/api/notifications", () => ({ notificationsApi: { markRead: vi.fn() } }));
 vi.mock("sonner", () => ({ toast: { warning: toastWarning, dismiss: toastDismiss } }));
 vi.mock("./useNotificationPreferences", () => ({ useNotificationPreferences: () => preferences }));
@@ -59,7 +61,7 @@ describe("useNotificationToasts", () => {
     useUiStore.setState({ notificationsPanelOpen: false });
     useAgentSessionStore.setState({ selectedConversationId: null });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
-    vi.mocked(navigateNotification).mockResolvedValue(true);
+    vi.mocked(performNotificationPrimaryAction).mockResolvedValue(true);
     renderHook(() => useNotificationToasts(), { wrapper });
   });
 
@@ -124,8 +126,39 @@ describe("useNotificationToasts", () => {
 
     options.action.onClick();
     await Promise.resolve();
-    expect(navigateNotification).toHaveBeenCalledWith(notification, expect.any(QueryClient));
+    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+      notification,
+      expect.any(QueryClient),
+    );
     expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-1");
+  });
+
+  it("resumes a paused automation directly from the toast action", async () => {
+    const pausedNotification = {
+      ...notification,
+      id: "automation-paused-1",
+      category: "automation_paused",
+      title: "Automation paused",
+      target: {
+        kind: "automation_run",
+        projectId: "project-1",
+        automationId: "automation-1",
+      },
+    };
+    subscribers.get("notification:created")?.(pausedNotification);
+    const options = toastWarning.mock.calls[0]?.[1] as {
+      action: { label: string; onClick: () => void };
+    };
+    expect(options.action.label).toBe("Resume");
+    options.action.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+      pausedNotification,
+      expect.any(QueryClient),
+    );
+    expect(notificationsApi.markRead).toHaveBeenCalledWith("automation-paused-1");
   });
 
   it("keeps Agent conversation toasts open until manually dismissed", () => {
@@ -156,7 +189,7 @@ describe("useNotificationToasts", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(navigateNotification).toHaveBeenCalledWith(
+    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
       agentConversationNotification,
       expect.any(QueryClient),
     );
@@ -198,7 +231,7 @@ describe("useNotificationToasts", () => {
   });
 
   it("keeps an Agent conversation toast unread when its CTA cannot navigate", async () => {
-    vi.mocked(navigateNotification).mockResolvedValue(false);
+    vi.mocked(performNotificationPrimaryAction).mockResolvedValue(false);
     subscribers.get("notification:created")?.(agentConversationNotification);
     const options = toastWarning.mock.calls[0]?.[1] as {
       action: { onClick: () => void };

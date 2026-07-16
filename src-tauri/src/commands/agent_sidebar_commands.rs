@@ -881,6 +881,7 @@ mod tests {
             first_run_prompt: Some("Run the next slice".to_string()),
             setup_analysis_summary: None,
             spec_artifact_id: None,
+            authoring_state_json: None,
             plan_approval_mode: AutomationPlanApprovalMode::Manual,
             pr_merge_mode: AutomationPrMergeMode::Manual,
             plan_deep_verification: false,

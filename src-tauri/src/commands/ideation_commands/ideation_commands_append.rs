@@ -53,6 +53,8 @@ pub async fn append_ideation_plan_task_core(
     }
 
     let session_id = IdeationSessionId::from_string(input.session_id.clone());
+    let _attempt_mutation_guard =
+        super::ideation_commands_restart::RestartInFlightGuard::acquire(&session_id)?;
     let session = app_state
         .ideation_session_repo
         .get_by_id(&session_id)
