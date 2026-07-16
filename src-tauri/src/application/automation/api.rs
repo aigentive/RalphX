@@ -12,8 +12,12 @@ use crate::application::automation::transition::{
 use crate::application::AppState;
 use crate::domain::entities::{
     is_open_automation_run, AgentConversationWorkspaceMode, AgentRun, Automation, AutomationRun,
+    IdeationSessionStatus, InternalStatus,
 };
 
+use super::decomposition_verifier::{
+    parse_authoring_state, AutomationAuthoringState, AutomationDecompositionVerificationStatus,
+};
 use super::plan_gate::{
     current_plan_artifact_id_for_workspace, matching_plan_approval_for_workspace,
 };
@@ -47,6 +51,9 @@ pub struct AutomationResponse {
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
     pub spec_artifact_id: Option<String>,
+    pub authoring_mode: String,
+    pub decomposition_verification_status: String,
+    pub decomposition_verification_verdict_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -108,6 +115,28 @@ pub struct AutomationDetailResponse {
     pub automation: AutomationResponse,
     pub runs: Vec<AutomationRunResponse>,
     pub usage: AutomationUsageResponse,
+    pub pipeline: Option<AutomationPipelineProgressResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AutomationPipelineTaskResponse {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub blocked_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AutomationPipelineProgressResponse {
+    pub deliverable: String,
+    pub status: String,
+    pub ideation_session_id: String,
+    pub plan_artifact_id: Option<String>,
+    pub proposal_count: u32,
+    pub task_total: u32,
+    pub task_merged: u32,
+    pub task_terminal: u32,
+    pub tasks: Vec<AutomationPipelineTaskResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,12 +187,105 @@ pub async fn automation_detail_response_for_state(
     state: &AppState,
 ) -> crate::error::AppResult<AutomationDetailResponse> {
     let usage = automation_usage_for_runs(&detail.runs, state).await?;
+    let pipeline = automation_pipeline_progress_for_state(&detail, state).await?;
     let runs = automation_run_responses_for_state(detail.runs, state).await?;
     Ok(AutomationDetailResponse {
         automation: AutomationResponse::from(detail.automation),
         runs,
         usage,
+        pipeline,
     })
+}
+
+async fn automation_pipeline_progress_for_state(
+    detail: &AutomationDetail,
+    state: &AppState,
+) -> crate::error::AppResult<Option<AutomationPipelineProgressResponse>> {
+    if detail.automation.run_mode
+        != crate::application::automation::service::IDEATION_BRIDGE_RUN_MODE
+    {
+        return Ok(None);
+    }
+
+    let mut linked_session_id = None;
+    for run in detail.runs.iter().rev() {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            continue;
+        };
+        let Some(workspace) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            continue;
+        };
+        if workspace.linked_ideation_session_id.is_some() {
+            linked_session_id = workspace.linked_ideation_session_id;
+            break;
+        }
+    }
+    let Some(session_id) = linked_session_id else {
+        return Ok(None);
+    };
+    let Some(session) = state.ideation_session_repo.get_by_id(&session_id).await? else {
+        return Ok(None);
+    };
+
+    let proposals = state.task_proposal_repo.get_by_session(&session_id).await?;
+    let tasks = state.task_repo.get_by_ideation_session(&session_id).await?;
+    let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
+    let blockers = state
+        .task_dependency_repo
+        .get_blockers_batch(&task_ids)
+        .await?;
+    let task_merged = tasks
+        .iter()
+        .filter(|task| task.internal_status == InternalStatus::Merged)
+        .count() as u32;
+    let task_terminal = tasks.iter().filter(|task| task.is_terminal()).count() as u32;
+    let has_failed_terminal = tasks
+        .iter()
+        .any(|task| task.is_terminal() && task.internal_status != InternalStatus::Merged);
+    let status = if has_failed_terminal {
+        "attention"
+    } else if session.status == IdeationSessionStatus::Accepted
+        && (tasks.is_empty() || task_merged == tasks.len() as u32)
+    {
+        "completed"
+    } else if tasks.is_empty() {
+        "authoring"
+    } else {
+        "executing"
+    };
+    let tasks = tasks
+        .into_iter()
+        .map(|task| AutomationPipelineTaskResponse {
+            blocked_by: blockers
+                .get(&task.id)
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect(),
+            id: task.id.to_string(),
+            title: task.title,
+            status: task.internal_status.to_string(),
+        })
+        .collect();
+
+    Ok(Some(AutomationPipelineProgressResponse {
+        deliverable: "task_graph".to_string(),
+        status: status.to_string(),
+        ideation_session_id: session.id.to_string(),
+        plan_artifact_id: session.plan_artifact_id.map(|id| id.to_string()),
+        proposal_count: proposals
+            .iter()
+            .filter(|proposal| proposal.archived_at.is_none())
+            .count() as u32,
+        task_total: task_ids.len() as u32,
+        task_merged,
+        task_terminal,
+        tasks,
+    }))
 }
 
 async fn automation_usage_for_runs(
@@ -267,6 +389,11 @@ async fn automation_run_plan_read_model_for_state(
 
 impl From<Automation> for AutomationResponse {
     fn from(automation: Automation) -> Self {
+        let authoring_state = parse_authoring_state(automation.authoring_state_json.as_deref())
+            .unwrap_or_else(|_| AutomationAuthoringState {
+                verification_status: AutomationDecompositionVerificationStatus::Failed,
+                ..AutomationAuthoringState::default()
+            });
         Self {
             id: automation.id.as_str().to_string(),
             project_id: automation.project_id.as_str().to_string(),
@@ -295,6 +422,12 @@ impl From<Automation> for AutomationResponse {
             first_run_prompt: automation.first_run_prompt,
             setup_analysis_summary: automation.setup_analysis_summary,
             spec_artifact_id: automation.spec_artifact_id,
+            authoring_mode: authoring_state.mode.as_str().to_string(),
+            decomposition_verification_status: authoring_state
+                .verification_status
+                .as_str()
+                .to_string(),
+            decomposition_verification_verdict_json: authoring_state.verdict_json,
             created_at: automation.created_at.to_rfc3339(),
             updated_at: automation.updated_at.to_rfc3339(),
         }

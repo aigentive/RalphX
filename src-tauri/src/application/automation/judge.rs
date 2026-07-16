@@ -3,6 +3,9 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::application::automation::decomposition_verifier::{
+    parse_authoring_state, AutomationGoalReplanStatus,
+};
 use crate::domain::entities::{Automation, AutomationRun, AutomationRunStatus};
 use crate::error::{AppError, AppResult};
 
@@ -20,6 +23,7 @@ const RUN_HISTORY_MAX_BYTES: usize = 18 * 1024;
 const PREVIOUS_RUN_MAX_BYTES: usize = 16 * 1024;
 const PREVIOUS_RUN_SUMMARY_MAX_BYTES: usize = 8 * 1024;
 const MIN_CONTINUE_PROMPT_CHARS: usize = 40;
+const GOAL_ITEMS_PROPOSAL_MAX_BYTES: usize = 32 * 1024;
 
 const REQUIRED_VERDICT_KEYS: &[&str] = &[
     "decision",
@@ -109,6 +113,13 @@ pub struct AutomationJudgeItemStatusUpdate {
     pub status: AutomationGoalItemStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomationJudgeGoalItemProposal {
+    pub id: String,
+    pub title: String,
+    pub status: AutomationGoalItemStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomationJudgeVerdict {
@@ -118,6 +129,8 @@ pub struct AutomationJudgeVerdict {
     pub confidence: f64,
     pub goal_progress: Option<AutomationJudgeGoalProgress>,
     pub updated_item_statuses: Option<Vec<AutomationJudgeItemStatusUpdate>>,
+    #[serde(default)]
+    pub goal_items_proposal: Option<Vec<AutomationJudgeGoalItemProposal>>,
     pub next_run_prompt: Option<String>,
     pub next_base_branch: Option<AutomationJudgeNextBaseBranch>,
 }
@@ -248,6 +261,8 @@ pub fn validate_automation_judge_verdict(
         context.automation.goal_items_json.as_deref(),
         verdict.updated_item_statuses.as_deref(),
     )?;
+    let goal_items_proposal_json =
+        validate_goal_items_proposal(&mut verdict, applied_goal_items.as_deref())?;
     if verdict.decision == AutomationJudgeDecision::Stop
         && verdict.goal_met
         && goal_items_have_unfinished_work(applied_goal_items.as_deref())?
@@ -280,7 +295,9 @@ pub fn validate_automation_judge_verdict(
             }
             verdict.next_run_prompt = Some(normalize_next_run_prompt_phase(
                 &prompt,
-                applied_goal_items.as_deref(),
+                goal_items_proposal_json
+                    .as_deref()
+                    .or(applied_goal_items.as_deref()),
             )?);
             match verdict.next_base_branch {
                 Some(AutomationJudgeNextBaseBranch::AutomationBase) => {
@@ -314,6 +331,11 @@ pub fn validate_automation_judge_verdict(
             }
         }
         AutomationJudgeDecision::Stop => {
+            if verdict.goal_items_proposal.is_some() {
+                return Err(AppError::Validation(
+                    "goalItemsProposal is only valid for continue verdicts".to_string(),
+                ));
+            }
             if verdict
                 .next_run_prompt
                 .as_deref()
@@ -329,6 +351,109 @@ pub fn validate_automation_judge_verdict(
     }
 
     Ok(verdict)
+}
+
+pub(crate) fn goal_items_proposal_json(
+    verdict: &AutomationJudgeVerdict,
+) -> AppResult<Option<String>> {
+    verdict
+        .goal_items_proposal
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            AppError::Validation(format!("failed to serialize goalItemsProposal: {error}"))
+        })
+}
+
+fn validate_goal_items_proposal(
+    verdict: &mut AutomationJudgeVerdict,
+    applied_goal_items_json: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(proposal) = verdict.goal_items_proposal.as_mut() else {
+        return Ok(None);
+    };
+    if verdict.decision != AutomationJudgeDecision::Continue {
+        return Err(AppError::Validation(
+            "goalItemsProposal is only valid for continue verdicts".to_string(),
+        ));
+    }
+    if proposal.is_empty() {
+        return Err(AppError::Validation(
+            "goalItemsProposal must contain at least one goal item".to_string(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    for item in proposal.iter_mut() {
+        item.id = item.id.trim().to_string();
+        item.title = item.title.trim().to_string();
+        if item.id.is_empty() || item.title.is_empty() {
+            return Err(AppError::Validation(
+                "goalItemsProposal items require non-empty id and title".to_string(),
+            ));
+        }
+        if !ids.insert(item.id.clone()) {
+            return Err(AppError::Validation(format!(
+                "goalItemsProposal contains duplicate id {}",
+                item.id
+            )));
+        }
+        if item.status == AutomationGoalItemStatus::InProgress {
+            return Err(AppError::Validation(format!(
+                "goalItemsProposal item {} cannot be in_progress before plan approval",
+                item.id
+            )));
+        }
+    }
+    if !proposal.iter().any(|item| {
+        matches!(
+            item.status,
+            AutomationGoalItemStatus::Pending | AutomationGoalItemStatus::InProgress
+        )
+    }) {
+        return Err(AppError::Validation(
+            "goalItemsProposal must retain concrete unfinished work".to_string(),
+        ));
+    }
+    let existing = applied_goal_items_json
+        .map(parse_goal_items_json)
+        .transpose()?;
+    if let Some(Value::Array(items)) = existing.as_ref() {
+        for item in items {
+            let Some(object) = item.as_object() else {
+                continue;
+            };
+            let Some(id) = object.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let status = object
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            if matches!(status, "done" | "skipped")
+                && !proposal
+                    .iter()
+                    .any(|candidate| candidate.id == id && candidate.status.as_str() == status)
+            {
+                return Err(AppError::Validation(format!(
+                    "goalItemsProposal must preserve completed goal item {id}"
+                )));
+            }
+        }
+    }
+    let serialized = goal_items_proposal_json(verdict)?.expect("proposal exists");
+    if serialized.len() > GOAL_ITEMS_PROPOSAL_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "goalItemsProposal exceeds {GOAL_ITEMS_PROPOSAL_MAX_BYTES} bytes"
+        )));
+    }
+    let proposed_value = parse_goal_items_json(&serialized)?;
+    if existing.as_ref() == Some(&proposed_value) {
+        return Err(AppError::Validation(
+            "goalItemsProposal must structurally change the stored goal items".to_string(),
+        ));
+    }
+    Ok(Some(serialized))
 }
 
 pub fn apply_updated_item_statuses(
@@ -809,6 +934,24 @@ pub(crate) fn build_automation_run_context_block(
         .filter(|value| !value.is_empty())
         .unwrap_or("[]");
     let goal_items = xml_section("goal_items", goal_items_body, false);
+    let goal_items_proposal = parse_authoring_state(automation.authoring_state_json.as_deref())
+        .ok()
+        .and_then(|state| state.pending_goal_replan)
+        .filter(|state| {
+            state.status == AutomationGoalReplanStatus::Pending
+                && run
+                    .base_from_run_id
+                    .as_ref()
+                    .is_some_and(|source_run_id| source_run_id.as_str() == state.source_run_id)
+        })
+        .map(|state| {
+            xml_section(
+                "goal_items_proposal",
+                &state.proposed_goal_items_json,
+                false,
+            )
+        })
+        .unwrap_or_default();
     let stats = goal_item_stats(automation.goal_items_json.as_deref());
     let phase_body = serde_json::to_string_pretty(&json!({
         "runIndex": run.run_index,
@@ -819,7 +962,9 @@ pub(crate) fn build_automation_run_context_block(
     }))
     .expect("automation phase JSON should serialize");
     let phase = xml_section("phase", &phase_body, false);
-    format!("<automation_context>{goal}{goal_items}{phase}</automation_context>")
+    format!(
+        "<automation_context>{goal}{goal_items}{goal_items_proposal}{phase}</automation_context>"
+    )
 }
 
 fn budgeted_xml_section(tag: &str, raw: &str, cap: usize, remaining: usize) -> String {
@@ -1023,6 +1168,7 @@ Return exactly one JSON object:
   "confidence": 0.0-1.0,
   "goalProgress": { "completedItems": 7, "totalItems": 20, "summary": "string" } | null,
   "updatedItemStatuses": [ { "id": "string", "status": "pending"|"in_progress"|"done"|"skipped" } ] | null,
+  "goalItemsProposal": [ { "id": "string", "title": "string", "status": "pending"|"done"|"skipped" } ] | null,
   "nextRunPrompt": "string" | null,
   "nextBaseBranch": "automation_base" | "previous_pr_head" | null
 }
@@ -1031,6 +1177,7 @@ Rules:
 - `continue` requires `nextRunPrompt` and `nextBaseBranch`.
 - `previous_pr_head` is valid only for `chainMode=pr_head_stacked` with a valid previous PR head.
 - `updatedItemStatuses` ids must exist in `goal_items`.
+- `goalItemsProposal` is an optional full replacement for add/split/reorder discoveries. It is valid only with `continue`, must preserve every completed/skipped item and its status, and is applied only after the successor run plan is approved.
 - If `nextRunPrompt` starts with `Phase N:`, `N` must be the 1-based position of the first goal item that remains unfinished after `updatedItemStatuses`; repeated runs for that item keep the same `N`.
 - If `stop` uses `goalMet=true`, the resulting `goal_items` after `updatedItemStatuses` must all be `done` or `skipped`.
 - If there is no concrete unfinished work, choose `stop`.

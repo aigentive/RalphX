@@ -1069,6 +1069,7 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
       'get_artifact',
       'get_automation',
       'update_automation',
+      'verify_automation_decomposition',
       'finalize_automation',
     ]);
 

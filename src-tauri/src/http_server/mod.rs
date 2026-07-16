@@ -260,6 +260,10 @@ pub async fn start_http_server(
         // Automation setup-agent tools; caller identity is header-derived.
         .route("/api/get_automation", post(get_automation))
         .route("/api/update_automation", post(update_automation))
+        .route(
+            "/api/verify_automation_decomposition",
+            post(verify_automation_decomposition),
+        )
         .route("/api/finalize_automation", post(finalize_automation))
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))

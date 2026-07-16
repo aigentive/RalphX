@@ -74,6 +74,15 @@ pub trait AutomationRepository: Send + Sync {
         goal_items_json: Option<String>,
     ) -> AppResult<Option<Automation>>;
 
+    /// Persist automation authoring/verification state only if the automation
+    /// row has not changed since the verifier loaded it.
+    async fn update_authoring_state_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+        authoring_state_json: Option<String>,
+    ) -> AppResult<bool>;
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,
