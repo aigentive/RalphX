@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 
+import { useAgentArtifactUiStore } from "@/components/agents/agentArtifactUiStore";
 import { performNotificationPrimaryAction } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -47,8 +48,20 @@ const agentConversationNotification = {
   },
 };
 
+const planReviewNotification = {
+  ...agentConversationNotification,
+  id: "plan-notification-1",
+  category: "plan_approval" as const,
+  title: "Plan ready for review",
+};
+
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+}
+
+function renderToastContent(callIndex = 0) {
+  const content = toastWarning.mock.calls[callIndex]?.[0] as ReactElement;
+  return render(content);
 }
 
 describe("useNotificationToasts", () => {
@@ -60,6 +73,7 @@ describe("useNotificationToasts", () => {
     preferences.mutedProjectIds = [];
     useUiStore.setState({ notificationsPanelOpen: false });
     useAgentSessionStore.setState({ selectedConversationId: null });
+    useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
     vi.mocked(performNotificationPrimaryAction).mockResolvedValue(true);
     renderHook(() => useNotificationToasts(), { wrapper });
@@ -116,21 +130,39 @@ describe("useNotificationToasts", () => {
     subscribers.get("notification:created")?.({ ...notification, id: "global-1", projectId: undefined });
 
     expect(toastWarning).toHaveBeenCalledTimes(1);
-    expect(toastWarning).toHaveBeenCalledWith("Permission requested", expect.any(Object));
+    expect(toastWarning).toHaveBeenCalledWith(expect.any(Object), expect.any(Object));
   });
 
-  it("navigates and marks the notification read from the toast action", async () => {
+  it("renders every durable action-required notification as a persistent custom toast", () => {
     subscribers.get("notification:created")?.(notification);
-    const options = toastWarning.mock.calls[0]?.[1] as { action: { onClick: () => void }; duration: number };
-    expect(options.duration).toBeLessThanOrEqual(5 * 60_000);
+    const options = toastWarning.mock.calls[0]?.[1] as {
+      action?: unknown;
+      duration: number;
+    };
+    const view = renderToastContent();
 
-    options.action.onClick();
-    await Promise.resolve();
-    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
-      notification,
-      expect.any(QueryClient),
-    );
-    expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-1");
+    expect(options.duration).toBe(Infinity);
+    expect(options.action).toBeUndefined();
+    expect(view.getByText("Permission requested")).toBeVisible();
+    expect(view.getByText("git push")).toBeVisible();
+    expect(view.getByRole("button", { name: "Respond" })).toBeEnabled();
+    expect(view.getByRole("button", { name: "Dismiss" })).toBeEnabled();
+  });
+
+  it("dismisses and marks a non-Agent notification read only after its action succeeds", async () => {
+    subscribers.get("notification:created")?.(notification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Respond" }));
+
+    await waitFor(() => {
+      expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+        notification,
+        expect.any(QueryClient),
+      );
+      expect(toastDismiss).toHaveBeenCalledWith("notification-1");
+      expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-1");
+    });
   });
 
   it("resumes a paused automation directly from the toast action", async () => {
@@ -146,55 +178,46 @@ describe("useNotificationToasts", () => {
       },
     };
     subscribers.get("notification:created")?.(pausedNotification);
-    const options = toastWarning.mock.calls[0]?.[1] as {
-      action: { label: string; onClick: () => void };
-    };
-    expect(options.action.label).toBe("Resume");
-    options.action.onClick();
-    await Promise.resolve();
-    await Promise.resolve();
+    const view = renderToastContent();
+    fireEvent.click(view.getByRole("button", { name: "Resume" }));
 
-    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
-      pausedNotification,
-      expect.any(QueryClient),
-    );
-    expect(notificationsApi.markRead).toHaveBeenCalledWith("automation-paused-1");
+    await waitFor(() => {
+      expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+        pausedNotification,
+        expect.any(QueryClient),
+      );
+      expect(notificationsApi.markRead).toHaveBeenCalledWith("automation-paused-1");
+    });
   });
 
-  it("keeps Agent conversation toasts open until manually dismissed", () => {
+  it("manual dismissal hides the toast without marking the notification read", () => {
     subscribers.get("notification:created")?.(agentConversationNotification);
+    const view = renderToastContent();
 
-    const options = toastWarning.mock.calls[0]?.[1] as {
-      closeButton: boolean;
-      closeButtonAriaLabel: string;
-      duration: number;
-      onDismiss: () => void;
-    };
-    expect(options.duration).toBe(Infinity);
-    expect(options.closeButton).toBe(true);
-    expect(options.closeButtonAriaLabel).toBe("Dismiss notification");
+    fireEvent.click(view.getByRole("button", { name: "Dismiss" }));
 
-    options.onDismiss();
-
+    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
-  it("acknowledges and dismisses an Agent conversation toast after its CTA navigates", async () => {
+  it("keeps an Agent conversation toast unread until the target conversation is observed", async () => {
     subscribers.get("notification:created")?.(agentConversationNotification);
-    const options = toastWarning.mock.calls[0]?.[1] as {
-      action: { onClick: () => void };
-    };
+    const view = renderToastContent();
 
-    options.action.onClick();
-    await Promise.resolve();
-    await Promise.resolve();
+    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
 
-    expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
-      agentConversationNotification,
-      expect.any(QueryClient),
-    );
-    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
-    expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(toastDismiss).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+    });
+
+    await waitFor(() => {
+      expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+    });
   });
 
   it("acknowledges and dismisses only the toast for the conversation the user visits", async () => {
@@ -233,32 +256,158 @@ describe("useNotificationToasts", () => {
   it("keeps an Agent conversation toast unread when its CTA cannot navigate", async () => {
     vi.mocked(performNotificationPrimaryAction).mockResolvedValue(false);
     subscribers.get("notification:created")?.(agentConversationNotification);
-    const options = toastWarning.mock.calls[0]?.[1] as {
-      action: { onClick: () => void };
-    };
+    const view = renderToastContent();
+    const action = view.getByRole("button", { name: "Answer" });
 
-    options.action.onClick();
-    await Promise.resolve();
-    await Promise.resolve();
+    fireEvent.click(action);
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+    await waitFor(() => expect(action).toBeEnabled());
 
     expect(toastDismiss).not.toHaveBeenCalled();
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
+  it("disables repeated CTA clicks while an action is pending", async () => {
+    let settleAction: ((result: boolean) => void) | undefined;
+    vi.mocked(performNotificationPrimaryAction).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settleAction = resolve;
+      }),
+    );
+    subscribers.get("notification:created")?.(notification);
+    const view = renderToastContent();
+    const action = view.getByRole("button", { name: "Respond" });
+
+    fireEvent.click(action);
+    fireEvent.click(action);
+
+    expect(action).toBeDisabled();
+    expect(performNotificationPrimaryAction).toHaveBeenCalledTimes(1);
+
+    act(() => settleAction?.(false));
+    await waitFor(() => expect(action).toBeEnabled());
+    expect(toastDismiss).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
+  it("keeps a plan-review toast unread until the linked conversation and Plan surface are observed", async () => {
+    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+      isOpen: true,
+      activeTab: "tasks",
+      taskMode: "kanban",
+      hiddenTabs: ["plan"],
+    });
+    subscribers.get("notification:created")?.(planReviewNotification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Review plan" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+    });
+    expect(toastDismiss).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+
+    act(() => {
+      useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+        isOpen: true,
+        activeTab: "plan",
+        taskMode: "kanban",
+        hiddenTabs: [],
+      });
+    });
+
+    await waitFor(() => {
+      expect(toastDismiss).toHaveBeenCalledWith(planReviewNotification.id);
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
+    });
+  });
+
+  it("reveals and acknowledges a plan notification for the already-selected conversation", async () => {
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+        isOpen: true,
+        activeTab: "tasks",
+        taskMode: "graph",
+        hiddenTabs: ["plan"],
+      });
+    });
+    vi.mocked(performNotificationPrimaryAction).mockImplementation(async () => {
+      useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+        isOpen: true,
+        activeTab: "plan",
+        taskMode: "graph",
+        hiddenTabs: [],
+      });
+      return true;
+    });
+
+    subscribers.get("notification:created")?.(planReviewNotification);
+
+    await waitFor(() => {
+      expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+        planReviewNotification,
+        expect.any(QueryClient),
+      );
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
+    });
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
   it("dismisses active notification toasts when the drawer opens", () => {
     subscribers.get("notification:created")?.(notification);
-    expect(toastWarning).toHaveBeenCalledWith("Permission requested", expect.objectContaining({ id: "notification-1" }));
+    expect(toastWarning).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ id: "notification-1" }));
 
     act(() => { useUiStore.setState({ notificationsPanelOpen: true }); });
 
     expect(toastDismiss).toHaveBeenCalledWith("notification-1");
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges an in-flight Agent CTA after the drawer hides its toast", async () => {
+    let settleAction: ((result: boolean) => void) | undefined;
+    vi.mocked(performNotificationPrimaryAction).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settleAction = resolve;
+      }),
+    );
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+
+    act(() => {
+      useUiStore.setState({ notificationsPanelOpen: true });
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      settleAction?.(true);
+    });
+
+    await waitFor(() => {
+      expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+    });
+  });
+
+  it("does not acknowledge an Agent toast hidden by the drawer without a CTA action", async () => {
+    subscribers.get("notification:created")?.(agentConversationNotification);
+
+    act(() => {
+      useUiStore.setState({ notificationsPanelOpen: true });
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+    });
+
+    await Promise.resolve();
+    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
   it("does not dismiss a toast that already settled before the drawer opens", () => {
     subscribers.get("notification:created")?.(notification);
     const dismissedOptions = toastWarning.mock.calls[0]?.[1] as {
       onDismiss: () => void;
-      onAutoClose: () => void;
     };
     dismissedOptions.onDismiss();
 
@@ -266,13 +415,5 @@ describe("useNotificationToasts", () => {
     expect(toastDismiss).not.toHaveBeenCalled();
 
     act(() => { useUiStore.setState({ notificationsPanelOpen: false }); });
-    subscribers.get("notification:created")?.({ ...notification, id: "notification-auto-closed" });
-    const autoClosedOptions = toastWarning.mock.calls[1]?.[1] as {
-      onAutoClose: () => void;
-    };
-    autoClosedOptions.onAutoClose();
-
-    act(() => { useUiStore.setState({ notificationsPanelOpen: true }); });
-    expect(toastDismiss).not.toHaveBeenCalled();
   });
 });
