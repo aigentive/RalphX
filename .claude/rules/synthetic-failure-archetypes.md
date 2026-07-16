@@ -8,11 +8,10 @@ paths:
   - "src-tauri/src/http_server/**"
   - "frontend/src/hooks/useAgentEvents.ts"
   - "frontend/src/components/Chat/**"
-  - "agents/ralphx-plan-verifier/**"
-  - "agents/plan-critic-*/**"
   - "agents/ralphx-ideation-team-lead/**"
   - "agents/ralphx-ideation/**"
-  - "agents/ideation-specialist-*/**"
+  - "agents/ralphx-ideation-specialist-*/**"
+  - "agents/ralphx-general-explorer/**"
 ---
 
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
