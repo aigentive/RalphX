@@ -278,6 +278,7 @@ pub use plan_ranking::{
 pub use priority_service::PriorityService;
 pub(crate) use provider_onboarding_gate::{
     ensure_provider_spawn_enabled, resolve_enabled_default_provider,
+    resolve_enabled_provider_or_default,
 };
 pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};
