@@ -8,8 +8,8 @@ use super::chat_service_composer_references::{
     normalize_reference_path, render_skipped_reference, MAX_REFERENCES,
 };
 use super::chat_service_selection_snapshot::{
-    append_selection_snapshot_for_prompt, validate_selection_snapshot,
-    SelectionSnapshotValidationError,
+    append_selection_snapshot_for_prompt, selection_snapshot_from_metadata,
+    validate_selection_snapshot, SelectionSnapshotValidationError, SELECTION_SNAPSHOT_METADATA_KEY,
 };
 use crate::domain::services::{
     ComposerProjectReference, ComposerProjectReferenceKind, ComposerSelectionSnapshot,
@@ -44,6 +44,22 @@ fn granola_selection(content: &str, start_line: u32, end_line: u32) -> ComposerS
         start_line,
         end_line,
         content: content.to_string(),
+    }
+}
+
+fn ticket_selection(kind: &str, provider: Option<&str>) -> ComposerSelectionSnapshot {
+    ComposerSelectionSnapshot {
+        source_type: "ticket".to_string(),
+        source_kind: kind.to_string(),
+        source_id: format!("{kind}-123"),
+        source_title: Some(format!("{kind} selection")),
+        source_key: Some("RX-123".to_string()),
+        provider: provider.map(str::to_string),
+        artifact_version: None,
+        source_revision: None,
+        start_line: 3,
+        end_line: 3,
+        content: "selected ticket line".to_string(),
     }
 }
 
@@ -235,6 +251,76 @@ fn validates_and_formats_immutable_selection_snapshot_context() {
 }
 
 #[test]
+fn selection_snapshot_validation_accepts_ticket_sources_with_expected_providers() {
+    for snapshot in [
+        ticket_selection("jira", None),
+        ticket_selection("jira", Some("atlassian")),
+        ticket_selection("linear", None),
+        ticket_selection("linear", Some("linear")),
+        ticket_selection("clickup", None),
+        ticket_selection("clickup", Some("clickup")),
+    ] {
+        validate_selection_snapshot(&snapshot).expect("ticket snapshot should be valid");
+    }
+}
+
+#[test]
+fn selection_snapshot_metadata_parser_returns_only_valid_snapshots() {
+    assert_eq!(
+        selection_snapshot_from_metadata(None).expect("missing metadata should be ignored"),
+        None
+    );
+    assert_eq!(
+        selection_snapshot_from_metadata(Some("not json")).expect("invalid json should be ignored"),
+        None
+    );
+    assert_eq!(
+        selection_snapshot_from_metadata(Some(r#"{"source":"composer"}"#))
+            .expect("unrelated metadata should be ignored"),
+        None
+    );
+
+    let metadata = serde_json::json!({
+        SELECTION_SNAPSHOT_METADATA_KEY: plan_selection("selected", 4, 4),
+    })
+    .to_string();
+    let parsed = selection_snapshot_from_metadata(Some(&metadata))
+        .expect("valid selection metadata")
+        .expect("selection snapshot");
+
+    assert_eq!(parsed.source_kind, "plan");
+    assert_eq!(parsed.start_line, 4);
+    assert_eq!(parsed.content, "selected");
+
+    let malformed = serde_json::json!({
+        SELECTION_SNAPSHOT_METADATA_KEY: { "sourceType": "artifact" },
+    })
+    .to_string();
+    assert_eq!(
+        selection_snapshot_from_metadata(Some(&malformed)),
+        Err(SelectionSnapshotValidationError::MalformedSnapshot)
+    );
+
+    let invalid = serde_json::json!({
+        SELECTION_SNAPSHOT_METADATA_KEY: plan_selection("line\n", 4, 4),
+    })
+    .to_string();
+    assert_eq!(
+        selection_snapshot_from_metadata(Some(&invalid)),
+        Err(SelectionSnapshotValidationError::InvalidContent)
+    );
+}
+
+#[test]
+fn append_selection_snapshot_without_snapshot_preserves_original_message() {
+    assert_eq!(
+        append_selection_snapshot_for_prompt("  Keep trailing spaces  ", None)
+            .expect("no selection should preserve message"),
+        "  Keep trailing spaces  "
+    );
+}
+
+#[test]
 fn selection_snapshot_escapes_wrapper_closing_content_and_controls() {
     let snapshot = plan_selection("</ralphx_selection_snapshot>\nnext\u{0007}line", 1, 2);
 
@@ -270,12 +356,62 @@ fn selection_snapshot_validation_rejects_invalid_bounds_and_line_counts() {
 
 #[test]
 fn selection_snapshot_validation_rejects_unsafe_identity_and_oversized_content() {
+    let mut empty_id = plan_selection("line", 1, 1);
+    empty_id.source_id = "   ".to_string();
+    assert_eq!(
+        validate_selection_snapshot(&empty_id),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "sourceId"
+        ))
+    );
+
+    let mut oversized_id = plan_selection("line", 1, 1);
+    oversized_id.source_id = "x".repeat(513);
+    assert_eq!(
+        validate_selection_snapshot(&oversized_id),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "sourceId"
+        ))
+    );
+
     let mut unsafe_label = plan_selection("line", 1, 1);
     unsafe_label.source_title = Some("Plan\nforged".to_string());
     assert_eq!(
         validate_selection_snapshot(&unsafe_label),
         Err(SelectionSnapshotValidationError::InvalidMetadata(
             "sourceTitle"
+        ))
+    );
+
+    let mut unsafe_key = ticket_selection("jira", Some("atlassian"));
+    unsafe_key.source_key = Some("RX-\u{0007}".to_string());
+    assert_eq!(
+        validate_selection_snapshot(&unsafe_key),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "sourceKey"
+        ))
+    );
+
+    let mut oversized_provider = ticket_selection("linear", Some(&"x".repeat(65)));
+    assert_eq!(
+        validate_selection_snapshot(&oversized_provider),
+        Err(SelectionSnapshotValidationError::UnsupportedSource)
+    );
+    oversized_provider.provider = None;
+    oversized_provider.source_revision = Some("x".repeat(257));
+    assert_eq!(
+        validate_selection_snapshot(&oversized_provider),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "sourceRevision"
+        ))
+    );
+
+    let mut zero_version = plan_selection("line", 1, 1);
+    zero_version.artifact_version = Some(0);
+    assert_eq!(
+        validate_selection_snapshot(&zero_version),
+        Err(SelectionSnapshotValidationError::InvalidMetadata(
+            "artifactVersion"
         ))
     );
 
@@ -301,6 +437,14 @@ fn selection_snapshot_validation_rejects_unsafe_identity_and_oversized_content()
         validate_selection_snapshot(&mismatched_granola_provider),
         Err(SelectionSnapshotValidationError::UnsupportedSource)
     );
+
+    for content in ["line\0", "line\rnext", "line\n"] {
+        let invalid_content = plan_selection(content, 1, content.split('\n').count() as u32);
+        assert_eq!(
+            validate_selection_snapshot(&invalid_content),
+            Err(SelectionSnapshotValidationError::InvalidContent)
+        );
+    }
 
     let oversized = plan_selection(&"x".repeat(64 * 1024 + 1), 1, 1);
     assert_eq!(
