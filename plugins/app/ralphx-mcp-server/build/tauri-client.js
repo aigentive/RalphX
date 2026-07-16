@@ -3,6 +3,7 @@
  * All MCP tools forward to these endpoints (proxy pattern)
  */
 import { safeTrace } from "./redact.js";
+import { request as httpRequest } from "node:http";
 const DEFAULT_TAURI_API_URL = "http://127.0.0.1:3847";
 const ALLOWED_TAURI_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 function resolveTauriApiBaseUrl() {
@@ -66,6 +67,10 @@ export class TauriClientError extends Error {
         this.name = "TauriClientError";
     }
 }
+let tauriHttpTransport = executeNodeHttpRequest;
+export function __setTauriHttpTransportForTests(transport) {
+    tauriHttpTransport = transport ?? executeNodeHttpRequest;
+}
 /**
  * Safely parse a 2xx HTTP response body as JSON.
  * Returns null for empty bodies or non-JSON text instead of throwing.
@@ -97,6 +102,99 @@ function isRetryable(error) {
  */
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function parseValidatedTauriUrl(url) {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:") {
+        throw new TauriClientError(`Invalid Tauri backend protocol: ${parsed.protocol}`, 0);
+    }
+    if (!ALLOWED_TAURI_HOSTS.has(parsed.hostname)) {
+        throw new TauriClientError(`Invalid Tauri backend host: ${parsed.hostname}`, 0);
+    }
+    if (!/^\d+$/.test(parsed.port)) {
+        throw new TauriClientError(`Invalid Tauri backend port: ${parsed.port}`, 0);
+    }
+    if (!parsed.pathname.startsWith("/api/")) {
+        throw new TauriClientError(`Invalid Tauri backend path: ${parsed.pathname}`, 0);
+    }
+    return parsed;
+}
+function normalizeRequestHeaders(headers) {
+    if (!headers)
+        return undefined;
+    if (headers instanceof Headers) {
+        return Object.fromEntries(headers.entries());
+    }
+    if (Array.isArray(headers)) {
+        return Object.fromEntries(headers);
+    }
+    return headers;
+}
+function toResponseHeaders(headers) {
+    const responseHeaders = new Headers();
+    for (const [name, value] of Object.entries(headers)) {
+        if (Array.isArray(value)) {
+            for (const entry of value) {
+                responseHeaders.append(name, entry);
+            }
+        }
+        else if (typeof value === "string") {
+            responseHeaders.set(name, value);
+        }
+    }
+    return responseHeaders;
+}
+function writeRequestBody(request, body) {
+    if (body == null)
+        return;
+    if (typeof body === "string" || body instanceof Uint8Array) {
+        request.write(body);
+        return;
+    }
+    if (body instanceof ArrayBuffer) {
+        request.write(new Uint8Array(body));
+        return;
+    }
+    if (body instanceof URLSearchParams) {
+        request.write(body.toString());
+        return;
+    }
+    throw new TauriClientError("Unsupported Tauri backend request body type", 0);
+}
+async function executeNodeHttpRequest(url, init) {
+    const parsed = parseValidatedTauriUrl(url);
+    return new Promise((resolve, reject) => {
+        const request = httpRequest({
+            protocol: "http:",
+            hostname: "127.0.0.1",
+            port: parsed.port,
+            path: `${parsed.pathname}${parsed.search}`,
+            method: init.method ?? "GET",
+            headers: normalizeRequestHeaders(init.headers),
+        }, (response) => {
+            const chunks = [];
+            response.on("data", (chunk) => {
+                chunks.push(chunk);
+            });
+            response.on("end", () => {
+                resolve(new Response(Buffer.concat(chunks), {
+                    status: response.statusCode ?? 500,
+                    statusText: response.statusMessage,
+                    headers: toResponseHeaders(response.headers),
+                }));
+            });
+            response.on("error", reject);
+        });
+        request.on("error", reject);
+        try {
+            writeRequestBody(request, init.body);
+            request.end();
+        }
+        catch (error) {
+            request.destroy();
+            reject(error);
+        }
+    });
 }
 /**
  * Parse HTTP error response into a TauriClientError.
@@ -171,7 +269,7 @@ async function executeFetch(url, init, label) {
             body: typeof init.body === "string" ? init.body : undefined,
         });
         try {
-            const response = await fetch(url, init);
+            const response = await tauriHttpTransport(url, init);
             safeTrace("backend.response", {
                 label,
                 method: init.method ?? "GET",

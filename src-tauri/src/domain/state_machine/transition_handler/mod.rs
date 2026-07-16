@@ -72,6 +72,7 @@ pub(crate) use merge_helpers::{
     clear_main_merge_deferred_metadata, clear_merge_deferred_metadata,
     commit_hook_failure_fingerprint, commit_hook_repeat_count, compute_merge_worktree_path,
     compute_plan_update_worktree_path, compute_rebase_worktree_path,
+    compute_source_update_worktree_path,
     create_draft_pr_if_needed, draft_plan_pr_description_for_write, extract_commit_hook_merge_error,
     get_trigger_origin, has_branch_missing_metadata, has_main_merge_deferred_metadata,
     has_merge_deferred_metadata, is_commit_hook_merge_error_text, is_main_merge_deferred_timed_out,

@@ -13,6 +13,8 @@ export const PersonaSchema = z.object({
   version: z.number().int(),
   contentHash: z.string().min(1),
   sourceSessionId: z.string().nullable().optional(),
+  sourcePersonaId: z.string().nullable().optional(),
+  sourceContentHash: z.string().nullable().optional(),
   createdAt: z.string().datetime({ offset: true }),
   updatedAt: z.string().datetime({ offset: true }),
 });
@@ -30,6 +32,8 @@ export const PersonaResponseSchema = z.object({
   version: z.number().int(),
   content_hash: z.string().min(1),
   source_session_id: z.string().nullable().optional(),
+  source_persona_id: z.string().nullable().optional(),
+  source_content_hash: z.string().nullable().optional(),
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
 });
@@ -47,6 +51,8 @@ export function transformPersona(raw: PersonaResponse): Persona {
     version: raw.version,
     contentHash: raw.content_hash,
     sourceSessionId: raw.source_session_id,
+    sourcePersonaId: raw.source_persona_id,
+    sourceContentHash: raw.source_content_hash,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   });
@@ -64,6 +70,15 @@ export const PersonaIngestManifestSchema = z.object({
 });
 
 export type PersonaIngestManifest = z.infer<typeof PersonaIngestManifestSchema>;
+
+export const IngestPersonaContextInputSchema = z.object({
+  conversationId: z.string().min(1),
+  pickedPaths: z.array(z.string().min(1)).min(1),
+});
+
+export type IngestPersonaContextInput = z.infer<
+  typeof IngestPersonaContextInputSchema
+>;
 
 export const PersonaBuilderIngestStatusSchema = z.object({
   live: z.boolean(),

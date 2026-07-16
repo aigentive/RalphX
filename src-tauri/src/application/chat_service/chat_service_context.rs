@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::domain::agents::AgentHarnessKind;
-use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, Artifact, ArtifactContent, ArtifactId, ArtifactType,
     ChatAttachment, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
@@ -3405,16 +3404,12 @@ pub async fn get_entity_status_for_resume(
                 None
             }
         }
-        // Ideation context: check purpose first (Verification sessions → ralphx-plan-verifier agent)
-        // then fall back to status for accepted/readonly routing
+        // Ideation context: route from the session status. Legacy verification children
+        // no longer select a dedicated agent.
         ChatContextType::Ideation => {
             let session_id = IdeationSessionId::from_string(context_id);
             if let Ok(Some(session)) = ideation_session_repo.get_by_id(&session_id).await {
-                if session.session_purpose == SessionPurpose::Verification {
-                    Some("verification".to_string())
-                } else {
-                    Some(session.status.to_string())
-                }
+                Some(session.status.to_string())
             } else {
                 None
             }

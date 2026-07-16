@@ -229,13 +229,15 @@ Emitted when the orchestrator creates a plan artifact in an ideation session.
 
 ### `ideation:verified`
 
-Emitted when a plan passes the adversarial verification loop and is marked Verified.
+Emitted when the authoritative Verify Plan action records exact proof for the current plan artifact.
 
 ```json
 {
   "event_type": "ideation:verified",
   "session_id": "session-def456",
   "project_id": "proj-xyz",
+  "plan_artifact_id": "artifact-current",
+  "status": "verified",
   "timestamp": "2026-03-20T13:45:00Z"
 }
 ```

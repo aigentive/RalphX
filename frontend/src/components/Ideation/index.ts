@@ -1,5 +1,4 @@
 export { FinalizeConfirmationDialog } from "./FinalizeConfirmationDialog";
-export { VerificationConfirmDialog } from "./VerificationConfirmDialog";
 export { PriorityBadge } from "./PriorityBadge";
 export { ProposalCard } from "./ProposalCard";
 export { ProposalDetailSheet } from "./ProposalDetailSheet";

@@ -99,6 +99,8 @@ pub struct Persona {
     pub version: i64,
     pub content_hash: String,
     pub source_session_id: Option<String>,
+    pub source_persona_id: Option<PersonaId>,
+    pub source_content_hash: Option<String>,
     pub source_json: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

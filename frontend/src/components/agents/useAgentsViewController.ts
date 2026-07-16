@@ -835,10 +835,13 @@ export function useAgentsViewController({
     ],
   );
   const {
+    hideArtifactTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
+    seedArtifactTab,
     setArtifactPaneVisibility,
     setArtifactTaskMode,
+    showArtifactTab,
     toggleArtifactPaneVisibility,
   } = useAgentArtifactController({
     hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
@@ -896,7 +899,18 @@ export function useAgentsViewController({
       useAgentArtifactUiStore.getState().artifactByConversationId[
         selectedConversationId
       ] ?? null;
-    if (!optimisticArtifactState || optimisticArtifactState.activeTab === seededTab) {
+    const seededTabIsHidden = Boolean(
+      optimisticArtifactState?.hiddenTabs?.includes(seededTab) ||
+        useAgentSessionStore.getState().artifactByConversationId[
+          selectedConversationId
+        ]?.hiddenTabs?.includes(seededTab),
+    );
+    if (seededTabIsHidden) {
+      openArtifactTab(selectedConversationId, seededTab);
+    } else if (
+      !optimisticArtifactState ||
+      optimisticArtifactState.activeTab === seededTab
+    ) {
       seedAgentArtifactTab(
         selectedConversationId,
         seededTab,
@@ -918,6 +932,7 @@ export function useAgentsViewController({
     externalAutomationRunFocusRequest,
     handleFocusAutomationRun,
     hasAutoOpenArtifactsWithReview,
+    openArtifactTab,
     selectedConversationId,
   ]);
   useEffect(() => {
@@ -931,13 +946,13 @@ export function useAgentsViewController({
     ) {
       return;
     }
-    openArtifactTab(selectedConversationId, "automation");
+    seedArtifactTab(selectedConversationId, "automation");
   }, [
     activeConversation?.agentMode,
     activeConversation?.automationId,
     chatFocus.type,
     externalAutomationRunFocusRequest,
-    openArtifactTab,
+    seedArtifactTab,
     selectedConversationId,
   ]);
   useEffect(() => {
@@ -1496,6 +1511,7 @@ export function useAgentsViewController({
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
       hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
+      hideArtifactTab,
       isArtifactResizing,
       openArtifactTab,
       automationRunFocusTarget,
@@ -1505,6 +1521,7 @@ export function useAgentsViewController({
       selectedConversationId,
       setArtifactPaneVisibility,
       setArtifactTaskMode,
+      showArtifactTab,
       setTerminalPanelDockElement,
       taskArtifactFocusRequest,
       terminalArchivedReason,

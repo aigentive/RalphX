@@ -1663,6 +1663,32 @@ describe("IntegratedChatPanel", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
+    it("renders pending tool activity in the transcript without the deprecated working panel", () => {
+      mockChatPanelContext.activeConversationId = "conv-1";
+      mockChatPanelContext.streamingToolCalls = [{
+        id: "tool-1",
+        name: "Read",
+        arguments: { file_path: "src/app.ts" },
+      }];
+      act(() => {
+        useChatStore.setState({
+          isSending: { "task:task-1": true },
+          activeConversationIds: { "task:task-1": "conv-1" },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" />
+        </TestWrapper>,
+      );
+
+      expect(screen.queryByTestId("streaming-tool-indicator")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", {
+        name: "Agent called 1 tool. Expand tool details.",
+      })).toBeInTheDocument();
+    });
+
     it("renders a custom composer with its attachment contract", () => {
       mockChatPanelContext.activeConversationId = "conv-1";
       const renderComposer = vi.fn(({ enableAttachments }) => (

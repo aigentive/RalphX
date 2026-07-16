@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
+use crate::application::services::pr_auto_merge_status::AUTO_MERGE_ENABLE_WARNING_CODE;
 use crate::domain::entities::{
     AgentWorkspacePrReviewMonitorStatus, AttentionItem, AutomationRunStatus, AutomationStatus,
     ChatContextType, InternalStatus, NotificationCategory, NotificationTarget,
@@ -217,6 +218,11 @@ impl AttentionService {
             {
                 if run.status == AutomationRunStatus::AwaitingPlanApproval {
                     items.push(automation_plan_approval_item(&automation, &run));
+                }
+                if run.status == AutomationRunStatus::Published
+                    && run.error_code.as_deref() == Some(AUTO_MERGE_ENABLE_WARNING_CODE)
+                {
+                    items.push(automation_auto_merge_attention_item(&automation, &run));
                 }
             }
         }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -23,12 +22,13 @@ use crate::application::automation::judge::{
 use crate::application::automation::merged_run_finalizer::AutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
-    current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
-    matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
-    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
-    AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
-    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
-    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+    current_plan_artifact_id_for_workspace, ideation_bridge_delivery_prompt,
+    is_plan_gate_pause_reason, matching_plan_approval_for_workspace, refresh_plan_park_baseline,
+    revision_delivery_prompt, AutomationPlanVerificationStartOutcome,
+    AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
+    AutomationRunResumer, ResumeDelivery, AUTOMATION_PLAN_REMINDER_PROMPT,
+    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE, PLAN_RESUME_FAILED_ERROR_CODE,
+    PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use crate::application::automation::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
@@ -42,32 +42,36 @@ use crate::application::automation::provisioning::{
 };
 use crate::application::automation::service::{
     AutomationJudgeApplyOutcome, AutomationService, CompleteAutomationJudgeInput,
+    PendingGoalReplanApplyOutcome, IDEATION_BRIDGE_RUN_MODE, IDEATION_FINALIZED_COMPLETION_SIGNAL,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
+};
+use crate::application::automation::utility_agent::{
+    invoke_automation_utility_agent, AutomationUtilityModelPolicy,
 };
 use crate::application::harness_runtime_registry::{
     default_automation_judge_timeout_secs, default_automation_max_run_duration_secs,
     default_automation_plan_judge_models, default_automation_plan_max_revision_rounds,
     default_automation_publish_grace_secs, default_automation_scheduler_poll_secs,
-    default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
+    default_automation_signal_failure_pause_threshold,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_ENABLE_FAILURE_SUMMARY_PREFIX, AUTO_MERGE_ENABLE_WARNING_CODE,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::AppState;
 use crate::application::NotificationService;
-use crate::domain::agents::{
-    plan_judge_model_for_provider, AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS,
-};
+use crate::domain::agents::{plan_judge_model_for_provider, AgentHarnessKind};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
     ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode, AutomationRun,
-    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationSession,
-    VerificationRunSnapshot, VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId, IdeationSession,
+    IdeationSessionStatus, VerificationRunSnapshot, VerificationStatus,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -82,7 +86,6 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
-use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationSchedulerConfig {
@@ -107,11 +110,7 @@ impl AutomationSchedulerConfig {
             plan_judge_models: config.plan_judge_model.clone(),
             plan_max_revision_rounds: i64::try_from(config.plan_max_revision_rounds.max(1))
                 .unwrap_or(i64::MAX),
-            plan_verification_hold_timeout: Duration::from_secs(
-                crate::application::harness_runtime_registry::default_verification_reconciliation_config()
-                    .auto_verify_stale_secs
-                    .max(1),
-            ),
+            plan_verification_hold_timeout: Duration::from_secs(5_400),
         }
     }
 }
@@ -385,71 +384,19 @@ impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
             );
         }
 
-        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
-            .map_err(AppError::Validation)?;
-        let runtime = AppState::lock_utility_agent_runtime_model(
-            self.state
-                .resolve_background_agent_runtime_for_harness(harness, "automation judge")
-                .await?,
-        );
-        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let project = self
-            .state
-            .project_repo
-            .get_by_id(&input.automation.project_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "automation judge project {} not found",
-                    input.automation.project_id.as_str()
-                ))
-            })?;
-        let project_working_directory = validate_absolute_non_root_path(
-            Path::new(&project.working_directory),
-            "automation judge project checkout",
-        )?;
-        let bootstrap = resolve_harness_agent_bootstrap(
-            helper_harness,
+        let output = invoke_automation_utility_agent(
+            &self.state,
+            &input.automation,
             agent_names::AGENT_AUTOMATION_JUDGE,
-            project_working_directory,
-        );
-        let env = runtime.env_with_overrides(bootstrap.env);
-        let client = Arc::clone(&runtime.client);
-        let model_id = runtime.model.clone();
-        let handle = client
-            .spawn_agent(AgentConfig {
-                role: AgentRole::Custom(bootstrap.agent_role.clone()),
-                prompt,
-                working_directory: bootstrap.working_directory,
-                plugin_dir: Some(bootstrap.plugin_dir),
-                agent: Some(bootstrap.agent_name),
-                model: runtime.model,
-                harness: runtime.harness,
-                cli_path_override: runtime.cli_path_override,
-                logical_effort: runtime.logical_effort,
-                approval_policy: runtime.approval_policy,
-                sandbox_mode: runtime.sandbox_mode,
-                service_tier: runtime.service_tier,
-                max_tokens: None,
-                timeout_secs: Some(input.timeout.as_secs().max(1)),
-                env,
-            })
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("failed to spawn automation judge: {error}"))
-            })?;
-        let output = client.wait_for_completion(&handle).await.map_err(|error| {
-            AppError::Infrastructure(format!("automation judge failed: {error}"))
-        })?;
-        if !output.success {
-            return Err(AppError::Infrastructure(format!(
-                "automation judge exited unsuccessfully: {}",
-                output.content.trim()
-            )));
-        }
+            "automation judge",
+            prompt,
+            input.timeout,
+            AutomationUtilityModelPolicy::LockedDefault,
+        )
+        .await?;
         Ok(AutomationJudgeInvocationOutput {
-            raw_output: output.content,
-            model_id,
+            raw_output: output.raw_output,
+            model_id: output.model_id,
         })
     }
 }
@@ -516,71 +463,19 @@ impl AutomationPlanJudgeInvoker for HarnessAutomationPlanJudgeInvoker {
             );
         }
 
-        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
-            .map_err(AppError::Validation)?;
-        let mut runtime = self
-            .state
-            .resolve_background_agent_runtime_for_harness(harness, "automation plan judge")
-            .await?;
-        runtime.model = input.plan_judge_model.clone();
-        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let project = self
-            .state
-            .project_repo
-            .get_by_id(&input.automation.project_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "automation plan judge project {} not found",
-                    input.automation.project_id.as_str()
-                ))
-            })?;
-        let project_working_directory = validate_absolute_non_root_path(
-            Path::new(&project.working_directory),
-            "automation plan judge project checkout",
-        )?;
-        let bootstrap = resolve_harness_agent_bootstrap(
-            helper_harness,
+        let output = invoke_automation_utility_agent(
+            &self.state,
+            &input.automation,
             agent_names::AGENT_AUTOMATION_PLAN_JUDGE,
-            project_working_directory,
-        );
-        let env = runtime.env_with_overrides(bootstrap.env);
-        let client = Arc::clone(&runtime.client);
-        let model_id = runtime.model.clone();
-        let handle = client
-            .spawn_agent(AgentConfig {
-                role: AgentRole::Custom(bootstrap.agent_role.clone()),
-                prompt,
-                working_directory: bootstrap.working_directory,
-                plugin_dir: Some(bootstrap.plugin_dir),
-                agent: Some(bootstrap.agent_name),
-                model: runtime.model,
-                harness: runtime.harness,
-                cli_path_override: runtime.cli_path_override,
-                logical_effort: runtime.logical_effort,
-                approval_policy: runtime.approval_policy,
-                sandbox_mode: runtime.sandbox_mode,
-                service_tier: runtime.service_tier,
-                max_tokens: None,
-                timeout_secs: Some(input.timeout.as_secs().max(1)),
-                env,
-            })
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("failed to spawn automation plan judge: {error}"))
-            })?;
-        let output = client.wait_for_completion(&handle).await.map_err(|error| {
-            AppError::Infrastructure(format!("automation plan judge failed: {error}"))
-        })?;
-        if !output.success {
-            return Err(AppError::Infrastructure(format!(
-                "automation plan judge exited unsuccessfully: {}",
-                output.content.trim()
-            )));
-        }
+            "automation plan judge",
+            prompt,
+            input.timeout,
+            AutomationUtilityModelPolicy::Override(input.plan_judge_model.clone()),
+        )
+        .await?;
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: output.content,
-            model_id,
+            raw_output: output.raw_output,
+            model_id: output.model_id,
         })
     }
 }
@@ -1202,6 +1097,23 @@ fn verification_summary_judge_context(
     }
 }
 
+fn model_native_verification_judge_context(
+    status: PlanVerificationStatusKind,
+) -> AutomationPlanVerificationJudgeContext {
+    AutomationPlanVerificationJudgeContext {
+        status: status.as_str().to_string(),
+        in_progress: status.is_in_progress(),
+        generation: None,
+        current_round: None,
+        max_rounds: None,
+        convergence_reason: None,
+        gap_count: None,
+        gap_score: None,
+        gaps: Vec::new(),
+        unavailable_reason: None,
+    }
+}
+
 fn verification_unavailable_judge_context(
     session: Option<&IdeationSession>,
     detail: String,
@@ -1366,6 +1278,7 @@ pub struct AutomationScheduler {
     service: AutomationService,
     provisioner: AutomationRunProvisioner,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -1424,7 +1337,7 @@ impl AutomationScheduler {
         let provisioner = AutomationRunProvisioner::new(
             automation_repo,
             Arc::clone(&run_repo),
-            conversation_repo,
+            Arc::clone(&conversation_repo),
             Arc::clone(&workspace_repo),
             starter,
             event_emitter,
@@ -1435,6 +1348,7 @@ impl AutomationScheduler {
             service,
             provisioner,
             agent_run_repo,
+            conversation_repo,
             run_repo,
             workspace_repo,
             ideation_session_repo,
@@ -1766,6 +1680,20 @@ impl AutomationScheduler {
             | AutomationRunStatus::Completed
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed => {
+                if run.status == AutomationRunStatus::Completed
+                    && automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL
+                {
+                    self.transition_service
+                        .transition_automation_status(
+                            &automation.id,
+                            AutomationStatus::Active,
+                            AutomationStatus::Completed,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    return Ok(());
+                }
                 if run.status == AutomationRunStatus::Merged
                     && !self.finalize_merged_run_conversation(automation, run).await
                 {
@@ -1822,6 +1750,11 @@ impl AutomationScheduler {
             .workspace_repo
             .get_by_conversation_id(conversation_id)
             .await?;
+        if automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL {
+            self.observe_ideation_bridge_run(automation, run, workspace.as_ref(), summary)
+                .await?;
+            return Ok(());
+        }
         if let Some(workspace) = workspace.as_ref() {
             if workspace.mode == AgentConversationWorkspaceMode::Plan {
                 self.observe_plan_phase_running_run(automation, run, workspace, summary)
@@ -2013,6 +1946,169 @@ impl AutomationScheduler {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    async fn observe_ideation_bridge_run(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        workspace: Option<&AgentConversationWorkspace>,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(workspace) = workspace else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge lost its planning workspace",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge has no linked planning session",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+        let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge planning session was not found",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+
+        if session.status == IdeationSessionStatus::Accepted {
+            if self
+                .transition_service
+                .transition_run_status(
+                    &run.id,
+                    AutomationRunStatus::Running,
+                    AutomationRunStatus::Completed,
+                    None,
+                    None,
+                )
+                .await?
+            {
+                summary.completed_runs += 1;
+                self.transition_service
+                    .transition_automation_status(
+                        &automation.id,
+                        AutomationStatus::Active,
+                        AutomationStatus::Completed,
+                        None,
+                        None,
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+        if session.status != IdeationSessionStatus::Active {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_not_finalized",
+                &format!(
+                    "Automation ideation bridge session entered {} before finalization",
+                    session.status
+                ),
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+        if running_run_has_exceeded(run, self.config.max_run_duration) {
+            self.fail_running_run(
+                run,
+                "timeout",
+                "Automation ideation bridge exceeded max_run_duration_secs",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let bridge_conversation = self
+            .conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session_id.as_str())
+            .await?;
+        let bridge_agent_run = match bridge_conversation.as_ref() {
+            Some(conversation) => {
+                self.latest_agent_run_for_current_phase(&conversation.id, run)
+                    .await?
+            }
+            None => None,
+        };
+        let restart_orphan = bridge_agent_run
+            .as_ref()
+            .is_some_and(agent_run_is_restart_orphan);
+        match bridge_agent_run.as_ref().map(|agent_run| agent_run.status) {
+            Some(AgentRunStatus::Failed) => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_agent_failed",
+                    "Automation ideation bridge agent exited before finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Cancelled) if !restart_orphan => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_agent_failed",
+                    "Automation ideation bridge agent exited before finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Completed) => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_not_finalized",
+                    "Automation ideation bridge agent completed without finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Running) => {}
+            Some(AgentRunStatus::Cancelled) | None => {
+                if session.pending_initial_prompt.is_some()
+                    || self.resumer.is_ideation_agent_running(session_id).await?
+                {
+                    return Ok(());
+                }
+                let Some(approval) = matching_plan_approval_for_workspace(
+                    &self.ideation_session_repo,
+                    &self.plan_approval_repo,
+                    workspace,
+                )
+                .await?
+                else {
+                    self.fail_running_run(
+                        run,
+                        "ideation_bridge_approval_missing",
+                        "Automation ideation bridge lost its approved plan",
+                        summary,
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                self.resumer
+                    .resume_ideation_with_prompt(
+                        session_id,
+                        &ideation_bridge_delivery_prompt(&approval),
+                    )
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -2429,6 +2525,43 @@ impl AutomationScheduler {
             }
         };
 
+        let Some(artifact_id) = plan_artifact_id else {
+            return PlanVerificationJudgeGate {
+                context: Some(verification_unavailable_judge_context(
+                    Some(&session),
+                    "planning session has no linked plan".to_string(),
+                )),
+                ..PlanVerificationJudgeGate::default()
+            };
+        };
+        let verification_request = AutomationPlanVerificationStartRequest {
+            session_id: session_id.clone(),
+            artifact_id: artifact_id.to_string(),
+            provider_harness: AgentHarnessKind::from_str(automation.provider_harness.trim()).ok(),
+        };
+        let mut action_status = match self
+            .plan_verification_starter
+            .verification_status(&verification_request)
+            .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    session_id = %session_id.as_str(),
+                    error = %error,
+                    "Automation model-native plan verification status read failed"
+                );
+                return PlanVerificationJudgeGate {
+                    context: Some(verification_unavailable_judge_context(
+                        Some(&session),
+                        format!("model-native verification status read failed: {error}"),
+                    )),
+                    ..PlanVerificationJudgeGate::default()
+                };
+            }
+        };
+
         let mut effective_status =
             match load_effective_verification_status(self.ideation_session_repo.as_ref(), &session)
                 .await
@@ -2452,62 +2585,93 @@ impl AutomationScheduler {
             };
 
         let mut force_hold_after_start = false;
-        if baseline_changed
+        if action_status == PlanVerificationStatusKind::Unverified
+            && baseline_changed
             && verification_status_allows_deep_start(effective_status.0, effective_status.1)
         {
-            if let Some(artifact_id) = plan_artifact_id {
-                match self
-                    .plan_verification_starter
-                    .start_verification(AutomationPlanVerificationStartRequest {
-                        session_id: session_id.clone(),
-                        artifact_id: artifact_id.to_string(),
-                        provider_harness: AgentHarnessKind::from_str(
-                            automation.provider_harness.trim(),
-                        )
-                        .ok(),
-                    })
-                    .await
-                {
-                    Ok(AutomationPlanVerificationStartOutcome::Unavailable { detail }) => {
-                        tracing::warn!(
-                            automation_id = %automation.id,
-                            session_id = %session_id.as_str(),
-                            artifact_id,
+            match self
+                .plan_verification_starter
+                .start_verification(verification_request.clone())
+                .await
+            {
+                Ok(AutomationPlanVerificationStartOutcome::Unavailable { detail }) => {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        session_id = %session_id.as_str(),
+                        artifact_id,
+                        detail,
+                        "Automation plan verification could not be started"
+                    );
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
                             detail,
-                            "Automation plan verification could not be started"
-                        );
-                        return PlanVerificationJudgeGate {
-                            context: Some(verification_unavailable_judge_context(
-                                Some(&session),
-                                detail,
-                            )),
-                            ..PlanVerificationJudgeGate::default()
-                        };
-                    }
-                    Ok(outcome) => {
-                        force_hold_after_start = matches!(
-                            outcome,
-                            AutomationPlanVerificationStartOutcome::Started { .. }
-                                | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }
-                        );
-                        match self.ideation_session_repo.get_by_id(&session_id).await {
-                            Ok(Some(updated)) => {
-                                session = updated;
-                                effective_status = match load_effective_verification_status(
-                                    self.ideation_session_repo.as_ref(),
-                                    &session,
-                                )
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
+                }
+                Ok(outcome) => {
+                    force_hold_after_start = matches!(
+                        &outcome,
+                        AutomationPlanVerificationStartOutcome::Started { .. }
+                            | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }
+                    );
+                    action_status = match outcome {
+                        AutomationPlanVerificationStartOutcome::Started { .. }
+                        | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. } => {
+                            match self
+                                .plan_verification_starter
+                                .verification_status(&verification_request)
                                 .await
-                                {
-                                    Ok(status) => status,
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            automation_id = %automation.id,
-                                            session_id = %session_id.as_str(),
-                                            error = %error,
-                                            "Automation plan verification post-start effective status read failed"
-                                        );
-                                        return PlanVerificationJudgeGate {
+                            {
+                                Ok(status) => status,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        automation_id = %automation.id,
+                                        session_id = %session_id.as_str(),
+                                        error = %error,
+                                        "Automation post-start model-native verification status read failed"
+                                    );
+                                    return PlanVerificationJudgeGate {
+                                            hold_judge: true,
+                                            context: Some(verification_unavailable_judge_context(
+                                                Some(&session),
+                                                format!("verification started but status read failed: {error}"),
+                                            )),
+                                        };
+                                }
+                            }
+                        }
+                        AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                            status:
+                                VerificationStatus::Verified | VerificationStatus::ImportedVerified,
+                            ..
+                        } => PlanVerificationStatusKind::Verified,
+                        AutomationPlanVerificationStartOutcome::AlreadyTerminal { .. } => {
+                            PlanVerificationStatusKind::Failed
+                        }
+                        AutomationPlanVerificationStartOutcome::Unavailable { .. } => {
+                            PlanVerificationStatusKind::Unverified
+                        }
+                    };
+                    match self.ideation_session_repo.get_by_id(&session_id).await {
+                        Ok(Some(updated)) => {
+                            session = updated;
+                            effective_status = match load_effective_verification_status(
+                                self.ideation_session_repo.as_ref(),
+                                &session,
+                            )
+                            .await
+                            {
+                                Ok(status) => status,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        automation_id = %automation.id,
+                                        session_id = %session_id.as_str(),
+                                        error = %error,
+                                        "Automation plan verification post-start effective status read failed"
+                                    );
+                                    return PlanVerificationJudgeGate {
                                             context: Some(verification_unavailable_judge_context(
                                                 Some(&session),
                                                 format!(
@@ -2516,56 +2680,80 @@ impl AutomationScheduler {
                                             )),
                                             ..PlanVerificationJudgeGate::default()
                                         };
-                                    }
-                                };
-                            }
-                            Ok(None) => {
-                                return PlanVerificationJudgeGate {
-                                    context: Some(verification_unavailable_judge_context(
-                                        None,
-                                        "planning session disappeared after verification start"
-                                            .to_string(),
-                                    )),
-                                    ..PlanVerificationJudgeGate::default()
-                                };
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    automation_id = %automation.id,
-                                    session_id = %session_id.as_str(),
-                                    error = %error,
-                                    "Automation plan verification post-start state read failed"
-                                );
-                                return PlanVerificationJudgeGate {
-                                    context: Some(verification_unavailable_judge_context(
-                                        Some(&session),
-                                        format!(
-                                            "verification post-start state read failed: {error}"
-                                        ),
-                                    )),
-                                    ..PlanVerificationJudgeGate::default()
-                                };
-                            }
+                                }
+                            };
+                        }
+                        Ok(None) => {
+                            return PlanVerificationJudgeGate {
+                                context: Some(verification_unavailable_judge_context(
+                                    None,
+                                    "planning session disappeared after verification start"
+                                        .to_string(),
+                                )),
+                                ..PlanVerificationJudgeGate::default()
+                            };
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                automation_id = %automation.id,
+                                session_id = %session_id.as_str(),
+                                error = %error,
+                                "Automation plan verification post-start state read failed"
+                            );
+                            return PlanVerificationJudgeGate {
+                                context: Some(verification_unavailable_judge_context(
+                                    Some(&session),
+                                    format!("verification post-start state read failed: {error}"),
+                                )),
+                                ..PlanVerificationJudgeGate::default()
+                            };
                         }
                     }
-                    Err(error) => {
-                        tracing::warn!(
-                            automation_id = %automation.id,
-                            session_id = %session_id.as_str(),
-                            artifact_id,
-                            error = %error,
-                            "Automation plan verification start failed"
-                        );
-                        return PlanVerificationJudgeGate {
-                            context: Some(verification_unavailable_judge_context(
-                                Some(&session),
-                                format!("verification start failed: {error}"),
-                            )),
-                            ..PlanVerificationJudgeGate::default()
-                        };
-                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        session_id = %session_id.as_str(),
+                        artifact_id,
+                        error = %error,
+                        "Automation plan verification start failed"
+                    );
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
+                            format!("verification start failed: {error}"),
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
                 }
             }
+        }
+
+        if action_status != PlanVerificationStatusKind::Unverified {
+            let context = model_native_verification_judge_context(action_status);
+            if action_status.is_in_progress() {
+                if verification_hold_timed_out(&session, self.config.plan_verification_hold_timeout)
+                {
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
+                            format!(
+                                "verification did not reach a terminal state within {} seconds",
+                                self.config.plan_verification_hold_timeout.as_secs()
+                            ),
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
+                }
+                return PlanVerificationJudgeGate {
+                    hold_judge: true,
+                    context: Some(context),
+                };
+            }
+            return PlanVerificationJudgeGate {
+                hold_judge: false,
+                context: Some(context),
+            };
         }
 
         let (status, in_progress) = effective_status;
@@ -2645,13 +2833,32 @@ impl AutomationScheduler {
         let Some(conversation_id) = run.conversation_id.as_ref() else {
             return Ok(());
         };
-        let Some(workspace) = self
+        let workspace = self
             .workspace_repo
             .get_by_conversation_id(conversation_id)
-            .await?
-        else {
+            .await?;
+        let Some(workspace) = workspace else {
+            if automation.run_mode == IDEATION_BRIDGE_RUN_MODE {
+                self.pause_ideation_bridge_for_missing_session(
+                    automation,
+                    "Automation ideation bridge lost its planning workspace",
+                    summary,
+                )
+                .await?;
+            }
             return Ok(());
         };
+        if automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+            && workspace.linked_ideation_session_id.is_none()
+        {
+            self.pause_ideation_bridge_for_missing_session(
+                automation,
+                "Automation ideation bridge has no linked planning session",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
 
         if self.resumer.is_agent_running(conversation_id).await? {
             let agent_phase_started_at = self
@@ -2695,7 +2902,7 @@ impl AutomationScheduler {
         )
         .await?
         {
-            self.deliver_plan_approval(&run, &workspace, &approval, summary)
+            self.deliver_plan_approval(automation, &run, &workspace, &approval, summary)
                 .await?;
             return Ok(());
         }
@@ -2801,6 +3008,7 @@ impl AutomationScheduler {
 
     async fn deliver_plan_approval(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         workspace: &AgentConversationWorkspace,
         approval: &PlanArtifactApproval,
@@ -2816,9 +3024,77 @@ impl AutomationScheduler {
             return Ok(());
         }
 
+        let bridge_session_id = if automation.run_mode == IDEATION_BRIDGE_RUN_MODE {
+            let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+                self.pause_ideation_bridge_for_missing_session(
+                    automation,
+                    "Automation ideation bridge has no linked planning session",
+                    summary,
+                )
+                .await?;
+                return Ok(());
+            };
+            let verified = self
+                .ideation_session_repo
+                .get_by_id(session_id)
+                .await?
+                .is_some_and(|session| session.verification_status == VerificationStatus::Verified);
+            if !verified {
+                if self
+                    .transition_service
+                    .transition_automation_status(
+                        &automation.id,
+                        AutomationStatus::Active,
+                        AutomationStatus::Paused,
+                        Some("ideation_bridge_verification_failed".to_string()),
+                        Some(
+                            "The approved automation bridge plan did not complete deep verification"
+                                .to_string(),
+                        ),
+                    )
+                    .await?
+                {
+                    summary.paused_automations += 1;
+                }
+                return Ok(());
+            }
+            Some(session_id.clone())
+        } else {
+            None
+        };
+
+        if self
+            .service
+            .apply_pending_goal_replan_for_run(&automation.id, run)
+            .await?
+            == PendingGoalReplanApplyOutcome::Stale
+        {
+            if self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("goal_replan_stale".to_string()),
+                    Some(
+                        "Goal items changed after the judge proposed a structural re-plan; review the proposal before resuming"
+                            .to_string(),
+                    ),
+                )
+                .await?
+            {
+                summary.paused_automations += 1;
+            }
+            return Ok(());
+        }
+
         clear_plan_phase_publication_metadata(&self.run_repo, &self.workspace_repo, run, workspace)
             .await?;
-        self.resumer.switch_to_edit(conversation_id).await?;
+        if bridge_session_id.is_some() {
+            self.resumer.switch_to_ideation(conversation_id).await?;
+        } else {
+            self.resumer.switch_to_edit(conversation_id).await?;
+        }
         if !self
             .transition_service
             .transition_run_status_clearing_plan_pending_instructions(
@@ -2838,12 +3114,22 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        let prompt = approval_delivery_prompt(approval);
-        match self
-            .resumer
-            .resume_with_prompt(conversation_id, &prompt)
-            .await
-        {
+        let delivery = match bridge_session_id.as_ref() {
+            Some(session_id) => {
+                self.resumer
+                    .resume_ideation_with_prompt(
+                        session_id,
+                        &ideation_bridge_delivery_prompt(approval),
+                    )
+                    .await
+            }
+            None => {
+                self.resumer
+                    .resume_with_prompt(conversation_id, &approval_delivery_prompt(approval))
+                    .await
+            }
+        };
+        match delivery {
             Ok(ResumeDelivery::Delivered) => {}
             Ok(ResumeDelivery::QueuedAndPurged) => {
                 self.run_repo
@@ -2859,6 +3145,28 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
+        }
+        Ok(())
+    }
+
+    async fn pause_ideation_bridge_for_missing_session(
+        &self,
+        automation: &Automation,
+        detail: &str,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("ideation_bridge_missing_session".to_string()),
+                Some(detail.to_string()),
+            )
+            .await?
+        {
+            summary.paused_automations += 1;
         }
         Ok(())
     }
@@ -3468,12 +3776,11 @@ impl AutomationScheduler {
                 .await;
         }
 
-        self.sync_auto_merge_enable_warning_from_workspace(run, &workspace)
+        self.sync_auto_merge_enable_warning_from_workspace(automation, run, &workspace)
             .await?;
 
         match self
-            .signal_checker
-            .check_pr_status(&workspace, pr_number)
+            .check_pr_status_with_transient_retry(&workspace, pr_number)
             .await
         {
             Ok(PrStatus::Open) => {
@@ -3584,6 +3891,29 @@ impl AutomationScheduler {
         Ok(())
     }
 
+    async fn check_pr_status_with_transient_retry(
+        &self,
+        workspace: &AgentConversationWorkspace,
+        pr_number: i64,
+    ) -> AppResult<PrStatus> {
+        let first = self
+            .signal_checker
+            .check_pr_status(workspace, pr_number)
+            .await;
+        if !matches!(first, Err(AppError::Infrastructure(_))) {
+            return first;
+        }
+        tracing::warn!(
+            conversation_id = %workspace.conversation_id,
+            pr_number,
+            "Retrying transient automation PR signal check failure"
+        );
+        tokio::task::yield_now().await;
+        self.signal_checker
+            .check_pr_status(workspace, pr_number)
+            .await
+    }
+
     async fn enable_run_auto_merge_preference(
         &self,
         workspace: &AgentConversationWorkspace,
@@ -3643,6 +3973,7 @@ impl AutomationScheduler {
 
     async fn sync_auto_merge_enable_warning_from_workspace(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         workspace: &AgentConversationWorkspace,
     ) -> AppResult<()> {
@@ -3663,9 +3994,12 @@ impl AutomationScheduler {
                 .update_published_run_error(
                     &run.id,
                     Some(AUTO_MERGE_ENABLE_WARNING_CODE.to_string()),
-                    Some(detail),
+                    Some(detail.clone()),
                 )
                 .await?;
+            self.transition_service
+                .record_auto_merge_enable_warning(automation, run, &detail)
+                .await;
         } else if run.error_code.as_deref() == Some(AUTO_MERGE_ENABLE_WARNING_CODE) {
             self.run_repo
                 .update_published_run_error(&run.id, None, None)

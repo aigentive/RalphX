@@ -526,13 +526,13 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
             },
             {
               type: "tool_use",
-              id: "verification-update-1",
-              name: "mcp__ralphx__report_verification_round",
-              arguments: { round: 2, generation: 4 },
+              id: "verification-complete-1",
+              name: "mcp__ralphx__complete_plan_verification",
+              arguments: {},
               result: [
                 {
                   type: "text",
-                  text: "{\"status\":\"reviewing\",\"current_round\":2,\"max_rounds\":4,\"current_gaps\":[{\"severity\":\"major\",\"summary\":\"Missing merge widget baseline\"}],\"convergence_reason\":\"jaccard_converged\"}",
+                  text: "{\"status\":\"verified\",\"verified_plan_artifact_id\":\"artifact-1\"}",
                 },
               ],
             },
@@ -544,19 +544,7 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
               result: [
                 {
                   type: "text",
-                  text: "{\"status\":\"verified\",\"current_round\":3,\"max_rounds\":3,\"convergence_reason\":\"zero_blocking\",\"verification_child\":{\"latestChildSessionId\":\"child-session-12345678\",\"agentState\":\"likely_waiting\",\"lastAssistantMessage\":\"Waiting on parent confirmation before closing the verification thread.\"}}",
-                },
-              ],
-            },
-            {
-              type: "tool_use",
-              id: "verification-pending-1",
-              name: "mcp__ralphx__get_pending_confirmations",
-              arguments: {},
-              result: [
-                {
-                  type: "text",
-                  text: "{\"sessions\":[{\"session_id\":\"pending-1\"},{\"session_id\":\"pending-2\"}]}",
+                  text: "{\"status\":\"verified\",\"plan_artifact_id\":\"artifact-1\",\"verified_plan_artifact_id\":\"artifact-1\",\"in_progress\":false}",
                 },
               ],
             },

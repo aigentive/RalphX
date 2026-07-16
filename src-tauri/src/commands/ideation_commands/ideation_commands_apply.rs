@@ -41,6 +41,75 @@ struct TxOutput {
     any_ready_tasks: bool,
 }
 
+fn recheck_exact_plan_verification(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    expected_plan_id: Option<&str>,
+    required: bool,
+) -> AppResult<()> {
+    if !required {
+        return Ok(());
+    }
+    let (current_plan_id, verified_plan_id): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT plan_artifact_id, verified_plan_artifact_id
+             FROM ideation_sessions
+             WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| {
+            AppError::Database(format!(
+                "Failed to recheck plan verification proof: {}",
+                error
+            ))
+        })?;
+    if current_plan_id.as_deref() != expected_plan_id
+        || verified_plan_id.as_deref() != current_plan_id.as_deref()
+    {
+        return Err(AppError::Validation(
+            "Plan changed or lost exact verification proof before acceptance; verify the current plan and accept again"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn finalize_session_acceptance(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    require_pending_confirmation: bool,
+) -> AppResult<()> {
+    let rows = if require_pending_confirmation {
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET status = 'accepted', acceptance_status = 'accepted',
+                 converted_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+             WHERE id = ?1 AND status = 'active' AND acceptance_status = 'pending'",
+            [session_id],
+        )
+    } else {
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET status = 'accepted',
+                 converted_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+             WHERE id = ?1 AND status = 'active'",
+            [session_id],
+        )
+    }
+    .map_err(|error| AppError::Database(format!("Failed to accept ideation session: {}", error)))?;
+    if rows != 1 {
+        return Err(AppError::Validation(if require_pending_confirmation {
+            "Session is no longer awaiting acceptance".to_string()
+        } else {
+            "Session is no longer active".to_string()
+        }));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Transaction Phase Helpers
 // ============================================================================
@@ -475,6 +544,26 @@ pub async fn apply_proposals_core(
     app_state: &AppState,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, false).await
+}
+
+/// Apply every selected proposal under a still-pending human confirmation.
+///
+/// The pending confirmation is consumed in the same transaction that accepts
+/// the session and creates its execution-plan/task rows. Verification admission
+/// failures therefore leave the confirmation pending for a later retry.
+pub async fn apply_pending_proposals_core(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, true).await
+}
+
+async fn apply_proposals_core_inner(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+    require_pending_confirmation: bool,
+) -> AppResult<ApplyProposalsResult> {
     let session_id = IdeationSessionId::from_string(input.session_id);
 
     // Status will be determined automatically based on dependencies:
@@ -496,9 +585,17 @@ pub async fn apply_proposals_core(
             "Cannot apply proposals from an inactive session".to_string(),
         ));
     }
+    if require_pending_confirmation
+        && session.acceptance_status != Some(crate::domain::entities::AcceptanceStatus::Pending)
+    {
+        return Err(AppError::Validation(
+            "Session is not in pending_acceptance state".to_string(),
+        ));
+    }
 
-    // Verification gate: block acceptance if plan is not verified (when enforcement is enabled).
-    // Resolve the effective policy once from (settings, session.origin) and pass to gate.
+    // Acceptance is the only automatic-verification boundary. Draft creation and
+    // revision stay uninterrupted; a required unverified plan queues one visible
+    // Verify Plan turn here and asks the caller to retry after proof is recorded.
     let ideation_settings = app_state
         .ideation_settings_repo
         .get_settings()
@@ -506,9 +603,14 @@ pub async fn apply_proposals_core(
         .map_err(|e| AppError::Database(format!("Failed to get ideation settings: {}", e)))?;
     let effective_policy =
         crate::domain::services::resolve_effective_gate_policy(&ideation_settings, session.origin);
-    if let Err(e) = crate::domain::services::check_verification_gate(&session, &effective_policy) {
-        return Err(AppError::Validation(e.to_string()));
-    }
+    let chat_service = app_state.build_chat_service_with_managed_execution_state();
+    crate::application::plan_verification_service::ensure_plan_verification_for_acceptance(
+        app_state,
+        &chat_service,
+        &session,
+        &effective_policy,
+    )
+    .await?;
 
     let proposal_ids: HashSet<TaskProposalId> = input
         .proposal_ids
@@ -608,8 +710,9 @@ pub async fn apply_proposals_core(
     }
 
     let proposals_to_apply: Vec<TaskProposal> = all_proposals
-        .into_iter()
+        .iter()
         .filter(|p| proposal_ids.contains(&p.id))
+        .cloned()
         .collect();
 
     if proposals_to_apply.len() != proposal_ids.len() {
@@ -706,14 +809,35 @@ pub async fn apply_proposals_core(
         })
         .collect();
 
+    let session_converted = all_proposals
+        .iter()
+        .filter(|proposal| is_local_proposal(proposal, &project_dir))
+        .filter(|proposal| proposal.created_task_id.is_none())
+        .all(|proposal| proposal_ids.contains(&proposal.id));
+
     // All proposals were foreign — transition session to Accepted and return early.
     if proposals_to_apply.is_empty() {
+        if !session_converted {
+            return Err(AppError::Validation(
+                "No local proposals were selected for acceptance".to_string(),
+            ));
+        }
         let foreign_skipped = total_count;
+        let session_id_tx = session_id.as_str().to_string();
+        let expected_plan_id_tx = plan_artifact_id.as_ref().map(ToString::to_string);
+        let require_verification_tx = effective_policy.require_verification_for_accept;
         app_state
-            .ideation_session_repo
-            .update_status(&session_id, IdeationSessionStatus::Accepted)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .db
+            .run_transaction(move |conn| {
+                recheck_exact_plan_verification(
+                    conn,
+                    &session_id_tx,
+                    expected_plan_id_tx.as_deref(),
+                    require_verification_tx,
+                )?;
+                finalize_session_acceptance(conn, &session_id_tx, require_pending_confirmation)
+            })
+            .await?;
         return Ok(ApplyProposalsResult {
             created_task_ids: vec![],
             dependencies_created: 0,
@@ -782,6 +906,8 @@ pub async fn apply_proposals_core(
     let project_base_branch_tx = project.base_branch.clone();
     let project_name_tx = project.name.clone();
     let project_pr_eligible_tx = project.github_pr_enabled;
+    let require_verification_for_accept_tx = effective_policy.require_verification_for_accept;
+    let session_converted_tx = session_converted;
     let proposals_tx = proposals_to_apply.clone();
     // Convert to String-keyed map so the closure is 'static
     let proposal_deps_tx: HashMap<String, Vec<String>> = proposal_deps
@@ -797,6 +923,13 @@ pub async fn apply_proposals_core(
     let tx_output = app_state
         .db
         .run_transaction(move |conn| {
+            recheck_exact_plan_verification(
+                conn,
+                &session_id_str,
+                plan_artifact_id_tx.as_ref().map(ArtifactId::as_str),
+                require_verification_for_accept_tx,
+            )?;
+
             // ----------------------------------------------------------------
             // (a) INSERT execution_plan
             // ----------------------------------------------------------------
@@ -864,6 +997,10 @@ pub async fn apply_proposals_core(
                 &created_tasks,
             )?;
 
+            if session_converted_tx {
+                finalize_session_acceptance(conn, &session_id_str, require_pending_confirmation)?;
+            }
+
             Ok(TxOutput {
                 execution_plan_id,
                 plan_branch_id: branch_id.clone(),
@@ -890,31 +1027,6 @@ pub async fn apply_proposals_core(
                     error
                 ))
             })?;
-    }
-
-    // ========================================================================
-    // POST-TRANSACTION: session status transition to Accepted
-    // ========================================================================
-
-    // Check if all LOCAL proposals in session are now applied.
-    // Foreign proposals (target_project pointing to another project) are intentionally
-    // excluded — they were migrated elsewhere and should not block session acceptance.
-    let remaining = app_state
-        .task_proposal_repo
-        .get_by_session(&session_id)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?
-        .into_iter()
-        .filter(|p| is_local_proposal(p, &project_dir) && p.created_task_id.is_none())
-        .count();
-
-    let session_converted = remaining == 0;
-    if session_converted {
-        app_state
-            .ideation_session_repo
-            .update_status(&session_id, IdeationSessionStatus::Accepted)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
     let is_user_title = session

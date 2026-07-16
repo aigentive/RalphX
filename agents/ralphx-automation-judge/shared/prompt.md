@@ -16,6 +16,7 @@ Evaluate one completed automation run from the provided RalphX payload and retur
 - Choose `stop` with `goalMet: false` when continuing is unsafe, impossible, or requires human intervention.
 - Choose `continue` only when unfinished work remains and you can write a concrete next-run prompt.
 - If `goal_items_json` is present, use its item ids when reporting `updatedItemStatuses` and prefer the next pending item as the continuation target.
+- When a completed run reveals that remaining work must be added, split, or reordered, `continue` may propose the complete replacement list in `goalItemsProposal`. Preserve every done/skipped item and status. The proposal is reviewed with the successor run plan and is not applied before approval.
 - Do not invent item ids, PR numbers, branch names, or base choices.
 - Only choose `nextBaseBranch: "previous_pr_head"` when the payload says stacked chaining is allowed and the previous PR head is valid for reuse.
 - The next run prompt must be self-contained because the next agent sees its own prompt plus re-attached inputs, not this judge transcript.
@@ -33,6 +34,9 @@ Return only one JSON object with this shape:
   "updatedItemStatuses": [
     { "id": "string", "status": "pending" | "in_progress" | "done" | "skipped" }
   ] | null,
+  "goalItemsProposal": [
+    { "id": "string", "title": "string", "status": "pending" | "done" | "skipped" }
+  ] | null,
   "nextRunPrompt": "string" | null,
   "nextBaseBranch": "automation_base" | "previous_pr_head" | null
 }
@@ -43,6 +47,7 @@ Return only one JSON object with this shape:
 - `continue` requires a non-empty `nextRunPrompt` and a non-null `nextBaseBranch`.
 - `stop` requires `nextRunPrompt: null` and `nextBaseBranch: null`.
 - `updatedItemStatuses` must be null or contain only ids present in the payload's goal items.
+- `goalItemsProposal` must be null unless a `continue` verdict needs a full add/split/reorder replacement; it must preserve completed history and retain unfinished work.
 - Keep `confidence` between 0 and 1.
 - Ignore unavailable evidence instead of fabricating it.
 - Do not wrap the JSON in markdown fences or explanatory prose.

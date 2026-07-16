@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useAgentArtifactUiStore } from "@/components/agents/agentArtifactUiStore";
 import type { IdeationSession } from "@/types/ideation";
 import {
   navigateToAgentConversation,
@@ -43,9 +44,11 @@ vi.mock("@/stores/ideationStore", () => ({
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: { getState: mockProjectGetState },
 }));
-vi.mock("@/stores/agentSessionStore", () => ({
+vi.mock("@/stores/agentSessionStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/agentSessionStore")>()),
   useAgentSessionStore: {
     getState: () => ({
+      artifactByConversationId: {},
       selectConversation: selectConversationMock,
       setArtifactTab: setArtifactTabMock,
       setFocusedProject: setFocusedProjectMock,
@@ -108,6 +111,7 @@ function cacheLinkedConversation(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
   mockProjectGetState.mockReturnValue({
     activeProjectId: PROJECT_A,
     selectProject: selectProjectMock,
@@ -160,8 +164,23 @@ describe("navigateToAgentConversation", () => {
 
 describe("navigateToAgentPlan", () => {
   it("opens the exact conversation's Plan artifact", () => {
+    useAgentArtifactUiStore.getState().setArtifactState(CONVERSATION_A, {
+      isOpen: false,
+      activeTab: "tasks",
+      taskMode: "kanban",
+      hiddenTabs: ["plan"],
+    });
+
     navigateToAgentPlan(PROJECT_A, CONVERSATION_A);
 
+    expect(
+      useAgentArtifactUiStore.getState().artifactByConversationId[CONVERSATION_A],
+    ).toEqual({
+      isOpen: true,
+      activeTab: "plan",
+      taskMode: "kanban",
+      hiddenTabs: [],
+    });
     expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
     expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
     expect(setActiveConversationMock).toHaveBeenCalledWith(

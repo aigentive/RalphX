@@ -10,7 +10,7 @@ In progress.
 
 Landed so far:
 - phase 1 pilot skeleton under `agents/` for `ralphx-ideation`, `ralphx-ideation-team-lead`, and `ralphx-utility-session-namer`
-- verification cohort canonicalized for Claude generation: `ralphx-plan-verifier`, `ralphx-plan-critic-completeness`, `ralphx-plan-critic-implementation-feasibility`
+- model-native Verify Plan now reuses the active Plan conversation model and its general-purpose delegation surface; the former verifier cohort was removed
 - specialist/debate cohort canonicalized as Claude-only agents: ideation specialists plus `ralphx-ideation-advocate` / `ralphx-ideation-critic`
 - worker team lead canonicalized as Claude-only under `agents/ralphx-execution-team-lead/`; canonical-to-legacy prompt filename mapping is now explicit so runtime agent ids no longer need to match legacy markdown stems during migration
 - first cross-harness execution pair canonicalized: `ralphx-execution-reviewer` + `ralphx-execution-merger`
@@ -364,8 +364,6 @@ Requirements for the readonly ideation agent:
 Migrate:
 - ideation specialists
 - advocate/critic
-- plan critics
-- plan verifier
 
 This is where harness-specific delegation semantics matter most.
 
@@ -405,11 +403,8 @@ Remaining:
 - `ralphx-execution-merger`
 - `ralphx-execution-team-lead`
 
-### Verification / Debate
+### Debate
 
-- `ralphx-plan-verifier`
-- `ralphx-plan-critic-completeness`
-- `ralphx-plan-critic-implementation-feasibility`
 - `ralphx-ideation-advocate`
 - `ralphx-ideation-critic`
 
@@ -418,12 +413,6 @@ Remaining:
 - `ralphx-ideation-specialist-backend`
 - `ralphx-ideation-specialist-frontend`
 - `ralphx-ideation-specialist-infra`
-- `ralphx-ideation-specialist-ux`
-- `ralphx-ideation-specialist-code-quality`
-- `ralphx-ideation-specialist-prompt-quality`
-- `ralphx-ideation-specialist-intent`
-- `ralphx-ideation-specialist-pipeline-safety`
-- `ralphx-ideation-specialist-state-machine`
 
 ## Required Tests
 

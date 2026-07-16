@@ -53,28 +53,10 @@ export function canonicalAgentName(agentType: string): string {
       return "ralphx-ideation-critic";
     case "ideation-specialist-backend":
       return "ralphx-ideation-specialist-backend";
-    case "ideation-specialist-code-quality":
-      return "ralphx-ideation-specialist-code-quality";
     case "ideation-specialist-frontend":
       return "ralphx-ideation-specialist-frontend";
     case "ideation-specialist-infra":
       return "ralphx-ideation-specialist-infra";
-    case "ideation-specialist-intent":
-      return "ralphx-ideation-specialist-intent";
-    case "ideation-specialist-pipeline-safety":
-      return "ralphx-ideation-specialist-pipeline-safety";
-    case "ideation-specialist-prompt-quality":
-      return "ralphx-ideation-specialist-prompt-quality";
-    case "ideation-specialist-state-machine":
-      return "ralphx-ideation-specialist-state-machine";
-    case "ideation-specialist-ux":
-      return "ralphx-ideation-specialist-ux";
-    case "plan-verifier":
-      return "ralphx-plan-verifier";
-    case "plan-critic-completeness":
-      return "ralphx-plan-critic-completeness";
-    case "plan-critic-implementation-feasibility":
-      return "ralphx-plan-critic-implementation-feasibility";
     case "chat-task":
       return "ralphx-chat-task";
     case "chat-project":

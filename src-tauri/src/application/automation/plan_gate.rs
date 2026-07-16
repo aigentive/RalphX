@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AutomationPlanJudgeState, AutomationRun, ChatConversationId,
@@ -32,15 +33,32 @@ pub enum ResumeDelivery {
 pub trait AutomationRunResumer: Send + Sync {
     async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool>;
 
+    async fn is_ideation_agent_running(&self, session_id: &IdeationSessionId) -> AppResult<bool>;
+
     async fn launches_paused(&self) -> AppResult<bool>;
 
     async fn switch_to_edit(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
+
+    async fn switch_to_ideation(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 
     async fn resume_with_prompt(
         &self,
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<ResumeDelivery>;
+
+    async fn resume_ideation_with_prompt(
+        &self,
+        session_id: &IdeationSessionId,
+        prompt: &str,
+    ) -> AppResult<ResumeDelivery>;
+}
+
+pub(crate) fn ideation_bridge_delivery_prompt(approval: &PlanArtifactApproval) -> String {
+    format!(
+        "<auto-propose>Automation plan v{} is verified and approved. Read the current plan, run the cross-project check, create atomic implementation task proposals with explicit dependencies, analyze the dependency graph, and finalize all proposals into executable tasks. Do not ask for another confirmation; this approved automation bridge is the authorization boundary.</auto-propose>",
+        approval.artifact_version
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +91,11 @@ pub trait AutomationPlanVerificationStarter: Send + Sync {
         &self,
         request: AutomationPlanVerificationStartRequest,
     ) -> AppResult<AutomationPlanVerificationStartOutcome>;
+
+    async fn verification_status(
+        &self,
+        request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind>;
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +110,13 @@ impl AutomationPlanVerificationStarter for NoopAutomationPlanVerificationStarter
         Ok(AutomationPlanVerificationStartOutcome::Unavailable {
             detail: "automation plan verification starter is not configured".to_string(),
         })
+    }
+
+    async fn verification_status(
+        &self,
+        _request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind> {
+        Ok(PlanVerificationStatusKind::Unverified)
     }
 }
 

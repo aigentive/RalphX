@@ -95,6 +95,7 @@ pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod personas;
 pub mod persona_ingest;
+mod persona_ingest_batch;
 pub mod persona_prompt;
 pub mod persona_resolver;
 pub mod permission_state;
@@ -107,6 +108,9 @@ mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
+pub mod plan_verification_service;
+#[cfg(test)]
+mod plan_verification_service_tests;
 pub mod plan_ranking;
 pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;
@@ -169,7 +173,6 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
-pub mod verification_child_session;
 pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
@@ -390,6 +393,8 @@ mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
 #[cfg(test)]
+mod task_cleanup_service_tests;
+#[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
@@ -399,8 +404,6 @@ mod ticketing_cache_invalidator_tests;
 mod ticketing_pr_summary_tests;
 #[cfg(test)]
 mod validation_service_tests;
-#[cfg(test)]
-mod verification_child_session_tests;
 #[cfg(test)]
 mod verification_event_emitters_tests;
 #[cfg(test)]
