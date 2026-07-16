@@ -270,4 +270,117 @@ describe("filesystem tools", () => {
     expect(text).toContain(`- ${root}`);
     expect(result.isError).toBe(true);
   });
+
+  it("enforces configured roots without implicitly allowing cwd", async () => {
+    const cwd = makeWorkspace();
+    const allowedRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-"))
+    );
+    tempDirs.push(allowedRoot);
+    process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+    const insideFile = path.join(allowedRoot, "inside.txt");
+    const cwdFile = path.join(cwd, "cwd.txt");
+    fs.writeFileSync(insideFile, "allowed context\n");
+    fs.writeFileSync(cwdFile, "implicit cwd must be denied\n");
+
+    const inside = await handleFilesystemToolCall(
+      "fs_read_file",
+      { path: insideFile },
+      { filesystemEnforced: true }
+    );
+    expect(inside.content[0]?.text).toContain("allowed context");
+
+    await expect(
+      handleFilesystemToolCall(
+        "fs_list_dir",
+        { path: allowedRoot },
+        { filesystemEnforced: true }
+      )
+    ).resolves.toHaveProperty("content");
+    await expect(
+      handleFilesystemToolCall(
+        "fs_read_file",
+        { path: cwdFile },
+        { filesystemEnforced: true }
+      )
+    ).rejects.toThrow("outside the allowed filesystem roots");
+    await expect(
+      handleFilesystemToolCall(
+        "fs_read_file",
+        { path: path.join(allowedRoot, "..", path.basename(cwd), "cwd.txt") },
+        { filesystemEnforced: true }
+      )
+    ).rejects.toThrow("outside the allowed filesystem roots");
+  });
+
+  it("rejects absolute and symlink escapes in enforced mode", async () => {
+    makeWorkspace();
+    const allowedRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-"))
+    );
+    const outsideRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-outside-"))
+    );
+    tempDirs.push(allowedRoot, outsideRoot);
+    process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+    const outsideFile = path.join(outsideRoot, "secret.txt");
+    fs.writeFileSync(outsideFile, "secret\n");
+    const symlinkPath = path.join(allowedRoot, "escape.txt");
+    fs.symlinkSync(outsideFile, symlinkPath);
+
+    for (const target of [outsideFile, symlinkPath]) {
+      await expect(
+        handleFilesystemToolCall(
+          "fs_read_file",
+          { path: target },
+          { filesystemEnforced: true }
+        )
+      ).rejects.toThrow("outside the allowed filesystem roots");
+    }
+  });
+
+  it("denies every filesystem tool when enforced roots are empty", async () => {
+    makeWorkspace();
+    delete process.env.RALPHX_FILESYSTEM_READ_ROOTS;
+
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["fs_read_file", { path: "README.md" }],
+      ["fs_list_dir", { path: "." }],
+      ["fs_grep", { pattern: "needle", base_path: "." }],
+      ["fs_glob", { pattern: "**/*", base_path: "." }],
+    ];
+
+    for (const [name, args] of calls) {
+      await expect(
+        handleFilesystemToolCall(name, args, { filesystemEnforced: true })
+      ).rejects.toThrow("outside the allowed filesystem roots");
+    }
+  });
+
+  it("preserves normal not-found errors only for missing paths inside an enforced root", async () => {
+    makeWorkspace();
+    const allowedRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-"))
+    );
+    const outsideRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-outside-"))
+    );
+    tempDirs.push(allowedRoot, outsideRoot);
+    process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+
+    await expect(
+      handleFilesystemToolCall(
+        "fs_read_file",
+        { path: path.join(allowedRoot, "missing", "file.txt") },
+        { filesystemEnforced: true }
+      )
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      handleFilesystemToolCall(
+        "fs_read_file",
+        { path: path.join(outsideRoot, "missing.txt") },
+        { filesystemEnforced: true }
+      )
+    ).rejects.toThrow("outside the allowed filesystem roots");
+  });
 });

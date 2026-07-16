@@ -7,7 +7,9 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   getPrimaryFilesystemRoot,
   normalizePathLike,
+  resolveEnforcedFilesystemPath,
 } from "./path-policy.js";
+import type { RuntimeContext } from "./runtime-context.js";
 
 const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 const MAX_READ_BYTES_CAP = 256 * 1024;
@@ -283,6 +285,7 @@ function clampNonNegative(value: number, fallback: number): number {
 
 async function resolveReadOnlyExistingPath(
   inputPath: string,
+  filesystemEnforced: boolean,
   basePath?: string
 ): Promise<ResolvedExistingPath> {
   const baseRoot = normalizePathLike(basePath ?? getPrimaryFilesystemRoot());
@@ -290,7 +293,9 @@ async function resolveReadOnlyExistingPath(
     path.isAbsolute(inputPath) || inputPath.startsWith("~")
       ? normalizePathLike(inputPath)
       : path.resolve(baseRoot, inputPath);
-  const safePath = await fs.realpath(displayPath);
+  const safePath = filesystemEnforced
+    ? await resolveEnforcedFilesystemPath(inputPath, displayPath)
+    : await fs.realpath(displayPath);
 
   return {
     displayPath,
@@ -543,7 +548,10 @@ function formatByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleReadFile(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const requestedPath = getStringArg(args, "path");
   if (!requestedPath) {
     throw new Error("fs_read_file requires a non-empty path.");
@@ -554,7 +562,10 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
     DEFAULT_MAX_READ_BYTES,
     MAX_READ_BYTES_CAP
   );
-  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(
+    requestedPath,
+    filesystemEnforced
+  );
   const stat = await fs.stat(safePath);
   if (!stat.isFile()) {
     throw new Error(`Path "${requestedPath}" is not a file.`);
@@ -584,9 +595,15 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
   };
 }
 
-async function handleListDir(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleListDir(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const requestedPath = getStringArg(args, "path") ?? ".";
-  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(
+    requestedPath,
+    filesystemEnforced
+  );
   const stat = await fs.stat(safePath);
   if (!stat.isDirectory()) {
     throw new Error(`Path "${requestedPath}" is not a directory.`);
@@ -646,7 +663,10 @@ async function handleListDir(args: Record<string, unknown>): Promise<ToolResult>
   };
 }
 
-async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleGlob(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const pattern = getStringArg(args, "pattern");
   if (!pattern) {
     throw new Error("fs_glob requires a non-empty pattern.");
@@ -654,7 +674,7 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
 
   const basePath = getStringArg(args, "base_path") ?? ".";
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveReadOnlyExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -696,7 +716,10 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
   };
 }
 
-async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleGrep(
+  args: Record<string, unknown>,
+  filesystemEnforced: boolean
+): Promise<ToolResult> {
   const pattern = getStringArg(args, "pattern");
   if (!pattern) {
     throw new Error("fs_grep requires a non-empty pattern.");
@@ -719,7 +742,7 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
   );
 
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveReadOnlyExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -790,7 +813,10 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
 
 export async function handleFilesystemToolCall(
   name: string,
-  rawArgs: unknown
+  rawArgs: unknown,
+  runtimeContext: Pick<RuntimeContext, "filesystemEnforced"> = {
+    filesystemEnforced: false,
+  }
 ): Promise<ToolResult> {
   if (!isFilesystemToolName(name)) {
     throw new Error(`Unknown filesystem tool "${name}".`);
@@ -803,13 +829,13 @@ export async function handleFilesystemToolCall(
 
   switch (name) {
     case "fs_read_file":
-      return handleReadFile(args);
+      return handleReadFile(args, runtimeContext.filesystemEnforced);
     case "fs_list_dir":
-      return handleListDir(args);
+      return handleListDir(args, runtimeContext.filesystemEnforced);
     case "fs_grep":
-      return handleGrep(args);
+      return handleGrep(args, runtimeContext.filesystemEnforced);
     case "fs_glob":
-      return handleGlob(args);
+      return handleGlob(args, runtimeContext.filesystemEnforced);
   }
 }
 

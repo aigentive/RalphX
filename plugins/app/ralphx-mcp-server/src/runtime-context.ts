@@ -1,4 +1,4 @@
-type RuntimeContextKey =
+type RuntimeStringContextKey =
   | "agentType"
   | "agentProfile"
   | "taskId"
@@ -16,10 +16,12 @@ type RuntimeContextKey =
   | "tauriApiUrl"
   | "traceDir";
 
-export type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
+export type RuntimeContext = Partial<Record<RuntimeStringContextKey, string>> & {
+  filesystemEnforced: boolean;
+};
 
 const RUNTIME_ARG_ENV_MAPPINGS: Array<{
-  key: RuntimeContextKey;
+  key: RuntimeStringContextKey;
   argName: string;
   envName: string;
 }> = [
@@ -78,7 +80,10 @@ export function hydrateRalphxRuntimeEnvFromCli(
   args: readonly string[],
   env: NodeJS.ProcessEnv = process.env
 ): RuntimeContext {
-  const context: RuntimeContext = {};
+  const context: RuntimeContext = {
+    filesystemEnforced:
+      parseCliOptionFromArgs(args, "filesystem-enforced") === "1",
+  };
 
   for (const mapping of RUNTIME_ARG_ENV_MAPPINGS) {
     const cliValue = parseCliOptionFromArgs(args, mapping.argName);
@@ -136,7 +141,7 @@ export function buildRuntimeIdentityTransportHeaders(
 }
 
 export function buildRuntimeTransportHeaders(
-  context: RuntimeContext
+  context: Pick<RuntimeContext, "conversationId">
 ): Record<string, string> | undefined {
   const conversationId = context.conversationId?.trim();
   return conversationId

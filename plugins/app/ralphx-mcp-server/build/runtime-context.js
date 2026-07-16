@@ -40,7 +40,9 @@ export function parseCliOptionsFromArgs(args, optionName) {
     return values;
 }
 export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
-    const context = {};
+    const context = {
+        filesystemEnforced: parseCliOptionFromArgs(args, "filesystem-enforced") === "1",
+    };
     for (const mapping of RUNTIME_ARG_ENV_MAPPINGS) {
         const cliValue = parseCliOptionFromArgs(args, mapping.argName);
         if (cliValue && cliValue.length > 0) {

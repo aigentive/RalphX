@@ -31,7 +31,7 @@ export declare function normalizePermissionToolInput(toolName: string, toolInput
  * @param args - Tool call details from Claude CLI (shape may vary)
  * @returns MCP tool result with decision (behavior + updatedInput / message)
  */
-export declare function handlePermissionRequest(args: Record<string, unknown>, runtimeContext?: RuntimeContext): Promise<{
+export declare function handlePermissionRequest(args: Record<string, unknown>, runtimeContext?: Pick<RuntimeContext, "conversationId">): Promise<{
     content: Array<{
         type: "text";
         text: string;
