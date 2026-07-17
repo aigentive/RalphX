@@ -10,10 +10,10 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::Command;
-use std::sync::Mutex;
 use tauri::Manager;
+use tokio::sync::Mutex;
 
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
+static ENV_MUTEX: Mutex<()> = Mutex::const_new(());
 
 struct EnvGuard {
     key: &'static str,
@@ -607,7 +607,7 @@ fn cached_target_list_is_returned_without_reprobing() {
 
 #[test]
 fn launch_workspace_open_target_accepts_immediate_success() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -619,7 +619,7 @@ fn launch_workspace_open_target_accepts_immediate_success() {
 
 #[test]
 fn launch_workspace_open_target_reports_spawn_failures() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -646,7 +646,7 @@ fn launch_workspace_open_target_reports_spawn_failures() {
 
 #[test]
 fn launch_workspace_open_target_accepts_background_process() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -658,7 +658,7 @@ fn launch_workspace_open_target_accepts_background_process() {
 
 #[test]
 fn launch_workspace_open_item_target_accepts_immediate_success() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     let file_path = temp.path().join("src.rs");
@@ -677,7 +677,7 @@ exit 0"#,
 
 #[test]
 fn launch_workspace_open_item_target_reports_spawn_failures() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     let file_path = temp.path().join("src.rs");
@@ -706,7 +706,7 @@ fn launch_workspace_open_item_target_reports_spawn_failures() {
 
 #[test]
 fn launch_workspace_open_item_target_accepts_background_process() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     let file_path = temp.path().join("src.rs");
@@ -720,7 +720,7 @@ fn launch_workspace_open_item_target_accepts_background_process() {
 
 #[tokio::test]
 async fn open_agent_conversation_workspace_command_launches_resolved_workspace() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.lock().await;
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     let worktree_parent = temp.path().join("worktrees");
@@ -747,7 +747,7 @@ exit 0"#,
 
 #[tokio::test]
 async fn open_agent_conversation_workspace_path_command_resolves_relative_items() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = ENV_MUTEX.lock().await;
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     let worktree_parent = temp.path().join("worktrees");
