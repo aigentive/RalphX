@@ -19,6 +19,7 @@ use crate::application::automation::judge::{
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
+    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
@@ -542,9 +543,15 @@ impl AutomationService {
 
     pub async fn resume(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
+        if automation.status != AutomationStatus::Paused {
+            return Err(AppError::InvalidTransition {
+                from: automation.status.as_str().to_string(),
+                to: AutomationStatus::Active.as_str().to_string(),
+            });
+        }
         self.transition_automation_status_or_conflict(
             id,
-            automation.status,
+            AutomationStatus::Paused,
             AutomationStatus::Active,
             None,
             None,
@@ -554,6 +561,10 @@ impl AutomationService {
 
     pub async fn stop(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
+        // Cancel the observed open work before committing the terminal automation state.
+        // This keeps a failed sweep retryable and prevents a stopped automation from
+        // silently retaining the work that was already visible to this request.
+        self.cancel_open_runs(&automation).await?;
         let stopped = self
             .transition_automation_status_or_conflict(
                 id,
@@ -563,37 +574,127 @@ impl AutomationService {
                 None,
             )
             .await?;
-        let mut first_cancel_error = None;
-        for run in self.run_repo.list_for_automation(id).await? {
-            if run_status_is_cancellable(run.status) {
-                if let Err(error) = self
-                    .transition_run_status_or_conflict(
-                        &run.id,
-                        run.status,
-                        AutomationRunStatus::Cancelled,
+
+        // An Active automation can race a create_run call that passed its status check
+        // before the stop CAS. Sweep once more after Stopped closes admission. If this
+        // second sweep loses a run CAS, reactivate only through Stopped -> Active so the
+        // scheduler can still observe and reconcile the open run.
+        if automation.status == AutomationStatus::Active {
+            if let Err(error) = self.cancel_open_runs(&automation).await {
+                if let Err(rollback_error) = self
+                    .transition_automation_status_or_conflict(
+                        id,
+                        AutomationStatus::Stopped,
+                        AutomationStatus::Active,
                         None,
                         None,
                     )
                     .await
                 {
-                    tracing::warn!(
+                    tracing::error!(
                         automation_id = %id,
-                        run_id = %run.id,
                         error = %error,
-                        "Failed to cancel automation run during stop sweep"
+                        rollback_error = %rollback_error,
+                        "Automation stop sweep failed and status reactivation also failed"
                     );
-                    if first_cancel_error.is_none() {
-                        first_cancel_error = Some(error);
-                    }
                 }
+                return Err(error);
             }
         }
         self.sync_goal_items_for_closed_run_without_successor(id)
             .await;
-        if let Some(error) = first_cancel_error {
-            return Err(error);
-        }
         Ok(stopped)
+    }
+
+    async fn cancel_open_runs(&self, automation: &Automation) -> AppResult<()> {
+        for run in self.run_repo.list_for_automation(&automation.id).await? {
+            if run_status_is_cancellable(run.status) {
+                self.cancel_run_core(automation, &run).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn restart(&self, id: &AutomationId) -> AppResult<AutomationScheduleOutcome> {
+        let automation = self.require_automation(id).await?;
+        if automation.status != AutomationStatus::Stopped {
+            return Err(AppError::InvalidTransition {
+                from: automation.status.as_str().to_string(),
+                to: AutomationStatus::Active.as_str().to_string(),
+            });
+        }
+        validate_activation_configuration(&automation)?;
+
+        let latest = self.run_repo.latest_for_automation(id).await?;
+        if latest.as_ref().is_some_and(|run| {
+            run_status_is_cancellable(run.status)
+                || run.judge_state == AutomationJudgeState::InProgress
+        }) {
+            return Err(AppError::Conflict(format!(
+                "automation {} still has work in flight",
+                id.as_str()
+            )));
+        }
+        let run_input = restart_run_input(&automation, latest.as_ref())?;
+        let previous_run_id = latest.as_ref().map(|run| run.id.clone());
+
+        self.transition_automation_status_or_conflict(
+            id,
+            AutomationStatus::Stopped,
+            AutomationStatus::Active,
+            None,
+            None,
+        )
+        .await?;
+
+        match self.create_run(run_input).await {
+            Ok(_) => Ok(AutomationScheduleOutcome {
+                scheduled: true,
+                reason: None,
+            }),
+            Err(error) => {
+                self.rollback_failed_restart_if_still_current(id, previous_run_id)
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn rollback_failed_restart_if_still_current(
+        &self,
+        id: &AutomationId,
+        previous_run_id: Option<AutomationRunId>,
+    ) {
+        let latest_run_id = match self.run_repo.latest_for_automation(id).await {
+            Ok(latest) => latest.map(|run| run.id),
+            Err(error) => {
+                tracing::error!(
+                    automation_id = %id,
+                    error = %error,
+                    "Failed to read current run while rolling back automation restart"
+                );
+                return;
+            }
+        };
+        if latest_run_id != previous_run_id {
+            return;
+        }
+        if let Err(error) = self
+            .transition_automation_status_or_conflict(
+                id,
+                AutomationStatus::Active,
+                AutomationStatus::Stopped,
+                None,
+                None,
+            )
+            .await
+        {
+            tracing::error!(
+                automation_id = %id,
+                error = %error,
+                "Failed to roll back automation status after restart run creation failed"
+            );
+        }
     }
 
     pub async fn trigger_run_now(&self, id: &AutomationId) -> AppResult<AutomationScheduleOutcome> {
@@ -696,6 +797,96 @@ impl AutomationService {
             AutomationJudgeState::InProgress => Ok(AutomationRunNowAction::Outcome(
                 schedule_not_scheduled("run in flight"),
             )),
+        }
+    }
+
+    pub async fn retry_judge_action(&self, id: &AutomationId) -> AppResult<AutomationRunNowAction> {
+        let latest = self.latest_run_for_automation(id).await?;
+        if latest.judge_state != AutomationJudgeState::Failed
+            || !is_signal_terminal_automation_run(latest.status)
+        {
+            return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
+                "latest judge is not failed",
+            )));
+        }
+        self.trigger_run_now_action(id).await
+    }
+
+    pub async fn retry_plan_judge(
+        &self,
+        id: &AutomationId,
+        expected_artifact_id: &str,
+    ) -> AppResult<AutomationScheduleOutcome> {
+        let expected_artifact_id = expected_artifact_id.trim();
+        if expected_artifact_id.is_empty() {
+            return Err(AppError::Validation(
+                "current plan artifact is required to retry plan judge".to_string(),
+            ));
+        }
+        let automation = self.require_automation(id).await?;
+        let paused_for_failed_plan_judge = automation.status == AutomationStatus::Paused
+            && automation.paused_reason_code.as_deref()
+                == Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE);
+        if automation.status != AutomationStatus::Active && !paused_for_failed_plan_judge {
+            return Err(AppError::Validation(
+                "automation must be active or paused for a failed plan judge".to_string(),
+            ));
+        }
+        let run = self.latest_run_for_automation(id).await?;
+        if run.status != AutomationRunStatus::AwaitingPlanApproval {
+            return Ok(schedule_not_scheduled(
+                "latest run is not awaiting plan approval",
+            ));
+        }
+        if run.plan_last_parked_artifact_id.as_deref() != Some(expected_artifact_id) {
+            return Err(AppError::Conflict(
+                "current plan artifact does not match the parked judge attempt".to_string(),
+            ));
+        }
+        if run.plan_judge_state != AutomationPlanJudgeState::Failed {
+            return Ok(schedule_not_scheduled("latest plan judge is not failed"));
+        }
+
+        if paused_for_failed_plan_judge {
+            self.transition_automation_status_or_conflict(
+                id,
+                AutomationStatus::Paused,
+                AutomationStatus::Active,
+                None,
+                None,
+            )
+            .await?;
+        }
+        match self
+            .transition_service
+            .transition_plan_judge_state(
+                &run.id,
+                AutomationPlanJudgeState::Failed,
+                AutomationPlanJudgeState::None,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(true) => Ok(AutomationScheduleOutcome {
+                scheduled: true,
+                reason: None,
+            }),
+            Ok(false) => Ok(schedule_not_scheduled("plan judge already retried")),
+            Err(error) => {
+                if paused_for_failed_plan_judge {
+                    let _ = self
+                        .transition_automation_status_or_conflict(
+                            id,
+                            AutomationStatus::Active,
+                            AutomationStatus::Paused,
+                            Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+                            Some("Plan judge retry could not be scheduled".to_string()),
+                        )
+                        .await;
+                }
+                Err(error)
+            }
         }
     }
 
@@ -817,9 +1008,20 @@ impl AutomationService {
                 "automation run is not owned by the requested automation".to_string(),
             ));
         }
+        let cancelled = self.cancel_run_core(&automation, &run).await?;
+        self.sync_goal_items_for_closed_run_without_successor(id)
+            .await;
+        Ok(cancelled)
+    }
+
+    async fn cancel_run_core(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+    ) -> AppResult<AutomationRun> {
         let cancelled = self
             .transition_run_status_or_conflict(
-                run_id,
+                &run.id,
                 run.status,
                 AutomationRunStatus::Cancelled,
                 None,
@@ -827,11 +1029,9 @@ impl AutomationService {
             )
             .await?;
         if automation.pr_merge_mode == AutomationPrMergeMode::Automatic {
-            self.disarm_cancelled_run_auto_merge(&run).await;
+            self.disarm_cancelled_run_auto_merge(run).await;
         }
-        self.run_repo.clear_plan_judge_state(run_id).await?;
-        self.sync_goal_items_for_closed_run_without_successor(id)
-            .await;
+        self.run_repo.clear_plan_judge_state(&run.id).await?;
         Ok(cancelled)
     }
 
@@ -2263,6 +2463,10 @@ pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
             to: AutomationStatus::Active.as_str().to_string(),
         });
     }
+    validate_activation_configuration(automation)
+}
+
+fn validate_activation_configuration(automation: &Automation) -> AppResult<()> {
     reject_persona_builder_workspace_mode(&automation.run_mode).map_err(AppError::Validation)?;
     if automation.goal_prompt.trim().is_empty() {
         return Err(AppError::Validation(
@@ -2339,6 +2543,41 @@ pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
     )?;
     validate_stacked_chain_merge_mode(&automation.chain_mode, automation.pr_merge_mode)?;
     Ok(())
+}
+
+fn restart_run_input(
+    automation: &Automation,
+    latest: Option<&AutomationRun>,
+) -> AppResult<CreateAutomationRunInput> {
+    if let Some(latest) = latest {
+        return Ok(CreateAutomationRunInput {
+            automation_id: automation.id.clone(),
+            run_prompt: latest.run_prompt.clone(),
+            prompt_author: latest.prompt_author,
+            base_ref_kind: latest.base_ref_kind.clone(),
+            base_ref_used: latest.base_ref_used.clone(),
+            base_from_run_id: latest.base_from_run_id.clone(),
+        });
+    }
+    let run_prompt = automation
+        .first_run_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "automation first_run_prompt is required before restart".to_string(),
+            )
+        })?
+        .to_string();
+    Ok(CreateAutomationRunInput {
+        automation_id: automation.id.clone(),
+        run_prompt,
+        prompt_author: AutomationPromptAuthor::SetupAgent,
+        base_ref_kind: automation.base_ref_kind.clone(),
+        base_ref_used: automation.base_ref.clone(),
+        base_from_run_id: None,
+    })
 }
 
 fn validate_goal_items_json(goal_items_json: Option<&str>) -> AppResult<()> {

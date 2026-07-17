@@ -1,4 +1,5 @@
 pub mod api;
+pub mod actions;
 pub mod decomposition_verifier;
 pub mod delete;
 pub mod integration_pr;
@@ -14,6 +15,8 @@ pub mod service;
 pub mod transition;
 pub(crate) mod utility_agent;
 
+#[cfg(test)]
+mod actions_tests;
 #[cfg(test)]
 mod decomposition_verifier_tests;
 #[cfg(test)]
