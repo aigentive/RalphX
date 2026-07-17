@@ -11,6 +11,7 @@ import type {
 import {
   describeAutomationRunPrState,
   getAutomationJudgeRecovery,
+  getAutomationRunJudgeLabel,
   getAutomationRunView,
   isAutomationRunComposerReadOnly,
   isIdleAfterCancelledRun,
@@ -206,6 +207,15 @@ describe("automationRunView", () => {
         actionLabel: "Retry terminal judge",
       }),
     );
+  });
+
+  it("labels a completed automatic plan judge", () => {
+    expect(
+      getAutomationRunJudgeLabel(
+        run({ status: "awaiting_plan_approval", planJudgeState: "done" }),
+        automation({ planApprovalMode: "automatic" }),
+      ),
+    ).toBe("Plan judge complete");
   });
 
   it("collects the core run view flags from one selector", () => {

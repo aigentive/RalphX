@@ -1055,6 +1055,130 @@ describe("AutomationDetailView", () => {
     expect(screen.getByLabelText("Run now")).toBeDisabled();
   });
 
+  it("reports deferred restart and judge-retry outcomes", async () => {
+    restartAutomationMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "restart prerequisites changed",
+    });
+    const restartView = renderDetail({
+      automation: automation({ status: "stopped" }),
+      runs: [run({ status: "cancelled", judgeState: "none" })],
+      usage,
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Restart automation" }),
+    );
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("restart prerequisites changed"),
+    );
+    restartView.unmount();
+
+    retryJudgeMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "terminal judge already retried",
+    });
+    const terminalJudgeView = renderDetail({
+      automation: automation(),
+      runs: [run({ status: "completed", judgeState: "failed" })],
+      usage,
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Retry terminal judge" }),
+    );
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("terminal judge already retried"),
+    );
+    terminalJudgeView.unmount();
+
+    retryPlanJudgeMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "plan judge already retried",
+    });
+    renderDetail({
+      automation: automation({ planApprovalMode: "automatic" }),
+      runs: [
+        run({
+          status: "awaiting_plan_approval",
+          planJudgeState: "failed",
+          planArtifactId: "plan-1",
+        }),
+      ],
+      usage,
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Retry plan judge" }),
+    );
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("plan judge already retried"),
+    );
+  });
+
+  it("reports a rejected automation cancellation", async () => {
+    stopAutomationMock.mockRejectedValueOnce(new Error("cancel failed"));
+    renderDetail({ automation: automation(), runs: [run()], usage });
+
+    await userEvent.click(await screen.findByLabelText("Cancel automation"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Cancel automation" }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Failed to cancel automation"),
+    );
+  });
+
+  it.each([
+    {
+      name: "restart",
+      actionName: "Restart automation",
+      apiMock: restartAutomationMock,
+      errorMessage: "Failed to restart automation",
+      detail: {
+        automation: automation({ status: "stopped" }),
+        runs: [run({ status: "cancelled", judgeState: "none" })],
+        usage,
+      },
+    },
+    {
+      name: "terminal judge retry",
+      actionName: "Retry terminal judge",
+      apiMock: retryJudgeMock,
+      errorMessage: "Failed to retry terminal judge",
+      detail: {
+        automation: automation(),
+        runs: [run({ status: "completed", judgeState: "failed" })],
+        usage,
+      },
+    },
+    {
+      name: "plan judge retry",
+      actionName: "Retry plan judge",
+      apiMock: retryPlanJudgeMock,
+      errorMessage: "Failed to retry plan judge",
+      detail: {
+        automation: automation({ planApprovalMode: "automatic" }),
+        runs: [
+          run({
+            status: "awaiting_plan_approval",
+            planJudgeState: "failed",
+            planArtifactId: "plan-1",
+          }),
+        ],
+        usage,
+      },
+    },
+  ])("reports a rejected $name action", async ({ actionName, apiMock, detail, errorMessage }) => {
+    apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
+    renderDetail(detail);
+
+    await userEvent.click(await screen.findByRole("button", { name: actionName }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith(errorMessage));
+  });
+
   it("separates plan-judge recovery from terminal-judge recovery", async () => {
     const rendered = renderDetail({
       automation: automation({ planApprovalMode: "automatic" }),

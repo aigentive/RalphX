@@ -26,6 +26,7 @@ const {
   openExternalUrlMock,
   toastSuccessMock,
   toastErrorMock,
+  toastInfoMock,
 } = vi.hoisted(() => ({
   useAutomationDetailMock: vi.fn(),
   useAutomationEventsMock: vi.fn(),
@@ -47,6 +48,7 @@ const {
   openExternalUrlMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
 }));
 
 vi.mock("@/hooks/useArtifacts", () => ({
@@ -57,6 +59,7 @@ vi.mock("sonner", () => ({
   toast: {
     success: toastSuccessMock,
     error: toastErrorMock,
+    info: toastInfoMock,
   },
 }));
 
@@ -1519,6 +1522,160 @@ describe("AgentsAutomationPanel", () => {
 
     await waitFor(() => expect(restartAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation restarted with a new run");
+  });
+
+  it("reports deferred restart, run-now, and judge-retry outcomes", async () => {
+    restartAutomationMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "restart prerequisites changed",
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "stopped" }),
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const restartView = renderPanel();
+    fireEvent.click(screen.getByTestId("agents-automation-restart"));
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("restart prerequisites changed"),
+    );
+    restartView.unmount();
+
+    triggerRunNowMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "run in flight",
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const runNowView = renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await waitFor(() => expect(toastInfoMock).toHaveBeenCalledWith("run in flight"));
+    runNowView.unmount();
+
+    retryJudgeMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "terminal judge already retried",
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "completed", judgeState: "failed" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const terminalJudgeView = renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Retry terminal judge" }));
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("terminal judge already retried"),
+    );
+    terminalJudgeView.unmount();
+
+    retryPlanJudgeMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "plan judge already retried",
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ planApprovalMode: "automatic" }),
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            planJudgeState: "failed",
+            planArtifactId: "plan-artifact-1",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Retry plan judge" }));
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith("plan judge already retried"),
+    );
+  });
+
+  it("reports a rejected automation cancellation", async () => {
+    stopAutomationMock.mockRejectedValueOnce(new Error("cancel failed"));
+    renderPanel();
+
+    fireEvent.click(screen.getByTestId("agents-automation-stop"));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel automation" }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Failed to cancel automation"),
+    );
+  });
+
+  it.each([
+    {
+      name: "restart",
+      actionName: "Restart automation",
+      apiMock: restartAutomationMock,
+      errorMessage: "Failed to restart automation",
+      detail: automationDetailFixture({
+        automation: automationFixture({ status: "stopped" }),
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+    },
+    {
+      name: "run now",
+      actionName: "Run now",
+      apiMock: triggerRunNowMock,
+      errorMessage: "Failed to run automation",
+      detail: automationDetailFixture({
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+    },
+    {
+      name: "terminal judge retry",
+      actionName: "Retry terminal judge",
+      apiMock: retryJudgeMock,
+      errorMessage: "Failed to retry terminal judge",
+      detail: automationDetailFixture({
+        runs: [automationRunFixture({ status: "completed", judgeState: "failed" })],
+      }),
+    },
+    {
+      name: "plan judge retry",
+      actionName: "Retry plan judge",
+      apiMock: retryPlanJudgeMock,
+      errorMessage: "Failed to retry plan judge",
+      detail: automationDetailFixture({
+        automation: automationFixture({ planApprovalMode: "automatic" }),
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            planJudgeState: "failed",
+            planArtifactId: "plan-artifact-1",
+          }),
+        ],
+      }),
+    },
+  ])("reports a rejected $name action", async ({ actionName, apiMock, detail, errorMessage }) => {
+    apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
+    useAutomationDetailMock.mockReturnValue({
+      data: detail,
+      isLoading: false,
+      isError: false,
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: actionName }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith(errorMessage));
   });
 
   it("renders terminal automations without mutation controls", () => {
