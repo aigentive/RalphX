@@ -19,8 +19,9 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AppStateRepository, PlanBranchRepository,
     ProjectRepository,
 };
+use crate::domain::services::github_service::{GithubConnectionState, GithubConnectionStatus};
 use crate::infrastructure::git_auth::{
-    check_gh_auth_token_available, git_remote_url_kind_label, inspect_origin_auth_config,
+    git_remote_url_kind_label, inspect_origin_auth_config, probe_github_connection_status,
     suggested_github_ssh_origin, GitRemoteAuthConfig,
 };
 
@@ -69,6 +70,7 @@ pub(crate) struct StartupGitAuthIssue {
     pub push_kind: Option<String>,
     pub mixed_auth_modes: bool,
     pub gh_authenticated: bool,
+    pub gh_state: GithubConnectionState,
     pub issue_kind: String,
     pub can_switch_to_ssh: bool,
     pub suggested_ssh_url: Option<String>,
@@ -181,15 +183,15 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
         .iter()
         .any(|(project, _, config_result, _)| project_needs_gh_auth_check(project, config_result));
     let gh_started_at = Instant::now();
-    let gh_authenticated = if gh_auth_required {
-        check_gh_auth_token_available().await
+    let gh_status = if gh_auth_required {
+        probe_github_connection_status().await
     } else {
-        false
+        GithubConnectionStatus::unauthenticated()
     };
     tracing::info!(
-        gh_authenticated,
+        gh_state = ?gh_status.state,
         auth_required = gh_auth_required,
-        method = if gh_auth_required { "token" } else { "skipped" },
+        method = if gh_auth_required { "typed_probe" } else { "skipped" },
         elapsed_ms = gh_started_at.elapsed().as_millis(),
         "Startup Git auth preflight: GitHub CLI auth check completed"
     );
@@ -200,7 +202,7 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
         let issue = evaluate_project_git_auth_issue(
             &project,
             active_project,
-            gh_authenticated,
+            gh_status.state,
             config_result,
         );
         if let Some(issue) = issue {
@@ -345,9 +347,10 @@ fn project_needs_gh_auth_check(
 pub(crate) fn evaluate_project_git_auth_issue(
     project: &Project,
     active_project: bool,
-    gh_authenticated: bool,
+    gh_state: GithubConnectionState,
     config_result: Result<GitRemoteAuthConfig, String>,
 ) -> Option<StartupGitAuthIssue> {
+    let gh_authenticated = gh_state == GithubConnectionState::Authenticated;
     let mut reasons = Vec::new();
     let mut fetch_kind = None;
     let mut push_kind = None;
@@ -374,10 +377,8 @@ pub(crate) fn evaluate_project_git_auth_issue(
                 reasons.push("origin fetch and push use different auth modes".to_string());
             } else {
                 if project.github_pr_enabled && !gh_authenticated {
-                    issue_kind = "auth_blocked".to_string();
-                    reasons.push(
-                        "GitHub PR mode is enabled but GitHub CLI is not authenticated".to_string(),
-                    );
+                    issue_kind = github_connection_issue_kind(gh_state).to_string();
+                    reasons.push(github_connection_reason(gh_state, "GitHub PR mode"));
                 }
 
                 let has_github_https_remote = config.has_github_https_remote();
@@ -389,12 +390,15 @@ pub(crate) fn evaluate_project_git_auth_issue(
                     );
                 }
 
-                if has_github_https_remote && !gh_authenticated {
-                    issue_kind = "auth_blocked".to_string();
-                    reasons.push(
-                        "GitHub HTTPS origin needs GitHub CLI authentication for background git access"
-                            .to_string(),
-                    );
+                if has_github_https_remote
+                    && config.github_https_credential_helper_configured
+                    && !gh_authenticated
+                {
+                    issue_kind = github_connection_issue_kind(gh_state).to_string();
+                    reasons.push(github_connection_reason(
+                        gh_state,
+                        "GitHub HTTPS background access",
+                    ));
                 }
             }
         }
@@ -417,11 +421,48 @@ pub(crate) fn evaluate_project_git_auth_issue(
         push_kind,
         mixed_auth_modes,
         gh_authenticated,
+        gh_state,
         issue_kind,
         can_switch_to_ssh: suggested_ssh_url.is_some(),
         suggested_ssh_url,
         reasons,
     })
+}
+
+fn github_connection_issue_kind(state: GithubConnectionState) -> &'static str {
+    match state {
+        GithubConnectionState::Authenticated => "auth_blocked",
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => {
+            "auth_blocked"
+        }
+        GithubConnectionState::ProviderUnavailable | GithubConnectionState::ProbeFailed => {
+            "github_unavailable"
+        }
+        GithubConnectionState::CliUnavailable => "gh_cli_unavailable",
+    }
+}
+
+fn github_connection_reason(state: GithubConnectionState, context: &str) -> String {
+    match state {
+        GithubConnectionState::Authenticated => {
+            format!("{context} has an unexpected authentication block")
+        }
+        GithubConnectionState::Unauthenticated => {
+            format!("{context} needs GitHub CLI authentication")
+        }
+        GithubConnectionState::CredentialRejected => {
+            format!("{context} needs the rejected GitHub CLI credential replaced")
+        }
+        GithubConnectionState::ProviderUnavailable => {
+            format!("{context} is deferred while GitHub is temporarily unavailable")
+        }
+        GithubConnectionState::CliUnavailable => {
+            format!("{context} needs an available GitHub CLI")
+        }
+        GithubConnectionState::ProbeFailed => {
+            format!("{context} is deferred because GitHub access could not be verified")
+        }
+    }
 }
 
 fn has_github_https_remote(config: &GitRemoteAuthConfig) -> bool {

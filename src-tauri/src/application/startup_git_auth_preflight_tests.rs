@@ -7,12 +7,20 @@ fn project(github_pr_enabled: bool) -> Project {
     project
 }
 
+fn gh_state(authenticated: bool) -> GithubConnectionState {
+    if authenticated {
+        GithubConnectionState::Authenticated
+    } else {
+        GithubConnectionState::Unauthenticated
+    }
+}
+
 #[test]
 fn mixed_https_fetch_ssh_push_blocks_startup_git_work() {
     let issue = evaluate_project_git_auth_issue(
         &project(true),
         true,
-        true,
+        gh_state(true),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("git@github.com:owner/repo.git".to_string()),
@@ -37,7 +45,7 @@ fn github_pr_mode_blocks_when_gh_is_not_authenticated() {
     let issue = evaluate_project_git_auth_issue(
         &project(true),
         false,
-        false,
+        gh_state(false),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("git@github.com:owner/repo.git".to_string()),
             push_url: Some("git@github.com:owner/repo.git".to_string()),
@@ -50,7 +58,7 @@ fn github_pr_mode_blocks_when_gh_is_not_authenticated() {
     assert!(issue
         .reasons
         .iter()
-        .any(|reason| reason.contains("GitHub CLI is not authenticated")));
+        .any(|reason| reason.contains("needs GitHub CLI authentication")));
     assert_eq!(issue.issue_kind, "auth_blocked");
 }
 
@@ -59,7 +67,7 @@ fn github_https_origin_blocks_background_git_when_gh_is_missing() {
     let issue = evaluate_project_git_auth_issue(
         &project(false),
         true,
-        false,
+        gh_state(false),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("https://github.com/owner/repo.git".to_string()),
@@ -87,7 +95,7 @@ fn github_https_origin_blocks_when_helper_missing_even_if_gh_is_authenticated() 
     let issue = evaluate_project_git_auth_issue(
         &project(false),
         true,
-        true,
+        gh_state(true),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("https://github.com/owner/repo.git".to_string()),
@@ -104,11 +112,36 @@ fn github_https_origin_blocks_when_helper_missing_even_if_gh_is_authenticated() 
 }
 
 #[test]
+fn github_https_helper_repair_is_not_hidden_by_provider_outage() {
+    let issue = evaluate_project_git_auth_issue(
+        &project(false),
+        true,
+        GithubConnectionState::ProviderUnavailable,
+        Ok(GitRemoteAuthConfig {
+            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+            push_url: Some("https://github.com/owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
+        }),
+    )
+    .expect("missing helper should remain actionable during a provider outage");
+
+    assert_eq!(issue.issue_kind, "auth_blocked");
+    assert!(issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("credential helper")));
+    assert!(!issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("temporarily unavailable")));
+}
+
+#[test]
 fn github_https_origin_with_helper_and_gh_auth_does_not_block() {
     let issue = evaluate_project_git_auth_issue(
         &project(false),
         true,
-        true,
+        gh_state(true),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("https://github.com/owner/repo.git".to_string()),
@@ -124,7 +157,7 @@ fn git_config_inspection_error_reports_repo_unavailable() {
     let issue = evaluate_project_git_auth_issue(
         &project(false),
         false,
-        true,
+        gh_state(true),
         Err("permission denied".to_string()),
     )
     .expect("repo inspection failures should be visible");
@@ -143,7 +176,7 @@ fn ssh_project_without_pr_mode_does_not_block_when_gh_is_missing() {
     let issue = evaluate_project_git_auth_issue(
         &project(false),
         true,
-        false,
+        gh_state(false),
         Ok(GitRemoteAuthConfig {
             fetch_url: Some("git@github.com:owner/repo.git".to_string()),
             push_url: Some("git@github.com:owner/repo.git".to_string()),
@@ -159,7 +192,7 @@ fn missing_origin_is_repo_config_issue_not_auth_issue() {
     let issue = evaluate_project_git_auth_issue(
         &project(true),
         false,
-        false,
+        gh_state(false),
         Ok(GitRemoteAuthConfig {
             fetch_url: None,
             push_url: None,
@@ -170,6 +203,33 @@ fn missing_origin_is_repo_config_issue_not_auth_issue() {
 
     assert_eq!(issue.issue_kind, "repo_remote_missing");
     assert_eq!(issue.reasons, vec!["origin remote is not configured"]);
+}
+
+#[test]
+fn provider_outage_blocks_startup_without_requesting_auth_repair() {
+    let issue = evaluate_project_git_auth_issue(
+        &project(true),
+        true,
+        GithubConnectionState::ProviderUnavailable,
+        Ok(GitRemoteAuthConfig {
+            fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+            push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
+        }),
+    )
+    .expect("unreadable provider state must fail closed");
+
+    assert!(!issue.gh_authenticated);
+    assert_eq!(issue.gh_state, GithubConnectionState::ProviderUnavailable);
+    assert_eq!(issue.issue_kind, "github_unavailable");
+    assert!(issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("temporarily unavailable")));
+    assert!(!issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("needs GitHub CLI authentication")));
 }
 
 #[test]

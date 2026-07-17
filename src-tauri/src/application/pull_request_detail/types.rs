@@ -22,6 +22,8 @@ pub enum PullRequestDetailState {
     RepoUnresolvable,
     /// A `gh` fetch exceeded its subprocess timeout.
     FetchTimeout,
+    /// GitHub access could not be verified because the provider/probe is unavailable.
+    FetchUnavailable,
     /// GitHub reported an API rate-limit.
     RateLimited,
 }
