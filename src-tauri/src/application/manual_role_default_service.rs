@@ -4,8 +4,8 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::domain::agents::{
-    AgentProviderSettings, ManualRoleDefault, ManualServiceTier, RoutingRole, RoutingRoleFamily,
-    DEFAULT_AGENT_HARNESS,
+    AgentLane, AgentProviderSettings, ManualRoleDefault, ManualServiceTier, RoutingRole,
+    RoutingRoleFamily, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{CoordinationMode, PersonaStatus};
 use crate::domain::repositories::{
@@ -133,7 +133,7 @@ impl ManualRoleDefaultService {
             return Ok(resolved);
         }
 
-        if let Some(lane) = role.legacy_lane() {
+        if let Some(lane) = legacy_lane_for_role_default(role) {
             let project_row = match project_id {
                 Some(project_id) => self
                     .lane_repo
@@ -194,6 +194,16 @@ impl ManualRoleDefaultService {
         }
         Ok(())
     }
+}
+
+fn legacy_lane_for_role_default(role: RoutingRole) -> Option<AgentLane> {
+    role.legacy_lane().or(match role {
+        RoutingRole::ExecutionQaPrep
+        | RoutingRole::ExecutionQaRefiner
+        | RoutingRole::ExecutionQaTester => Some(AgentLane::ExecutionWorker),
+        RoutingRole::UtilityLightweight => Some(AgentLane::IdeationPrimary),
+        _ => None,
+    })
 }
 
 fn resolve_yaml(

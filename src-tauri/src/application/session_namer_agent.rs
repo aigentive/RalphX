@@ -118,7 +118,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
     let harness_override = match &target {
         SessionNamerTarget::ConversationInitial {
             requested_harness, ..
-        } => *requested_harness,
+        } => requested_harness.or(resolved.conversation_harness),
         _ => None,
     };
     let working_directory =
@@ -182,6 +182,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
 
 struct ResolvedSessionNamerTarget {
     project_id: Option<String>,
+    conversation_harness: Option<AgentHarnessKind>,
     review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     conversation_context: Option<String>,
 }
@@ -197,6 +198,7 @@ async fn resolve_target_context(
             let project_id = Some(session.project_id.as_str().to_string());
             Ok(ResolvedSessionNamerTarget {
                 project_id,
+                conversation_harness: None,
                 review_pull_request: None,
                 conversation_context: None,
             })
@@ -217,6 +219,7 @@ async fn resolve_target_context(
             let conversation_context = format_conversation_context(state, &conversation).await?;
             Ok(ResolvedSessionNamerTarget {
                 project_id,
+                conversation_harness: conversation.provider_harness,
                 review_pull_request,
                 conversation_context,
             })

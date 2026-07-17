@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     generic_harness_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
-    ManualServiceTier, RoutingRole, StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
+    ManualServiceTier, RoutingRole, RoutingRoleFamily, StoredAgentLaneSettings,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
 use crate::domain::repositories::AgentLaneSettingsRepository;
@@ -401,25 +402,26 @@ pub async fn resolve_manual_role_spawn_settings(
     let resolved = service.resolve(project_id, project_root, role).await?;
     let effective_harness = harness_override.unwrap_or(resolved.value.harness);
     let settings_match_effective_harness = resolved.value.harness == effective_harness;
+    let utility_legacy_harness_only = resolved.source == ManualDefaultSource::LegacyLane
+        && role.metadata().family == RoutingRoleFamily::Utility;
     let configured = settings_match_effective_harness
         .then_some(&resolved.value)
-        .filter(|_| resolved.source != ManualDefaultSource::ProviderDefault);
+        .filter(|_| {
+            resolved.source != ManualDefaultSource::ProviderDefault && !utility_legacy_harness_only
+        });
     let selected = settings_match_effective_harness.then_some(&resolved.value);
-    let harness_defaults = role
-        .legacy_lane()
-        .and_then(|lane| nondefault_harness_lane_settings(lane, effective_harness))
-        .or_else(|| non_lane_harness_defaults(effective_harness));
+    let harness_defaults = manual_role_harness_defaults(role, effective_harness);
 
     let model = model_override
         .map(str::to_string)
-        .or_else(|| selected.and_then(|value| value.model.clone()))
+        .or_else(|| configured.and_then(|value| value.model.clone()))
         .or_else(|| {
             harness_defaults
                 .as_ref()
                 .and_then(|settings| settings.model.clone())
         })
         .unwrap_or_else(|| resolve_model(Some(agent_name)));
-    let logical_effort = selected.and_then(|value| value.effort).or_else(|| {
+    let logical_effort = configured.and_then(|value| value.effort).or_else(|| {
         harness_defaults
             .as_ref()
             .and_then(|settings| settings.effort)
@@ -461,6 +463,34 @@ pub async fn resolve_manual_role_spawn_settings(
         configured_subagent_model_cap,
         subagent_model_cap,
     })
+}
+
+fn manual_role_harness_defaults(
+    role: RoutingRole,
+    harness: AgentHarnessKind,
+) -> Option<AgentLaneSettings> {
+    if role.metadata().family == RoutingRoleFamily::Utility {
+        return Some(utility_harness_defaults(harness));
+    }
+
+    let lane = role.legacy_lane().or(match role {
+        RoutingRole::ExecutionQaPrep
+        | RoutingRole::ExecutionQaRefiner
+        | RoutingRole::ExecutionQaTester => Some(AgentLane::ExecutionWorker),
+        _ => None,
+    })?;
+
+    nondefault_harness_lane_settings(lane, harness)
+}
+
+fn utility_harness_defaults(harness: AgentHarnessKind) -> AgentLaneSettings {
+    let mut settings = AgentLaneSettings::new(harness);
+    settings.model =
+        Some(crate::domain::agents::lightweight_model_for_provider(harness).to_string());
+    settings.effort = Some(LogicalEffort::Medium);
+    settings.approval_policy = default_approval_policy_for_harness(harness).map(str::to_string);
+    settings.sandbox_mode = default_sandbox_mode_for_harness(harness).map(str::to_string);
+    settings
 }
 
 async fn resolve_manual_subagent_model(
