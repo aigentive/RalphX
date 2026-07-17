@@ -94,7 +94,7 @@ Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/ag
 Plan-verification run/round/gap lineage and terminal classification are backend-owned; the active model may choose permitted lenses/delegates but must not replay orchestration bookkeeping. Follow `.claude/rules/ideation-verification-architecture.md` and the live profile prompt; implementation still requires the product's user-confirmation gate.
 
 ## Design System
-`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter | **INVOKE `/tailwind-v4-shadcn` before UI work**
+`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter
 
 Input outline removal:
 ```tsx
@@ -115,6 +115,5 @@ style={{ boxShadow: "none", outline: "none" }}
 - DB: `sqlite3 src-tauri/ralphx.db "SELECT * FROM table_name;"`
 - App logs: per-launch file — dev: `.artifacts/logs/ralphx_YYYY-MM-DD_HH-MM-SS.log` | prod: `~/Library/Application Support/com.ralphx.app/logs/` | latest: `ls -t .artifacts/logs/*.log | head -1` | config: `file_logging` in `config/ralphx.yaml` / `RALPHX_FILE_LOGGING` env (default: true)
 - Debug logs: `scripts/find-debug-logs.sh -a "<agent-name>" -d "YYYY-MM-DD" -v` — find Claude debug logs by agent name/date/keywords
-- Slash commands: `/activate-prd <path>` — switch PRD | `/create-prd` — PRD wizard
 - Claude integration docs: `docs/ai-docs/claude-code/README.md` — lightweight local index plus official-doc stubs; fetch official Claude Code docs when current vendor behavior matters
 - OpenAI GPT-5 prompting notes: `docs/ai-docs/openai/README.md` — route by configured target model; do not apply one model's guide wholesale to another family
