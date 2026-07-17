@@ -124,6 +124,9 @@ pub async fn await_required_external_mcp<R: Runtime>(
         .await
 }
 
+pub const AGENT_WORKSPACE_AUTOMATION_SKILL_NAME: &str = "ralphx-agent-workspace-automation";
+const AGENT_WORKSPACE_AUTOMATION_SUMMARY_MAX_BYTES: usize = 600;
+
 /// Whether to inject `<session_history>` into the bootstrap prompt for this context.
 ///
 /// Ideation has always had it. Project and Task chat join the list because their

@@ -134,6 +134,8 @@ pub use chat_service_context::format_agent_workspace_prompt_context;
 pub use chat_service_context::build_launch_plan_for_harness_with_persona_for_test;
 #[doc(hidden)]
 pub use chat_service_context::create_assistant_message;
+#[doc(hidden)]
+pub use chat_service_context::format_agent_workspace_prompt_context;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::ResolvedChatHarnessLaunch;
