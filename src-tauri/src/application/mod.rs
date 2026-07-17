@@ -181,6 +181,9 @@ mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
 pub mod ticket_git_convention;
 mod ticket_git_convention_render;
+pub mod ticket_git_cycle_lifecycle;
+#[cfg(test)]
+mod ticket_git_cycle_lifecycle_tests;
 pub mod ticket_git_publish_policy;
 #[cfg(test)]
 mod ticket_git_publish_policy_tests;

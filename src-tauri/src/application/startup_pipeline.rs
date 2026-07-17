@@ -486,6 +486,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     {
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let project_repo = Arc::clone(&project_repo);
+        let ticket_branch_repo = Arc::clone(&app_state.ticket_canonical_branch_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
@@ -494,6 +495,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                     agent_conversation_workspace_repo,
                     project_repo,
+                    Some(ticket_branch_repo),
                     github_service,
                     blocked_git_project_ids,
                     running_agent_registry,
@@ -509,6 +511,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let plan_branch_repo = Arc::clone(&plan_branch_repo);
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let project_repo = Arc::clone(&project_repo);
+        let ticket_branch_repo = Arc::clone(&app_state.ticket_canonical_branch_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
@@ -516,6 +519,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 plan_branch_repo,
                 agent_conversation_workspace_repo,
                 project_repo,
+                Some(ticket_branch_repo),
                 github_service,
                 running_agent_registry,
             )
@@ -527,6 +531,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     {
         let project_repo = Arc::clone(&project_repo);
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let ticket_branch_repo = Arc::clone(&app_state.ticket_canonical_branch_repo);
         let orphan_worktree_cleanup_marker_repo = Arc::clone(&orphan_worktree_cleanup_marker_repo);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
@@ -535,6 +540,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
                     project_repo,
                     agent_conversation_workspace_repo,
+                    Some(ticket_branch_repo),
                     orphan_worktree_cleanup_marker_repo,
                     blocked_git_project_ids,
                     running_agent_registry,
@@ -551,6 +557,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
+        Some(Arc::clone(&app_state.ticket_canonical_branch_repo)),
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
         Arc::clone(&blocked_git_project_ids),

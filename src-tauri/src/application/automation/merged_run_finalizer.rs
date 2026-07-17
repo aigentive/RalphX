@@ -71,6 +71,7 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                 self.state.github_service.clone(),
                 true,
                 true,
+                Some(Arc::clone(&self.state.ticket_canonical_branch_repo)),
                 "merged",
             )
             .await;

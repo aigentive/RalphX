@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use chrono::Utc;
 
 use super::{
     cleanup_terminal_agent_workspace_after_pr, terminalize_agent_workspace_after_pr,
@@ -35,9 +36,12 @@ use crate::domain::entities::{
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     ArtifactId, ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
+    IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId, TicketCanonicalBranch,
+    TicketCanonicalBranchCycleState, TicketGitConventionSnapshot,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, TicketCanonicalBranchRepository,
+};
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
     PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrStatus, PrSyncState,
@@ -46,7 +50,7 @@ use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryPlanBranchRepository, MemoryTicketCanonicalBranchRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -3658,6 +3662,7 @@ async fn terminal_agent_workspace_pr_terminalization_stops_active_project_run() 
         None,
         false,
         true,
+        None,
         "closed",
     )
     .await;
@@ -3676,6 +3681,75 @@ async fn terminal_agent_workspace_pr_terminalization_stops_active_project_run() 
         updated_run.error_message.as_deref(),
         Some("Agent stopped because the workspace pull request was closed")
     );
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_persists_strict_cycle_and_preserves_ticket_branch() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "ralphx/test/strict-ticket";
+    let workspace = cleanup_workspace_with_conversation(&project, branch, "poller-strict-terminal");
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+        .await
+        .expect("create strict worktree");
+
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let base = GitService::get_branch_sha(repo.path(), "main")
+        .await
+        .unwrap();
+    let ticket_repo = Arc::new(MemoryTicketCanonicalBranchRepository::new());
+    let mut binding = TicketCanonicalBranch::new_strict(
+        project.id.clone(),
+        "clickup",
+        "ENG-42",
+        branch,
+        "main",
+        Some(base.clone()),
+        TicketGitConventionSnapshot {
+            policy_version: 1,
+            task_title: "Ticket".to_string(),
+            username: Some("Ada".to_string()),
+            commit_subject_rule: "ENG-42 - :summary:".to_string(),
+            pr_title: "ENG-42 - Ticket".to_string(),
+        },
+        Utc::now(),
+    );
+    binding.origin_pushed = true;
+    binding.cycle.state = TicketCanonicalBranchCycleState::Active;
+    binding.cycle.effective_merge_base = Some(base);
+    ticket_repo.create_if_absent(binding).await.unwrap();
+
+    let terminalized = terminalize_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        &conversation_id,
+        &project,
+        None,
+        true,
+        true,
+        Some(Arc::clone(&ticket_repo) as Arc<dyn TicketCanonicalBranchRepository>),
+        "merged",
+    )
+    .await;
+
+    assert!(terminalized);
+    assert!(!worktree_path.exists());
+    assert!(branch_exists(repo.path(), branch));
+    let binding = ticket_repo
+        .get_by_branch_name(&project.id, branch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(binding.cycle.state, TicketCanonicalBranchCycleState::Merged);
 }
 
 #[tokio::test]
@@ -3932,6 +4006,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
         project,
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
     );

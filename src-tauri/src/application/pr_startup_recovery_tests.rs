@@ -15,6 +15,7 @@ use crate::application::pr_startup_recovery::{
     cleanup_terminal_plan_branch_local_artifacts_on_startup, recover_agent_workspace_pr_pollers,
 };
 use crate::application::services::PrPollerRegistry;
+use crate::application::AppState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -22,7 +23,8 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId, TicketCanonicalBranch,
+    TicketCanonicalBranchCycleState, TicketGitConventionSnapshot,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
@@ -232,6 +234,7 @@ async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixtur
         Arc::clone(&fixture.project_repo),
         Arc::clone(&fixture.plan_branch_repo),
         Arc::clone(&fixture.registry),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
@@ -279,6 +282,7 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
         workspace_repo,
         project_repo,
         None,
+        None,
         Arc::new(HashSet::new()),
         empty_running_agent_registry(),
     )
@@ -317,6 +321,7 @@ async fn startup_terminal_workspace_cleanup_continues_when_workspace_load_fails(
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
         project_repo,
+        None,
         None,
         Arc::new(HashSet::new()),
         empty_running_agent_registry(),
@@ -385,6 +390,7 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
         project_repo,
         plan_branch_repo,
         Arc::clone(&registry),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
@@ -580,6 +586,7 @@ async fn startup_agent_workspace_pr_recovery_skips_orphaned_review_pr_monitor() 
         project_repo,
         plan_branch_repo,
         Arc::clone(&registry),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
@@ -611,6 +618,7 @@ async fn startup_agent_workspace_pr_recovery_tolerates_workspace_and_monitor_lis
         project_repo,
         plan_branch_repo,
         Arc::clone(&registry),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
@@ -706,6 +714,7 @@ async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller
         project_repo,
         plan_branch_repo,
         Arc::clone(&registry),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
@@ -793,6 +802,7 @@ async fn startup_terminal_workspace_cleanup_records_safety_skip_reports() {
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
         project_repo,
+        None,
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(HashSet::new()),
         empty_running_agent_registry(),
@@ -800,6 +810,111 @@ async fn startup_terminal_workspace_cleanup_records_safety_skip_reports() {
     .await;
 
     assert_eq!(github.state().fetch_remote_calls, 0);
+}
+
+#[tokio::test]
+async fn startup_terminal_workspace_cleanup_removes_worktree_but_preserves_strict_ticket_branch() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo");
+    run_git(&repo_path, &["init", "-b", "main"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write base");
+    run_git(&repo_path, &["add", "README.md"]);
+    run_git(&repo_path, &["commit", "-m", "base"]);
+    let base = GitService::get_branch_sha(&repo_path, "main")
+        .await
+        .expect("base sha");
+
+    let mut project = Project::new(
+        "Strict startup cleanup".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let branch = "ralphx/test/strict-persistent";
+    let conversation_id = ChatConversationId::from_string("strict-startup-cleanup");
+    let mut workspace = published_workspace(&project, conversation_id.clone(), branch);
+    workspace.base_commit = Some(base.clone());
+    workspace.publication_pr_status = Some("merged".to_string());
+    GitService::create_worktree(
+        &repo_path,
+        Path::new(&workspace.worktree_path),
+        branch,
+        "main",
+    )
+    .await
+    .expect("create strict worktree");
+
+    let state = AppState::new_test();
+    state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let mut binding = TicketCanonicalBranch::new_strict(
+        project.id.clone(),
+        "clickup",
+        "ENG-42",
+        branch,
+        "main",
+        Some(base.clone()),
+        TicketGitConventionSnapshot {
+            policy_version: 1,
+            task_title: "Ticket".to_string(),
+            username: Some("Ada".to_string()),
+            commit_subject_rule: "ENG-42 - :summary:".to_string(),
+            pr_title: "ENG-42 - Ticket".to_string(),
+        },
+        Utc::now(),
+    );
+    binding.origin_pushed = true;
+    binding.cycle.state = TicketCanonicalBranchCycleState::Active;
+    binding.cycle.effective_merge_base = Some(base);
+    state
+        .ticket_canonical_branch_repo
+        .create_if_absent(binding)
+        .await
+        .unwrap();
+
+    cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
+        None,
+        Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
+    )
+    .await;
+
+    assert!(!Path::new(&workspace.worktree_path).exists());
+    assert!(GitService::branch_exists_strict(&repo_path, branch)
+        .await
+        .unwrap());
+    let binding = state
+        .ticket_canonical_branch_repo
+        .get_by_branch_name(&project.id, branch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(binding.cycle.state, TicketCanonicalBranchCycleState::Merged);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("cleaned")
+    );
 }
 
 struct ProjectListErrorRepository;

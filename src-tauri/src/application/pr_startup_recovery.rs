@@ -29,16 +29,20 @@ use crate::application::git_artifact_cleanup::{
 use crate::application::git_service::{git_cmd, FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
+use crate::application::ticket_git_cycle_lifecycle::{
+    active_cycle_is_partial_rollover, mark_strict_ticket_cycle_terminal,
+};
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, ExecutionPlanId, ExecutionPlanStatus, InternalStatus,
     PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    TicketCanonicalBranchPolicyKind,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     ExecutionPlanRepository, IdeationSessionRepository, PlanBranchRepository, ProjectRepository,
-    TaskRepository,
+    TaskRepository, TicketCanonicalBranchRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
@@ -1111,6 +1115,7 @@ pub async fn recover_agent_workspace_pr_pollers(
     project_repo: Arc<dyn ProjectRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
@@ -1189,6 +1194,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                 let project_repo = Arc::clone(&project_repo);
                 let plan_branch_repo = Arc::clone(&plan_branch_repo);
                 let pr_poller_registry = Arc::clone(&pr_poller_registry);
+                let ticket_branch_repo = ticket_branch_repo.as_ref().map(Arc::clone);
                 let agent_run_repo = Arc::clone(&agent_run_repo);
                 let chat_service = Arc::clone(&chat_service);
                 let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -1199,6 +1205,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                         project_repo,
                         plan_branch_repo,
                         pr_poller_registry,
+                        ticket_branch_repo,
                         agent_run_repo,
                         chat_service,
                         blocked_git_project_ids,
@@ -1216,6 +1223,7 @@ async fn recover_one_agent_workspace_pr_poller(
     project_repo: Arc<dyn ProjectRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
@@ -1373,6 +1381,7 @@ async fn recover_one_agent_workspace_pr_poller(
         project,
         worktree_path,
         workspace_repo,
+        ticket_branch_repo,
         agent_run_repo,
         chat_service,
     );
@@ -1616,6 +1625,7 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
 pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
@@ -1754,8 +1764,78 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                 return;
             }
 
-            let delete_branch_if_merged =
-                workspace.publication_pr_status.as_deref() == Some("merged");
+            let preserve_strict_ticket_branch = match ticket_branch_repo.as_ref() {
+                Some(repository) => match repository
+                    .get_by_branch_name(&workspace.project_id, &workspace.branch_name)
+                    .await
+                {
+                    Ok(Some(binding))
+                        if binding.policy_kind
+                            == TicketCanonicalBranchPolicyKind::StrictGitConvention =>
+                    {
+                        match active_cycle_is_partial_rollover(repo_path, &workspace, &binding)
+                            .await
+                        {
+                            Ok(true) => {
+                                tracing::info!(
+                                    conversation_id = workspace.conversation_id.as_str(),
+                                    generation = binding.cycle.generation,
+                                    "Terminal agent workspace cleanup: preserving partial strict rollover for workspace reconciliation"
+                                );
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                stats.branches_failed += 1;
+                                tracing::warn!(
+                                    conversation_id = workspace.conversation_id.as_str(),
+                                    error = %error,
+                                    "Terminal agent workspace cleanup: failed to inspect strict rollover state"
+                                );
+                                continue;
+                            }
+                        }
+                        match workspace.publication_pr_status.as_deref() {
+                            Some(pr_status) if matches!(pr_status, "merged" | "closed") => {
+                                match mark_strict_ticket_cycle_terminal(
+                                    repository.as_ref(),
+                                    &workspace,
+                                    pr_status,
+                                )
+                                .await
+                                {
+                                    Ok(Some(_)) => true,
+                                    Ok(None) => false,
+                                    Err(error) => {
+                                        stats.branches_failed += 1;
+                                        tracing::warn!(
+                                            conversation_id = workspace.conversation_id.as_str(),
+                                            error = %error,
+                                            "Terminal agent workspace cleanup: failed to reconcile strict ticket cycle"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            _ => true,
+                        }
+                    }
+                    Ok(_) => false,
+                    Err(error) => {
+                        stats.branches_failed += 1;
+                        tracing::warn!(
+                            conversation_id = workspace.conversation_id.as_str(),
+                            error = %error,
+                            "Terminal agent workspace cleanup: skipped because strict ticket policy lookup failed"
+                        );
+                        continue;
+                    }
+                },
+                None => false,
+            };
+            let delete_branch_if_merged = workspace.publication_pr_status.as_deref()
+                == Some("merged")
+                && !preserve_strict_ticket_branch;
             match cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches(
                 &project,
                 &workspace,
@@ -1806,6 +1886,7 @@ pub async fn run_periodic_terminal_pr_local_cleanup(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1819,6 +1900,7 @@ pub async fn run_periodic_terminal_pr_local_cleanup(
         plan_branch_repo,
         workspace_repo,
         project_repo,
+        ticket_branch_repo,
         github_service,
         running_agent_registry,
     )
@@ -1830,6 +1912,7 @@ async fn run_periodic_terminal_pr_local_cleanup_with_interval(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1839,6 +1922,7 @@ async fn run_periodic_terminal_pr_local_cleanup_with_interval(
             Arc::clone(&plan_branch_repo),
             Arc::clone(&workspace_repo),
             Arc::clone(&project_repo),
+            ticket_branch_repo.as_ref().map(Arc::clone),
             github_service.as_ref().map(Arc::clone),
             Arc::clone(&running_agent_registry),
         )
@@ -1850,6 +1934,7 @@ pub(crate) async fn run_terminal_pr_local_cleanup_once(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1866,6 +1951,7 @@ pub(crate) async fn run_terminal_pr_local_cleanup_once(
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             workspace_repo,
             project_repo,
+            ticket_branch_repo,
             github_service,
             unblocked_git_projects,
             running_agent_registry,
@@ -2682,6 +2768,7 @@ mod tests {
                 Arc::clone(&app_state.agent_conversation_workspace_repo),
                 Arc::clone(&app_state.project_repo),
                 None,
+                None,
                 Arc::clone(&app_state.running_agent_registry),
             ),
         )
@@ -3279,6 +3366,7 @@ mod tests {
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
             Arc::clone(&app_state.running_agent_registry),
@@ -3329,6 +3417,7 @@ mod tests {
             Arc::clone(&app_state.plan_branch_repo),
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::clone(&app_state.running_agent_registry),
         )
@@ -3383,6 +3472,7 @@ mod tests {
             Arc::clone(&app_state.plan_branch_repo),
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::clone(&app_state.running_agent_registry),
         )
@@ -3437,6 +3527,7 @@ mod tests {
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
             Arc::clone(&app_state.running_agent_registry),
@@ -3482,6 +3573,7 @@ mod tests {
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
             Arc::clone(&app_state.running_agent_registry),
@@ -3549,6 +3641,7 @@ mod tests {
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
+            None,
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             blocked,
             Arc::clone(&app_state.running_agent_registry),

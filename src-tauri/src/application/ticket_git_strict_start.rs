@@ -14,6 +14,7 @@ use crate::application::git_service::GitService;
 use crate::application::ticket_git_convention::{
     disambiguate_branch_name, TicketGitConventionContext, TicketGitConventionTemplates,
 };
+use crate::application::ticket_git_cycle_lifecycle::prepare_merged_strict_ticket_cycle_for_start;
 use crate::application::AppState;
 use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId, TicketCanonicalBranch,
@@ -88,7 +89,7 @@ pub struct StrictTicketGitBlocker {
 }
 
 impl StrictTicketGitBlocker {
-    fn new(code: StrictTicketGitBlockerCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: StrictTicketGitBlockerCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -98,12 +99,12 @@ impl StrictTicketGitBlocker {
         }
     }
 
-    fn for_task(mut self, task_id: &str) -> Self {
+    pub(crate) fn for_task(mut self, task_id: &str) -> Self {
         self.task_id = Some(task_id.to_string());
         self
     }
 
-    fn for_branch(mut self, branch: &str) -> Self {
+    pub(crate) fn for_branch(mut self, branch: &str) -> Self {
         self.expected_branch = Some(branch.to_string());
         self
     }
@@ -186,6 +187,7 @@ pub async fn ensure_strict_clickup_ticket_branch(
 ) -> Result<Option<StrictTicketGitResolution>, StrictTicketGitBlocker> {
     let issue_key = clickup_identity_from_task(context.task).preferred_token();
     if let Some(existing) = load_binding(state, project_id, &issue_key).await? {
+        let existing = prepare_merged_strict_ticket_cycle_for_start(state, &existing).await?;
         let binding = validate_existing_strict_binding(existing, &issue_key)?;
         validate_ticket_git_evidence(state, context.task, &binding).await?;
         ensure_available_owner(state, project_id, &binding, allowed_owner).await?;
@@ -255,6 +257,7 @@ pub async fn ensure_strict_clickup_ticket_branch(
             )
             .for_task(&issue_key)
         })?;
+    let binding = prepare_merged_strict_ticket_cycle_for_start(state, &binding).await?;
     let binding = validate_existing_strict_binding(binding, &issue_key)?;
     if binding.branch_name != candidate_branch_name {
         validate_ticket_git_evidence(state, context.task, &binding).await?;

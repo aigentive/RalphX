@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
@@ -279,6 +279,10 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                         .then(|| Arc::clone(&deps.github)),
                     pr_status == "merged",
                     !target.is_ideation_plan(),
+                    deps.app_handle
+                        .as_ref()
+                        .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                        .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                     pr_status,
                 )
                 .await;
@@ -342,6 +346,10 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     .then(|| Arc::clone(&deps.github)),
                 pr_status == "merged",
                 true,
+                deps.app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                 pr_status,
             )
             .await;
@@ -671,6 +679,10 @@ fn start_recovered_pr_polling(
         project.clone(),
         target.worktree_path.clone(),
         Arc::clone(&deps.workspace_repo),
+        deps.app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<crate::application::AppState>())
+            .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&deps.agent_run_repo),
         Arc::clone(chat_service),
     );

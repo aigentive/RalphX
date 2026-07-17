@@ -9,10 +9,11 @@ use crate::application::agent_conversation_workspace::{
     expand_worktree_parent_public, resolve_agent_conversation_project_workspace_dir,
 };
 use crate::application::git_service::GitService;
-use crate::domain::entities::{Project, ProjectId};
+use crate::domain::entities::{Project, ProjectId, TicketCanonicalBranchPolicyKind};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, OrphanWorktreeCleanupMarker,
     OrphanWorktreeCleanupMarkerKey, OrphanWorktreeCleanupMarkerRepository, ProjectRepository,
+    TicketCanonicalBranchRepository,
 };
 use crate::domain::services::RunningAgentRegistry;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -102,6 +103,7 @@ pub(super) async fn resolve_target_ref_for_orphan(repo_path: &Path) -> String {
 pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
     project_repo: Arc<dyn ProjectRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
@@ -137,6 +139,7 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
         cleanup_project_orphan_worktrees(
             &project,
             &workspace_repo,
+            ticket_branch_repo.as_ref(),
             &marker_repo,
             &running_agent_registry,
             &mut stats,
@@ -150,6 +153,7 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
 pub(super) async fn cleanup_project_orphan_worktrees(
     project: &Project,
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    ticket_branch_repo: Option<&Arc<dyn TicketCanonicalBranchRepository>>,
     marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     stats: &mut OrphanCleanupStats,
@@ -263,6 +267,8 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         if !record_candidate_path(&worktree_path, &mut processed_candidate_paths, stats) {
             continue;
         }
+        let preserve_branch =
+            preserve_strict_ticket_branch(ticket_branch_repo, project, branch).await;
 
         try_cleanup_orphan_worktree(
             project,
@@ -272,6 +278,7 @@ pub(super) async fn cleanup_project_orphan_worktrees(
             worktree.head.as_deref(),
             &target_ref,
             &local_branches,
+            preserve_branch,
             marker_repo,
             stats,
         )
@@ -285,6 +292,7 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         &known_workspace_paths,
         &target_ref,
         &local_branches,
+        ticket_branch_repo,
         running_agent_registry,
         marker_repo,
         &mut processed_candidate_paths,
@@ -330,6 +338,7 @@ pub(super) async fn scan_canonical_directories(
         known_workspace_paths,
         target_ref,
         local_branches,
+        None,
         running_agent_registry,
         marker_repo,
         &mut processed_candidate_paths,
@@ -345,6 +354,7 @@ async fn scan_canonical_directories_with_seen(
     known_workspace_paths: &HashSet<String>,
     target_ref: &str,
     local_branches: &HashSet<String>,
+    ticket_branch_repo: Option<&Arc<dyn TicketCanonicalBranchRepository>>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     processed_candidate_paths: &mut HashSet<String>,
@@ -439,6 +449,8 @@ async fn scan_canonical_directories_with_seen(
         if !record_candidate_path(&conv_path, processed_candidate_paths, stats) {
             continue;
         }
+        let preserve_branch =
+            preserve_strict_ticket_branch(ticket_branch_repo, project, &branch).await;
 
         try_cleanup_orphan_worktree(
             project,
@@ -448,6 +460,7 @@ async fn scan_canonical_directories_with_seen(
             head_sha.as_deref(),
             target_ref,
             local_branches,
+            preserve_branch,
             marker_repo,
             stats,
         )
@@ -463,6 +476,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
     head_sha: Option<&str>,
     target_ref: &str,
     local_branches: &HashSet<String>,
+    preserve_branch: bool,
     marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     stats: &mut OrphanCleanupStats,
 ) {
@@ -574,7 +588,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
         "Orphan cleanup: removed contained orphan worktree"
     );
 
-    if local_branches.contains(branch) {
+    if local_branches.contains(branch) && !preserve_branch {
         if let Err(error) = GitService::delete_branch(repo_path, branch, true).await {
             tracing::warn!(
                 branch,
@@ -584,6 +598,31 @@ pub(super) async fn try_cleanup_orphan_worktree(
         } else {
             stats.branch_deletions += 1;
             tracing::info!(branch, "Orphan cleanup: deleted contained orphan branch");
+        }
+    }
+}
+
+async fn preserve_strict_ticket_branch(
+    ticket_branch_repo: Option<&Arc<dyn TicketCanonicalBranchRepository>>,
+    project: &Project,
+    branch: &str,
+) -> bool {
+    let Some(repository) = ticket_branch_repo else {
+        return false;
+    };
+    match repository.get_by_branch_name(&project.id, branch).await {
+        Ok(Some(binding)) => {
+            binding.policy_kind == TicketCanonicalBranchPolicyKind::StrictGitConvention
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                branch,
+                error = %error,
+                "Orphan cleanup: preserving branch because strict ticket policy lookup failed"
+            );
+            true
         }
     }
 }

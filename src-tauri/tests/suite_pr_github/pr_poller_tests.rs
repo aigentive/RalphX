@@ -400,6 +400,7 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
         project,
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );

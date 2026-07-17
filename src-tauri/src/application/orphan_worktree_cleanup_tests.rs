@@ -251,6 +251,7 @@ async fn try_cleanup_skips_dirty_worktree() {
         None,
         "main",
         &local_branches,
+        false,
         &marker_repo(),
         &mut stats,
     )
@@ -302,6 +303,7 @@ async fn try_cleanup_skips_non_contained_branch() {
         None,
         "main",
         &local_branches,
+        false,
         &marker_repo(),
         &mut stats,
     )
@@ -377,6 +379,7 @@ async fn try_cleanup_skips_recent_unsafe_marker() {
         Some(&head_sha),
         "main",
         &local_branches,
+        false,
         &marker_repo,
         &mut stats,
     )
@@ -426,6 +429,7 @@ async fn try_cleanup_removes_contained_worktree_and_branch() {
         None,
         "main",
         &local_branches,
+        false,
         &marker_repo(),
         &mut stats,
     )
@@ -441,6 +445,52 @@ async fn try_cleanup_removes_contained_worktree_and_branch() {
         .output()
         .expect("git check");
     assert!(!branch_check.status.success());
+}
+
+#[tokio::test]
+async fn try_cleanup_removes_contained_worktree_but_preserves_persistent_branch() {
+    let repo_dir = init_repo();
+    let repo_path = repo_dir.path();
+    let branch = "ralphx/test-proj/persistent-ticket";
+    run_git(repo_path, &["branch", branch, "main"]);
+
+    let worktree_dir = tempfile::tempdir().expect("worktree temp");
+    let worktree_path = worktree_dir.path().join("persistent-wt");
+    run_git(
+        repo_path,
+        &["worktree", "add", &worktree_path.to_string_lossy(), branch],
+    );
+
+    let local_branches = HashSet::from([branch.to_string()]);
+    let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "persistent-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+
+    super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
+        repo_path,
+        &worktree_path,
+        branch,
+        None,
+        "main",
+        &local_branches,
+        true,
+        &marker_repo(),
+        &mut stats,
+    )
+    .await;
+
+    assert_eq!(stats.contained_removals, 1);
+    assert_eq!(stats.branch_deletions, 0);
+    assert!(!worktree_path.exists());
+    let branch_check = Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo_path)
+        .output()
+        .expect("git check");
+    assert!(branch_check.status.success());
 }
 
 #[tokio::test]
@@ -464,6 +514,7 @@ async fn try_cleanup_skips_nonexistent_worktree() {
         None,
         "main",
         &local_branches,
+        false,
         &marker_repo(),
         &mut stats,
     )
@@ -544,6 +595,7 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo,
         &registry,
         &mut stats,
@@ -596,6 +648,7 @@ async fn cleanup_project_orphan_worktrees_dedupes_registered_and_canonical_candi
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo,
         &registry,
         &mut stats,
@@ -648,6 +701,7 @@ async fn cleanup_project_orphan_worktrees_ignores_task_worktrees_under_shared_pa
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo,
         &registry,
         &mut stats,
@@ -917,6 +971,7 @@ async fn startup_cleanup_skips_blocked_projects() {
     cleanup_orphan_agent_worktrees_on_startup(
         project_repo,
         workspace_repo,
+        None,
         marker_repo(),
         blocked,
         registry,
@@ -954,6 +1009,7 @@ async fn startup_cleanup_pauses_when_agent_running() {
     cleanup_orphan_agent_worktrees_on_startup(
         project_repo,
         workspace_repo,
+        None,
         marker_repo(),
         blocked,
         running_registry,
@@ -972,6 +1028,7 @@ async fn startup_cleanup_with_empty_projects() {
     cleanup_orphan_agent_worktrees_on_startup(
         project_repo,
         workspace_repo,
+        None,
         marker_repo(),
         blocked,
         registry,
@@ -1032,6 +1089,7 @@ async fn try_cleanup_removes_worktree_but_skips_branch_deletion_when_not_local()
         None,
         "main",
         &local_branches,
+        false,
         &marker_repo(),
         &mut stats,
     )
@@ -1150,6 +1208,7 @@ async fn startup_cleanup_processes_multiple_projects() {
     cleanup_orphan_agent_worktrees_on_startup(
         project_repo,
         workspace_repo,
+        None,
         marker_repo(),
         blocked,
         registry,
@@ -1249,6 +1308,7 @@ async fn cleanup_project_handles_bad_working_directory() {
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo(),
         &registry,
         &mut stats,
@@ -1342,6 +1402,7 @@ async fn cleanup_project_handles_worktree_with_no_branch() {
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo(),
         &registry,
         &mut stats,
@@ -1393,6 +1454,7 @@ async fn cleanup_project_skips_non_ralphx_worktrees() {
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo(),
         &registry,
         &mut stats,
@@ -1445,6 +1507,7 @@ async fn cleanup_project_skips_worktree_outside_parent() {
     cleanup_project_orphan_worktrees(
         &project,
         &workspace_repo,
+        None,
         &marker_repo(),
         &registry,
         &mut stats,
@@ -1513,8 +1576,15 @@ async fn cleanup_project_matches_known_worktree_paths() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &ws_repo, &marker_repo(), &registry, &mut stats)
-        .await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &ws_repo,
+        None,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert!(
         stats.db_matches >= 1,

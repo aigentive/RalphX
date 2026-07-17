@@ -22,6 +22,7 @@ use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
@@ -33,6 +34,7 @@ use crate::domain::entities::{
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    TicketCanonicalBranchRepository,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -149,6 +151,7 @@ impl PrPollerRegistry {
         project: Project,
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
         chat_service: Arc<dyn ChatService>,
     ) {
@@ -191,6 +194,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 workspace_repo,
+                ticket_branch_repo,
                 agent_run_repo,
                 chat_service,
             )
@@ -845,6 +849,7 @@ async fn agent_workspace_poll_loop(
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
 ) {
@@ -910,6 +915,7 @@ async fn agent_workspace_poll_loop(
                     Some(Arc::clone(&github)),
                     true,
                     true,
+                    ticket_branch_repo.as_ref().map(Arc::clone),
                     "merged",
                 )
                 .await;
@@ -935,6 +941,7 @@ async fn agent_workspace_poll_loop(
                     None,
                     false,
                     true,
+                    ticket_branch_repo.as_ref().map(Arc::clone),
                     "closed",
                 )
                 .await;
@@ -1594,6 +1601,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
     github: Option<Arc<dyn GithubServiceTrait>>,
     delete_branch_if_merged: bool,
     cleanup_local_artifacts: bool,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     pr_status: &str,
 ) -> bool {
     let active_run = match agent_run_repo
@@ -1684,6 +1692,37 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
         }
     }
 
+    let mut preserve_ticket_branch = false;
+    if let Some(ticket_branch_repo) = ticket_branch_repo.as_ref() {
+        let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+            Ok(Some(workspace)) => workspace,
+            Ok(None) => return false,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace terminal PR cleanup: failed to load strict cycle binding"
+                );
+                return false;
+            }
+        };
+        match mark_strict_ticket_cycle_terminal(ticket_branch_repo.as_ref(), &workspace, pr_status)
+            .await
+        {
+            Ok(Some(_)) => preserve_ticket_branch = true,
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_status,
+                    error = %error,
+                    "Agent workspace terminal PR cleanup: failed to persist strict cycle terminal state"
+                );
+                return false;
+            }
+        }
+    }
+
     if !cleanup_local_artifacts {
         return true;
     }
@@ -1693,7 +1732,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
         conversation_id,
         project,
         github,
-        delete_branch_if_merged,
+        delete_branch_if_merged && !preserve_ticket_branch,
     )
     .await;
     true

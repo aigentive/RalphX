@@ -787,7 +787,7 @@ fn log_agent_workspace_probe_result(
     );
 }
 
-async fn run_or_defer_agent_conversation_workspace_setup(
+pub(crate) async fn run_or_defer_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
     worktree_path: &Path,
@@ -1044,7 +1044,7 @@ pub(crate) fn reject_persona_builder_workspace_mode(mode: &str) -> Result<(), St
     }
 }
 
-async fn ensure_agent_conversation_worktree(
+pub(crate) async fn ensure_agent_conversation_worktree(
     repo_path: &Path,
     workspace_path: &Path,
     branch_name: &str,
@@ -1378,7 +1378,7 @@ fn resolve_agent_conversation_workspace_path_from_record(
     Ok(expected_path)
 }
 
-pub(super) fn resolve_agent_conversation_workspace_path_from_record_identity(
+pub(crate) fn resolve_agent_conversation_workspace_path_from_record_identity(
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<PathBuf> {

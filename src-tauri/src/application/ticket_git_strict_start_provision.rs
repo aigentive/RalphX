@@ -114,10 +114,32 @@ pub(super) async fn ensure_available_owner(
                 .for_task(&binding.issue_key)
                 .for_branch(&binding.branch_name)
         })?;
-    if let Some(owner) = owners
-        .into_iter()
-        .find(|workspace| allowed_owner != Some(&workspace.conversation_id))
-    {
+    let mut blocking_owner = None;
+    for workspace in owners {
+        if allowed_owner == Some(&workspace.conversation_id) {
+            continue;
+        }
+        let released_terminal = workspace.publication_pr_status.as_deref() == Some("merged")
+            && state
+                .agent_conversation_workspace_repo
+                .get_local_cleanup_status(&workspace.conversation_id)
+                .await
+                .map_err(|error| {
+                    StrictTicketGitBlocker::new(
+                        StrictTicketGitBlockerCode::ActiveOwner,
+                        error.to_string(),
+                    )
+                    .for_task(&binding.issue_key)
+                    .for_branch(&binding.branch_name)
+                })?
+                .as_deref()
+                == Some("cleaned");
+        if !released_terminal {
+            blocking_owner = Some(workspace);
+            break;
+        }
+    }
+    if let Some(owner) = blocking_owner {
         return Err(StrictTicketGitBlocker {
             code: StrictTicketGitBlockerCode::ActiveOwner,
             message: format!(

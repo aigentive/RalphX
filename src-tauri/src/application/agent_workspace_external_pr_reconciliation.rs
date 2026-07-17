@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::chat_service::ChatService;
@@ -215,6 +215,10 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
                 project.clone(),
                 Path::new(&project.working_directory).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
+                deps.app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                 Arc::clone(&deps.agent_run_repo),
                 Arc::clone(chat_service),
             );
@@ -229,6 +233,10 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             Some(Arc::clone(&deps.github)),
             matches!(pr.status, PrStatus::Merged { .. }),
             true,
+            deps.app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
             pr_status,
         )
         .await;
@@ -275,6 +283,10 @@ async fn reconcile_linked_agent_workspace_pr(
                 project.clone(),
                 Path::new(&workspace.worktree_path).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
+                deps.app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                 Arc::clone(&deps.agent_run_repo),
                 Arc::clone(chat_service),
             );
@@ -312,6 +324,10 @@ async fn reconcile_linked_agent_workspace_pr(
         matches!(status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
         pr_status == "merged",
         true,
+        deps.app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<crate::application::AppState>())
+            .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
         pr_status,
     )
     .await;

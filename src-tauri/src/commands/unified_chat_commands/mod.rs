@@ -1416,7 +1416,7 @@ fn agent_workspace_publish_locks() -> &'static DashMap<String, Arc<tokio::sync::
     LOCKS.get_or_init(DashMap::new)
 }
 
-fn try_acquire_agent_workspace_publish_guard(
+pub(crate) fn try_acquire_agent_workspace_publish_guard(
     conversation_id: &ChatConversationId,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     let lock = agent_workspace_publish_locks()
@@ -5048,6 +5048,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                     project,
                     target.working_dir.clone(),
                     Arc::clone(&state.agent_conversation_workspace_repo),
+                    Some(Arc::clone(&state.ticket_canonical_branch_repo)),
                     Arc::clone(&state.agent_run_repo),
                     chat_service,
                 );
@@ -7229,6 +7230,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         project.clone(),
         publish_target.worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
@@ -7263,6 +7265,23 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
+    publish_agent_conversation_workspace_while_guarded(
+        state,
+        execution_state,
+        team_service,
+        conversation_id,
+        route_fixable_failures_to_agent,
+    )
+    .await
+}
+
+pub(crate) async fn publish_agent_conversation_workspace_while_guarded(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: Option<Arc<crate::application::TeamService>>,
+    conversation_id: ChatConversationId,
+    route_fixable_failures_to_agent: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, false);
@@ -8022,6 +8041,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
