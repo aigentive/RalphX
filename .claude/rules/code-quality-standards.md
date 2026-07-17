@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/**/*.{ts,tsx,js,jsx}"
+  - "frontend/src/**/*.{ts,tsx,js,jsx}"
   - "src-tauri/src/**/*.rs"
   - "plugins/app/**/*.{ts,js}"
 ---
@@ -36,7 +36,7 @@ paths:
 | No manual body recreation (NON-NEGOTIABLE) | If an existing function/impl/block is being moved, do not recreate that body by hand in a new file; move it mechanically, then patch around it |
 | Abort bad splits fast (NON-NEGOTIABLE) | If a split becomes half-moved, accumulates visibility churn, or stops being a mechanical move, restore the module to `HEAD`, remove parked WIP from the repo tree, and redo the extraction mechanically |
 | Serial validation during splits | Never overlap Cargo validation jobs while a large extraction is in flight; run one targeted command at a time so build-lock noise does not mask real errors |
-| Validate | `cargo clippy --all-targets --all-features -- -D warnings` / `npm run typecheck` before commit |
+| Validate | Both clippy gates per rust-test-execution.md (`--lib --bins --no-default-features` + `--all-targets --all-features`, each with `--manifest-path src-tauri/Cargo.toml -- -D warnings`) / `npm run typecheck` (from `frontend/`) before commit |
 | Hook for logic | Complex state→hook, component only renders |
 | Re-export on extract | `export { New as Old }` — don't break imports |
 | Extract = delete original | When moving functions to new modules, fully remove original code (not just copy) |

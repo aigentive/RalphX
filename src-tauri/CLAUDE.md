@@ -12,10 +12,9 @@ tokio 1.x | serde 1.x | chrono 0.4 | thiserror 1.x | async-trait 0.1 | tracing 0
 ```
 src-tauri/src/
 ├─ domain/
-│  ├─ entities/        # Task, Project, InternalStatus, etc.
+│  ├─ entities/        # Re-exports ralphx-domain entities (Task, Project, InternalStatus)
 │  ├─ repositories/    # Traits (interfaces)
-│  ├─ state_machine/   # machine.rs, transition_handler.rs
-│  └─ agents/          # AgenticClient trait
+│  └─ state_machine/   # machine/, transition_handler/
 ├─ application/
 │  ├─ app_state.rs     # DI container
 │  └─ *_service.rs     # Business logic
@@ -24,6 +23,9 @@ src-tauri/src/
 └─ infrastructure/
    ├─ sqlite/          # Repo implementations
    └─ memory/          # Test repos
+src-tauri/crates/
+├─ ralphx-domain/      # Pure entities, AgenticClient trait, review/scope_drift logic
+└─ ralphx-events/      # Object-safe event sink
 ```
 
 ## Architecture: Clean/Hexagonal
@@ -32,7 +34,7 @@ Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS
 ```
 
 ### Dual AppState (CRITICAL)
-`lib.rs` creates TWO `AppState` instances (Tauri commands + HTTP/MCP server) with separate DB connections. Any `Arc<T>` coordinating between them MUST be cloned in `lib.rs:200-208`. ❌ Relying on `new_production()` defaults.
+TWO `AppState` object graphs exist (Tauri commands + HTTP/MCP server), wired in `app_setup.rs` / `server_boot.rs` / `runtime_wiring.rs`; the HTTP state is built from the Tauri state's **shared physical SQLite connection**. Any `Arc<T>` coordinating between them MUST be explicitly cloned in `runtime_wiring.rs`. ❌ Relying on `new_production()` defaults.
 
 | Shared State | What Breaks If Not Shared |
 |---|---|
@@ -40,6 +42,7 @@ Commands (Tauri IPC) → Application Services → Domain Layer ← NO INFRA DEPS
 | `permission_state` | Permission prompts never shown |
 | `message_queue` | Messages lost between IPC/HTTP |
 | `interactive_process_registry` | Teammate→lead nudge fails |
+| event sink/bus, durable queue repo, streaming cache, GitHub service, PR poller, webhook publisher, merge locks, capability gate | Event/notification/runtime coordination silently diverges between the two graphs |
 
 ## Patterns
 
@@ -61,7 +64,7 @@ All SQLite repos MUST use `db.run(|conn| { ... })` / `db.query_optional(|conn| {
 ## Rules
 
 ### State Machine (CRITICAL)
-Refs: task-state-machine.md (24 states) | task-git-branching.md (git/merge) | task-execution-agents.md (agents)
+Refs: task-state-machine.md (28 states) | task-git-branching.md (git/merge) | task-execution-agents.md (agents)
 ❌ `task.internal_status = X` for live workflow paths | ✅ validated `TaskTransitionService::transition_task*()` or `handler.handle_transition(&state, &TaskEvent::Schedule).await` | ✅ nonstandard repair only via `transition_task_corrective()` / `apply_corrective_transition()` | ✅ direct status writes stay confined to canonical transition-handler / merge-engine internals that also own history/events
 Auto-transitions: QaPassed→PendingReview | PendingReview→Reviewing | RevisionNeeded→ReExecuting | Approved→PendingMerge
 Review approval gate: AI review may continue `review_passed → approved` when `require_human_review=false`, but do not shortcut `reviewing → approved`
@@ -84,9 +87,16 @@ New pattern → add one-liner here. Pattern name + rule only.
 
 | Pattern | Rule |
 |---|---|
+| Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module. ❌ New parallel services/engines/managers for owned concerns |
 | Validated task transitions | Normal workflow status changes use validated `TaskTransitionService::transition_task*`; corrective/recovery-only jumps use `transition_task_corrective()` / `apply_corrective_transition()`; raw `internal_status` writes are limited to canonical engine/bootstrap paths |
 | Shared scope drift logic | Review/merge scope matching and out-of-scope blocker fingerprints should live in `ralphx-domain::review::scope_drift`; root crate code should only handle repo/git wiring |
 | Follow-up blocker dedupe | Autonomous blocker follow-ups dedupe by first-class `blocker_fingerprint`; never rely on `spawn_reason` wording alone. See `.claude/rules/followup-blocker-dedupe.md` |
+| EventSink emission | New backend code emits via `AppState.events` (`crates/ralphx-events` object-safe sink; Tauri adapter at `src/shell/event_sink.rs`), never `AppHandle` directly; emission is fire-and-forget/non-fatal |
+| Transport-owned run identity | Model-facing MCP schemas must not accept run/orchestration IDs; inject `agentRunId` from MCP runtime context and validate against the active monitor (workspace-review pattern) |
+| Two-stage provider spawn gate | Every spawn path (send, queued resend, recovery, background transition, startup) requires an enabled default provider AND an enabled selected provider — `provider_onboarding_gate.rs`; missing provider settings fail closed |
+| Persisted review gate | Workspace Review is persisted `not_required\|required\|reviewing\|passed\|blocking\|failed` state; never infer pass from recency; validity = review scope + diff fingerprint + applicable head (content-equivalent commits preserve it, content changes invalidate) |
+| Typed failure taxonomy | Classify git/merge failures via `MergeFailureSource` → `RetryStrategy`; auth/disk-full/deterministic-infra/unknown never blind-retry; auth text is matched BEFORE broad transient patterns |
+| Durable completion proof | Completion authority = accepted `execution_complete` tool RESULT + current attempt + current validation evidence (HEAD + execution episode, non-baseline, tests ran+passed); never call-start, process exit, or commit SHA alone |
 | Rustfmt module roots | Never run `rustfmt` on `mod.rs` or other module-root files for a surgical change; rustfmt can recurse into child modules and create unrelated diffs |
 | ExecutionState Propagation | `Arc<ExecutionState>` → `TaskTransitionService::new()` + `AgenticClientSpawner::with_execution_state()` |
 | Agent MCP Tool Allowlist | MCP/tool changes are multi-layer: keep canonical `agents/<agent>/agent.yaml`, prompt contracts, runtime authorization, and registered handlers aligned; see `.claude/rules/agent-mcp-tools.md` |
@@ -164,15 +174,14 @@ Shared helpers: `transition_handler/tests/helpers.rs` — `setup_real_git_repo()
 
 | File | Tests | Real | Mocked |
 |------|-------|------|--------|
-| `tests/suite_transition_git/merge_system_hardening.rs` | 23 | git, MemoryTaskRepo | — |
+| `tests/suite_transition_git/merge_system_hardening.rs` | 22 | git, MemoryTaskRepo | — |
 | `tests/suite_transition_git/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
-| `transition_handler/tests/real_git_integration.rs` | 8 | git, merge dispatch | MockChatService |
+| `transition_handler/tests/real_git_integration.rs` | 11 | git, merge dispatch | MockChatService |
 | `transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
-| `transition_handler/tests/plan_update_from_main.rs` | 7 | git, pure fn | — |
-| `transition_handler/tests/source_update_from_target.rs` | 7 | git, pure fn | — |
-| `transition_handler/tests/rc12_rc13_stale_worktree.rs` | 3 | git worktrees | — |
-| `transition_handler/tests/merge_cleanup.rs` | 7 | transitions | TaskServices::new_mock() |
+| `transition_handler/tests/plan_update_from_main.rs` | 9 | git, pure fn | — |
+| `transition_handler/tests/source_update_from_target.rs` | 8 | git, pure fn | — |
+| `transition_handler/tests/rc12_rc13_stale_worktree.rs` | 5 | git worktrees | — |
+| `transition_handler/tests/merge_cleanup.rs` | 12 | transitions | TaskServices::new_mock() |
 
 ## Allowed Clippy Lints
-derivable_impls, redundant_closure, too_many_arguments, type_complexity,
-unnecessary_literal_unwrap, bool_comparison, useless_vec, let_and_return
+Crate-level `#![allow(clippy::...)]` list lives at the top of `src/lib.rs` (currently 18 lints) — that file is the source of truth; keep new allows there, not per-module.

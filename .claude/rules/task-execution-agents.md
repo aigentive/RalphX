@@ -70,7 +70,7 @@ paths:
 9. `start_step()` → work → `complete_step()` (per step)
 10. For re-execution: `mark_issue_in_progress()` / `mark_issue_addressed()` per issue
 
-**Key MCP tools:** `start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_task_context`, `get_review_notes`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed` (+ `Task` tool for coder delegation)
+**Key MCP tools:** `start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_task_context`, `get_review_notes`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed` (+ `delegate_start` / `delegate_wait` / `delegate_cancel` for coder delegation)
 
 ## Reviewer (`ralphx-execution-reviewer`)
 
@@ -155,25 +155,24 @@ paths:
 
 | Component | Path |
 |-----------|------|
-| GitMode enum | `src-tauri/src/domain/entities/project.rs` |
-| InternalStatus (24 variants) | `src-tauri/src/domain/entities/status.rs` |
-| Valid transitions table | `src-tauri/src/domain/entities/status.rs:valid_transitions()` |
+| GitMode enum | `src-tauri/crates/ralphx-domain/src/entities/project.rs` |
+| InternalStatus (28 variants) | `src-tauri/crates/ralphx-domain/src/entities/status.rs` |
+| Valid transitions table | `src-tauri/crates/ralphx-domain/src/entities/status.rs:valid_transitions()` |
 | TaskEvent enum | `src-tauri/src/domain/state_machine/events.rs` |
 | State machine dispatcher | `src-tauri/src/domain/state_machine/machine/transitions.rs` |
 | TransitionHandler + auto-transitions | `src-tauri/src/domain/state_machine/transition_handler/mod.rs` |
 | on_enter side effects | `src-tauri/src/domain/state_machine/transition_handler/side_effects/mod.rs` |
-| GitService (all git ops) | `src-tauri/src/application/git_service.rs` |
+| GitService (all git ops) | `src-tauri/src/application/git_service/` |
 | TaskTransitionService | `src-tauri/src/application/task_transition_service.rs` |
-| Task scheduler | `src-tauri/src/application/task_scheduler_service.rs` |
-| PlanBranch entity | `src-tauri/src/domain/entities/plan_branch.rs` |
-| PlanBranch repo trait | `src-tauri/src/domain/repositories/plan_branch_repository.rs` |
-| Agent configs (three-layer allowlist) | `src-tauri/src/infrastructure/agents/claude/agent_config.rs` |
+| Task scheduler | `src-tauri/src/application/task_scheduler_service/` |
+| PlanBranch entity | `src-tauri/crates/ralphx-domain/src/entities/plan_branch.rs` |
+| PlanBranch repo trait | `src-tauri/crates/ralphx-domain/src/repositories/plan_branch_repository.rs` |
+| Agent configs (three-layer allowlist) | `src-tauri/src/infrastructure/agents/claude/agent_config/` |
 | Agent spawner (CWD resolution) | `src-tauri/src/infrastructure/agents/spawner.rs` |
 | ChatService contexts | `src-tauri/src/application/chat_service/chat_service_context.rs` |
 | HTTP merge handlers | `src-tauri/src/http_server/handlers/git.rs` |
 | Canonical agent definitions | `agents/*/agent.yaml` + prompt files |
 | Plan branch commands | `src-tauri/src/commands/plan_branch_commands.rs` |
 | Ideation apply | `src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs` |
-| Git settings UI | `src/components/settings/GitSettingsSection.tsx` |
-| Frontend plan-branch API | `src/api/plan-branch.ts` |
-| Frontend GitMode type | `src/types/project.ts` |
+| Frontend plan-branch API | `frontend/src/api/plan-branch.ts` |
+| Frontend GitMode type | `frontend/src/types/project.ts` |

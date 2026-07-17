@@ -1,9 +1,9 @@
 ---
 paths:
   - "src-tauri/src/domain/state_machine/**"
-  - "src-tauri/src/domain/entities/status.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/status.rs"
   - "src-tauri/src/application/task_transition_service.rs"
-  - "src-tauri/src/application/task_scheduler_service.rs"
+  - "src-tauri/src/application/task_scheduler_service/**"
 ---
 
 # Task State Machine
@@ -14,7 +14,7 @@ paths:
 
 ---
 
-## 24 Internal Statuses
+## 28 Internal Statuses
 
 | # | Status | Category | Terminal? |
 |---|--------|----------|-----------|
@@ -35,46 +35,61 @@ paths:
 | 15 | `approved` | Transient | — |
 | 16 | `pending_merge` | Transient | — |
 | 17 | `merging` | Active (agent) | — |
-| 18 | `merge_incomplete` | Waiting (human) | — |
-| 19 | `merge_conflict` | Waiting (human) | — |
-| 20 | `merged` | Done | YES |
-| 21 | `failed` | Done | YES |
-| 22 | `cancelled` | Done | YES |
-| 23 | `paused` | Suspended | — |
-| 24 | `stopped` | Done | YES |
+| 18 | `waiting_on_pr` | Waiting (GitHub) | — |
+| 19 | `updating_plan_branch` | Active (system) | — |
+| 20 | `updating_task_branch` | Active (system) | — |
+| 21 | `branch_update_blocked` | Waiting (human) | — |
+| 22 | `merge_incomplete` | Waiting (human) | YES |
+| 23 | `merge_conflict` | Waiting (human) | — |
+| 24 | `merged` | Done | YES |
+| 25 | `failed` | Done | YES |
+| 26 | `cancelled` | Done | YES |
+| 27 | `paused` | Suspended | — |
+| 28 | `stopped` | Done | YES |
 
 **Transient:** Auto-transitions immediately to next state (no UI dwell time).
+**Terminal semantics:** `is_terminal()` = Merged | Failed | Cancelled | Stopped | MergeIncomplete — but only Merged | Cancelled satisfy dependencies (`is_dependency_satisfied()`).
+**Branch-update states:** `updating_plan_branch` / `updating_task_branch` / `branch_update_blocked` belong to the durable branch-update workflow (`branch_update_workflow.rs` / `branch_update_executor.rs`); the statig machine handles only pause/stop/cancel for them — completion/blocked exits are executor-owned CAS writes with lease/fencing authority.
+**`waiting_on_pr`:** entered by the PR-mode merge engine (`side_effects/merge_attempt/pr_mode.rs`, canonical engine write); GitHub is the merge authority while polling.
 
 ---
 
 ## State Transition Table
 
+Source of truth: `InternalStatus::valid_transitions()` (`crates/ralphx-domain/src/entities/status.rs`). Regenerate from that function, not the statig machine (which is a subset).
+
 | From | Valid Targets |
 |------|--------------|
 | `backlog` | `ready`, `cancelled` |
-| `ready` | `executing`, `blocked`, `cancelled` |
+| `ready` | `executing`, `blocked`, `pending_merge`, `cancelled` |
 | `blocked` | `ready`, `cancelled` |
-| `executing` | `qa_refining`, `pending_review`, `failed`, `blocked`, `merging`, `stopped`, `paused` |
+| `executing` | `qa_refining`, `pending_review`, `updating_plan_branch`, `updating_task_branch`, `failed`, `blocked`, `stopped`, `paused` |
 | `qa_refining` | `qa_testing`, `stopped`, `paused` |
 | `qa_testing` | `qa_passed`, `qa_failed`, `stopped`, `paused` |
 | `qa_passed` | `pending_review` |
 | `qa_failed` | `revision_needed` |
 | `pending_review` | `reviewing` |
-| `reviewing` | `review_passed`, `revision_needed`, `escalated`, `merging`, `stopped`, `paused` |
+| `reviewing` | `review_passed`, `revision_needed`, `escalated`, `updating_plan_branch`, `updating_task_branch`, `stopped`, `paused` |
 | `review_passed` | `approved`, `revision_needed` |
-| `escalated` | `approved`, `revision_needed` |
+| `escalated` | `approved`, `revision_needed`, `pending_review` |
 | `revision_needed` | `re_executing`, `cancelled` |
-| `re_executing` | `pending_review`, `failed`, `blocked`, `merging`, `stopped`, `paused` |
+| `re_executing` | `pending_review`, `updating_plan_branch`, `updating_task_branch`, `failed`, `blocked`, `stopped`, `paused` |
 | `approved` | `pending_merge`, `ready` |
-| `pending_merge` | `merged`, `merging` |
-| `merging` | `merged`, `merge_conflict`, `merge_incomplete`, `stopped`, `paused` |
-| `merge_incomplete` | `pending_merge`, `merged` |
-| `merge_conflict` | `merged` |
+| `pending_merge` | `merged`, `merging`, `waiting_on_pr`, `updating_plan_branch`, `updating_task_branch`, `merge_incomplete`, `stopped`, `paused`, `cancelled` |
+| `merging` | `merged`, `waiting_on_pr`, `updating_plan_branch`, `merge_conflict`, `merge_incomplete`, `stopped`, `paused`, `cancelled` |
+| `waiting_on_pr` | `merged`, `merge_incomplete`, `pending_merge`, `updating_plan_branch`, `stopped`, `paused`, `cancelled` |
+| `merge_incomplete` | `pending_merge`, `merging`, `waiting_on_pr`, `merged`, `stopped`, `paused`, `cancelled` |
+| `merge_conflict` | `pending_merge`, `merging`, `merged`, `stopped`, `paused`, `cancelled` |
+| `updating_plan_branch` | `updating_task_branch`, `branch_update_blocked`, `executing`, `re_executing`, `reviewing`, `pending_merge`, `waiting_on_pr`, `merged`, `failed`, `escalated`, `merge_incomplete`, `stopped`, `paused`, `cancelled` |
+| `updating_task_branch` | `branch_update_blocked`, `executing`, `re_executing`, `reviewing`, `pending_merge`, `waiting_on_pr`, `failed`, `escalated`, `merge_incomplete`, `stopped`, `paused`, `cancelled` |
+| `branch_update_blocked` | `updating_plan_branch`, `updating_task_branch`, `stopped`, `cancelled` |
 | `merged` | `ready` |
 | `failed` | `ready` |
 | `cancelled` | `ready` |
 | `stopped` | `ready` |
-| `paused` | `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging` |
+| `paused` | `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging`, `waiting_on_pr`, `updating_plan_branch`, `updating_task_branch` |
+
+Branch-update completion/blocked exits go through the branch-update executor's CAS writes, not statig machine events.
 
 ---
 
@@ -84,7 +99,7 @@ paths:
 |------|------|
 | Normal workflow transitions | Use validated `TaskTransitionService::transition_task*()` or `handler.handle_transition(...)` |
 | Corrective / repair-only jumps | Use explicit `transition_task_corrective()` / `apply_corrective_transition()` |
-| Canonical engine writes | Direct `internal_status` persistence is allowed only inside transition-handler / merge-engine core paths that also persist history/events |
+| Canonical engine writes | Direct `internal_status` persistence is allowed only inside transition-handler / merge-engine / branch-update-executor core paths that also persist history/events |
 | Forbidden | ❌ Direct repo/DB `internal_status` mutation for already-active live workflow tasks |
 
 ---
@@ -107,16 +122,16 @@ These are persisted as intermediate states but the system chains through them in
 | State | Side Effects |
 |-------|-------------|
 | **ready** | Spawn `qa-prep` agent (background, if QA enabled). After 600ms delay → `try_schedule_ready_tasks()` |
-| **executing** | Create task branch (Local: check dirty tree → create+checkout | Worktree: create worktree dir). Persist `task_branch`/`worktree_path`. Spawn **worker** agent |
+| **executing** | Create worktree dir + task branch. Persist `task_branch`/`worktree_path`. Spawn **worker** agent |
 | **qa_refining** | Wait for qa-prep if needed. Spawn `qa-refiner` agent |
 | **qa_testing** | Spawn `qa-tester` agent |
 | **qa_passed** | Emit `qa_passed` event |
 | **qa_failed** | Emit `qa_failed` event. Notify user |
 | **pending_review** | Start AI review via `ReviewStarter`. Emit `review:update` event |
-| **reviewing** | Checkout task branch (Local mode). Spawn **reviewer** agent |
+| **reviewing** | Spawn **reviewer** agent |
 | **review_passed** | Emit `review:ai_approved`. Notify user "Please review and approve" when `require_human_review=true`; otherwise the review-complete path may continue immediately to `approved` |
 | **escalated** | Emit `review:escalated`. Notify user "Please review and decide" |
-| **re_executing** | Checkout task branch (Local mode). Spawn **worker** agent with revision context |
+| **re_executing** | Spawn **worker** agent with revision context |
 | **approved** | Emit `task_completed` event |
 | **pending_merge** | Run `attempt_programmatic_merge()` (see task-git-branching.md) |
 | **merging** | Spawn **merger** agent |
@@ -170,7 +185,7 @@ Reviewing → RevisionNeeded → (auto) ReExecuting → PendingReview
 | `HumanApprove` | `review_passed`/`escalated` → `approved` |
 | `HumanRequestChanges` | `review_passed`/`escalated` → `revision_needed` |
 | `ForceApprove` | (override) → `approved` |
-| `Retry` | `failed`/`cancelled`/`stopped`/`merged` → `ready` |
+| `Retry` | `failed`/`cancelled`/`stopped`/`merged` → `ready`; `waiting_on_pr`/`merge_incomplete`/`merge_conflict` → `pending_merge` |
 | `SkipQa` | `qa_failed` → `pending_review` |
 
 ### Agent Events
@@ -186,7 +201,7 @@ Reviewing → RevisionNeeded → (auto) ReExecuting → PendingReview
 | `ReviewComplete(approved)` | `reviewing` → `review_passed` |
 | `ReviewComplete(!approved)` | `reviewing` → `revision_needed` |
 | `MergeAgentFailed` | `merging` → `merge_conflict` |
-| `MergeAgentError` | `merging` → `merge_incomplete` |
+| `MergeAgentError` | `merging`/`waiting_on_pr` → `merge_incomplete` |
 
 ### System Events
 
@@ -195,12 +210,12 @@ Reviewing → RevisionNeeded → (auto) ReExecuting → PendingReview
 | `StartReview` | `pending_review` → `reviewing` |
 | `StartRevision` | `revision_needed` → `re_executing` |
 | `StartMerge` | `approved` → `pending_merge` |
-| `MergeComplete` | `pending_merge`/`merging` → `merged` |
-| `MergeConflict` | `pending_merge` → `merging` |
+| `MergeComplete` | `pending_merge`/`merging`/`waiting_on_pr` → `merged` |
+| `MergeConflict` | `pending_merge`/`merge_incomplete` → `merging` |
 | `ConflictResolved` | `merge_conflict`/`merge_incomplete` → `merged` |
 | `BlockersResolved` | `blocked` → `ready` |
 | `BlockerDetected` | `ready`/`re_executing` → `blocked` |
-| `BranchFreshnessConflict` | `executing`/`re_executing`/`reviewing` → `merging` |
+| `PlanBranchUpdateRequired` / `TaskBranchUpdateRequired` | executing/re_executing/reviewing/pending_merge/merging/waiting_on_pr → `updating_plan_branch` / `updating_task_branch` |
 
 ---
 
@@ -208,10 +223,8 @@ Reviewing → RevisionNeeded → (auto) ReExecuting → PendingReview
 
 | Guard | Location | Effect |
 |-------|----------|--------|
-| Dirty working tree (Local mode) | `on_enter(Executing)` | `Err(ExecutionBlocked)` — task cannot execute |
 | `context.qa_enabled` | `ExecutionComplete` dispatch | Routes to `qa_refining` vs `pending_review` |
 | `task.task_branch.is_none()` | `on_enter(Executing)` | Only creates branch on first execution (skip on re-entry) |
-| Running task (Local mode) | `task_scheduler_service` | Blocks scheduling if another task is in a running state |
 | Self-transition | `can_transition_to()` | No state can transition to itself |
 
 ---
@@ -220,20 +233,11 @@ Reviewing → RevisionNeeded → (auto) ReExecuting → PendingReview
 
 When `ensure_branches_fresh()` detects stale branches at execution/review entry:
 
-| Source State | Event | Target | Return Path (via MergeComplete) |
-|---|---|---|---|
-| `executing` | `BranchFreshnessConflict` | `merging` | → `ready` (re-queued for execution) |
-| `re_executing` | `BranchFreshnessConflict` | `merging` | → `ready` (re-queued for execution) |
-| `reviewing` | `BranchFreshnessConflict` | `merging` | → `pending_review` (re-queued for review) |
-
-**Metadata:** `FreshnessMetadata` struct (`transition_handler/freshness.rs`) tracks:
-- `branch_freshness_conflict: bool` — MergeComplete detects freshness-triggered merges
-- `freshness_origin_state: Option<String>` — return-path routing ("executing"|"re_executing"|"reviewing")
-- `freshness_conflict_count: u32` — incremented once per `ensure_branches_fresh()` call; reset on clean check; cap: 3
-
-**Retry cap:** 4th freshness conflict → `ExecutionBlocked` → task transitions to `failed`.
-
-**No new events for return path** — MergeComplete checks `freshness_origin_state` metadata directly.
+- `BranchFreshnessConflict` is an `AppError` handled by `TaskTransitionService::handle_branch_freshness_conflict` via **corrective transitions** — not a statig machine event to `merging`. Tasks already in `updating_plan_branch`/`updating_task_branch` hand off to the branch-update workflow instead.
+- Reviewing-origin conflicts WITHOUT merge-conflict evidence park in `pending_review`; with evidence (or non-review origins) they route to `merging`.
+- **Caps:** `FRESHNESS_RETRY_LIMIT = 5` with one auto-reset + extended cooldown; second cap → `ExecutionBlocked`; review-origin count ≥5 → `failed` via corrective transition.
+- **Return path** keys on `plan_update_conflict` metadata (`freshness_return_route`), not a `branch_freshness_conflict` bool; origin values include `executing` | `re_executing` | `reviewing` | `waiting_on_pr` | `pr_branch_publication`.
+- **Metadata:** `FreshnessMetadata` (`transition_handler/freshness.rs`) — `freshness_origin_state`, `freshness_conflict_count`, `freshness_backoff_until`, `freshness_auto_reset_count`.
 
 **Review gate invariant:** Even when human review is disabled, AI approval still uses `reviewing → review_passed → approved`; do not reintroduce direct `reviewing → approved`.
 
@@ -245,7 +249,7 @@ When `ensure_branches_fresh()` detects stale branches at execution/review entry:
 
 | Aspect | Detail |
 |--------|--------|
-| **Which states** | All 6 agent-active states: `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging` + `pending_merge` |
+| **Which states** | All `AGENT_ACTIVE_STATUSES` (9): `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging`, `pending_merge`, `updating_plan_branch`, `updating_task_branch` |
 | **Which states NOT** | Idle (`backlog`, `ready`, `blocked`), terminal (`failed`, `cancelled`, `stopped`), transient states |
 | **Result** | Task → `paused`. Agents killed via `running_agent_registry.stop_all()` |
 | **Metadata** | `PauseReason` written to `task.metadata["pause_reason"]` before transition. Variants: `UserInitiated` (scope: "global"/"task") | `ProviderError` (auto-resumable) |
@@ -303,7 +307,7 @@ PauseReason::ProviderError { category, message, retry_after, previous_status, pa
 
 | Status | Affected by global pause? | Why |
 |--------|--------------------------|-----|
-| `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging` | YES → transitions to `paused` | In `AGENT_ACTIVE_STATUSES` — agent is running |
+| `executing`, `re_executing`, `qa_refining`, `qa_testing`, `reviewing`, `merging`, `pending_merge`, `updating_plan_branch`, `updating_task_branch` | YES → transitions to `paused` | In `AGENT_ACTIVE_STATUSES` |
 | `blocked` | NO — immune to pause | Not in `AGENT_ACTIVE_STATUSES` — no agent to kill |
 | `ready` | NO — stays queued | No agent running; scheduler gated by `is_paused()` flag |
 | `paused` | — | Result of pausing an agent-active task |
