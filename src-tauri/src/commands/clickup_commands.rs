@@ -3,9 +3,13 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::clickup_integration_service::ClickUpTaskListOptions;
+use crate::application::ticket_git_strict_start::{
+    preview_strict_clickup_ticket_branch_from_services, StrictTicketGitPreview,
+};
 use crate::application::{
     AppState, ClickUpIntegrationSettingsUpdate, ClickUpTaskSummary, ClickUpWorkspace,
 };
+use crate::domain::entities::ProjectId;
 use crate::domain::integrations::ClickUpIntegrationSettings;
 
 /// Connection/settings view for the ClickUp ticketing provider.
@@ -107,6 +111,20 @@ pub struct ListClickUpWorkspacesResponse {
     pub workspaces: Vec<ClickUpWorkspace>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewClickUpTicketGitConventionInput {
+    pub project_id: String,
+    pub task_id: String,
+    pub target_base_ref: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewClickUpTicketGitConventionResponse {
+    pub convention: Option<StrictTicketGitPreview>,
+}
+
 #[tauri::command]
 pub async fn get_clickup_integration_settings(
     state: State<'_, AppState>,
@@ -181,4 +199,39 @@ pub async fn search_clickup_tasks(
         )
         .await?;
     Ok(SearchClickUpTasksResponse { tasks })
+}
+
+/// Read-only strict ticket convention preflight. This never creates a binding,
+/// branch, worktree, push, or cycle transition.
+#[tauri::command]
+pub async fn preview_clickup_ticket_git_convention(
+    input: PreviewClickUpTicketGitConventionInput,
+    state: State<'_, AppState>,
+) -> Result<PreviewClickUpTicketGitConventionResponse, String> {
+    let project_id = ProjectId::from_string(input.project_id);
+    let project = state
+        .project_repo
+        .get_by_id(&project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    let task = state
+        .clickup_integration_service
+        .fetch_task(&input.task_id)
+        .await?;
+    let target_base_ref = input
+        .target_base_ref
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(project.base_branch)
+        .unwrap_or_else(|| "main".to_string());
+    let convention = preview_strict_clickup_ticket_branch_from_services(
+        state.inner(),
+        &project_id,
+        &task,
+        &target_base_ref,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(PreviewClickUpTicketGitConventionResponse { convention })
 }

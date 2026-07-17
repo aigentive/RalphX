@@ -181,6 +181,7 @@ mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
 pub mod ticket_git_convention;
 mod ticket_git_convention_render;
+pub mod ticket_git_strict_start;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;

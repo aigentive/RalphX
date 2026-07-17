@@ -44,10 +44,15 @@ pub use crate::application::agent_conversation_start_service::{
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+};
+use crate::application::ticket_git_strict_start::{
+    activate_strict_ticket_branch_cycle, authoritative_clickup_task_for_conversation,
+    ensure_strict_clickup_ticket_branch_from_services, resolve_strict_ticket_target_base_ref,
+    rollback_strict_ticket_workspace_activation,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -3548,10 +3553,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
-    let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-    let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
-    let base_ref = trim_optional_input(input.base_ref);
-    let base_display_name = trim_optional_input(input.base_display_name);
+    let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let mut base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
+    let mut base_ref = trim_optional_input(input.base_ref);
+    let mut base_display_name = trim_optional_input(input.base_display_name);
     let mut source_pull_request = normalize_agent_workspace_source_pull_request(
         input.base_source_pull_request,
         base_ref_kind,
@@ -3559,6 +3564,9 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     )?;
     let should_create_workspace =
         agent_mode_should_create_workspace(target_mode, source_pull_request.as_ref());
+    let mut strict_ticket_resolution = None;
+    let mut strict_ticket_project = None;
+    let mut linked_target_base_ref = None;
 
     let mut conversation = state
         .chat_conversation_repo
@@ -3688,6 +3696,61 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+                if matches!(
+                    target_mode,
+                    AgentConversationWorkspaceMode::Edit
+                        | AgentConversationWorkspaceMode::Plan
+                        | AgentConversationWorkspaceMode::Ideation
+                ) {
+                    if let Some(task) = authoritative_clickup_task_for_conversation(
+                        state,
+                        &project_id,
+                        &conversation.id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                    {
+                        let selected_pr_target = source_pull_request
+                            .as_ref()
+                            .and_then(|pull_request| pull_request.base_ref_name.as_deref())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let target_base_ref = resolve_strict_ticket_target_base_ref(
+                            &project,
+                            if selected_pr_target.is_some() {
+                                Some(IdeationAnalysisBaseRefKind::LocalBranch)
+                            } else {
+                                base_ref_kind
+                            },
+                            selected_pr_target.or(base_ref.as_deref()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                        strict_ticket_resolution =
+                            ensure_strict_clickup_ticket_branch_from_services(
+                                state,
+                                &project_id,
+                                &task,
+                                &target_base_ref,
+                                Some(&conversation.id),
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        if let Some(strict) = strict_ticket_resolution.as_ref() {
+                            strict_ticket_project = Some(project.clone());
+                            base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                            base_branch_mode =
+                                Some(AgentConversationWorkspaceBranchMode::Linked);
+                            base_ref = Some(strict.binding.branch_name.clone());
+                            base_display_name = Some(format!(
+                                "ClickUp {} ({})",
+                                strict.binding.issue_key, strict.binding.branch_name
+                            ));
+                            linked_target_base_ref = Some(strict.binding.base_branch.clone());
+                            source_pull_request = None;
+                        }
+                    }
+                }
                 ensure_linked_branch_workspace_available(
                     state,
                     &project_id,
@@ -3707,7 +3770,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 .await?;
                 let pr_automation_defaults =
                     agent_workspace_pr_automation_defaults_for_project(state, &project.id).await?;
-                let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+                let workspace = prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
                     &project,
                     &conversation.id,
                     target_mode,
@@ -3721,6 +3784,8 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
                     false,
+                    None,
+                    linked_target_base_ref,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -3736,6 +3801,33 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
     };
+
+    if let (Some(strict), Some(workspace)) =
+        (strict_ticket_resolution.as_ref(), workspace.as_ref())
+    {
+        if let Err(error) = activate_strict_ticket_branch_cycle(
+            state,
+            &strict.binding,
+            workspace.base_commit.as_deref(),
+        )
+        .await
+        {
+            let cleanup_error = match strict_ticket_project.as_ref() {
+                Some(project) => {
+                    rollback_strict_ticket_workspace_activation(state, project, workspace)
+                        .await
+                        .err()
+                }
+                None => Some("strict ticket project was not retained for rollback".to_string()),
+            };
+            return Err(match cleanup_error {
+                Some(cleanup_error) => {
+                    format!("{error}; strict workspace rollback failed: {cleanup_error}")
+                }
+                None => error.to_string(),
+            });
+        }
+    }
 
     if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
         state

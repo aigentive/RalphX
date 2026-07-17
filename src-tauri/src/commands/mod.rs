@@ -170,8 +170,10 @@ pub use chat_attachment_commands::{
 pub use chat_responses::ChatMessageResponse;
 pub use clickup_commands::{
     disconnect_clickup_integration, get_clickup_integration_settings, list_clickup_workspaces,
-    save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
+    preview_clickup_ticket_git_convention, save_clickup_integration_settings, search_clickup_tasks,
+    validate_clickup_integration,
     ClickUpIntegrationSettingsResponse, ListClickUpWorkspacesResponse,
+    PreviewClickUpTicketGitConventionInput, PreviewClickUpTicketGitConventionResponse,
     SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, SearchClickUpTasksResponse,
 };
 pub use conversation_stats_commands::{

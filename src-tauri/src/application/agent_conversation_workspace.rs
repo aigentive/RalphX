@@ -185,6 +185,34 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
     prefer_advanced_origin_base: bool,
     branch_name_hint: Option<AgentConversationWorkspaceBranchNameHint>,
 ) -> AppResult<AgentConversationWorkspace> {
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
+        project,
+        conversation_id,
+        mode,
+        selection,
+        setup_mode,
+        pr_automation_defaults,
+        prefer_advanced_origin_base,
+        branch_name_hint,
+        None,
+    )
+    .await
+}
+
+/// Prepare a linked workspace whose exact head branch and target base were
+/// resolved independently by a managed ticket policy.
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+    selection: AgentConversationWorkspaceBaseSelection,
+    setup_mode: AgentConversationWorkspaceSetupMode,
+    pr_automation_defaults: AgentConversationWorkspacePrAutomationDefaults,
+    prefer_advanced_origin_base: bool,
+    branch_name_hint: Option<AgentConversationWorkspaceBranchNameHint>,
+    linked_target_base_ref: Option<String>,
+) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
     tracing::info!(
@@ -349,7 +377,9 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
             .clone()
             .or_else(|| project.base_branch.clone())
             .unwrap_or_else(|| "main".to_string());
-        source_pr_base.unwrap_or(fallback_default)
+        source_pr_base
+            .or(linked_target_base_ref)
+            .unwrap_or(fallback_default)
     } else {
         selected_work_ref.clone()
     };

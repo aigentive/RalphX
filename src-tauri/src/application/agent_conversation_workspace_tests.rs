@@ -899,6 +899,56 @@ async fn linked_pr_workspace_checks_out_selected_branch_and_links_publication_pr
 }
 
 #[tokio::test]
+async fn managed_linked_workspace_keeps_exact_head_separate_from_target_base() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    git(&repo_path, &["branch", "release/next", "main"]);
+    git(&repo_path, &["branch", "eng-42_exact-head", "release/next"]);
+    let mut project = Project::new(
+        "Managed Linked Workspace".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let conversation_id = ChatConversationId::from_string("44444444-4444-4444-8444-444444444444");
+
+    let workspace = prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+            base_ref: Some("eng-42_exact-head".to_string()),
+            display_name: Some("ClickUp ENG-42".to_string()),
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+        AgentConversationWorkspacePrAutomationDefaults::default(),
+        false,
+        None,
+        Some("release/next".to_string()),
+    )
+    .await
+    .expect("managed linked workspace should prepare");
+
+    assert_eq!(workspace.branch_name, "eng-42_exact-head");
+    assert_eq!(workspace.base_ref, "release/next");
+    assert_eq!(
+        git(
+            Path::new(&workspace.worktree_path),
+            &["branch", "--show-current"]
+        ),
+        "eng-42_exact-head"
+    );
+    assert!(
+        !workspace.worktree_path.contains("eng-42_exact-head"),
+        "ticket branch text must not become a worktree path component"
+    );
+}
+
+#[tokio::test]
 async fn pr_workspace_omitted_branch_mode_defaults_to_isolated() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");

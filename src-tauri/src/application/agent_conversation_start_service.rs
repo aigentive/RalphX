@@ -5,7 +5,7 @@ use tauri::{Emitter, Runtime};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
-    prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target,
     resolve_valid_agent_conversation_workspace_path,
     validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
@@ -20,6 +20,11 @@ use crate::application::personas::PersonaService;
 use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
+};
+use crate::application::ticket_git_strict_start::{
+    activate_strict_ticket_branch_cycle, ensure_strict_clickup_ticket_branch_from_services,
+    resolve_strict_ticket_target_base_ref, rollback_strict_ticket_workspace_activation,
+    strict_clickup_ticket_policy_applies,
 };
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
@@ -236,6 +241,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .map(ChatConversationId::from_string);
         let mut ticket_branch_name_hint =
             first_ticket_branch_name_hint(&input.composer_integration_references);
+        let mut strict_ticket_resolution = None;
+        let mut linked_target_base_ref = None;
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
@@ -292,19 +299,68 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 ticket_token: identity.preferred_token(),
             });
 
-            let should_auto_resolve_ticket_base = should_create_workspace
+            let should_resolve_strict_ticket_base = should_create_workspace
                 && matches!(
                     mode,
                     AgentConversationWorkspaceMode::Edit
                         | AgentConversationWorkspaceMode::Plan
                         | AgentConversationWorkspaceMode::Ideation
-                )
+                );
+            let should_auto_resolve_ticket_base = should_resolve_strict_ticket_base
                 && matches!(
                     base_ref_kind,
                     None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
                         | Some(IdeationAnalysisBaseRefKind::CurrentBranch)
                 );
-            if should_auto_resolve_ticket_base {
+            let strict_policy_applies = should_resolve_strict_ticket_base
+                && strict_clickup_ticket_policy_applies(self.deps.state, &project_id, &task)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            let strict_target_base_ref = if strict_policy_applies {
+                let selected_pr_target = source_pull_request
+                    .as_ref()
+                    .and_then(|pull_request| pull_request.base_ref_name.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                Some(
+                    resolve_strict_ticket_target_base_ref(
+                        &project,
+                        if selected_pr_target.is_some() {
+                            Some(IdeationAnalysisBaseRefKind::LocalBranch)
+                        } else {
+                            base_ref_kind
+                        },
+                        selected_pr_target.or(base_ref.as_deref()),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
+            };
+            if let Some(target_base_ref) = strict_target_base_ref.as_deref() {
+                strict_ticket_resolution = ensure_strict_clickup_ticket_branch_from_services(
+                    self.deps.state,
+                    &project_id,
+                    &task,
+                    target_base_ref,
+                    draft_conversation_id.as_ref(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            if let Some(strict) = strict_ticket_resolution.as_ref() {
+                base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                base_branch_mode = Some(AgentConversationWorkspaceBranchMode::Linked);
+                base_ref = Some(strict.binding.branch_name.clone());
+                base_display_name = Some(format!(
+                    "ClickUp {} ({})",
+                    identity.preferred_token(),
+                    strict.binding.branch_name
+                ));
+                linked_target_base_ref = Some(strict.binding.base_branch.clone());
+                source_pull_request = None;
+            } else if should_auto_resolve_ticket_base {
                 match resolve_clickup_ticket_start(
                     &identity,
                     std::path::Path::new(&project.working_directory),
@@ -432,6 +488,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         } else {
             ChatConversation::new_project(project_id)
         };
+        let previous_agent_mode = conversation.agent_mode;
         conversation.set_agent_mode(Some(mode));
         if let Some(coordination_mode) = requested_coordination_mode {
             conversation.set_coordination_mode(coordination_mode);
@@ -496,7 +553,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
                     .await?;
             let mut workspace =
-                match prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+                match prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
                     &project,
                     &conversation.id,
                     mode,
@@ -515,6 +572,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     // start-point.
                     conversation.automation_id.is_some(),
                     ticket_branch_name_hint.clone(),
+                    linked_target_base_ref,
                 )
                 .await
                 {
@@ -658,6 +716,46 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
+        if let (Some(strict), Some(workspace)) =
+            (strict_ticket_resolution.as_ref(), workspace.as_ref())
+        {
+            if let Err(error) = activate_strict_ticket_branch_cycle(
+                self.deps.state,
+                &strict.binding,
+                workspace.base_commit.as_deref(),
+            )
+            .await
+            {
+                let cleanup_error = rollback_strict_ticket_workspace_activation(
+                    self.deps.state,
+                    &project,
+                    workspace,
+                )
+                .await
+                .err();
+                if should_create_conversation {
+                    let _ = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await;
+                } else {
+                    let _ = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .update_agent_mode(&conversation.id, previous_agent_mode)
+                        .await;
+                }
+                return Err(match cleanup_error {
+                    Some(cleanup_error) => {
+                        format!("{error}; strict workspace rollback failed: {cleanup_error}")
+                    }
+                    None => error.to_string(),
+                });
+            }
+        }
         ensure_review_pr_monitor_for_workspace(
             self.deps.state.agent_conversation_workspace_repo.as_ref(),
             workspace.as_ref(),
