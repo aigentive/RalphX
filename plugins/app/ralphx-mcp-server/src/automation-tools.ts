@@ -11,6 +11,22 @@ export type AutomationSetupToolRuntimeContext = {
   conversationId?: string;
 };
 
+const EMPTY_CALLER_BOUND_INPUT_SCHEMA: Tool["inputSchema"] = {
+  type: "object",
+  properties: {},
+  required: [],
+};
+
+function callerBoundAutomationTool(name: string, description: string): Tool {
+  return {
+    name,
+    description:
+      description +
+      " The backend resolves the automation and current run or workspace from the caller conversation; do not pass ids.",
+    inputSchema: EMPTY_CALLER_BOUND_INPUT_SCHEMA,
+  };
+}
+
 export const AUTOMATION_SETUP_TOOLS: Tool[] = [
   {
     name: "get_automation",
@@ -160,6 +176,58 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
       required: [],
     },
   },
+  callerBoundAutomationTool(
+    "run_automation_now",
+    "Start a fresh run for the active automation. If the latest run was cancelled, the new run reuses its durable prompt; it never revives the cancelled run."
+  ),
+  callerBoundAutomationTool(
+    "pause_automation",
+    "Pause automatic scheduling without cancelling the automation. Use resume_automation to continue scheduling later."
+  ),
+  callerBoundAutomationTool(
+    "resume_automation",
+    "Resume scheduling for a paused automation. This does not revive a cancelled run; use run_automation_now when fresh work is needed."
+  ),
+  callerBoundAutomationTool(
+    "cancel_automation_run",
+    "Cancel the latest open run while leaving the automation active. Completed work and artifacts remain inspectable, and a later run must be fresh."
+  ),
+  callerBoundAutomationTool(
+    "cancel_automation",
+    "Cancel the automation: cancel open runs and disable automatic scheduling while preserving conversations, artifacts, branches, PRs, and completed work. Use restart_automation for a fresh run later."
+  ),
+  callerBoundAutomationTool(
+    "restart_automation",
+    "Reactivate a stopped automation and create a fresh run from its durable configuration and latest prompt. This never resumes a cancelled process or run row."
+  ),
+  callerBoundAutomationTool(
+    "retry_automation_judge",
+    "Retry the terminal judge only when the latest signal-terminal run has a persisted failed judge state. The backend rejects stale, ineligible, or already-running attempts."
+  ),
+  callerBoundAutomationTool(
+    "retry_automation_plan_judge",
+    "Retry the plan judge only when the parked latest run and exact current plan artifact have a persisted failed plan-judge state. The backend rejects stale attempts."
+  ),
+  callerBoundAutomationTool(
+    "skip_automation_judge",
+    "Skip the recoverable terminal judge only when the automation chain mode and latest-run state support it."
+  ),
+  callerBoundAutomationTool(
+    "get_automation_publish_status",
+    "Read Commit & Publish status for the publishable setup or latest eligible run workspace selected by RalphX."
+  ),
+  callerBoundAutomationTool(
+    "check_automation_publish_readiness",
+    "Check base freshness, local changes, and publish readiness for the publishable automation workspace selected by RalphX."
+  ),
+  callerBoundAutomationTool(
+    "update_automation_from_base",
+    "Update the publishable automation workspace from its configured base through the existing workspace recovery pipeline."
+  ),
+  callerBoundAutomationTool(
+    "publish_automation_workspace",
+    "Publish the selected automation workspace through RalphX's existing Commit & Publish pipeline. Call only after the user explicitly asks to commit, publish, or open a PR."
+  ),
 ];
 
 const AUTOMATION_SETUP_TOOL_NAMES = new Set(
@@ -167,6 +235,21 @@ const AUTOMATION_SETUP_TOOL_NAMES = new Set(
 );
 
 const CALLER_SESSION_ID_HEADER = "X-RalphX-Caller-Session-Id";
+const CALLER_BOUND_ACTION_PATHS: Readonly<Record<string, string>> = {
+  run_automation_now: "run_automation_now",
+  pause_automation: "pause_automation",
+  resume_automation: "resume_automation",
+  cancel_automation_run: "cancel_automation_run",
+  cancel_automation: "cancel_automation",
+  restart_automation: "restart_automation",
+  retry_automation_judge: "retry_automation_judge",
+  retry_automation_plan_judge: "retry_automation_plan_judge",
+  skip_automation_judge: "skip_automation_judge",
+  get_automation_publish_status: "get_automation_publish_status",
+  check_automation_publish_readiness: "check_automation_publish_readiness",
+  update_automation_from_base: "update_automation_from_base",
+  publish_automation_workspace: "publish_automation_workspace",
+};
 const UPDATE_AUTOMATION_FIELDS = [
   "name",
   "max_runs",
@@ -202,6 +285,10 @@ export async function callAutomationSetupTool(
   runtimeContext?: AutomationSetupToolRuntimeContext
 ): Promise<unknown> {
   const headers = automationSetupHeaders(name, runtimeContext);
+  const callerBoundPath = CALLER_BOUND_ACTION_PATHS[name];
+  if (callerBoundPath) {
+    return callTauri(callerBoundPath, {}, { headers });
+  }
 
   switch (name) {
     case "get_automation":
