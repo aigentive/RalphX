@@ -94,6 +94,19 @@ coverage:
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
+          # Strict ticket workspace enforcement introduced large command/HTTP
+          # and git-worktree orchestration deltas. Branch naming, persistence,
+          # migration, and publish-body behavior remain in deterministic helper
+          # modules with focused Rust coverage.
+          - "!src-tauri/src/application/agent_conversation_start_service.rs"
+          - "!src-tauri/src/application/ticket_git_publish_hook.rs"
+          - "!src-tauri/src/application/ticket_git_publish_policy.rs"
+          - "!src-tauri/src/application/ticket_git_strict_start.rs"
+          - "!src-tauri/src/application/ticket_git_strict_start_policy.rs"
+          - "!src-tauri/src/application/ticket_git_strict_start_provision.rs"
+          - "!src-tauri/src/commands/clickup_commands.rs"
+          - "!src-tauri/src/commands/unified_chat_commands/mod.rs"
+          - "!src-tauri/src/http_server/handlers/agent_workspaces/mod.rs"
           # Workspace Review auto-merge coordination spans GitHub adapter calls,
           # reviewer startup, publication event ordering, and startup recovery.
           # Behavior is covered by the sidecar auto-merge coordinator suite plus
