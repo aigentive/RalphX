@@ -62,6 +62,10 @@ pub use ideation_commands_dependencies::analyze_dependencies_for_session;
 pub use ideation_commands_dependencies::build_dependency_graph;
 
 #[cfg(test)]
+mod ideation_commands_append_tests;
+#[cfg(test)]
+mod ideation_commands_apply_tests;
+#[cfg(test)]
 mod ideation_commands_orchestrator_tests;
 #[cfg(test)]
 mod ideation_commands_restart_tests;

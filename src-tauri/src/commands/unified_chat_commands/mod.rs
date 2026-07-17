@@ -359,6 +359,8 @@ pub struct AgentConversationWorkspaceResponse {
     pub branch_name: String,
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<String>,
+    pub task_pipeline_session_id: Option<String>,
+    pub task_pipeline_available: bool,
     pub linked_plan_branch_id: Option<String>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequestResponse>,
     pub publication_pr_number: Option<i64>,
@@ -423,6 +425,7 @@ pub struct AgentConversationForkedPayload {
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
     fn from(workspace: AgentConversationWorkspace) -> Self {
+        let task_pipeline_available = workspace.task_pipeline_session_id.is_some();
         Self {
             conversation_id: workspace.conversation_id.as_str(),
             project_id: workspace.project_id.as_str().to_string(),
@@ -437,6 +440,10 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             linked_ideation_session_id: workspace
                 .linked_ideation_session_id
                 .map(|id| id.as_str().to_string()),
+            task_pipeline_session_id: workspace
+                .task_pipeline_session_id
+                .map(|id| id.as_str().to_string()),
+            task_pipeline_available,
             linked_plan_branch_id: workspace
                 .linked_plan_branch_id
                 .map(|id| id.as_str().to_string()),
@@ -2942,6 +2949,8 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
         mode,
         AgentConversationWorkspaceMode::Edit
             | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Tasks
+            | AgentConversationWorkspaceMode::Autopilot
             | AgentConversationWorkspaceMode::Ideation
             | AgentConversationWorkspaceMode::ReviewPr
     )
@@ -3067,10 +3076,11 @@ fn validate_agent_conversation_mode_transition(
         return Err("Automation and PersonaBuilder conversations cannot change mode".to_string());
     }
     reject_persona_builder_workspace_mode(&target_mode.to_string())?;
-    if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
+    if workspace_mode_lock.locked && target_mode != current_mode {
         return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
-            "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
-                .to_string()
+            format!(
+                "This workspace is owned by active planning or execution state and cannot leave {current_mode} mode"
+            )
         }));
     }
 
@@ -3078,140 +3088,7 @@ fn validate_agent_conversation_mode_transition(
 }
 
 #[cfg(test)]
-mod agent_mode_workspace_tests {
-    use super::*;
-
-    #[test]
-    fn only_write_capable_agent_conversation_modes_require_workspace() {
-        assert!(!agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Chat
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Edit
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Plan
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Ideation
-        ));
-    }
-
-    #[test]
-    fn source_pr_backed_chat_mode_creates_workspace() {
-        let source_pull_request = AgentWorkspaceSourcePullRequest {
-            number: 123,
-            url: None,
-            title: None,
-            head_ref_name: "feature/source-pr".to_string(),
-            base_ref_name: Some("main".to_string()),
-            head_ref_oid: None,
-        };
-
-        assert!(agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Chat,
-            Some(&source_pull_request),
-        ));
-        assert!(!agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Chat,
-            None,
-        ));
-        assert!(agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Edit,
-            None,
-        ));
-    }
-
-    #[test]
-    fn plan_agent_conversation_mode_round_trips_through_api_string() {
-        let mode = "plan"
-            .parse::<AgentConversationWorkspaceMode>()
-            .expect("plan mode should parse");
-
-        assert_eq!(mode, AgentConversationWorkspaceMode::Plan);
-        assert_eq!(mode.to_string(), "plan");
-    }
-
-    #[test]
-    fn review_pr_agent_conversation_mode_round_trips_through_api_string() {
-        let mode = "review_pr"
-            .parse::<AgentConversationWorkspaceMode>()
-            .expect("review_pr mode should parse");
-
-        assert_eq!(mode, AgentConversationWorkspaceMode::ReviewPr);
-        assert_eq!(mode.to_string(), "review_pr");
-    }
-
-    #[test]
-    fn active_agent_conversations_support_expected_valid_mode_transition_matrix() {
-        let modes = [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::Ideation,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ];
-
-        for current_mode in modes {
-            for target_mode in modes {
-                assert!(
-                    validate_agent_conversation_mode_transition(
-                        current_mode,
-                        target_mode,
-                        &AgentConversationWorkspaceModeLock::unlocked()
-                    )
-                    .is_ok(),
-                    "{current_mode} -> {target_mode} should be allowed"
-                )
-            }
-        }
-    }
-
-    #[test]
-    fn active_state_owned_conversations_cannot_leave_ideation_mode() {
-        for target_mode in [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ] {
-            let error = validate_agent_conversation_mode_transition(
-                AgentConversationWorkspaceMode::Ideation,
-                target_mode,
-                &AgentConversationWorkspaceModeLock::locked("Plan execution is still active"),
-            )
-            .expect_err("state-owned conversations should not leave ideation mode");
-
-            assert!(error.contains("Plan execution is still active"));
-        }
-    }
-
-    #[test]
-    fn state_owned_workspaces_can_target_ideation_mode() {
-        for target_mode in [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ] {
-            let error = validate_agent_conversation_mode_transition(
-                AgentConversationWorkspaceMode::Chat,
-                target_mode,
-                &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-            )
-            .expect_err("state-owned workspaces should not leave ideation ownership");
-
-            assert!(error.contains("Ideation session is still active"));
-        }
-
-        assert!(validate_agent_conversation_mode_transition(
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Ideation,
-            &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-        )
-        .is_ok());
-    }
-}
+mod agent_mode_workspace_tests;
 
 fn build_agent_workspace_commit_message(conversation: &ChatConversation) -> String {
     let title = conversation
@@ -3604,6 +3481,22 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .agent_mode
         .or_else(|| existing_workspace.as_ref().map(|workspace| workspace.mode))
         .unwrap_or(AgentConversationWorkspaceMode::Chat);
+    if target_mode == AgentConversationWorkspaceMode::Autopilot
+        && current_mode != AgentConversationWorkspaceMode::Autopilot
+        && !state.agent_capability_gate.autopilot_enabled()
+    {
+        return Err("Autopilot is disabled in Agent conversation capabilities".to_string());
+    }
+    if target_mode == AgentConversationWorkspaceMode::Tasks
+        && existing_workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.task_pipeline_session_id.is_none())
+    {
+        return Err(
+            "Tasks mode is available only for this conversation's attached task pipeline"
+                .to_string(),
+        );
+    }
     let workspace_mode_lock = match existing_workspace.as_ref() {
         Some(workspace) => resolve_agent_conversation_workspace_mode_lock(state, workspace).await?,
         None => AgentConversationWorkspaceModeLock::unlocked(),
@@ -3634,9 +3527,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
-            let preserve_planning_session_link = if target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && workspace.linked_plan_branch_id.is_none()
+            let preserve_planning_session_link = if !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && workspace.linked_plan_branch_id.is_none()
             {
                 linked_ideation_session_is_planning(state, &workspace).await?
             } else {
@@ -3650,9 +3544,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             } else {
                 false
             };
-            let should_detach_inactive_owner = target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && !workspace_mode_lock.locked
+            let should_detach_inactive_owner = !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && !workspace_mode_lock.locked
                 && (workspace.linked_ideation_session_id.is_some()
                     || workspace.linked_plan_branch_id.is_some())
                 && !preserve_planning_session_link;
@@ -7818,38 +7713,6 @@ pub struct AgentWorkspaceRepairRuntimeOverrides {
     pub logical_effort: Option<LogicalEffort>,
 }
 
-async fn resolve_agent_workspace_repair_runtime_overrides(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AgentWorkspaceRepairRuntimeOverrides {
-    let conversation = state
-        .chat_conversation_repo
-        .get_by_id(&workspace.conversation_id)
-        .await
-        .ok()
-        .flatten();
-    let latest_run = state
-        .agent_run_repo
-        .get_latest_for_conversation(&workspace.conversation_id)
-        .await
-        .ok()
-        .flatten();
-
-    AgentWorkspaceRepairRuntimeOverrides {
-        harness: conversation
-            .as_ref()
-            .and_then(ChatConversation::provider_session_ref)
-            .map(|session_ref| session_ref.harness)
-            .or_else(|| latest_run.as_ref().and_then(|run| run.harness)),
-        model: latest_run.as_ref().and_then(|run| {
-            run.logical_model
-                .clone()
-                .or_else(|| run.effective_model_id.clone())
-        }),
-        logical_effort: latest_run.as_ref().and_then(|run| run.logical_effort),
-    }
-}
-
 #[doc(hidden)]
 pub async fn send_agent_workspace_publish_repair_message<S>(
     service: &S,
@@ -8105,8 +7968,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     )
     .await;
 
-    let runtime_overrides =
-        resolve_agent_workspace_repair_runtime_overrides(state, workspace).await;
+    let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
     if should_defer_agent_workspace_repair_message(state, workspace).await {
         spawn_deferred_agent_workspace_repair_message(
             state,
@@ -9666,7 +9528,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Chat => AgentConversationRuntimeIndexMode::Chat,
         AgentConversationWorkspaceMode::Edit => AgentConversationRuntimeIndexMode::Agent,
         AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
-        AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
+        AgentConversationWorkspaceMode::Tasks
+        | AgentConversationWorkspaceMode::Autopilot
+        | AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
         AgentConversationWorkspaceMode::PersonaBuilder => {

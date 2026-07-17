@@ -2149,16 +2149,13 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
         .get_by_id(&workspace.conversation_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
-    let latest_run = state
-        .agent_run_repo
-        .get_latest_for_conversation(&workspace.conversation_id)
-        .await?;
     let mut next = monitor.clone();
     let runtime = match state
-        .resolve_workspace_reviewer_runtime_for_project(
-            &conversation,
-            latest_run.as_ref(),
+        .resolve_workspace_role_runtime_for_project(
             workspace.project_id.as_str(),
+            crate::domain::agents::RoutingRole::WorkspaceRepair,
+            agent_names::AGENT_WORKSPACE_REPAIR,
+            "workspace Review fixer provider",
         )
         .await
     {

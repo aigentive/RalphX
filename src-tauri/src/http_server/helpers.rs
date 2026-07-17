@@ -852,6 +852,17 @@ pub async fn finalize_proposals_impl(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session_id_typed)
+        .await?;
+    if workspace.is_some() {
+        return Err(AppError::Validation(
+            "This supervised task pipeline is waiting for the user to choose Start Tasks"
+                .to_string(),
+        ));
+    }
+
     if session.status != IdeationSessionStatus::Active {
         return Err(AppError::Validation(format!(
             "Cannot finalize proposals for {} session",

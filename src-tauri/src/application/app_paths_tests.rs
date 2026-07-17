@@ -53,3 +53,14 @@ fn database_path_uses_app_data_dir_for_release_profile() {
     assert!(app_data_dir.exists());
     assert_eq!(db_path, app_data_dir.join("ralphx.db"));
 }
+
+#[test]
+fn global_router_path_uses_explicit_ralphx_config_root() {
+    let paths =
+        AppPaths::new_with_config_dir("/tmp/ralphx-app-data", None, "/tmp/user-config/.ralphx");
+
+    assert_eq!(
+        paths.global_router_path(),
+        PathBuf::from("/tmp/user-config/.ralphx/router.yaml")
+    );
+}

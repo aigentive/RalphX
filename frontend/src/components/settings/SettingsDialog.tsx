@@ -13,6 +13,12 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
@@ -20,7 +26,7 @@ import {
   DEFAULT_SETTINGS_SECTION,
   SETTINGS_GROUPS,
   SETTINGS_SECTIONS,
-  isSettingsSectionId,
+  resolveSettingsSectionId,
   type SettingsSectionId,
 } from "./settings-registry";
 import { loadActiveSection, saveActiveSection } from "./settings-ui-state";
@@ -118,8 +124,9 @@ export default function SettingsDialog({
   useEffect(() => {
     if (isOpen) {
       const section = modalContext?.["section"];
-      if (isSettingsSectionId(section)) {
-        setActiveSection(section);
+      const resolvedSection = resolveSettingsSectionId(section);
+      if (resolvedSection) {
+        setActiveSection(resolvedSection);
       }
     }
   }, [isOpen, modalContext, setActiveSection]);
@@ -165,14 +172,21 @@ export default function SettingsDialog({
               </>
             )}
           </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
-            aria-label="Close settings"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={requestClose}
+                  className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                  aria-label="Close settings"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Close settings</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
 
         {/* Body */}

@@ -1138,7 +1138,7 @@ async fn agent_workspace_pr_conflict_repair_errors_for_missing_conflicting_works
 }
 
 #[tokio::test]
-async fn agent_workspace_pr_conflict_repair_records_failed_handoff_with_latest_run_options() {
+async fn agent_workspace_pr_conflict_repair_does_not_override_the_repair_role_runtime() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
         "conflicting-failed-handoff-conversation",
@@ -1184,12 +1184,9 @@ async fn agent_workspace_pr_conflict_repair_records_failed_handoff_with_latest_r
     assert!(routed);
     let options = chat.get_sent_options().await;
     assert_eq!(options.len(), 1);
-    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
-    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.5"));
-    assert_eq!(
-        options[0].logical_effort_override,
-        Some(LogicalEffort::XHigh)
-    );
+    assert_eq!(options[0].harness_override, None);
+    assert_eq!(options[0].model_override, None);
+    assert_eq!(options[0].logical_effort_override, None);
     let events = workspace_repo
         .list_publication_events(&conversation_id)
         .await

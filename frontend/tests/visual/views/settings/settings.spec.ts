@@ -8,20 +8,18 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
   { id: "execution", heading: "Execution" },
-  { id: "execution-harnesses", heading: "Execution Pipeline Agents" },
+  { id: "agents", heading: "Agents" },
   { id: "global-execution", heading: "Global Capacity" },
   { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },
-  { id: "ideation-harnesses", heading: "Ideation Agents" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "external-mcp", heading: "External MCP" },
   { id: "accessibility", heading: "Accessibility" },
 ] as const;
 
-const EXPANDED_HARNESS_SECTION_IDS = new Set([
-  "execution-harnesses",
-  "ideation-harnesses",
+const EXPANDED_SETTINGS_SECTION_IDS = new Set([
+  "agents",
 ]);
 
 test.describe("Settings Dialog", () => {
@@ -135,7 +133,12 @@ test.describe("Settings Dialog", () => {
       settingsPage = new SettingsPage(page);
       await settingsPage.openViaStore(section.id);
       await settingsPage.waitForSection(section.id, section.heading);
-      if (EXPANDED_HARNESS_SECTION_IDS.has(section.id)) {
+      if (section.id === "agents") {
+        await expect(
+          settingsPage.settingsDialog.getByTestId("manual-role-row").first(),
+        ).toBeVisible({ timeout: 10000 });
+      }
+      if (EXPANDED_SETTINGS_SECTION_IDS.has(section.id)) {
         const expandAllButton = settingsPage.settingsDialog.getByRole("button", {
           name: "Expand all",
         });

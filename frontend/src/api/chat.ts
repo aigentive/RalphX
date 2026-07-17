@@ -1744,6 +1744,8 @@ export const chatApi = {
   updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
+  activateAgentTaskPipeline,
+  startAgentTaskPipeline,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
@@ -1883,6 +1885,8 @@ export interface AgentConversationWorkspace {
   branchName: string;
   worktreePath: string;
   linkedIdeationSessionId: string | null;
+  taskPipelineSessionId?: string | null;
+  taskPipelineAvailable?: boolean;
   linkedPlanBranchId: string | null;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
   modeSwitchLocked?: boolean;
@@ -2312,6 +2316,8 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   branch_name: z.string(),
   worktree_path: z.string(),
   linked_ideation_session_id: z.string().nullable(),
+  task_pipeline_session_id: z.string().nullable().optional().default(null),
+  task_pipeline_available: z.boolean().optional().default(false),
   linked_plan_branch_id: z.string().nullable(),
   source_pull_request:
     AgentConversationWorkspaceSourcePullRequestResponseSchema.nullable()
@@ -2778,6 +2784,8 @@ function transformAgentConversationWorkspace(
     branchName: raw.branch_name,
     worktreePath: raw.worktree_path,
     linkedIdeationSessionId: raw.linked_ideation_session_id,
+    taskPipelineSessionId: raw.task_pipeline_session_id,
+    taskPipelineAvailable: raw.task_pipeline_available,
     linkedPlanBranchId: raw.linked_plan_branch_id,
     sourcePullRequest: raw.source_pull_request
       ? {
@@ -4027,6 +4035,54 @@ export async function importAgentConversationPlan(
     AgentConversationPlanSeedResponseSchema,
   );
   return transformAgentConversationPlanSeedResponse(raw);
+}
+
+export async function activateAgentTaskPipeline(input: {
+  conversationId: string;
+  sessionId: string;
+}): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "activate_agent_task_pipeline",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+      },
+    },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function startAgentTaskPipeline(input: {
+  conversationId: string;
+  sessionId: string;
+  proposalIds: string[];
+  baseBranchOverride?: string | null;
+}): Promise<{ tasksCreated: number; executionPlanId: string | null }> {
+  const raw = await typedInvoke(
+    "start_agent_task_pipeline",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        proposalIds: input.proposalIds,
+        ...(input.baseBranchOverride
+          ? { baseBranchOverride: input.baseBranchOverride }
+          : {}),
+      },
+    },
+    z
+      .object({
+        tasks_created: z.number().int().nonnegative(),
+        execution_plan_id: z.string().nullable(),
+      })
+      .passthrough(),
+  );
+  return {
+    tasksCreated: raw.tasks_created,
+    executionPlanId: raw.execution_plan_id,
+  };
 }
 
 /**

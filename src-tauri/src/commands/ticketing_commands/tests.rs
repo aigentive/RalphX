@@ -24,6 +24,9 @@ use crate::application::{
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, ManualRoleDefault, ManualServiceTier, RoutingRole,
+};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
     ChatConversationId, CoordinationMode, IdeationAnalysisBaseRefKind, Project, ProjectId,
@@ -4068,6 +4071,7 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = seed_ticketing_project(&state, "team-start-new").await;
@@ -4124,6 +4128,87 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
 }
 
 #[tokio::test]
+async fn untouched_start_resolves_the_current_complete_role_default_at_launch() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    state.agent_capability_gate.replace(
+        crate::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+            autopilot: false,
+        },
+    );
+    let project_id = seed_ticketing_project(&state, "role-default-start").await;
+    state
+        .manual_role_default_repo
+        .upsert_for_project(
+            project_id.as_str(),
+            RoutingRole::WorkspaceChat,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-5.5".to_string()),
+                effort: Some(LogicalEffort::High),
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: Some(CoordinationMode::RxNativeTeam),
+                persona_id: None,
+                approval_policy: Some("never".to_string()),
+                sandbox_mode: Some("danger-full-access".to_string()),
+            },
+        )
+        .await
+        .expect("role default should persist");
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.as_str().to_string(),
+        content: "Use the current role default".to_string(),
+        persona_id: None,
+        conversation_id: None,
+        parent_conversation_id: None,
+        title: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        codex_fast_mode: None,
+        mode: Some("chat".to_string()),
+        base_ref_kind: None,
+        base_branch_mode: None,
+        base_ref: None,
+        base_display_name: None,
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
+        team_intent: None,
+    })
+    .await
+    .expect("untouched start should resolve and queue the role default");
+
+    assert_eq!(
+        result.conversation.coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
+    let queued = app
+        .state::<AppState>()
+        .message_queue
+        .get_queued(ChatContextType::Project, &result.conversation.id.as_str());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(queued[0].model_override.as_deref(), Some("gpt-5.5"));
+    assert_eq!(queued[0].logical_effort_override, Some(LogicalEffort::High));
+    assert_eq!(queued[0].service_tier_override.as_deref(), Some("standard"));
+}
+
+#[tokio::test]
 async fn start_agent_conversation_updates_seeded_project_team_coordination_mode() {
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let state = AppState::new_test();
@@ -4131,6 +4216,7 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = seed_ticketing_project(&state, "team-start-seeded").await;

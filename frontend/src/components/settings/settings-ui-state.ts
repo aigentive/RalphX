@@ -7,7 +7,7 @@
 
 import {
   DEFAULT_SETTINGS_SECTION,
-  isSettingsSectionId,
+  resolveSettingsSectionId,
   type SettingsSectionId,
 } from "./settings-registry";
 
@@ -15,7 +15,7 @@ const ACTIVE_SECTION_KEY = "ralphx-settings-active-section";
 const ACTIVE_SECTION_VERSION_KEY = "ralphx-settings-active-section-version";
 const HARNESS_TAB_KEY = "ralphx-settings-harness-tab";
 const HARNESS_EXPANDED_KEY = "ralphx-settings-harness-expanded";
-const SETTINGS_ACTIVE_SECTION_VERSION = 2;
+const SETTINGS_ACTIVE_SECTION_VERSION = 3;
 const LEGACY_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "execution";
 const PRE_HARNESS_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "repository";
 
@@ -56,7 +56,7 @@ export function migrateActiveSectionPreference(
   raw: string | null,
   version: number,
 ): SettingsSectionId | null {
-  const saved = isSettingsSectionId(raw) ? raw : null;
+  const saved = resolveSettingsSectionId(raw);
   if (version >= SETTINGS_ACTIVE_SECTION_VERSION) {
     return saved;
   }
@@ -91,7 +91,7 @@ export function migrateSettingsUiState(): void {
 export function loadActiveSection(): SettingsSectionId | null {
   migrateSettingsUiState();
   const saved = safeGet(ACTIVE_SECTION_KEY);
-  return isSettingsSectionId(saved) ? saved : null;
+  return resolveSettingsSectionId(saved);
 }
 
 export function saveActiveSection(section: SettingsSectionId): void {
