@@ -1523,10 +1523,6 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         ))
         .await?;
 
-    let latest_run = match agent_run_repo.as_ref() {
-        Some(repo) => repo.get_latest_for_conversation(conversation_id).await?,
-        None => None,
-    };
     let message = build_agent_workspace_pr_conflict_repair_message(pr_number, &workspace, &details);
     match chat_service
         .send_message(
@@ -1536,14 +1532,6 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
-                harness_override: latest_run.as_ref().and_then(|run| run.harness),
-                model_override: latest_run.as_ref().and_then(|run| {
-                    run.logical_model
-                        .clone()
-                        .or_else(|| run.effective_model_id.clone())
-                }),
-                logical_effort_override: latest_run.as_ref().and_then(|run| run.logical_effort),
-                service_tier_override: latest_run.as_ref().and_then(|run| run.service_tier.clone()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
                 force_new_provider_session: true,
                 preserve_conversation_provider_session_ref: true,

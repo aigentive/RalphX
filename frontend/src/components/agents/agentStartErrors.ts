@@ -27,10 +27,12 @@ export interface AgentStartConversationRetryInputSource {
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
+  useRoleDefault?: boolean | undefined;
   mode: AgentConversationWorkspaceMode;
   automationAuthoringMode?: AutomationAuthoringMode | undefined;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null | undefined;
+  personaId?: string | null | undefined;
   capabilityIntent?: CapabilityIntent | null | undefined;
   teamIntent?: TeamIntent | null | undefined;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
@@ -70,8 +72,14 @@ export function buildAgentStartConversationRetryInput(
   if (input.runtimeProviderContext !== undefined) {
     retryInput.runtimeProviderContext = input.runtimeProviderContext;
   }
+  if (input.useRoleDefault !== undefined) {
+    retryInput.useRoleDefault = input.useRoleDefault;
+  }
   if (input.codexFastMode !== undefined) {
     retryInput.codexFastMode = input.codexFastMode;
+  }
+  if (input.personaId !== undefined) {
+    retryInput.personaId = input.personaId;
   }
   if (input.capabilityIntent !== undefined) {
     retryInput.capabilityIntent = input.capabilityIntent;

@@ -1,7 +1,7 @@
 export type SettingsSectionId =
   | "providers"
+  | "agents"
   | "execution"
-  | "execution-harnesses"
   | "models"
   | "global-execution"
   | "personas"
@@ -12,7 +12,6 @@ export type SettingsSectionId =
   | "repository"
   | "project-analysis"
   | "ideation-workflow"
-  | "ideation-harnesses"
   | "api-keys"
   | "integrations"
   | "github"
@@ -53,10 +52,10 @@ export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = "providers";
 export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "providers", groupId: "harness", label: "Providers" },
   { id: "models", groupId: "harness", label: "Models" },
+  { id: "agents", groupId: "harness", label: "Agents" },
   { id: "repository", groupId: "workspace", label: "Repository" },
   { id: "project-analysis", groupId: "workspace", label: "Setup & Validation" },
   { id: "execution", groupId: "general", label: "Execution" },
-  { id: "execution-harnesses", groupId: "general", label: "Execution Agents" },
   { id: "global-execution", groupId: "general", label: "Global Capacity" },
   { id: "personas", groupId: "general", label: "Personas" },
   { id: "capabilities", groupId: "general", label: "Capabilities" },
@@ -64,7 +63,6 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "review", groupId: "general", label: "Review Policy" },
   { id: "autonomy", groupId: "general", label: "Autonomy Policy" },
   { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },
-  { id: "ideation-harnesses", groupId: "ideation", label: "Ideation Agents" },
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
   { id: "github", groupId: "integrations", label: "GitHub" },
   { id: "linear", groupId: "integrations", label: "Linear" },
@@ -81,4 +79,11 @@ export function isSettingsSectionId(value: unknown): value is SettingsSectionId 
     typeof value === "string" &&
     SETTINGS_SECTIONS.some((section) => section.id === value)
   );
+}
+
+export function resolveSettingsSectionId(value: unknown): SettingsSectionId | null {
+  if (value === "execution-harnesses" || value === "ideation-harnesses") {
+    return "agents";
+  }
+  return isSettingsSectionId(value) ? value : null;
 }
