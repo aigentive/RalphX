@@ -127,6 +127,8 @@ pub mod priority_service;
 pub mod project_pr_template;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
+#[cfg(test)]
+mod provider_onboarding_gate_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -148,6 +150,8 @@ pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
+#[cfg(test)]
+mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
