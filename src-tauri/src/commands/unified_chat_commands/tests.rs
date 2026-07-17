@@ -77,16 +77,17 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentWorkspacePrDescription, AgentWorkspaceReviewAutoMergeGuard,
+    AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId,
     AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
     ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
-    ChatTimelineItemStatus, CoordinationMode, ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
-    SessionPurpose, Task, TaskId, TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    ChatTimelineItemStatus, CoordinationMode, DelegatedSession, ExecutionPlan, ExecutionPlanId,
+    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+    IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
+    Project, ProjectId, SessionPurpose, Task, TaskId, TeamIntent,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -7426,6 +7427,320 @@ fn merge_delegated_snapshot_overrides_running_result_with_terminal_runtime_state
             .map(Vec::len),
         Some(1)
     );
+}
+
+#[test]
+fn merge_delegated_snapshot_updates_mcp_wrapped_result_payload() {
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": "{\"delegated_session_id\":\"delegated-wrapped\",\"status\":\"running\"}"
+        }]
+    });
+    let snapshot = DelegatedToolRuntimeSnapshot {
+        session_id: "delegated-wrapped".to_string(),
+        conversation_id: Some("conversation-wrapped".to_string()),
+        agent_run_id: Some("run-wrapped".to_string()),
+        agent_name: "ralphx-general-explorer".to_string(),
+        title: None,
+        harness: "codex".to_string(),
+        provider_session_id: None,
+        session_status: "completed".to_string(),
+        session_error: None,
+        created_at: "2026-04-13T10:00:00Z".to_string(),
+        updated_at: "2026-04-13T10:01:00Z".to_string(),
+        completed_at: Some("2026-04-13T10:01:30Z".to_string()),
+        latest_run: Some(json!({
+            "agent_run_id": "run-wrapped",
+            "status": "completed"
+        })),
+        recent_messages: Vec::new(),
+    };
+
+    merge_delegated_snapshot_into_result(&mut result, &snapshot);
+    let parsed = parse_wrapped_mcp_result_object(&result).expect("wrapped result parses");
+
+    assert_eq!(
+        parsed.get("status").and_then(|value| value.as_str()),
+        Some("completed")
+    );
+    assert_eq!(
+        parsed
+            .get("delegated_conversation_id")
+            .and_then(|value| value.as_str()),
+        Some("conversation-wrapped")
+    );
+    assert_eq!(
+        parsed
+            .get("delegated_status")
+            .and_then(|value| value.get("latest_run"))
+            .and_then(|value| value.get("agent_run_id"))
+            .and_then(|value| value.as_str()),
+        Some("run-wrapped")
+    );
+}
+
+async fn seed_delegated_timeline_tool(
+    state: &AppState,
+    status: AgentRunStatus,
+) -> (
+    ChatConversationId,
+    ChatTimelineItemId,
+    crate::domain::entities::DelegatedSessionId,
+    crate::domain::entities::AgentRunId,
+) {
+    let project_id = ProjectId::new();
+    let parent = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create parent conversation");
+    let child = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create child conversation");
+
+    let mut session = DelegatedSession::new(
+        project_id,
+        "agent_conversation",
+        parent.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    session.title = Some("Inspect delegate hydration".to_string());
+    session.status = status.to_string();
+    session.completed_at = Some(chrono::Utc::now());
+    let session = state
+        .delegated_session_repo
+        .create(session)
+        .await
+        .expect("create delegated session");
+
+    let mut run = AgentRun::new(child.id);
+    run.status = status;
+    run.completed_at = Some(chrono::Utc::now());
+    run.error_message =
+        matches!(status, AgentRunStatus::Failed).then(|| "delegated review failed".to_string());
+    run.harness = Some(AgentHarnessKind::Codex);
+    run.provider_session_id = Some("codex-delegated-thread".to_string());
+    run.upstream_provider = Some("openai".to_string());
+    run.provider_profile = Some("openai".to_string());
+    run.logical_model = Some("gpt-5.4".to_string());
+    run.effective_model_id = Some("gpt-5.4".to_string());
+    run.input_tokens = Some(120);
+    run.output_tokens = Some(30);
+    run.estimated_usd = Some(0.0125);
+    let run = state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("create delegated run");
+
+    let mut child_message =
+        ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "Delegated final output");
+    child_message.session_id = None;
+    child_message.conversation_id = Some(child.id);
+    state
+        .chat_message_repo
+        .create(child_message)
+        .await
+        .expect("create delegated message");
+
+    let mut item = ChatTimelineItem::for_message_block(
+        ChatMessageId::from_string("parent-delegate-message"),
+        parent.id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.tool_call_id = Some("delegate-tool-1".to_string());
+    item.tool_name = Some("mcp__ralphx__delegate_start".to_string());
+    item.input_json = Some(
+        json!({
+            "agent_name": "ralphx-general-explorer",
+            "prompt": "Inspect delegate hydration"
+        })
+        .to_string(),
+    );
+    item.result_json = Some(
+        json!({
+            "delegated_session_id": session.id.as_str(),
+            "delegated_conversation_id": child.id.as_str(),
+            "delegated_agent_run_id": run.id.as_str(),
+            "status": "running"
+        })
+        .to_string(),
+    );
+    let item = state
+        .chat_timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("create delegate timeline item");
+
+    (parent.id, item.id, session.id, run.id)
+}
+
+#[tokio::test]
+async fn completed_delegate_timeline_page_and_detail_reconcile_durable_runtime_state() {
+    let state = AppState::new_test();
+    let (conversation_id, item_id, session_id, run_id) =
+        seed_delegated_timeline_tool(&state, AgentRunStatus::Completed).await;
+
+    let page =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation_id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+    let page_result = &page.items[0]
+        .tool_call
+        .as_ref()
+        .expect("delegate tool call")["result"];
+
+    assert_eq!(page_result["delegated_session_id"], session_id.as_str());
+    assert_eq!(page_result["delegated_agent_run_id"], run_id.as_str());
+    assert_eq!(page_result["status"], "completed");
+    assert_eq!(
+        page_result["delegated_status"]["latest_run"]["status"],
+        "completed"
+    );
+    assert_eq!(
+        page_result["delegated_status"]["latest_run"]["total_tokens"],
+        150
+    );
+    assert_eq!(
+        page_result["delegated_status"]["recent_messages"][0]["content"],
+        "Delegated final output"
+    );
+
+    let detail =
+        get_agent_timeline_item_tool_call_detail_for_app_state(&state, conversation_id, item_id)
+            .await
+            .expect("timeline detail")
+            .expect("timeline detail exists");
+    let detail_result = &detail.tool_call["result"];
+
+    assert_eq!(detail_result["delegated_session_id"], session_id.as_str());
+    assert_eq!(detail_result["delegated_agent_run_id"], run_id.as_str());
+    assert_eq!(
+        detail_result["delegated_status"]["latest_run"]["status"],
+        "completed"
+    );
+    assert_eq!(
+        detail_result["delegated_status"]["recent_messages"][0]["content"],
+        "Delegated final output"
+    );
+}
+
+#[tokio::test]
+async fn delegate_timeline_hydration_preserves_failed_and_cancelled_statuses() {
+    for expected_status in [AgentRunStatus::Failed, AgentRunStatus::Cancelled] {
+        let state = AppState::new_test();
+        let (conversation_id, _, _, _) =
+            seed_delegated_timeline_tool(&state, expected_status).await;
+
+        let page =
+            get_agent_conversation_timeline_page_for_app_state(&state, conversation_id, 10, None)
+                .await
+                .expect("timeline page")
+                .expect("conversation exists");
+        let result = &page.items[0]
+            .tool_call
+            .as_ref()
+            .expect("delegate tool call")["result"];
+
+        assert_eq!(result["status"], expected_status.to_string());
+        assert_eq!(
+            result["delegated_status"]["latest_run"]["status"],
+            expected_status.to_string()
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegate_timeline_hydration_uses_stored_run_id_after_a_newer_retry() {
+    let state = AppState::new_test();
+    let (conversation_id, _, _, stored_run_id) =
+        seed_delegated_timeline_tool(&state, AgentRunStatus::Failed).await;
+    let page_before_retry =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation_id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+    let delegated_conversation_id = page_before_retry.items[0]
+        .tool_call
+        .as_ref()
+        .expect("delegate tool call")["result"]["delegated_conversation_id"]
+        .as_str()
+        .expect("delegated conversation id")
+        .to_string();
+
+    let mut retry = AgentRun::new(ChatConversationId::from_string(delegated_conversation_id));
+    retry.status = AgentRunStatus::Completed;
+    retry.completed_at = Some(chrono::Utc::now());
+    state
+        .agent_run_repo
+        .create(retry)
+        .await
+        .expect("create newer retry");
+
+    let page_after_retry =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation_id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+    let result = &page_after_retry.items[0]
+        .tool_call
+        .as_ref()
+        .expect("delegate tool call")["result"];
+
+    assert_eq!(result["delegated_agent_run_id"], stored_run_id.as_str());
+    assert_eq!(result["status"], "failed");
+}
+
+#[tokio::test]
+async fn delegate_timeline_hydration_keeps_sparse_result_when_session_is_missing() {
+    let state = AppState::new_test();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("create conversation");
+    let mut item = ChatTimelineItem::for_message_block(
+        ChatMessageId::from_string("missing-delegate-message"),
+        conversation.id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.tool_name = Some("delegate_start".to_string());
+    item.result_json = Some(
+        json!({
+            "delegated_session_id": "missing-session",
+            "status": "running"
+        })
+        .to_string(),
+    );
+    state
+        .chat_timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("create sparse delegate item");
+
+    let page =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation.id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+    let result = &page.items[0]
+        .tool_call
+        .as_ref()
+        .expect("delegate tool call")["result"];
+
+    assert_eq!(result["delegated_session_id"], "missing-session");
+    assert_eq!(result["status"], "running");
+    assert!(result.get("delegated_status").is_none());
 }
 
 #[tokio::test]
