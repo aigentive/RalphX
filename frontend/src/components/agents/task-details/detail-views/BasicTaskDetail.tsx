@@ -289,6 +289,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
   const [showValidationDialog, setShowValidationDialog] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const [restartNote, setRestartNote] = useState("");
+  const [restartOutcome, setRestartOutcome] = useState<string | null>(null);
   const { executionTeamModeAvailable } = useTeamModeAvailability(task.projectId);
   const taskId = task.id;
   const status = task.internalStatus;
@@ -306,6 +307,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
   );
 
   const isStopped = status === "stopped" && stopMetadata !== null;
+  const isFailed = status === "failed";
   const isReady = status === "ready";
 
   // Generate validation warnings based on stopped-from state
@@ -345,13 +347,21 @@ function ActionButtonsCard({ task }: { task: Task }) {
   const restartMutation = useMutation({
     mutationFn: async () => {
       const note = restartNote.trim() || undefined;
-      if (isStopped) {
-        // Use smart restart for stopped tasks via API layer
-        const result = await api.tasks.restart(taskId, false, note);
+      if (isStopped || isFailed) {
+        // Backend owns smart resume and failed-task recover-or-restart classification.
+        const result = await api.tasks.restart(
+          taskId,
+          false,
+          note,
+          executionMode === "team" ? "team" : undefined
+        );
         if (result.type === "ValidationFailed") {
           throw new Error(
             `Validation failed: ${result.warnings.map((w) => w.message).join(", ")}`
           );
+        }
+        if (result.type === "Blocked") {
+          throw new Error(result.warnings.map((warning) => warning.message).join(", "));
         }
         await resumeExecutionIfStopped(task.projectId);
         return result;
@@ -367,8 +377,20 @@ function ActionButtonsCard({ task }: { task: Task }) {
         return result;
       }
     },
-    onSuccess: () => {
+    onMutate: () => {
+      setRestartOutcome(null);
+    },
+    onSuccess: (result) => {
       setRestartNote("");
+      if ("disposition" in result) {
+        setRestartOutcome(
+          result.disposition === "recovered_to_review"
+            ? "Completed work recovered and continued to review."
+            : result.disposition === "restarted_to_ready"
+              ? "A fresh execution attempt was started."
+              : null
+        );
+      }
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
@@ -457,7 +479,9 @@ function ActionButtonsCard({ task }: { task: Task }) {
         title: `${actionLabel} this ${taskLabel}?`,
         description: isReady
           ? `The task will be started${modeNote}.`
-          : `The task will be moved to ready status and can be executed again${modeNote}.`,
+          : isFailed
+            ? `RalphX will recover the existing completed work and continue to review when current-attempt proof is valid. Otherwise it will safely start a fresh execution attempt${modeNote}. Existing work is not cleared if the safety checks cannot complete.`
+            : `The task will be moved to ready status and can be executed again${modeNote}.`,
         confirmText: actionLabel,
         variant: "default",
       });
@@ -465,7 +489,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     }
 
     restartMutation.mutate();
-  }, [confirm, status, isReady, isStopped, stopMetadata, restartMutation, executionMode, validationWarnings.length]);
+  }, [confirm, status, isReady, isStopped, isFailed, stopMetadata, restartMutation, executionMode, validationWarnings.length]);
 
   return (
     <DetailCard data-testid="action-buttons">
@@ -511,8 +535,9 @@ function ActionButtonsCard({ task }: { task: Task }) {
       {/* Restart Note textarea (for restartable states only, not shown for start) */}
       {!isReady && (
         <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--overlay-weak)" }}>
-          <textarea
-            data-testid="restart-note-textarea"
+        <textarea
+          aria-label="Restart note"
+          data-testid="restart-note-textarea"
             value={restartNote}
             onChange={(e) => setRestartNote(e.target.value)}
             disabled={restartMutation.isPending || isResuming}
@@ -533,6 +558,11 @@ function ActionButtonsCard({ task }: { task: Task }) {
       {restartMutation.error && (
         <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {restartMutation.error.message}
+        </p>
+      )}
+      {restartOutcome && (
+        <p data-testid="restart-outcome" className="mt-3 text-[0.75rem]" style={{ color: "var(--status-success)" }}>
+          {restartOutcome}
         </p>
       )}
 

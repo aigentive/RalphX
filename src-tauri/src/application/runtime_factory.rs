@@ -19,19 +19,24 @@ use crate::domain::repositories::{
     AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
     DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PersonaRepository, PlanBranchRepository,
+    ProjectRepository, QueuedMessageRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
 };
+use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
 
 #[derive(Clone)]
 pub(crate) struct RuntimeFactoryDeps {
     pub task_repo: Arc<dyn TaskRepository>,
+    pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    pub external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    pub webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
     pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
@@ -78,6 +83,10 @@ impl RuntimeFactoryDeps {
     ) -> Self {
         Self {
             task_repo,
+            task_step_repo: None,
+            validation_run_repo: None,
+            external_events_repo: None,
+            webhook_publisher: None,
             branch_update_repo: None,
             task_dependency_repo,
             project_repo,
@@ -124,6 +133,26 @@ impl RuntimeFactoryDeps {
         execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
     ) -> Self {
         self.execution_plan_repo = Some(execution_plan_repo);
+        self
+    }
+
+    pub(crate) fn with_completion_authority_repositories(
+        mut self,
+        task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+        validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    ) -> Self {
+        self.task_step_repo = task_step_repo;
+        self.validation_run_repo = validation_run_repo;
+        self
+    }
+
+    pub(crate) fn with_completion_event_delivery(
+        mut self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        self.external_events_repo = external_events_repo;
+        self.webhook_publisher = webhook_publisher;
         self
     }
 
@@ -194,6 +223,14 @@ impl RuntimeFactoryDeps {
         .with_agent_clients(Some(state.agent_client_bundle()))
         .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_execution_plan_repo(Arc::clone(&state.execution_plan_repo))
+        .with_completion_authority_repositories(
+            Some(Arc::clone(&state.task_step_repo)),
+            Some(Arc::clone(&state.validation_run_repo)),
+        )
+        .with_completion_event_delivery(
+            Some(Arc::clone(&state.external_events_repo)),
+            state.webhook_publisher.as_ref().map(Arc::clone),
+        )
         .with_review_repo(Arc::clone(&state.review_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
@@ -261,6 +298,9 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    pub external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    pub webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub streaming_state_cache: Option<StreamingStateCache>,
@@ -320,6 +360,9 @@ impl ChatRuntimeFactoryDeps {
             branch_update_repo: None,
             task_proposal_repo: None,
             task_step_repo: None,
+            validation_run_repo: None,
+            external_events_repo: None,
+            webhook_publisher: None,
             review_repo: None,
             interactive_process_registry: None,
             streaming_state_cache: None,
@@ -444,6 +487,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_validation_run_repo(
+        mut self,
+        repo: Arc<dyn ValidationRunRepository>,
+    ) -> Self {
+        self.validation_run_repo = Some(repo);
+        self
+    }
+
     pub(crate) fn with_review_repo(mut self, repo: Arc<dyn ReviewRepository>) -> Self {
         self.review_repo = Some(repo);
         self
@@ -538,6 +589,7 @@ impl ChatRuntimeFactoryDeps {
         mut self,
         task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
         task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+        validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
         review_repo: Option<Arc<dyn ReviewRepository>>,
         streaming_state_cache: Option<StreamingStateCache>,
     ) -> Self {
@@ -547,12 +599,25 @@ impl ChatRuntimeFactoryDeps {
         if let Some(repo) = task_step_repo {
             self = self.with_task_step_repo(repo);
         }
+        if let Some(repo) = validation_run_repo {
+            self = self.with_validation_run_repo(repo);
+        }
         if let Some(repo) = review_repo {
             self = self.with_review_repo(repo);
         }
         if let Some(cache) = streaming_state_cache {
             self = self.with_streaming_state_cache(cache);
         }
+        self
+    }
+
+    pub(crate) fn with_completion_event_delivery(
+        mut self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        self.external_events_repo = external_events_repo;
+        self.webhook_publisher = webhook_publisher;
         self
     }
 
@@ -605,8 +670,13 @@ impl ChatRuntimeFactoryDeps {
         .with_chat_context_support(
             Some(Arc::clone(&state.task_proposal_repo)),
             Some(Arc::clone(&state.task_step_repo)),
+            Some(Arc::clone(&state.validation_run_repo)),
             Some(Arc::clone(&state.review_repo)),
             Some(state.streaming_state_cache.clone()),
+        )
+        .with_completion_event_delivery(
+            Some(Arc::clone(&state.external_events_repo)),
+            state.webhook_publisher.as_ref().map(Arc::clone),
         )
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
         .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
@@ -696,6 +766,13 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     if let Some(repo) = deps.task_step_repo.as_ref() {
         service = service.with_task_step_repo(Arc::clone(repo));
     }
+    if let Some(repo) = deps.validation_run_repo.as_ref() {
+        service = service.with_validation_run_repo(Arc::clone(repo));
+    }
+    service = service.with_completion_event_delivery(
+        deps.external_events_repo.as_ref().map(Arc::clone),
+        deps.webhook_publisher.as_ref().map(Arc::clone),
+    );
     if let Some(repo) = deps.review_repo.as_ref() {
         service = service.with_review_repo(Arc::clone(repo));
     }
@@ -824,6 +901,18 @@ pub(crate) fn build_transition_service_from_deps(
     if let Some(repo) = deps.agent_conversation_workspace_repo.as_ref() {
         service = service.with_agent_conversation_workspace_repo(Arc::clone(repo));
     }
+    if let Some(repo) = deps.task_step_repo.as_ref() {
+        service = service.with_step_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.validation_run_repo.as_ref() {
+        service = service.with_validation_run_repo(Arc::clone(repo));
+    }
+    if let Some(publisher) = deps.webhook_publisher.as_ref() {
+        service = service.with_webhook_publisher_for_emitter(Arc::clone(publisher));
+    }
+    if let Some(repo) = deps.external_events_repo.as_ref() {
+        service = service.with_external_events_repo(Arc::clone(repo));
+    }
     service = service.with_artifact_repo(Arc::clone(&deps.artifact_repo));
     if let Some(registry) = deps.pr_poller_registry.as_ref() {
         service = service.with_pr_poller_registry(Arc::clone(registry));
@@ -872,6 +961,14 @@ pub(crate) fn build_task_scheduler_from_deps(
         Arc::clone(&deps.running_agent_registry),
         Arc::clone(&deps.memory_event_repo),
         app_handle,
+    );
+    scheduler = scheduler.with_completion_authority_repositories(
+        deps.task_step_repo.as_ref().map(Arc::clone),
+        deps.validation_run_repo.as_ref().map(Arc::clone),
+    );
+    scheduler = scheduler.with_completion_event_delivery(
+        deps.external_events_repo.as_ref().map(Arc::clone),
+        deps.webhook_publisher.as_ref().map(Arc::clone),
     );
     if let Some(repo) = deps.execution_settings_repo.as_ref() {
         scheduler = scheduler.with_execution_settings_repo(Arc::clone(repo));
