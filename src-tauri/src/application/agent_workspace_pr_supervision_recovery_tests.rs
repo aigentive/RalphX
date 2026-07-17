@@ -823,6 +823,12 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
     assert!(events
         .iter()
         .any(|event| event.step == "pr_supervision_recovered"));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event.step.as_str(),
+            "pr_autofix_completed" | "pr_autofix_published"
+        )
+    }));
 }
 
 #[tokio::test]
