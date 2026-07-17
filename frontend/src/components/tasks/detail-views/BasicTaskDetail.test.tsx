@@ -68,7 +68,13 @@ vi.mock("@/lib/tauri", () => ({
     },
     tasks: {
       move: vi.fn(async () => ({})),
-      restart: vi.fn(async () => ({ type: "Success", task: {} })),
+      restart: vi.fn(async () => ({
+        type: "Success",
+        task: {},
+        category: "direct",
+        resumedToStatus: "ready",
+        disposition: "restarted_to_ready",
+      })),
       unblock: vi.fn(async () => ({})),
     },
   },
@@ -166,7 +172,13 @@ describe("BasicTaskDetail", () => {
       success: true,
       status: runningExecutionStatus,
     });
-    mockApiTasksRestart.mockResolvedValue({ type: "Success", task: {} });
+    mockApiTasksRestart.mockResolvedValue({
+      type: "Success",
+      task: {},
+      category: "direct",
+      resumedToStatus: "ready",
+      disposition: "restarted_to_ready",
+    });
     mockUseTaskSteps.mockReturnValue({
       data: [],
       isLoading: false,
@@ -528,7 +540,7 @@ describe("BasicTaskDetail", () => {
       expect(screen.queryByTestId("restart-button")).not.toBeInTheDocument();
     });
 
-    it("calls api.tasks.move with correct parameters on button click", async () => {
+    it("routes failed restart through the backend recover-or-restart authority", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });
       mockConfirmation.confirm = vi.fn(async () => true);
@@ -539,8 +551,14 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined, undefined);
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
+          task.id,
+          false,
+          undefined,
+          undefined
+        );
       });
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
     });
 
     it("resumes execution after restart when the project is globally stopped", async () => {
@@ -554,7 +572,12 @@ describe("BasicTaskDetail", () => {
       await user.click(screen.getByTestId("restart-button"));
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined, undefined);
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
+          task.id,
+          false,
+          undefined,
+          undefined
+        );
         expect(mockApiExecutionResume).toHaveBeenCalledWith(task.projectId);
       });
     });
@@ -606,7 +629,7 @@ describe("BasicTaskDetail", () => {
       expect(screen.queryByTestId("restart-note-textarea")).not.toBeInTheDocument();
     });
 
-    it("passes note to api.tasks.move when restarting failed task", async () => {
+    it("passes note to api.tasks.restart when restarting failed task", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });
 
@@ -619,13 +642,46 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
-          "ready",
-          undefined,
-          "Fix the broken import"
+          false,
+          "Fix the broken import",
+          undefined
         );
       });
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
+      expect(mockConfirmation.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: expect.stringContaining(
+            "recover the existing completed work and continue to review"
+          ),
+        })
+      );
+      expect(await screen.findByTestId("restart-outcome")).toHaveTextContent(
+        "A fresh execution attempt was started."
+      );
+    });
+
+    it("shows a backend recovery block without moving or clearing the failed task", async () => {
+      mockApiTasksRestart.mockResolvedValueOnce({
+        type: "Blocked",
+        warnings: [
+          {
+            code: "dirty_worktree",
+            message: "The preserved worktree has uncommitted changes",
+          },
+        ],
+      });
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "failed" });
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("restart-button"));
+
+      expect(
+        await screen.findByText("The preserved worktree has uncommitted changes")
+      ).toBeInTheDocument();
+      expect(mockApiTasksMove).not.toHaveBeenCalled();
     });
 
     it("passes undefined note when textarea is empty", async () => {
@@ -638,9 +694,9 @@ describe("BasicTaskDetail", () => {
       await user.click(button);
 
       await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
-          "ready",
+          false,
           undefined,
           undefined
         );
@@ -749,6 +805,24 @@ describe("BasicTaskDetail", () => {
 
       await waitFor(() => {
         expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", "team", undefined);
+      });
+    });
+
+    it("passes 'team' agentVariant through failed recover-or-restart", async () => {
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "failed" });
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("mode-team"));
+      await user.click(screen.getByTestId("restart-button"));
+
+      await waitFor(() => {
+        expect(mockApiTasksRestart).toHaveBeenCalledWith(
+          task.id,
+          false,
+          undefined,
+          "team"
+        );
       });
     });
 

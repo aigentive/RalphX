@@ -2105,6 +2105,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
         review_repo: Some(Arc::clone(&state.review_repo)),
     };
 
@@ -2241,6 +2244,9 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
         review_repo: Some(Arc::clone(&state.review_repo)),
     };
 

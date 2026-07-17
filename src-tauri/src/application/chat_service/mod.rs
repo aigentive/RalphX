@@ -80,16 +80,18 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PersonaRepository, PlanBranchRepository,
-    ProjectRepository, QueuedMessageRepository, ReviewRepository, StateHistoryMetadata,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, QueueKey, QueuedMessage,
     RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
+use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
@@ -1190,6 +1192,16 @@ pub struct SendMessageOptions {
 /// - Task transitions: only TaskExecution context triggers state changes
 #[async_trait]
 pub trait ChatService: Send + Sync {
+    fn set_task_step_repo(&self, _repo: Arc<dyn TaskStepRepository>) {}
+
+    fn set_validation_run_repo(&self, _repo: Arc<dyn ValidationRunRepository>) {}
+    fn set_completion_event_delivery(
+        &self,
+        _external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        _webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) {
+    }
+
     /// Send a message in a context-aware conversation
     ///
     /// Returns immediately with conversation_id and agent_run_id.
@@ -1383,7 +1395,10 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_conversation_granola_note_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationGranolaNoteRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
-    task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    task_step_repo: std::sync::Mutex<Option<Arc<dyn TaskStepRepository>>>,
+    validation_run_repo: std::sync::Mutex<Option<Arc<dyn ValidationRunRepository>>>,
+    external_events_repo: std::sync::Mutex<Option<Arc<dyn ExternalEventsRepository>>>,
+    webhook_publisher: std::sync::Mutex<Option<Arc<dyn WebhookPublisher>>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
     model: String,
     /// When true, agent resolution uses team-lead variants if configured.
@@ -1473,7 +1488,10 @@ impl<R: Runtime> AppChatService<R> {
             agent_conversation_linear_issue_repo: std::sync::Mutex::new(None),
             agent_conversation_granola_note_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
-            task_step_repo: None,
+            task_step_repo: std::sync::Mutex::new(None),
+            validation_run_repo: std::sync::Mutex::new(None),
+            external_events_repo: std::sync::Mutex::new(None),
+            webhook_publisher: std::sync::Mutex::new(None),
             review_repo: None,
             model: "sonnet".to_string(),
             team_mode: AtomicBool::new(false),
@@ -2016,8 +2034,23 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
-    pub fn with_task_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
-        self.task_step_repo = Some(repo);
+    pub fn with_task_step_repo(self, repo: Arc<dyn TaskStepRepository>) -> Self {
+        *self.task_step_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        *self.validation_run_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
+    pub fn with_completion_event_delivery(
+        self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        *self.external_events_repo.lock().unwrap() = external_events_repo;
+        *self.webhook_publisher.lock().unwrap() = webhook_publisher;
         self
     }
 
@@ -4255,6 +4288,23 @@ pub(super) async fn load_turn_attachments_from_repo(
 
 #[async_trait]
 impl<R: Runtime + 'static> ChatService for AppChatService<R> {
+    fn set_task_step_repo(&self, repo: Arc<dyn TaskStepRepository>) {
+        *self.task_step_repo.lock().unwrap() = Some(repo);
+    }
+
+    fn set_validation_run_repo(&self, repo: Arc<dyn ValidationRunRepository>) {
+        *self.validation_run_repo.lock().unwrap() = Some(repo);
+    }
+
+    fn set_completion_event_delivery(
+        &self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) {
+        *self.external_events_repo.lock().unwrap() = external_events_repo;
+        *self.webhook_publisher.lock().unwrap() = webhook_publisher;
+    }
+
     async fn send_message(
         &self,
         context_type: ChatContextType,
@@ -6315,7 +6365,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message_queue: Arc::clone(&self.message_queue),
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
                 task_proposal_repo: self.task_proposal_repo.clone(),
-                task_step_repo: self.task_step_repo.clone(),
+                task_step_repo: self.task_step_repo.lock().unwrap().clone(),
+                validation_run_repo: self.validation_run_repo.lock().unwrap().clone(),
+                external_events_repo: self.external_events_repo.lock().unwrap().clone(),
+                webhook_publisher: self.webhook_publisher.lock().unwrap().clone(),
                 review_repo: self.review_repo.clone(),
             },
             execution_state: self.execution_state.clone(),
