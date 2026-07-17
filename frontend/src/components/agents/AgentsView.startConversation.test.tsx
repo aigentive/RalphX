@@ -204,7 +204,7 @@ describe("AgentsView start conversation", () => {
     useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
     view.queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: true }),
+      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: false }),
     );
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
@@ -214,6 +214,14 @@ describe("AgentsView start conversation", () => {
     expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    view.queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: true }),
+    );
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
   });
 

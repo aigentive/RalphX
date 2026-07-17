@@ -124,6 +124,24 @@ pub(super) async fn assert_bindings(
     }
 }
 
+pub(super) async fn assert_pending_bindings(
+    service: &PersonaService,
+    conversations: &[ChatConversation],
+    draft_id: &str,
+) {
+    for conversation in conversations {
+        let loaded = service
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation lookup should succeed")
+            .expect("conversation should exist");
+        assert_eq!(loaded.builder_draft_id.as_deref(), Some(draft_id));
+        assert!(loaded.builder_result_persona_id.is_none());
+        assert!(loaded.persona_id.is_none());
+    }
+}
+
 pub(super) async fn assert_finished_bindings(
     service: &PersonaService,
     conversations: &[ChatConversation],

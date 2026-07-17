@@ -33,8 +33,9 @@ use ralphx_lib::domain::entities::{
     PersonaStatus, Project, ProjectId, TaskId, TeamIntent,
 };
 use ralphx_lib::infrastructure::agents::claude::{
-    reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
-    set_agent_personas_override, set_standalone_conversations_override,
+    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
+    reset_standalone_conversations_override_for_test, set_agent_personas_override,
+    set_composer_folder_references_override, set_standalone_conversations_override,
 };
 use ralphx_lib::infrastructure::sqlite::{
     DbConnection, SqliteChatConversationRepository, SqlitePersonaRepository,
@@ -183,6 +184,7 @@ struct PersonaFlagsOverrideReset;
 impl Drop for PersonaFlagsOverrideReset {
     fn drop(&mut self) {
         reset_agent_personas_override_for_test();
+        reset_composer_folder_references_override_for_test();
         reset_standalone_conversations_override_for_test();
     }
 }
@@ -544,6 +546,39 @@ async fn start_agent_conversation_standalone_flag_off_rejected() {
 }
 
 #[tokio::test]
+async fn personas_on_standalone_off_rejects_global_builder_at_start() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(false));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input(
+            "Global builder must remain unavailable",
+            Some("persona_builder"),
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("global builder must reject when standalone conversations are disabled");
+
+    assert!(
+        error.contains("standalone_conversations"),
+        "unexpected error: {error}"
+    );
+    assert!(app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .list_by_context_type(ChatContextType::Standalone, true, 10)
+        .await
+        .expect("standalone conversation lookup should succeed")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn start_agent_conversation_standalone_non_chat_mode_rejected() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
@@ -896,9 +931,11 @@ async fn start_agent_conversation_persona_builder_flag_off_is_rejected() {
 }
 
 #[tokio::test]
-async fn start_agent_conversation_project_persona_builder_succeeds_through_standard_pipeline() {
+async fn all_flags_on_project_persona_builder_succeeds_through_standard_pipeline() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    set_composer_folder_references_override(Some(true));
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let db = SqliteTestDb::new("seeded-refine-scope-lock");
@@ -984,9 +1021,10 @@ async fn start_agent_conversation_project_persona_builder_succeeds_through_stand
 }
 
 #[tokio::test]
-async fn seeded_project_builder_start_syncs_pre_cleanup_text_attachment_into_workspace() {
+async fn folder_references_off_project_builder_still_materializes_text_attachment() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
+    set_composer_folder_references_override(Some(false));
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let db = SqliteTestDb::new("builder-start-attachment-sync");

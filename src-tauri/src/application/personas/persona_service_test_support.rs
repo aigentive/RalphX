@@ -48,6 +48,24 @@ pub(super) fn persona_artifacts(
     })
 }
 
+pub(super) fn artifact_count(db: &SqliteTestDb) -> i64 {
+    db.with_connection(|conn| {
+        conn.query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .unwrap()
+    })
+}
+
+pub(super) fn fail_persona_artifact_appends(db: &SqliteTestDb) {
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_persona_artifact_append
+             BEFORE INSERT ON artifacts WHEN NEW.type = 'persona'
+             BEGIN SELECT RAISE(ABORT, 'forced persona artifact failure'); END;",
+        )
+        .expect("artifact append failure trigger should install");
+    });
+}
+
 /// Expected hash derived through the shared parser, so tests never
 /// hand-replicate `split_frontmatter`'s exact frontmatter/body boundaries.
 pub(super) fn expected_hash(content: &str) -> String {

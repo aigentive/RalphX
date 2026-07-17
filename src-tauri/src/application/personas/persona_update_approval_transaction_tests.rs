@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use super::persona_service_test_support::fail_persona_artifact_appends;
 use super::persona_update_approval_test_support::*;
 use super::SavePersonaDraftInput;
 use crate::domain::entities::{PersonaStatus, ProjectId};
@@ -116,6 +117,63 @@ async fn seeded_approval_rolls_back_every_writer_when_artifact_append_fails() {
     assert_eq!(source_after.artifact_id, source_tip);
     assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
     assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
+}
+
+async fn assert_approve_as_new_append_rollback(
+    db_name: &str,
+    source_slug: &str,
+    new_slug: Option<&str>,
+) {
+    let db = SqliteTestDb::new(db_name);
+    let (service, source, draft, conversations) = seeded_fixture(&db, source_slug).await;
+    let archived_source = service
+        .archive_persona(true, &source.id)
+        .await
+        .expect("source fixture should archive");
+    let draft_chain_before = chain_ids(&db, draft.artifact_id.as_ref().unwrap());
+    fail_persona_artifact_appends(&db);
+
+    let error = service
+        .approve_persona_as_new(true, &draft.id, new_slug)
+        .await
+        .expect_err("artifact append failure must roll back approve-as-new");
+
+    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!(
+        service.get_draft(true, &draft.id).await.unwrap(),
+        draft,
+        "content, tip, status, slug, and provenance must roll back together"
+    );
+    assert_eq!(
+        service.get_persona(true, &source.id).await.unwrap(),
+        archived_source
+    );
+    assert_eq!(
+        chain_ids(&db, draft.artifact_id.as_ref().unwrap()),
+        draft_chain_before,
+        "failed approval must not leave an appended artifact"
+    );
+    assert_pending_bindings(&service, &conversations, draft.id.as_str()).await;
+}
+
+#[tokio::test]
+async fn approve_persona_as_new_same_slug_rolls_back_every_writer_when_append_fails() {
+    assert_approve_as_new_append_rollback(
+        "approve_as_new_same_slug_append_rollback",
+        "approve-as-new-same-slug",
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn approve_persona_as_new_recompose_rolls_back_every_writer_when_append_fails() {
+    assert_approve_as_new_append_rollback(
+        "approve_as_new_recompose_append_rollback",
+        "approve-as-new-recompose",
+        Some("approve-as-new-renamed"),
+    )
+    .await;
 }
 
 #[tokio::test]

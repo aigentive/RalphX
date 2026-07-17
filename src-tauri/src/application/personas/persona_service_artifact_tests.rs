@@ -119,6 +119,139 @@ async fn artifact_insert_failure_rolls_back_persona_content_and_tip() {
 }
 
 #[tokio::test]
+async fn create_persona_draft_rolls_back_row_tip_status_and_bindings_when_append_fails() {
+    let db = SqliteTestDb::new("create_persona_draft_append_rollback");
+    let service = sqlite_service(&db);
+    let conversation = service
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("unbound conversation fixture should persist");
+    let artifacts_before = artifact_count(&db);
+    fail_persona_artifact_appends(&db);
+
+    let error = service
+        .create_draft(
+            true,
+            draft_input("create-append-rollback", "Must never persist"),
+        )
+        .await
+        .expect_err("artifact append failure must roll back draft creation");
+
+    assert!(matches!(error, AppError::Database(_)));
+    assert!(
+        service
+            .list_personas(true, PersonaScopeFilter::All)
+            .await
+            .unwrap()
+            .is_empty(),
+        "failed creation must leave no persona content, tip, or status row"
+    );
+    assert_eq!(artifact_count(&db), artifacts_before);
+    let conversation_after = service
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(conversation_after.persona_id.is_none());
+    assert!(conversation_after.builder_draft_id.is_none());
+    assert!(conversation_after.builder_result_persona_id.is_none());
+}
+
+#[tokio::test]
+async fn update_persona_rolls_back_content_tip_status_and_bindings_when_append_fails() {
+    let db = SqliteTestDb::new("update_persona_append_rollback");
+    let service = sqlite_service(&db);
+    let persona_id = create_active(&service, "active-append-rollback").await;
+    let persona_before = service.get_persona(true, &persona_id).await.unwrap();
+    let artifacts_before = persona_artifacts(&db, &persona_id);
+    let conversation = service
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("conversation fixture should persist");
+    service
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(persona_id.as_str()))
+        .await
+        .expect("persona binding fixture should persist");
+    fail_persona_artifact_appends(&db);
+
+    let error = service
+        .update_persona(
+            true,
+            &persona_id,
+            &persona_content("active-append-rollback", "Must roll back"),
+        )
+        .await
+        .expect_err("artifact append failure must roll back active persona update");
+
+    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!(
+        service.get_persona(true, &persona_id).await.unwrap(),
+        persona_before
+    );
+    assert_eq!(persona_artifacts(&db, &persona_id), artifacts_before);
+    let conversation_after = service
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        conversation_after.persona_id.as_deref(),
+        Some(persona_id.as_str())
+    );
+    assert!(conversation_after.builder_draft_id.is_none());
+    assert!(conversation_after.builder_result_persona_id.is_none());
+}
+
+#[tokio::test]
+async fn approve_persona_plain_rolls_back_content_tip_status_and_bindings_when_append_fails() {
+    let db = SqliteTestDb::new("approve_persona_plain_append_rollback");
+    let service = sqlite_service(&db);
+    let project_id = ProjectId::new();
+    let mut builder = ChatConversation::new_project(project_id.clone());
+    builder.agent_mode =
+        Some(crate::domain::entities::AgentConversationWorkspaceMode::PersonaBuilder);
+    let builder = service
+        .chat_conversation_repo
+        .create(builder)
+        .await
+        .expect("builder conversation fixture should persist");
+    let mut input = draft_input("plain-approval-append-rollback", "Draft body");
+    input.project_id = Some(project_id);
+    let draft = service
+        .create_bound_draft(true, &builder.id, input)
+        .await
+        .expect("bound plain draft should persist");
+    let artifacts_before = persona_artifacts(&db, &draft.id);
+    fail_persona_artifact_appends(&db);
+
+    let error = service
+        .approve_persona(true, &draft.id)
+        .await
+        .expect_err("artifact append failure must roll back plain approval");
+
+    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_eq!(persona_artifacts(&db, &draft.id), artifacts_before);
+    let builder_after = service
+        .chat_conversation_repo
+        .get_by_id(&builder.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        builder_after.builder_draft_id.as_deref(),
+        Some(draft.id.as_str())
+    );
+    assert!(builder_after.builder_result_persona_id.is_none());
+    assert!(builder_after.persona_id.is_none());
+}
+
+#[tokio::test]
 async fn plain_approval_hashes_the_transactional_content_and_appends_that_tip() {
     let db = SqliteTestDb::new("plain_approval_transactional_content");
     let service = sqlite_service(&db);
