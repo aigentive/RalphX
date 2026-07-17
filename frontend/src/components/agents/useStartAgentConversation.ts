@@ -159,6 +159,7 @@ export function useStartAgentConversation({
       personaId,
       capabilityIntent,
       teamIntent,
+      sourcePersonaId,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
@@ -176,14 +177,15 @@ export function useStartAgentConversation({
       personaId?: string | null;
       capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
+      sourcePersonaId?: string | undefined;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
       const isStandalone = targetProjectId === null;
       const conversationContextType = isStandalone ? "standalone" : "project";
-      const effectiveMode = isStandalone ? "chat" : mode;
-      const effectiveFolders = isStandalone ? [] : folders;
+      const effectiveMode = isStandalone && mode !== "persona_builder" ? "chat" : mode;
+      const effectiveFolders = isStandalone && mode !== "persona_builder" ? [] : folders;
       const effectiveProjectReferences = isStandalone
         ? undefined
         : composerProjectReferences;
@@ -507,10 +509,19 @@ export function useStartAgentConversation({
                   normalizedRuntime.provider === "codex" ? codexFastMode : null,
               }
             : {}),
-          ...(!isStandalone && personaId ? { personaId } : {}),
+          ...(!isStandalone && effectiveMode !== "persona_builder" && personaId
+            ? { personaId }
+            : {}),
           mode: effectiveMode,
-          ...(!isStandalone && capabilityIntent ? { capabilityIntent } : {}),
-          ...(!isStandalone && teamIntent ? { teamIntent } : {}),
+          ...(effectiveMode === "persona_builder" && sourcePersonaId
+            ? { sourcePersonaId }
+            : {}),
+          ...(!isStandalone && effectiveMode !== "persona_builder" && capabilityIntent
+            ? { capabilityIntent }
+            : {}),
+          ...(!isStandalone && effectiveMode !== "persona_builder" && teamIntent
+            ? { teamIntent }
+            : {}),
           ...(effectiveProjectReferences?.length
             ? { composerProjectReferences: effectiveProjectReferences }
             : {}),

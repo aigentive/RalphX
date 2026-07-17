@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { Info } from "lucide-react";
 
-import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -13,23 +12,27 @@ import {
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { formatPersonaErrorMessage } from "@/lib/personaErrors";
 import { useProjectStore } from "@/stores/projectStore";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { Persona } from "@/types/persona";
 
 import { PersonaEditor, type PersonaEditorState } from "./PersonaEditor";
+import { PersonaBuilderScopeDialog } from "./PersonaBuilderScopeDialog";
 import { PersonaRow } from "./PersonaManagementRows";
 
 export interface PersonasManagementSectionProps {
   /** Controls whether the builder entry is available in the management UI. */
   showBuilderEntry?: boolean;
+  standaloneConversations?: boolean;
 }
 
 export function PersonasManagementSection({
   showBuilderEntry = true,
+  standaloneConversations = true,
 }: PersonasManagementSectionProps) {
   const [editor, setEditor] = useState<PersonaEditorState | null>(null);
   const [scopeFilter, setScopeFilter] = useState("all");
-  const [showBuilder, setShowBuilder] = useState(false);
-  const [builderEntryError, setBuilderEntryError] = useState<string | null>(null);
+  const [showScopeChooser, setShowScopeChooser] = useState(false);
   const activeProjectId = useProjectStore((state) => state.activeProjectId);
   const projectsById = useProjectStore((state) => state.projects);
   const projects = useMemo(
@@ -47,6 +50,11 @@ export function PersonasManagementSection({
   const approvePersona = useApprovePersona();
   const archivePersona = useArchivePersona();
   const deleteDraft = useDeletePersonaDraft();
+  const setStartConversationDraft = useAgentSessionStore((state) => state.setStartConversationDraft);
+  const setFocusedProject = useAgentSessionStore((state) => state.setFocusedProject);
+  const clearSelection = useAgentSessionStore((state) => state.clearSelection);
+  const closeModal = useUiStore((state) => state.closeModal);
+  const setCurrentView = useUiStore((state) => state.setCurrentView);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const visiblePersonas = personas.filter(
     (persona) =>
@@ -57,14 +65,26 @@ export function PersonasManagementSection({
           : persona.projectId === scopeFilter)),
   );
 
-  if (showBuilder && activeProjectId) {
-    return (
-      <PersonaBuilderView
-        projectId={activeProjectId}
-        onBack={() => setShowBuilder(false)}
-      />
-    );
-  }
+  const openBuilderComposer = (
+    projectId: string | null,
+    sourcePersona?: Persona,
+  ) => {
+    setStartConversationDraft({
+      projectId,
+      projectLocked: true,
+      mode: "persona_builder",
+      ...(sourcePersona
+        ? {
+            sourcePersonaId: sourcePersona.id,
+            sourcePersonaName: sourcePersona.name,
+          }
+        : {}),
+    });
+    closeModal();
+    setFocusedProject(projectId ?? null);
+    clearSelection();
+    setCurrentView("agents");
+  };
 
   const handleEdit = (persona: Persona) => {
     if (persona.status === "draft") {
@@ -133,15 +153,10 @@ export function PersonasManagementSection({
               variant="outline"
               size="sm"
               onClick={() => {
-                if (!activeProjectId) {
-                  setBuilderEntryError("Select a project before building a persona.");
-                  return;
-                }
-                setBuilderEntryError(null);
-                setShowBuilder(true);
+                setShowScopeChooser(true);
               }}
             >
-              Build with agent
+              Build with Agent
             </Button>
           )}
           <Button
@@ -197,18 +212,10 @@ export function PersonasManagementSection({
               onEdit={handleEdit}
               onActivate={(selected) => void approvePersona.mutateAsync(selected.id)}
               onRemove={(selected) => void handleRemove(selected)}
+              onRefine={(selected) => openBuilderComposer(selected.projectId, selected)}
             />
           ))}
         </ul>
-      )}
-
-      {builderEntryError && (
-        <div
-          role="alert"
-          className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]"
-        >
-          {builderEntryError}
-        </div>
       )}
 
       <div className="flex gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-3 text-xs leading-relaxed text-[var(--text-muted)]">
@@ -218,6 +225,14 @@ export function PersonasManagementSection({
         </p>
       </div>
       <ConfirmationDialog {...confirmationDialogProps} />
+      <PersonaBuilderScopeDialog
+        open={showScopeChooser}
+        projects={projects}
+        initialProjectId={activeProjectId ?? (!standaloneConversations ? projects[0]?.id ?? null : null)}
+        standaloneConversations={standaloneConversations}
+        onClose={() => setShowScopeChooser(false)}
+        onStart={openBuilderComposer}
+      />
     </section>
   );
 }

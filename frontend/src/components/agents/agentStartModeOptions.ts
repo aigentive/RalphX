@@ -10,6 +10,7 @@ export const AGENT_START_MODE_OPTIONS: Array<{
   { id: "review_pr", label: "Review PR", description: "Review a linked pull request.", requiresProject: true },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution.", requiresProject: true },
   { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow.", requiresProject: true },
+  { id: "persona_builder", label: "Persona", description: "Build or refine a reusable agent persona.", requiresProject: false },
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project.", requiresProject: false },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks.", requiresProject: true },
 ];

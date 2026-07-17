@@ -4019,6 +4019,19 @@ describe("startAgentConversationInvokeInput", () => {
       mode: "chat",
     });
   });
+  it("maps persona-builder refine provenance without inventing a standalone project", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "Refine this voice",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+      }),
+    ).toEqual({
+      content: "Refine this voice",
+      mode: "persona_builder",
+      sourcePersonaId: "persona-reviewer",
+    });
+  });
   it("includes only projectId and content when all optional fields are absent", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",

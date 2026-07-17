@@ -178,6 +178,45 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
+  it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
+    const atlas = { ...project, id: "project-atlas", name: "Atlas" };
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [project, atlas], isLoading: false });
+    resetAgentSessionState({
+      startConversationDraft: {
+        projectId: "project-atlas",
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+      },
+    });
+    const view = renderAgentsView();
+
+    await screen.findByTestId("persona-build-banner");
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.getByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.getByLabelText("Persona build project is locked")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.queryByTestId("agents-start-mode-persona_builder")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
+    view.queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: true }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
+  });
+
   it("keeps standalone reachable with zero projects and prevents project-only controls", async () => {
     mockAgentViewData();
     useProjectsMock.mockReturnValue({ data: [], isLoading: false });
@@ -1874,6 +1913,95 @@ describe("AgentsView start conversation", () => {
     expect(handleAutoManagedTitle).toHaveBeenCalledWith(
       expect.objectContaining({ targetProjectId: null }),
     );
+  });
+
+  it("starts a Global persona builder with locked provenance, folders, and no project or Team intent", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const builderConversation = conversation({
+      id: "builder-global-1",
+      contextType: "standalone",
+      contextId: "builder-global-1",
+      projectId: null,
+      agentMode: "persona_builder",
+    });
+    createConversationMock.mockResolvedValue(builderConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: builderConversation,
+      workspace: null,
+      sendResult: {
+        conversationId: "builder-global-1",
+        agentRunId: "run-builder-1",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "add_conversation_folder_reference") {
+        return {
+          id: "folder-ref-1",
+          conversationId: "builder-global-1",
+          folderPath: "/context/docs",
+          displayName: "docs",
+          createdAt: "2026-07-17T00:00:00Z",
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    await result.current({
+      projectId: null,
+      content: "Refine the review voice",
+      runtime: { provider: "claude", modelId: "sonnet", effort: "medium" },
+      mode: "persona_builder",
+      sourcePersonaId: "persona-reviewer",
+      base: null,
+      files: [],
+      folders: [{ folderPath: "/context/docs", displayName: "docs" }],
+      capabilityIntent: { coordinationMode: "rx_native_team" },
+    });
+
+    expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+    expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+      input: {
+        conversationId: "builder-global-1",
+        folderPath: "/context/docs",
+        displayName: "docs",
+      },
+    });
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: "builder-global-1",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+      }),
+    );
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("projectId");
+    expect(startInput).not.toHaveProperty("capabilityIntent");
+    expect(startInput).not.toHaveProperty("teamIntent");
   });
 
   it("falls back to the default runtime when the remembered provider is no longer valid", async () => {

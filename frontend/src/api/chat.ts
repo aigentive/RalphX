@@ -1974,6 +1974,7 @@ export interface StartAgentConversationInput {
   modelId?: string | null;
   logicalEffort?: string | null;
   personaId?: string | null;
+  sourcePersonaId?: string | null;
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
@@ -3026,6 +3027,7 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
+    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),

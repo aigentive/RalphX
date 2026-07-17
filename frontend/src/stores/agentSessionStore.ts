@@ -110,8 +110,11 @@ export interface AgentBranchBaseCacheEntry {
 
 export interface AgentStartConversationDraft {
   projectId: string | null;
-  content: string;
+  content?: string;
   mode: AgentConversationWorkspaceMode;
+  projectLocked?: boolean;
+  sourcePersonaId?: string;
+  sourcePersonaName?: string;
   automationAuthoringMode?: AutomationAuthoringMode;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
@@ -434,8 +437,13 @@ function cloneStartConversationDraft(
 ): AgentStartConversationDraft {
   return {
     projectId: draft.projectId,
-    content: draft.content,
+    content: draft.content ?? "",
     mode: draft.mode,
+    ...(draft.projectLocked !== undefined
+      ? { projectLocked: draft.projectLocked }
+      : {}),
+    ...(draft.sourcePersonaId ? { sourcePersonaId: draft.sourcePersonaId } : {}),
+    ...(draft.sourcePersonaName ? { sourcePersonaName: draft.sourcePersonaName } : {}),
     ...(draft.automationAuthoringMode
       ? { automationAuthoringMode: draft.automationAuthoringMode }
       : {}),

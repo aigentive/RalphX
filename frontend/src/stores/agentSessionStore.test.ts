@@ -405,6 +405,29 @@ describe("agentSessionStore", () => {
       });
     });
 
+    it("preserves persona-builder scope lock and refine provenance in the consumed copy", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    });
+
     it("selects a standalone conversation without project focus bookkeeping", () => {
       useAgentSessionStore.getState().selectConversation(null, "standalone-1");
 

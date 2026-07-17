@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { PauseCircle, Sparkles } from "lucide-react";
+import { Lock, PauseCircle, Sparkles } from "lucide-react";
 
 import type {
   AgentConversationBranchMode,
@@ -89,6 +89,8 @@ import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
+import { PersonaBuildBanner } from "./PersonaBuildBanner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface PendingAttachment {
   id: string;
@@ -112,6 +114,7 @@ interface AgentsStartComposerSubmitInput {
   personaId?: string | null;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
+  sourcePersonaId?: string;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -231,6 +234,9 @@ export function AgentsStartComposer({
     modelRegistry,
   );
   const [projectId, setProjectId] = useState<string | null>(defaultProjectId);
+  const [projectLocked, setProjectLocked] = useState(false);
+  const [sourcePersonaId, setSourcePersonaId] = useState<string | null>(null);
+  const [sourcePersonaName, setSourcePersonaName] = useState<string | null>(null);
   const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
@@ -491,6 +497,9 @@ export function AgentsStartComposer({
   }, [openModal]);
 
   useEffect(() => {
+    if (projectLocked) {
+      return;
+    }
     setProjectId((currentProjectId) => {
       if (currentProjectId === null && featureFlags.standaloneConversations) {
         return null;
@@ -500,7 +509,7 @@ export function AgentsStartComposer({
       }
       return defaultProjectId ?? projects[0]?.id ?? null;
     });
-  }, [defaultProjectId, featureFlags.standaloneConversations, projects]);
+  }, [defaultProjectId, featureFlags.standaloneConversations, projectLocked, projects]);
 
   useEffect(() => {
     if (projectId !== null) {
@@ -508,8 +517,10 @@ export function AgentsStartComposer({
     }
     setCapabilityMode("solo");
     setPersonaId(null);
-    setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, []);
-    if (mode !== "chat") {
+    if (mode !== "persona_builder") {
+      setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, []);
+    }
+    if (mode !== "chat" && mode !== "persona_builder") {
       setMode("chat");
       setAutomationAuthoringMode(null);
       setError(
@@ -521,6 +532,12 @@ export function AgentsStartComposer({
   }, [mode, projectId, setComposerDraftFolders]);
 
   useEffect(() => {
+    if (mode !== "persona_builder") return;
+    setCapabilityMode("solo");
+    setPersonaId(null);
+  }, [mode]);
+
+  useEffect(() => {
     if (!startConversationDraft) {
       return;
     }
@@ -529,7 +546,10 @@ export function AgentsStartComposer({
       return;
     }
     setProjectId(draft.projectId);
-    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
+    setProjectLocked(draft.projectLocked ?? false);
+    setSourcePersonaId(draft.sourcePersonaId ?? null);
+    setSourcePersonaName(draft.sourcePersonaName ?? null);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content ?? "");
     setMode(draft.mode);
     setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
@@ -675,6 +695,7 @@ export function AgentsStartComposer({
 
   const handleProjectChange = useCallback(
     (nextProjectId: string | null) => {
+      if (projectLocked) return;
       clearStartError();
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
@@ -683,7 +704,7 @@ export function AgentsStartComposer({
         persistRuntimePreference(nextProjectId, { provider, modelId, effort });
       }
     },
-    [clearStartError, effort, modelId, persistRuntimePreference, provider]
+    [clearStartError, effort, modelId, persistRuntimePreference, projectLocked, provider]
   );
 
   const handleProviderChange = useCallback(
@@ -1213,8 +1234,13 @@ export function AgentsStartComposer({
       files: attachments.map((attachment) => attachment.file),
       folders,
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
-      ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
-      ...(projectId ? { capabilityIntent } : {}),
+      ...(mode !== "persona_builder" && featureFlags.agentPersonas && personaId
+        ? { personaId }
+        : {}),
+      ...(mode === "persona_builder" && sourcePersonaId
+        ? { sourcePersonaId }
+        : {}),
+      ...(mode !== "persona_builder" && projectId ? { capabilityIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1328,6 +1354,17 @@ export function AgentsStartComposer({
             </div>
           )}
 
+          {mode === "persona_builder" && (
+            <PersonaBuildBanner
+              projectName={
+                projectId
+                  ? projects.find((project) => project.id === projectId)?.name ?? projectId
+                  : null
+              }
+              sourcePersonaName={sourcePersonaName}
+            />
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -1386,7 +1423,9 @@ export function AgentsStartComposer({
                   setAutomationAuthoringMode(null);
                 }
               },
-              options: AGENT_START_MODE_OPTIONS.map((option) => ({
+              options: AGENT_START_MODE_OPTIONS.filter(
+                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
+              ).map((option) => ({
                 ...option,
                 ...(projectId === null && option.requiresProject
                   ? {
@@ -1397,7 +1436,7 @@ export function AgentsStartComposer({
               })),
               testId: "agents-start-mode",
             }}
-            {...(projectId && capabilityOptions.length > 1
+            {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
               ? {
                   capability: {
                     value: capabilityMode,
@@ -1407,7 +1446,7 @@ export function AgentsStartComposer({
                   },
                 }
               : {})}
-            {...(featureFlags.agentPersonas && projectId
+            {...(mode !== "persona_builder" && featureFlags.agentPersonas && projectId
               ? {
                   personaControl: (
                     <PersonaPickerControl
@@ -1435,6 +1474,7 @@ export function AgentsStartComposer({
               })),
               placeholder: projects.length === 0 ? "No projects yet" : "Select project",
               disabled:
+                projectLocked ||
                 isLoadingProjects ||
                 (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
@@ -1535,6 +1575,7 @@ export function AgentsStartComposer({
               }))}
               placeholder={projects.length === 0 ? "No projects yet" : "Select project"}
               disabled={
+                projectLocked ||
                 isLoadingProjects ||
                 (projects.length === 0 && !featureFlags.standaloneConversations)
               }
@@ -1542,6 +1583,19 @@ export function AgentsStartComposer({
               allowNoProject={featureFlags.standaloneConversations === true}
               standaloneCaption="Runs in a private workspace"
             />
+            {projectLocked && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    aria-label="Persona build project is locked"
+                    className="inline-flex h-7 w-7 items-center justify-center text-[var(--text-muted)]"
+                  >
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Persona scope is locked for this build</TooltipContent>
+              </Tooltip>
+            )}
             {projectId && (
               <BranchBasePicker
                 value={selectedStartFromKey}

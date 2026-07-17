@@ -23,7 +23,10 @@ export function PersonasSection({ showBuilderEntry = true }: PersonasSectionProp
       {agentPersonasEnabled && (
         <>
           <Separator />
-          <PersonasManagementSection showBuilderEntry={showBuilderEntry} />
+          <PersonasManagementSection
+            showBuilderEntry={showBuilderEntry}
+            standaloneConversations={featureFlags.standaloneConversations ?? false}
+          />
         </>
       )}
     </section>

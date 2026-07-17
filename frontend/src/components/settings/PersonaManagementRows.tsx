@@ -54,12 +54,14 @@ export function PersonaRow({
   onEdit,
   onActivate,
   onRemove,
+  onRefine,
 }: {
   persona: Persona;
   projectNames: Record<string, string>;
   onEdit: (persona: Persona) => void;
   onActivate: (persona: Persona) => void;
   onRemove: (persona: Persona) => void;
+  onRefine: (persona: Persona) => void;
 }) {
   const active = persona.status === "active";
   const actionLabel = active ? "Archive" : "Delete";
@@ -88,6 +90,18 @@ export function PersonaRow({
         <p className="mt-1 text-xs text-[var(--text-muted)]">{relativeUpdatedAt(persona.updatedAt)}</p>
       </div>
       <div className="flex items-center gap-1">
+        {active && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={`Refine ${persona.name} with Agent`}
+            onClick={() => onRefine(persona)}
+            className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          >
+            Refine with Agent
+          </Button>
+        )}
         {!active && (
           <Button
             type="button"

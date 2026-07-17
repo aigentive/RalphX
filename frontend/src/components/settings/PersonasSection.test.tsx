@@ -3,11 +3,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { splitPersonaBody } from "@/lib/personaContent";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { Project } from "@/types/project";
 
 import { PersonasManagementSection } from "./PersonasManagementSection";
@@ -99,12 +100,14 @@ function createQueryClient() {
   });
 }
 
-function renderSection() {
+function renderSection(standaloneConversations = true) {
   useProjectStore.getState().setProjects([ralphxProject, atlasProject]);
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <TooltipProvider delayDuration={0}>
-        <PersonasManagementSection />
+        <PersonasManagementSection
+          standaloneConversations={standaloneConversations}
+        />
       </TooltipProvider>
     </QueryClientProvider>,
   );
@@ -177,6 +180,17 @@ function mockPersonaCommands(personas: RawPersona[]) {
 }
 
 describe("PersonasManagementSection", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useUiStore.setState({ modal: null, currentView: "agents" });
+    useAgentSessionStore.setState({
+      focusedProjectId: null,
+      selectedProjectId: null,
+      selectedConversationId: null,
+      startConversationDraft: null,
+    });
+  });
+
   it("filters archived personas from the list and renders the v1 limits copy", async () => {
     mockPersonaCommands([activePersona, draftPersona, archivedPersona]);
     renderSection();
@@ -255,7 +269,7 @@ describe("PersonasManagementSection", () => {
     );
 
     await screen.findByText("Reviewer Voice");
-    expect(screen.queryByRole("button", { name: "Build with agent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Build with Agent" })).not.toBeInTheDocument();
   });
 
   it("shows the builder entry by default when the feature is enabled", async () => {
@@ -263,7 +277,89 @@ describe("PersonasManagementSection", () => {
     renderSection();
 
     await screen.findByText("Reviewer Voice");
-    expect(screen.getByRole("button", { name: "Build with agent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build with Agent" })).toBeInTheDocument();
+  });
+
+  it("defaults builder scope to Global and gates project starts until a project is chosen", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    useProjectStore.getState().setProjects([ralphxProject, atlasProject]);
+    useProjectStore.getState().selectProject(null);
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Build with Agent" }));
+    expect(screen.getByRole("dialog", { name: "Build persona with agent" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Global/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Start build" })).toBeEnabled();
+
+    await user.click(screen.getByRole("radio", { name: /Project:/ }));
+    expect(screen.getByRole("button", { name: "Start build" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Build persona project"), "project-atlas");
+    expect(screen.getByRole("button", { name: "Start build" })).toBeEnabled();
+  });
+
+  it("hides Global when standalone is off and dispatches the exact locked draft before navigation", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    mockPersonaCommands([activePersona]);
+    useProjectStore.getState().setProjects([ralphxProject, atlasProject]);
+    useProjectStore.getState().selectProject("project-atlas");
+    useUiStore.getState().openModal("settings", { section: "personas" });
+    const sessionState = useAgentSessionStore.getState();
+    const uiState = useUiStore.getState();
+    vi.spyOn(sessionState, "setStartConversationDraft").mockImplementation((draft) => {
+      calls.push("draft");
+      useAgentSessionStore.setState({ startConversationDraft: draft });
+    });
+    vi.spyOn(uiState, "closeModal").mockImplementation(() => {
+      calls.push("close");
+      useUiStore.setState({ modal: null });
+    });
+    vi.spyOn(sessionState, "setFocusedProject").mockImplementation((projectId) => {
+      calls.push("focus");
+      useAgentSessionStore.setState({ focusedProjectId: projectId });
+    });
+    vi.spyOn(sessionState, "clearSelection").mockImplementation(() => {
+      calls.push("clear");
+      useAgentSessionStore.setState({ selectedProjectId: null, selectedConversationId: null });
+    });
+    vi.spyOn(uiState, "setCurrentView").mockImplementation((view) => {
+      calls.push("view");
+      useUiStore.setState({ currentView: view });
+    });
+    renderSection(false);
+
+    await user.click(await screen.findByRole("button", { name: "Build with Agent" }));
+    expect(screen.queryByRole("radio", { name: /Global/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Build persona project")).toHaveValue("project-atlas");
+    await user.click(screen.getByRole("button", { name: "Start build" }));
+
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-atlas",
+      projectLocked: true,
+      mode: "persona_builder",
+    });
+    expect(calls).toEqual(["draft", "close", "focus", "clear", "view"]);
+  });
+
+  it.each([
+    ["global", activePersona, null],
+    ["project", { ...activePersona, id: "project-persona", project_id: "project-ralphx" }, "project-ralphx"],
+  ])("refines a %s persona without opening the chooser", async (_scope, persona, projectId) => {
+    const user = userEvent.setup();
+    mockPersonaCommands([persona]);
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: `Refine ${persona.name} with Agent` }));
+
+    expect(screen.queryByRole("dialog", { name: "Build persona with agent" })).not.toBeInTheDocument();
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId,
+      projectLocked: true,
+      mode: "persona_builder",
+      sourcePersonaId: persona.id,
+      sourcePersonaName: persona.name,
+    });
   });
 
   it("creates a persona from structured fields and auto-fills the slug from its name", async () => {
