@@ -274,6 +274,7 @@ export function AgentsStartComposer({
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
+  const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
   const [personaId, setPersonaId] = useState<string | null>(null);
   const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
@@ -892,18 +893,31 @@ export function AgentsStartComposer({
 
   const handleResetRoleDefault = useCallback(async () => {
     clearStartError();
-    clearLastRuntimeForProject(projectId);
-    setRoleOverrideKey(null);
-    const result = await roleDefaultQuery.refetch();
-    if (!result.data) {
-      const message =
-        result.error instanceof Error
-          ? result.error.message
-          : "Failed to load the current role default";
-      setError(plainStartComposerError(message));
-      return;
+    setIsResettingRoleDefault(true);
+    try {
+      const result = await roleDefaultQuery.refetch();
+      if (result.isError || !result.data) {
+        const message =
+          result.error instanceof Error
+            ? result.error.message
+            : "Failed to load the current role default";
+        setError(plainStartComposerError(message));
+        return;
+      }
+      clearLastRuntimeForProject(projectId);
+      setRoleOverrideKey(null);
+      applyRoleDefault(result.data);
+    } catch (error) {
+      setError(
+        plainStartComposerError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load the current role default",
+        ),
+      );
+    } finally {
+      setIsResettingRoleDefault(false);
     }
-    applyRoleDefault(result.data);
   }, [
     applyRoleDefault,
     clearLastRuntimeForProject,
@@ -1590,11 +1604,15 @@ export function AgentsStartComposer({
             }}
             runtimeDefault={{
               source: roleDefaultQuery.data?.source ?? null,
-              isResetting: roleDefaultQuery.isFetching,
+              isResetting: roleDefaultQuery.isFetching || isResettingRoleDefault,
               disabled: !projectId,
               onReset: handleResetRoleDefault,
             }}
-            sendDisabledReason={providerStatusMessage}
+            sendDisabledReason={
+              isResettingRoleDefault
+                ? "Resetting the current role default"
+                : providerStatusMessage
+            }
           />
 
           {providerStatusMessage && (

@@ -641,7 +641,7 @@ describe("AgentsView start conversation", () => {
     });
   });
 
-  it("cannot submit the pre-reset runtime while the role default is refetching", async () => {
+  it("cannot submit while the role default reset is refetching", async () => {
     mockAgentViewData();
     resetAgentSessionState({
       lastRuntimeByProjectId: {
@@ -693,18 +693,92 @@ describe("AgentsView start conversation", () => {
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
-    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
-    expect(startInput).not.toHaveProperty("providerHarness");
-    expect(startInput).not.toHaveProperty("modelId");
-    expect(startInput).not.toHaveProperty("logicalEffort");
-    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).not.toEqual({
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
       provider: "claude",
       modelId: "opus",
       effort: "high",
     });
 
     resolveRefetch?.(roleDefault);
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toBeUndefined(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("providerHarness");
+    expect(startInput).not.toHaveProperty("modelId");
+    expect(startInput).not.toHaveProperty("logicalEffort");
+  });
+
+  it("keeps the visible runtime override when reset role default refetch fails", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "claude",
+          modelId: "opus",
+          effort: "high",
+        },
+      },
+    });
+    const roleDefault = {
+      role: "workspace_edit",
+      source: "project_ui",
+      value: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "xhigh",
+        service_tier: "standard",
+        coordination_mode: "solo",
+        persona_id: null,
+        approval_policy: "never",
+        sandbox_mode: "danger-full-access",
+      },
+    };
+    let roleDefaultCalls = 0;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_start_composer_role_default") {
+        roleDefaultCalls += 1;
+        return roleDefaultCalls === 1
+          ? Promise.resolve(roleDefault)
+          : Promise.reject(new Error("role default unavailable"));
+      }
+      return Promise.resolve(undefined);
+    });
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const reset = await screen.findByRole("button", {
+      name: "Reset runtime to current role default",
+    });
+    await waitFor(() => expect(reset).toBeEnabled());
+    await userEvent.click(reset);
+
+    await waitFor(() =>
+      expect(screen.getByText("role default unavailable")).toBeInTheDocument(),
+    );
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "high",
+    });
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "send after failed reset" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerHarness: "claude",
+        modelId: "opus",
+        logicalEffort: "high",
+      }),
+    );
   });
 
   it("starts a new conversation with Team enabled", async () => {

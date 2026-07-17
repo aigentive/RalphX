@@ -1202,6 +1202,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         supportedEffortsForProvider(providerOptions, nextProvider),
         supportedModelAliasesForProvider(providerOptions, nextProvider),
       );
+      const refreshedRoleDefault = roleDefaultQuery.refetch().then((result) => {
+        if (result.isError || !result.data) {
+          throw result.error instanceof Error
+            ? result.error
+            : new Error("Failed to load the current role default");
+        }
+        return result.data;
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: agentConversationKeys.project(activeProjectId),
+        }),
+        invalidateConversationDataQueries(queryClient, selectedConversationId),
+        refreshedRoleDefault,
+      ]);
       useAgentSessionStore
         .getState()
         .setRoleDefaultRuntimeForConversation(
@@ -1219,13 +1234,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         }
         return next;
       });
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: agentConversationKeys.project(activeProjectId),
-        }),
-        invalidateConversationDataQueries(queryClient, selectedConversationId),
-        roleDefaultQuery.refetch(),
-      ]);
     } catch (error) {
       toast.error(
         error instanceof Error
