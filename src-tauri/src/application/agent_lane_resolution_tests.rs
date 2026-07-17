@@ -680,6 +680,7 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
         lane_repo,
         provider_repo,
         Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
         true,
         config_root.path().join("router.yaml"),
     );

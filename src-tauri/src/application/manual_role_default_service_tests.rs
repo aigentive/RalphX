@@ -5,6 +5,7 @@ use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, ManualRoleDefault, ManualServiceTier,
     RoutingRole,
 };
+use crate::domain::entities::CoordinationMode;
 use crate::domain::entities::PersonaId;
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, ManualRoleDefaultRepository,
@@ -47,6 +48,7 @@ fn service(
         lane_repo_trait,
         provider_repo,
         Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
         true,
         global_router_path,
     );
@@ -144,6 +146,7 @@ async fn persona_feature_off_suppresses_validation_without_discarding_the_defaul
         lane_repo,
         provider_repo,
         Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
         false,
         global_root.path().join("router.yaml"),
     );
@@ -160,4 +163,41 @@ async fn persona_feature_off_suppresses_validation_without_discarding_the_defaul
         .unwrap();
 
     assert_eq!(resolved.value.persona_id, value.persona_id);
+}
+
+#[tokio::test]
+async fn resolution_fails_closed_when_a_stored_team_default_is_disabled() {
+    let global_root = tempfile::tempdir().unwrap();
+    let (service, repo, _lane_repo) = service(global_root.path().join("router.yaml"));
+    let mut value = exact("team-default");
+    value.coordination_mode = Some(CoordinationMode::RxNativeTeam);
+    repo.upsert_global(RoutingRole::WorkspaceEdit, &value)
+        .await
+        .unwrap();
+
+    let error = service
+        .resolve(None, None, RoutingRole::WorkspaceEdit)
+        .await
+        .expect_err("disabled stored Team default must fail closed");
+
+    assert!(error.to_string().contains("Team is disabled"));
+}
+
+#[tokio::test]
+async fn resolution_fails_closed_when_stored_fast_mode_is_unsupported() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let global_root = tempfile::tempdir().unwrap();
+    let (service, repo, _lane_repo) = service(global_root.path().join("router.yaml"));
+    let mut value = exact("gpt-5.5");
+    value.service_tier = ManualServiceTier::Fast;
+    repo.upsert_global(RoutingRole::WorkspaceEdit, &value)
+        .await
+        .unwrap();
+
+    let error = service
+        .resolve(None, None, RoutingRole::WorkspaceEdit)
+        .await
+        .expect_err("unsupported stored Fast default must fail closed");
+
+    assert!(error.to_string().contains("Fast mode is not supported"));
 }

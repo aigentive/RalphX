@@ -609,6 +609,104 @@ describe("AgentsView start conversation", () => {
     expect(startInput).not.toHaveProperty("personaId");
   });
 
+  it("does not reuse a remembered runtime after the workspace mode changes", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "claude",
+          modelId: "opus",
+          effort: "high",
+        },
+      },
+    });
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "plan with the plan role default" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("providerHarness");
+    expect(startInput).not.toHaveProperty("modelId");
+    expect(startInput).not.toHaveProperty("logicalEffort");
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).not.toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "high",
+    });
+  });
+
+  it("cannot submit the pre-reset runtime while the role default is refetching", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "claude",
+          modelId: "opus",
+          effort: "high",
+        },
+      },
+    });
+    const roleDefault = {
+      role: "workspace_edit",
+      source: "project_ui",
+      value: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "xhigh",
+        service_tier: "standard",
+        coordination_mode: "solo",
+        persona_id: null,
+        approval_policy: "never",
+        sandbox_mode: "danger-full-access",
+      },
+    };
+    let resolveRefetch: ((value: typeof roleDefault) => void) | null = null;
+    const pendingRefetch = new Promise<typeof roleDefault>((resolve) => {
+      resolveRefetch = resolve;
+    });
+    let roleDefaultCalls = 0;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_start_composer_role_default") {
+        roleDefaultCalls += 1;
+        return roleDefaultCalls === 1
+          ? Promise.resolve(roleDefault)
+          : pendingRefetch;
+      }
+      return Promise.resolve(undefined);
+    });
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const reset = await screen.findByRole("button", {
+      name: "Reset runtime to current role default",
+    });
+    await waitFor(() => expect(reset).toBeEnabled());
+    await userEvent.click(reset);
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "start while the reset is loading" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("providerHarness");
+    expect(startInput).not.toHaveProperty("modelId");
+    expect(startInput).not.toHaveProperty("logicalEffort");
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).not.toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "high",
+    });
+
+    resolveRefetch?.(roleDefault);
+  });
+
   it("starts a new conversation with Team enabled", async () => {
     mockAgentViewData();
 
@@ -2661,13 +2759,14 @@ describe("AgentsView start conversation", () => {
           projectId: "project-1",
           content: "set up a weekly dependency cleanup automation",
           conversationId: "automation-setup-conversation",
-          providerHarness: "codex",
-          modelId: "gpt-5.5",
-          logicalEffort: "xhigh",
           mode: "automation",
         })
       )
     );
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("providerHarness");
+    expect(startInput).not.toHaveProperty("modelId");
+    expect(startInput).not.toHaveProperty("logicalEffort");
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );

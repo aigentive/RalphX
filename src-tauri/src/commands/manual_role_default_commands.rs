@@ -159,6 +159,7 @@ pub async fn get_manual_role_defaults(
             configured_value,
             resolution,
             agent_personas_enabled(),
+            &state.agent_capability_gate,
         ));
     }
 
@@ -181,6 +182,7 @@ pub async fn get_effective_manual_role_default(
         configured.get(&role).map(|row| response(&row.value)),
         resolution,
         agent_personas_enabled(),
+        &state.agent_capability_gate,
     ))
 }
 
@@ -463,6 +465,7 @@ fn catalog_entry(
     configured: Option<ManualRoleDefaultResponse>,
     resolution: crate::error::AppResult<ResolvedManualRoleDefault>,
     personas_enabled: bool,
+    capability_gate: &crate::application::agent_capability_gate::AgentCapabilityGate,
 ) -> ManualRoleCatalogEntryResponse {
     let metadata = role.metadata();
     let (effective, source, diagnostics, provider, model) = match resolution {
@@ -490,7 +493,13 @@ fn catalog_entry(
         effective,
         source,
         diagnostics,
-        controls: control_options(role, provider, model.as_deref(), personas_enabled),
+        controls: control_options(
+            role,
+            provider,
+            model.as_deref(),
+            personas_enabled,
+            capability_gate,
+        ),
     }
 }
 
@@ -499,6 +508,7 @@ pub(super) fn control_options(
     provider: AgentHarnessKind,
     model: Option<&str>,
     personas_enabled: bool,
+    capability_gate: &crate::application::agent_capability_gate::AgentCapabilityGate,
 ) -> RoleControlOptionsResponse {
     let workspace_root = role.metadata().family == RoutingRoleFamily::Workspace;
     let ultra_supported =
@@ -523,13 +533,21 @@ pub(super) fn control_options(
             capability("solo", true, ""),
             capability(
                 "rx_native_team",
-                workspace_root,
-                "Team is available only for Workspace root roles",
+                workspace_root && capability_gate.team_enabled(),
+                if workspace_root {
+                    "Team is disabled. Enable it in Settings > Capabilities."
+                } else {
+                    "Team is available only for Workspace root roles"
+                },
             ),
             capability(
                 "rx_native_workflow",
-                workspace_root,
-                "Workflow is available only for Workspace root roles",
+                workspace_root && capability_gate.workflows_enabled(),
+                if workspace_root {
+                    "Workflows are disabled. Enable them in Settings > Capabilities."
+                } else {
+                    "Workflow is available only for Workspace root roles"
+                },
             ),
             capability(
                 "codex_native_ultra",
@@ -542,7 +560,9 @@ pub(super) fn control_options(
             capability("standard", true, ""),
             capability(
                 "fast",
-                provider == AgentHarnessKind::Codex,
+                crate::application::agent_capability_validation::codex_fast_support_for_model(
+                    provider, model,
+                ) == Some(true),
                 "Fast requires a supported Codex provider and model",
             ),
         ],
@@ -565,21 +585,10 @@ fn validate_manual_role_default_update(
     capability_gate: &crate::application::agent_capability_gate::AgentCapabilityGate,
 ) -> Result<(), String> {
     validate_role_value(role, value).map_err(|error| error.to_string())?;
-    if value.coordination_mode == Some(CoordinationMode::CodexNativeUltra) {
-        let ultra_supported =
-            crate::application::agent_capability_validation::codex_ultra_support_for_model(
-                value.harness,
-                value.model.as_deref(),
-            );
-        crate::application::agent_capability_validation::validate_agent_capability(
-            CoordinationMode::CodexNativeUltra,
-            value.harness,
-            capability_gate,
-            ultra_supported,
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    crate::application::agent_capability_validation::validate_manual_role_runtime_capabilities(
+        value,
+        capability_gate,
+    )
 }
 
 pub(super) fn parse_input(input: ManualRoleDefaultInput) -> Result<ManualRoleDefault, String> {

@@ -44,6 +44,8 @@ describe("agentStartErrors", () => {
           branchMode: "linked",
         },
         codexFastMode: true,
+        personaId: null,
+        capabilityIntent: { coordinationMode: "rx_native_workflow" },
         teamIntent: { coordinationMode: "rx_native_team" },
         composerArtifactReferences: [
           {
@@ -82,6 +84,8 @@ describe("agentStartErrors", () => {
         branchMode: "linked",
       },
       codexFastMode: true,
+      personaId: null,
+      capabilityIntent: { coordinationMode: "rx_native_workflow" },
       teamIntent: { coordinationMode: "rx_native_team" },
       composerArtifactReferences: [
         {

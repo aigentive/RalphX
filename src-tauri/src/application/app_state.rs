@@ -48,7 +48,7 @@ use crate::domain::agents::{
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{AgentRun, ChatConversation};
+use crate::domain::entities::{AgentRun, ChatConversation, ProjectId};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -404,6 +404,7 @@ impl AppState {
             Arc::clone(&self.agent_lane_settings_repo),
             Arc::clone(&self.agent_provider_settings_repo),
             Arc::clone(&self.persona_repo),
+            Arc::clone(&self.agent_capability_gate),
             crate::infrastructure::agents::claude::agent_personas_enabled(),
             self.app_paths.global_router_path(),
         )
@@ -970,12 +971,62 @@ impl AppState {
         build_task_scheduler_from_deps(app_handle, execution_state, &deps)
     }
 
+    pub(crate) async fn resolve_workspace_role_runtime_for_project(
+        &self,
+        project_id: &str,
+        role: RoutingRole,
+        agent_name: &str,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let project = self
+            .project_repo
+            .get_by_id(&ProjectId::from_string(project_id.to_string()))
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Project not found: {project_id}")))?;
+        self.resolve_manual_role_background_agent_runtime(
+            Some(project_id),
+            Some(std::path::Path::new(&project.working_directory)),
+            role,
+            agent_name,
+            purpose,
+            None,
+        )
+        .await
+    }
+
     pub(crate) async fn resolve_workspace_reviewer_runtime_for_project(
         &self,
         conversation: &ChatConversation,
         latest_run: Option<&AgentRun>,
         project_id: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let project = self
+            .project_repo
+            .get_by_id(&ProjectId::from_string(project_id.to_string()))
+            .await?;
+        let project_root = project
+            .as_ref()
+            .map(|project| std::path::Path::new(&project.working_directory));
+        let role_default = self
+            .manual_role_default_service()
+            .resolve(
+                Some(project_id),
+                project_root,
+                RoutingRole::WorkspaceReviewer,
+            )
+            .await?;
+        if role_default.source
+            != crate::application::manual_role_default_service::ManualDefaultSource::ProviderDefault
+        {
+            return self
+                .resolve_workspace_role_runtime_for_project(
+                    project_id,
+                    RoutingRole::WorkspaceReviewer,
+                    crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER,
+                    "workspace reviewer provider",
+                )
+                .await;
+        }
         self.resolve_workspace_reviewer_runtime_with_project_scope(
             conversation,
             latest_run,
