@@ -5,8 +5,9 @@ use chrono::Utc;
 
 use super::publish_resilience::PublishFailureClass;
 use super::ticket_git_publish_policy::{
-    install_ticket_git_commit_hook, load_ticket_git_publish_policy,
-    refresh_ticket_git_publish_cycle_base, TicketGitPublishFailureKind,
+    frozen_commit_subject_matches, install_ticket_git_commit_hook, load_ticket_git_publish_policy,
+    refresh_ticket_git_publish_cycle_base, render_frozen_commit_subject,
+    TicketGitPublishFailureKind,
 };
 use super::AppState;
 use crate::domain::entities::{
@@ -171,6 +172,52 @@ async fn strict_publish_policy_rejects_bad_commit_with_typed_agent_fixable_failu
         "feat: bypass convention"
     );
     assert!(!failure.offending_commits[0].short_sha.is_empty());
+}
+
+#[test]
+fn frozen_commit_subject_matching_handles_exact_dynamic_and_invalid_subjects() {
+    assert!(frozen_commit_subject_matches("ENG-42 - frozen", "ENG-42 - frozen").unwrap());
+    assert!(!frozen_commit_subject_matches("ENG-42 - frozen", "ENG-42 - other").unwrap());
+    assert!(frozen_commit_subject_matches(
+        "ENG-42 - :summary:",
+        "ENG-42 - implement strict naming",
+    )
+    .unwrap());
+    assert!(!frozen_commit_subject_matches("ENG-42 - :summary:", "ENG-42 -   ").unwrap());
+    assert!(!frozen_commit_subject_matches("ENG-42 - :summary:", "wrong prefix").unwrap());
+    assert!(!frozen_commit_subject_matches("ENG-42 - :summary:", "ENG-42 - bad\nsubject").unwrap());
+}
+
+#[test]
+fn frozen_commit_subject_rendering_normalizes_summary_and_rejects_invalid_rules() {
+    assert_eq!(
+        render_frozen_commit_subject("ENG-42 - :summary:", "  implement   strict naming  ")
+            .unwrap(),
+        "ENG-42 - implement strict naming"
+    );
+    assert_eq!(
+        render_frozen_commit_subject("ENG-42 - frozen", "ignored summary").unwrap(),
+        "ENG-42 - frozen"
+    );
+
+    let empty_summary =
+        render_frozen_commit_subject("ENG-42 - :summary:", " \n ").expect_err("summary required");
+    assert_eq!(
+        empty_summary.kind,
+        TicketGitPublishFailureKind::InvalidFrozenPolicy
+    );
+    assert_eq!(
+        empty_summary.expected_commit_subject.as_deref(),
+        Some("ENG-42 - :summary:")
+    );
+
+    let duplicate_marker =
+        frozen_commit_subject_matches("ENG-42 - :summary: - :summary:", "ENG-42 - one - two")
+            .expect_err("duplicate marker must be invalid");
+    assert_eq!(
+        duplicate_marker.kind,
+        TicketGitPublishFailureKind::InvalidFrozenPolicy
+    );
 }
 
 #[tokio::test]

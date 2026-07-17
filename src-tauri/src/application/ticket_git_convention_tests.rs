@@ -83,6 +83,58 @@ fn every_template_requires_task_id_and_rejects_unknown_placeholders() {
 }
 
 #[test]
+fn templates_reject_empty_and_duplicate_dynamic_summary_rules() {
+    let empty =
+        TicketGitConventionTemplates::new("  ", ":taskId: - :taskName:", ":taskId: - :taskName:")
+            .expect_err("empty branch template must fail");
+    assert!(matches!(
+        empty,
+        TicketGitConventionError::InvalidTemplate {
+            kind: TicketGitConventionTemplateKind::Branch,
+            ..
+        }
+    ));
+
+    let duplicate_summary = TicketGitConventionTemplates::new(
+        ":taskId:",
+        ":taskId: - :summary: - :summary:",
+        ":taskId: - :taskName:",
+    )
+    .expect_err("summary can appear at most once");
+    assert!(matches!(
+        duplicate_summary,
+        TicketGitConventionError::InvalidTemplate {
+            kind: TicketGitConventionTemplateKind::CommitSubject,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn malformed_colon_literals_are_preserved_and_empty_branch_parts_fail() {
+    let templates = TicketGitConventionTemplates::new(
+        ":taskId:_:taskName:",
+        ":taskId: - literal: text",
+        ":taskId: - :taskName:",
+    )
+    .unwrap();
+
+    let rendered = templates
+        .render(&context("CU-123", "Fix login", None, None))
+        .unwrap();
+
+    assert_eq!(rendered.commit_subject, "CU-123 - literal: text");
+
+    let empty_branch_part = templates
+        .render(&context("!!!", "???", None, None))
+        .expect_err("branch placeholders must normalize to non-empty values");
+    assert!(matches!(
+        empty_branch_part,
+        TicketGitConventionError::MissingPlaceholderValue { placeholder } if placeholder == "taskId"
+    ));
+}
+
+#[test]
 fn summary_is_dynamic_for_commit_subjects_but_forbidden_in_branches() {
     let branch_error = TicketGitConventionTemplates::new(
         ":taskId:_:summary:",
@@ -197,6 +249,17 @@ fn collision_disambiguation_is_explicit_and_stable() {
     assert_ne!(first, other);
     assert!(first.starts_with(original));
     assert!(first.len() <= MAX_TICKET_BRANCH_BYTES);
+}
+
+#[test]
+fn collision_disambiguation_rejects_empty_identity() {
+    let error = disambiguate_branch_name("cu-123_fix-login_ada", " \n ")
+        .expect_err("collision identity must be stable and non-empty");
+
+    assert!(matches!(
+        error,
+        TicketGitConventionError::InvalidBranch { .. }
+    ));
 }
 
 #[test]
