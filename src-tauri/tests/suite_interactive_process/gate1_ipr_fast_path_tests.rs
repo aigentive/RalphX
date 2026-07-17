@@ -29,8 +29,8 @@ use ralphx_lib::application::interactive_process_registry::{
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, ProjectId,
-    TaskId,
+    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, TaskId,
 };
 use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
@@ -57,6 +57,21 @@ fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
+}
+
+async fn seed_project_context(state: &AppState, context_id: &str) -> tempfile::TempDir {
+    let project_dir = tempfile::tempdir().expect("temp project dir");
+    let mut project = Project::new(
+        format!("Gate-1 test project {context_id}"),
+        project_dir.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string(context_id.to_string());
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project context");
+    project_dir
 }
 
 fn write_capturing_claude_cli(temp: &Path, capture: &Path) -> PathBuf {
@@ -185,6 +200,7 @@ async fn gate1_persona_resolution_failure_blocks_before_stdin_write() {
 async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-compare";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-gate1-compare", "persona body", "new-hash");
     state.persona_repo.create(persona.clone()).await.unwrap();
     let mut conversation =
@@ -277,6 +293,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         configure_runtime_plugin_dirs_for_gate1_persona_test();
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-edit";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-gate1-edit", "old persona body", "old-hash");
     state
         .persona_repo
@@ -824,6 +841,7 @@ async fn gate1_without_active_conversation_bypasses_fast_path() {
         configure_runtime_plugin_dirs_for_gate1_persona_test();
     let state = AppState::new_test();
     let context_id = "project-gate1-no-active-conversation";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -877,6 +895,7 @@ async fn gate1_without_active_conversation_bypasses_fast_path() {
 async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-override-order";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-override-order", "persona body", "new-hash");
     state.persona_repo.create(persona.clone()).await.unwrap();
     let mut conversation =
