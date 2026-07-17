@@ -233,6 +233,9 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Canonical specialist agent retained by a parented child conversation.
+    #[serde(default)]
+    pub bound_agent_name: Option<String>,
     /// Optional active persona bound to this conversation.
     pub persona_id: Option<String>,
     /// Optional persona draft owned by this builder conversation.
@@ -281,6 +284,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -315,6 +319,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -349,6 +354,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -383,6 +389,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -418,6 +425,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -452,6 +460,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
@@ -486,6 +495,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,
