@@ -284,7 +284,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
                 super::persona_resolve_flags_for_conversation(
                     persona_feature_enabled,
                     false,
-                    agent_name_override_set,
+                    agent_name_override_set || conversation.bound_agent_name.is_some(),
                     context_type,
                     conversation,
                     workspace_mode,

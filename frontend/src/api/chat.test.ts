@@ -19,6 +19,7 @@ import {
   getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
+  approveAgentWorkspaceReviewAnyway,
   listAgentConversationIssues,
   updateAgentConversationIssueStatus,
   convertAgentConversationIssueFollowup,
@@ -3625,6 +3626,51 @@ describe("getConversationActiveState", () => {
     expect(result.isCurrent).toBe(true);
     expect(result.monitor.reviewFixerStatus).toBe("running");
     expect(result.monitor.reviewFixerRunId).toBe("fixer-run-1");
+  });
+
+  it("approves an exact blocking workspace Review through the encoded REST endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          monitor: rawWorkspaceReviewMonitor({
+            review_outcome: "blocking",
+            review_gate_status: "passed",
+            review_gate_bypassed_at: "2026-06-18T12:06:00Z",
+            review_gate_bypassed_target_scope: "workspace_delta",
+            review_gate_bypassed_diff_fingerprint: "fingerprint-1",
+            review_gate_bypassed_artifact_id: "review-artifact-1",
+            review_gate_bypassed_artifact_version: 2,
+          }),
+        }),
+    });
+
+    const result = await approveAgentWorkspaceReviewAnyway("conversation/1", {
+      targetScope: "workspace_delta",
+      diffFingerprint: "fingerprint-1",
+      artifactId: "review-artifact-1",
+      artifactVersion: 2,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-approve-anyway",
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_scope: "workspace_delta",
+          diff_fingerprint: "fingerprint-1",
+          artifact_id: "review-artifact-1",
+          artifact_version: 2,
+        }),
+      },
+    );
+    expect(result.monitor.reviewOutcome).toBe("blocking");
+    expect(result.monitor.reviewGateStatus).toBe("passed");
+    expect(result.monitor.reviewGateBypassedArtifactVersion).toBe(2);
   });
 
   it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {
