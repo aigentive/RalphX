@@ -433,6 +433,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            bound_agent_name: None,
             persona_id: None,
             builder_draft_id: None,
             coordination_mode: CoordinationMode::Solo,

@@ -75,6 +75,9 @@ pub struct StartAgentConversationInput {
     pub content: String,
     /// Optional active persona to bind before the first project-conversation send.
     pub persona_id: Option<String>,
+    /// Optional active persona whose content seeds a scope-locked builder draft.
+    #[serde(default)]
+    pub source_persona_id: Option<String>,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
     /// Optional visible parent conversation for follow-up/branch conversations.
@@ -139,12 +142,17 @@ const PERSONA_BINDING_PROJECT_CONTEXT_ERROR: &str =
 const STANDALONE_CONVERSATIONS_DISABLED_ERROR: &str =
     "Standalone conversations are disabled (flag: standalone_conversations)";
 const STANDALONE_MODE_NOT_ALLOWED_ERROR: &str =
-    "Standalone conversations only support mode=\"chat\" in this phase";
+    "Standalone conversations only support mode=\"chat\" or mode=\"persona_builder\"";
 const STANDALONE_TEAM_INTENT_REJECTED_ERROR: &str =
     "Team mode is not supported for standalone conversations";
 const STANDALONE_PARENT_CONVERSATION_REJECTED_ERROR: &str =
     "Standalone conversations do not support parent_conversation_id";
 const STANDALONE_CONTEXT_LOG_LABEL: &str = "standalone";
+const PERSONA_BUILDER_TEAM_INTENT_REJECTED_ERROR: &str =
+    "Team mode is not supported for persona builder conversations";
+const PERSONA_BUILDER_SOURCE_MODE_ERROR: &str =
+    "source_persona_id is valid only with mode=\"persona_builder\"";
+const SEEDED_CONVERSATION_MODE_LOCKED_ERROR_CODE: &str = "[ralphx:conversation_mode_locked]";
 
 fn ensure_persona_binding_project_context(context_type: ChatContextType) -> Result<(), AppError> {
     if context_type == ChatContextType::Project {
@@ -196,7 +204,12 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             if !standalone_conversations_enabled() {
                 return Err(STANDALONE_CONVERSATIONS_DISABLED_ERROR.to_string());
             }
-            if !matches!(input.mode.as_deref().map(str::trim), Some("chat")) {
+            if input.conversation_id.is_none()
+                && !matches!(
+                    input.mode.as_deref().map(str::trim),
+                    Some("chat" | "persona_builder")
+                )
+            {
                 return Err(STANDALONE_MODE_NOT_ALLOWED_ERROR.to_string());
             }
             if let Some(team_intent) = input.team_intent.as_ref() {
@@ -215,6 +228,68 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .as_deref()
             .map(str::parse::<AgentHarnessKind>)
             .transpose()?;
+        let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
+        let draft_conversation_id = input
+            .conversation_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|conversation_id| !conversation_id.is_empty())
+            .map(ChatConversationId::from_string);
+        let seeded_conversation = if let Some(conversation_id) = draft_conversation_id.as_ref() {
+            Some(
+                self.deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?,
+            )
+        } else {
+            None
+        };
+        if seeded_conversation.as_ref().is_some_and(|conversation| {
+            matches!(
+                conversation.agent_mode,
+                Some(
+                    AgentConversationWorkspaceMode::PersonaBuilder
+                        | AgentConversationWorkspaceMode::Automation
+                )
+            ) && conversation.agent_mode != Some(mode)
+        }) {
+            return Err(format!(
+                "{SEEDED_CONVERSATION_MODE_LOCKED_ERROR_CODE} conversation mode is locked"
+            ));
+        }
+        if context_type == ChatContextType::Standalone
+            && !matches!(
+                input.mode.as_deref().map(str::trim),
+                Some("chat" | "persona_builder")
+            )
+        {
+            return Err(STANDALONE_MODE_NOT_ALLOWED_ERROR.to_string());
+        }
+        let requested_coordination_mode = input
+            .team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode);
+        if mode == AgentConversationWorkspaceMode::PersonaBuilder
+            && requested_coordination_mode.is_some_and(|mode| mode != CoordinationMode::Solo)
+        {
+            return Err(PERSONA_BUILDER_TEAM_INTENT_REJECTED_ERROR.to_string());
+        }
+        if input.source_persona_id.is_some()
+            && mode != AgentConversationWorkspaceMode::PersonaBuilder
+        {
+            return Err(PERSONA_BUILDER_SOURCE_MODE_ERROR.to_string());
+        }
+        let source_persona_id = match input.source_persona_id.as_deref() {
+            Some(source_id) if source_id.trim().is_empty() => {
+                return Err("source_persona_id cannot be empty".to_string())
+            }
+            Some(source_id) => Some(PersonaId::from_string(source_id.trim().to_string())),
+            None => None,
+        };
         log_start_agent_conversation_phase(
             &context_log_id,
             None,
@@ -223,14 +298,24 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let validate_runtime_started = Instant::now();
-        crate::application::validate_chat_runtime_for_context_with_override(
-            self.deps.state,
-            context_type,
-            &context_log_id,
-            "start_agent_conversation",
-            harness_override,
-        )
-        .await?;
+        let effective_harness =
+            crate::application::validate_chat_runtime_for_context_with_override(
+                self.deps.state,
+                context_type,
+                &context_log_id,
+                "start_agent_conversation",
+                harness_override,
+            )
+            .await?;
+        if context_type == ChatContextType::Standalone
+            && mode == AgentConversationWorkspaceMode::PersonaBuilder
+            && effective_harness == AgentHarnessKind::Codex
+        {
+            return Err(
+                crate::application::chat_service::STANDALONE_PERSONA_BUILDER_CODEX_ERROR
+                    .to_string(),
+            );
+        }
         let requested_capability = input
             .team_intent
             .as_ref()
@@ -265,7 +350,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let parse_input_started = Instant::now();
-        let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
         let mut base_branch_mode =
             parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
@@ -274,12 +358,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
         let persona_id = trim_optional_input(input.persona_id).map(PersonaId::from_string);
-        let draft_conversation_id = input
-            .conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|conversation_id| !conversation_id.is_empty())
-            .map(ChatConversationId::from_string);
         let mut ticket_branch_name_hint =
             first_ticket_branch_name_hint(&input.composer_integration_references);
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
@@ -290,13 +368,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())
             .map_err(|error| error.to_string())?;
         let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
-        let requested_coordination_mode = input
-            .team_intent
-            .as_ref()
-            .map(|intent| intent.coordination_mode);
-        // Standalone never creates a project-rooted workspace: only `chat` mode is
-        // reachable here (gated above) and CWD instead resolves to the private
-        // standalone workspace via `send_message`'s existing Standalone arm.
+        // Standalone never creates a project-rooted workspace. Its CWD resolves to
+        // the private standalone workspace via `send_message`'s Standalone arm.
         let should_create_workspace = context_type == ChatContextType::Project
             && agent_mode_should_create_workspace(
                 mode,
@@ -327,6 +400,20 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             ),
             None => None,
         };
+        if let Some(source_persona_id) = source_persona_id.as_ref() {
+            PersonaService::new(
+                self.deps.state.db.clone(),
+                Arc::clone(&self.deps.state.persona_repo),
+                Arc::clone(&self.deps.state.chat_conversation_repo),
+            )
+            .validate_refine_source(
+                agent_personas_enabled(),
+                source_persona_id,
+                project_id_opt.as_ref(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
         log_start_agent_conversation_phase(
             &context_log_id,
             None,
@@ -493,15 +580,12 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         };
 
         let conversation_resolve_started = Instant::now();
-        let mut conversation = if let Some(conversation_id) = draft_conversation_id {
-            let conversation = self
-                .deps
-                .state
-                .chat_conversation_repo
-                .get_by_id(&conversation_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
+        let mut conversation = if let Some(conversation) = seeded_conversation {
+            if mode == AgentConversationWorkspaceMode::PersonaBuilder
+                && conversation.coordination_mode != CoordinationMode::Solo
+            {
+                return Err(PERSONA_BUILDER_TEAM_INTENT_REJECTED_ERROR.to_string());
+            }
             match context_type {
                 ChatContextType::Project => {
                     if conversation.context_type != ChatContextType::Project
@@ -725,6 +809,46 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             }
             conversation
         };
+        if let Some(source_persona_id) = source_persona_id.as_ref() {
+            if conversation.builder_draft_id.is_some() {
+                return Err(
+                    "source_persona_id cannot replace an existing bound persona draft".to_string(),
+                );
+            }
+            let persona_service = PersonaService::new(
+                self.deps.state.db.clone(),
+                Arc::clone(&self.deps.state.persona_repo),
+                Arc::clone(&self.deps.state.chat_conversation_repo),
+            );
+            if let Err(error) = persona_service
+                .create_seeded_bound_draft(
+                    agent_personas_enabled(),
+                    &conversation,
+                    source_persona_id,
+                )
+                .await
+            {
+                if should_create_conversation {
+                    let _ = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await;
+                }
+                return Err(error.to_string());
+            }
+            conversation = self
+                .deps
+                .state
+                .chat_conversation_repo
+                .get_by_id(&conversation.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "PersonaBuilder conversation disappeared after draft seeding".to_string()
+                })?;
+        }
         if let Some(persona_id) = persona_id.as_ref() {
             self.deps
                 .state

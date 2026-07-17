@@ -100,7 +100,7 @@ fn source_persona(id: &str, status: PersonaStatus) -> Persona {
     let now = Utc::now();
     Persona {
         id: PersonaId::from(id),
-        project_id: None,
+        project_id: Some(ProjectId::from_string("project-persona-update".to_string())),
         slug: "existing-reviewer".to_string(),
         name: "Existing Reviewer".to_string(),
         description: "Existing persona to update".to_string(),

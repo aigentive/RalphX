@@ -18,16 +18,18 @@ use ralphx_lib::application::{
     AppState, InteractiveProcessKey, MockChatService, PrPollerRegistry, SendResult,
 };
 use ralphx_lib::commands::unified_chat_commands::{
-    agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
-    mark_agent_workspace_publish_failure, parse_context_type,
+    agent_workspace_post_repair_action_from_events, create_agent_conversation,
+    get_agent_running_states_for_service, mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_with_provider_session_reset,
+    update_agent_conversation_coordination_mode, validate_persona_builder_team_intent_for_send,
     AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
-    ModeSwitchInitiator, QueuedMessageResponse, SendAgentMessageResponse,
-    SwitchAgentConversationModeInput, SwitchAgentConversationPersonaInput,
+    CreateAgentConversationInput, ModeSwitchInitiator, QueuedMessageResponse,
+    SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    SwitchAgentConversationPersonaInput, UpdateAgentConversationCoordinationModeInput,
     AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -36,9 +38,10 @@ use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, AutomationId,
-    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, Persona,
-    PersonaId, PersonaStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
+    ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionId, Persona, PersonaId, PersonaStatus, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -972,6 +975,140 @@ async fn switch_mode_rejects_persona_builder_target() {
         error.contains("PersonaBuilder"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn create_agent_conversation_persona_builder_is_flag_gated_and_persists_mode() {
+    use ralphx_lib::infrastructure::agents::claude::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    let input = || CreateAgentConversationInput {
+        context_type: ChatContextType::Project.to_string(),
+        context_id: Some("project-builder-create".to_string()),
+        title: Some("Builder seed".to_string()),
+        mode: Some("persona_builder".to_string()),
+        team_intent: None,
+    };
+
+    set_agent_personas_override(Some(false));
+    let disabled = create_agent_conversation(input(), app.state())
+        .await
+        .expect_err("builder create must reject while agent_personas is disabled");
+    assert!(disabled.contains("agent_personas"));
+
+    set_agent_personas_override(Some(true));
+    let created = create_agent_conversation(input(), app.state())
+        .await
+        .expect("builder create should use the standard pipeline when enabled");
+    assert_eq!(created.agent_mode.as_deref(), Some("persona_builder"));
+    reset_agent_personas_override_for_test();
+}
+
+#[tokio::test]
+async fn create_agent_conversation_project_persona_builder_rejects_team_intent() {
+    use ralphx_lib::infrastructure::agents::claude::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    set_agent_personas_override(Some(true));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Project.to_string(),
+            context_id: Some("project-builder-team-create".to_string()),
+            title: None,
+            mode: Some("persona_builder".to_string()),
+            team_intent: Some(ralphx_lib::domain::entities::TeamIntent::rx_native(None)),
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("Project builder create must reject Team intent");
+    assert!(error.contains("Team mode"));
+    reset_agent_personas_override_for_test();
+}
+
+#[test]
+fn send_agent_message_rejects_team_flip_for_project_persona_builder() {
+    let project_id = ProjectId::from_string("project-builder-send-team".to_string());
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let error = validate_persona_builder_team_intent_for_send(
+        ChatContextType::Project,
+        Some(&conversation),
+        CoordinationMode::RxNativeTeam,
+    )
+    .expect_err("send-time Team flip must reject for Project builder conversations");
+    assert!(
+        error.contains("persona builder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
+    let state = AppState::new_test();
+    state.agent_capability_gate.replace(
+        ralphx_lib::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+        },
+    );
+    let project_id = ProjectId::from_string("project-coordination-builder-guard".to_string());
+    let mut builder = ChatConversation::new_project(project_id.clone());
+    builder.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let builder = state
+        .chat_conversation_repo
+        .create(builder)
+        .await
+        .expect("builder conversation should persist");
+    let chat = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id))
+        .await
+        .expect("chat conversation should persist");
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: builder.id.as_str(),
+            coordination_mode: "rx_native_team".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("builder coordination must remain solo");
+    assert!(error.contains("persona builder"));
+    let stored_builder = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&builder.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_builder.coordination_mode, CoordinationMode::Solo);
+
+    let response = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: chat.id.as_str(),
+            coordination_mode: "rx_native_team".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("Project chat coordination should still update");
+    assert_eq!(response.coordination_mode, "rx_native_team");
 }
 
 #[tokio::test]
@@ -3279,10 +3416,12 @@ mod ipc_contract {
 
     #[test]
     fn create_agent_conversation_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"review","contextId":"task-review-123"}"#;
+        let json =
+            r#"{"contextType":"review","contextId":"task-review-123","mode":"persona_builder"}"#;
         let input: CreateAgentConversationInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "review");
         assert_eq!(input.context_id.as_deref(), Some("task-review-123"));
+        assert_eq!(input.mode.as_deref(), Some("persona_builder"));
     }
 
     #[test]
@@ -3307,12 +3446,13 @@ mod ipc_contract {
 
     #[test]
     fn start_agent_conversation_input_accepts_chat_mode_without_base() {
-        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
+        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh","sourcePersonaId":"persona-source"}"#;
         let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.project_id.as_deref(), Some("project-1"));
         assert_eq!(input.mode.as_deref(), Some("chat"));
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
+        assert_eq!(input.source_persona_id.as_deref(), Some("persona-source"));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
         assert!(input.composer_project_references.is_empty());
@@ -3363,6 +3503,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Inspect the repo without editing".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3457,6 +3598,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Review this PR".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3619,6 +3761,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Prepare an editable workspace".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3778,6 +3921,7 @@ mod ipc_contract {
                     project_id: Some(fix.project_id.as_str().to_string()),
                     content: format!("Use the selected plan in {mode} mode"),
                     persona_id: None,
+                    source_persona_id: None,
                     conversation_id: None,
                     parent_conversation_id: None,
                     title: None,
@@ -3929,6 +4073,7 @@ mod ipc_contract {
                 project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Review the selected PR".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -4004,6 +4149,7 @@ mod ipc_contract {
                 project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Use both selected plans".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -4107,6 +4253,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Continue on the linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: Some(conversation.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -4209,6 +4356,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Start on linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -4305,6 +4453,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Start on checked-out linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: Some(draft.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -4400,6 +4549,7 @@ mod ipc_contract {
                 project_id: Some(project_id.as_str().to_string()),
                 content: "Plan a small refactor".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,

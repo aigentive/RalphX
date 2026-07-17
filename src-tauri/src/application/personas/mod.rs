@@ -5,7 +5,8 @@ use ralphx_domain::personas::validation::validate_persona_content;
 use serde_json::{json, Value};
 
 use crate::domain::entities::{
-    ChatConversationId, Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId, Persona,
+    PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
 };
 use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
 use crate::error::{AppError, AppResult};
@@ -27,6 +28,7 @@ pub const PERSONA_UNAVAILABLE_PREFIX: &str = "[Persona unavailable:";
 pub const PERSONA_FEATURE_DISABLED_PREFIX: &str = "[Personas disabled:";
 /// Stable IPC code for a manual persona draft compare-and-swap rejection.
 pub const PERSONA_DRAFT_CONFLICT_CODE: &str = "PERSONA_DRAFT_CONFLICT:";
+pub const PERSONA_REFINE_SCOPE_MISMATCH_PREFIX: &str = "PERSONA_REFINE_SCOPE_MISMATCH:";
 
 /// The draft-update event contract intentionally excludes persona content/body.
 pub fn draft_updated_payload(persona: &Persona) -> Value {
@@ -108,6 +110,127 @@ impl PersonaService {
             })
             .await
             .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
+    }
+
+    pub async fn validate_refine_source(
+        &self,
+        feature_enabled: bool,
+        source_id: &PersonaId,
+        conversation_project_id: Option<&ProjectId>,
+    ) -> AppResult<Persona> {
+        ensure_enabled(feature_enabled)?;
+        let source = self
+            .persona_repo
+            .get_by_id(source_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Persona not found: {source_id}")))?;
+        if source.status != PersonaStatus::Active {
+            return Err(AppError::PersonaUnavailable(format!(
+                "{PERSONA_UNAVAILABLE_PREFIX} persona {source_id} is not active]"
+            )));
+        }
+        if source.project_id.as_ref() != conversation_project_id {
+            return Err(AppError::Validation(format!(
+                "{PERSONA_REFINE_SCOPE_MISMATCH_PREFIX} source persona {source_id} scope does not match the builder conversation scope"
+            )));
+        }
+        Ok(source)
+    }
+
+    pub async fn create_seeded_bound_draft(
+        &self,
+        feature_enabled: bool,
+        conversation: &ChatConversation,
+        source_id: &PersonaId,
+    ) -> AppResult<Persona> {
+        if conversation.agent_mode != Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+            return Err(AppError::Validation(
+                "Seeded persona drafts require a persona_builder conversation".to_string(),
+            ));
+        }
+        let conversation_project_id = match conversation.context_type {
+            ChatContextType::Project => Some(validate_persona_project_id(ProjectId::from_string(
+                conversation.context_id.clone(),
+            ))?),
+            ChatContextType::Standalone => None,
+            _ => {
+                return Err(AppError::Validation(
+                    "Persona builder conversations must use Project or Standalone context"
+                        .to_string(),
+                ))
+            }
+        };
+        let source = self
+            .validate_refine_source(feature_enabled, source_id, conversation_project_id.as_ref())
+            .await?;
+        self.create_bound_draft(
+            feature_enabled,
+            &conversation.id,
+            SavePersonaDraftInput {
+                project_id: conversation_project_id,
+                slug: source.slug,
+                content: source.content,
+                source_session_id: Some(conversation.id.as_str()),
+                source_persona_id: Some(source.id),
+                source_content_hash: Some(source.content_hash),
+            },
+        )
+        .await
+    }
+
+    pub async fn create_project_builder_conversation(
+        &self,
+        feature_enabled: bool,
+        project_id: ProjectId,
+        source_id: Option<&PersonaId>,
+    ) -> AppResult<ChatConversation> {
+        ensure_enabled(feature_enabled)?;
+        let project_id = validate_persona_project_id(project_id)?;
+        if let Some(source_id) = source_id {
+            self.validate_refine_source(feature_enabled, source_id, Some(&project_id))
+                .await?;
+            if let Some(draft) = self
+                .persona_repo
+                .get_draft_by_source_persona_id(source_id)
+                .await?
+            {
+                if let Some(conversation) = self
+                    .chat_conversation_repo
+                    .get_by_builder_draft_id(draft.id.as_str())
+                    .await?
+                    .filter(|conversation| {
+                        conversation.context_type == ChatContextType::Project
+                            && conversation.context_id == project_id.as_str()
+                            && conversation.agent_mode
+                                == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+                    })
+                {
+                    return Ok(conversation);
+                }
+            }
+        }
+
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+        conversation.set_title("Persona builder".to_string());
+        let conversation = self.chat_conversation_repo.create(conversation).await?;
+        if let Some(source_id) = source_id {
+            if let Err(error) = self
+                .create_seeded_bound_draft(feature_enabled, &conversation, source_id)
+                .await
+            {
+                let _ = self.chat_conversation_repo.delete(&conversation.id).await;
+                return Err(error);
+            }
+        }
+        self.chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(
+                    "PersonaBuilder conversation was not found after creation".to_string(),
+                )
+            })
     }
 
     async fn build_draft(

@@ -135,6 +135,7 @@ impl AutomationRunStartRequest {
             project_id: Some(self.project_id),
             content,
             persona_id: None,
+            source_persona_id: None,
             conversation_id: Some(self.conversation_id.as_str().to_string()),
             parent_conversation_id: None,
             title: None,

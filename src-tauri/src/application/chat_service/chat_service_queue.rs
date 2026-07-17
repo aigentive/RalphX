@@ -611,7 +611,6 @@ struct QueuedAgentContext {
     effective_mode: Option<AgentConversationWorkspaceMode>,
     conversation: Option<ChatConversation>,
     builder_draft: Option<Persona>,
-    builder_context_error: Option<String>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -646,19 +645,18 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
     app_handle: Option<&AppHandle<R>>,
     context_type: ChatContextType,
     conversation_id: &ChatConversationId,
-) -> QueuedAgentContext {
+) -> Result<QueuedAgentContext, String> {
     if !matches!(
         context_type,
         ChatContextType::Project | ChatContextType::Standalone
     ) {
-        return QueuedAgentContext::default();
+        return Ok(QueuedAgentContext::default());
     }
     let Some(handle) = app_handle else {
-        return QueuedAgentContext::default();
+        return Ok(QueuedAgentContext::default());
     };
 
     let app_state = handle.state::<AppState>();
-    let mut builder_context_error = None;
     let conversation = match app_state
         .chat_conversation_repo
         .get_by_id(conversation_id)
@@ -666,15 +664,9 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
     {
         Ok(conversation) => conversation,
         Err(error) => {
-            tracing::warn!(
-                error = %error,
-                %conversation_id,
-                "[QUEUE] Failed to resolve queued conversation mode"
-            );
-            builder_context_error = Some(format!(
-                "PersonaBuilder conversation lookup failed: {error}"
-            ));
-            None
+            return Err(format!(
+                "Queued conversation lookup failed for {conversation_id}: {error}"
+            ))
         }
     };
     let conversation_mode = conversation
@@ -690,15 +682,14 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
             .await
         {
             Ok(Some(draft)) => Some(draft),
-            Ok(None) => {
-                builder_context_error = Some(format!(
-                    "Bound PersonaBuilder draft {draft_id} was not found"
-                ));
-                None
-            }
+            Ok(None) => None,
             Err(error) => {
-                builder_context_error =
-                    Some(format!("PersonaBuilder draft lookup failed: {error}"));
+                tracing::warn!(
+                    error = %error,
+                    %conversation_id,
+                    draft_id,
+                    "[QUEUE] Failed to resolve bound PersonaBuilder draft"
+                );
                 None
             }
         }
@@ -722,14 +713,13 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
     };
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
-    QueuedAgentContext {
+    Ok(QueuedAgentContext {
         identity: queued_agent_identity_for_conversation(conversation.as_ref(), mode.clone()),
         workspace,
         effective_mode: mode,
         conversation,
         builder_draft,
-        builder_context_error,
-    }
+    })
 }
 
 async fn resolve_queue_resume_persona<R: Runtime>(
@@ -1129,6 +1119,70 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             };
 
+            let queued_agent_context = match resolve_queued_agent_context(
+                app_handle.as_ref(),
+                context_type,
+                &conversation_id,
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        queued_message_id = %queued_msg.id,
+                        "[QUEUE] Queued conversation lookup blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            };
+            let target_harness = queued_target_harness(&queued_msg, harness);
+            if let Some(conversation) = queued_agent_context.conversation.as_ref() {
+                if let Err(error) =
+                    super::validate_conversation_spawn_harness(conversation, target_harness)
+                {
+                    let error = error.to_string();
+                    tracing::error!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        queued_message_id = %queued_msg.id,
+                        "[QUEUE] Queued harness selection blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            }
+
             // Emit queue sent event (removes from frontend optimistic UI)
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
@@ -1141,33 +1195,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     },
                 );
             }
-            let queued_agent_context =
-                resolve_queued_agent_context(app_handle.as_ref(), context_type, &conversation_id)
-                    .await;
-            if let Some(error) = queued_agent_context.builder_context_error.as_ref() {
-                tracing::warn!(
-                    error,
-                    %context_type,
-                    context_id,
-                    "queue resume blocked because PersonaBuilder context could not be loaded"
-                );
-                if let Some(ref handle) = app_handle {
-                    let _ = handle.emit(
-                        "agent:error",
-                        AgentErrorPayload {
-                            conversation_id: Some(conversation_id.as_str().to_string()),
-                            context_type: context_type.to_string(),
-                            context_id: context_id.to_string(),
-                            agent_run_id: None,
-                            error: error.clone(),
-                            stderr: None,
-                        },
-                    );
-                }
-                total_processed += 1;
-                continue;
-            }
-
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
                     restore_queue_front(
@@ -1194,7 +1221,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     execution_state.as_ref().map(Arc::clone),
                     Some(handle.clone()),
                 );
-                let target_harness = queued_target_harness(&queued_msg, harness);
                 let force_new_provider_session =
                     !can_reuse_fresh_provider_run(&queued_msg, fresh_provider_harness);
                 let send_result = service
@@ -1894,6 +1920,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             } else if let Some(project_repo) = project_repo.as_ref() {
                 let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
+                    context_type,
                     project_id,
                     Arc::clone(project_repo),
                     working_directory,
@@ -2494,6 +2521,82 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
         total_processed,
         last_run_id,
     }
+}
+
+#[doc(hidden)]
+pub async fn process_queued_messages_for_test<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    context_type: ChatContextType,
+    harness: AgentHarnessKind,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    session_id: &str,
+    cli_path: &Path,
+) -> (u32, Option<String>) {
+    let (
+        message_queue,
+        running_agent_registry,
+        agent_run_repo,
+        chat_message_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        activity_event_repo,
+        task_repo,
+        ideation_session_repo,
+    ) = {
+        let state = app_handle.state::<AppState>();
+        (
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.ideation_session_repo),
+        )
+    };
+    let streaming_state_cache = super::StreamingStateCache::new();
+    let queue_context_id = conversation_id.as_str();
+
+    let outcome = process_queued_messages(
+        context_type,
+        harness,
+        context_id,
+        &queue_context_id,
+        conversation_id,
+        session_id,
+        false,
+        &message_queue,
+        None,
+        None,
+        &running_agent_registry,
+        &agent_run_repo,
+        &chat_message_repo,
+        None,
+        &chat_attachment_repo,
+        &artifact_repo,
+        &activity_event_repo,
+        &task_repo,
+        &ideation_session_repo,
+        cli_path,
+        Path::new("."),
+        Path::new("."),
+        None,
+        None,
+        Some(app_handle),
+        None,
+        None,
+        false,
+        CancellationToken::new(),
+        None,
+        None,
+        streaming_state_cache,
+    )
+    .await;
+
+    (outcome.total_processed, outcome.last_run_id)
 }
 
 #[cfg(test)]

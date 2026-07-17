@@ -215,6 +215,27 @@ fn hidden_user_message_metadata() -> String {
     .to_string()
 }
 
+#[doc(hidden)]
+pub fn validate_persona_builder_team_intent_for_send(
+    context_type: ChatContextType,
+    persisted_conversation: Option<&ChatConversation>,
+    requested_capability: CoordinationMode,
+) -> Result<(), String> {
+    let persona_builder_conversation = persisted_conversation.is_some_and(|conversation| {
+        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    });
+    if (context_type == ChatContextType::Standalone || persona_builder_conversation)
+        && requested_capability != CoordinationMode::Solo
+    {
+        return Err(if persona_builder_conversation {
+            "Team mode is not supported for persona builder conversations".to_string()
+        } else {
+            STANDALONE_TEAM_INTENT_REJECTED_ERROR.to_string()
+        });
+    }
+    Ok(())
+}
+
 /// Response from send_agent_message command
 #[derive(Debug, Serialize)]
 pub struct SendAgentMessageResponse {
@@ -2749,6 +2770,21 @@ fn parse_agent_workspace_mode(
     mode.parse::<AgentConversationWorkspaceMode>()
 }
 
+fn parse_agent_workspace_mode_for_creation(
+    mode: Option<&str>,
+) -> Result<Option<AgentConversationWorkspaceMode>, String> {
+    let Some(mode) = mode.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let mode = mode.parse::<AgentConversationWorkspaceMode>()?;
+    if mode == AgentConversationWorkspaceMode::PersonaBuilder
+        && !crate::infrastructure::agents::claude::agent_personas_enabled()
+    {
+        return Err("PersonaBuilder mode requires the agent_personas feature flag".to_string());
+    }
+    Ok(Some(mode))
+}
+
 fn parse_agent_workspace_base_kind(
     kind: Option<&str>,
 ) -> Result<Option<IdeationAnalysisBaseRefKind>, String> {
@@ -3820,6 +3856,11 @@ pub async fn send_agent_message(
                 .map(|conversation| conversation.coordination_mode)
         })
         .unwrap_or_default();
+    validate_persona_builder_team_intent_for_send(
+        context_type,
+        persisted_conversation.as_ref(),
+        requested_capability,
+    )?;
     let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
         .then(|| {
             crate::application::agent_capability_validation::codex_ultra_support_for_model(
@@ -9492,7 +9533,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Chat => AgentConversationRuntimeIndexMode::Chat,
         AgentConversationWorkspaceMode::Edit => AgentConversationRuntimeIndexMode::Agent,
         AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
-        AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
+        AgentConversationWorkspaceMode::Tasks
+        | AgentConversationWorkspaceMode::Autopilot
+        | AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
         AgentConversationWorkspaceMode::PersonaBuilder => {
@@ -10300,6 +10343,9 @@ pub struct CreateAgentConversationInput {
     #[serde(default)]
     pub context_id: Option<String>,
     pub title: Option<String>,
+    /// Optional initial mode for pre-send seeded conversations.
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
 }
@@ -10341,9 +10387,19 @@ pub async fn create_agent_conversation(
     };
 
     let context_type = parse_context_type(&input.context_type)?;
+    let mode = parse_agent_workspace_mode_for_creation(input.mode.as_deref())?;
     let coordination_mode = coordination_mode_from_team_intent(input.team_intent.as_ref())?;
-    if context_type == ChatContextType::Standalone && coordination_mode != CoordinationMode::Solo {
-        return Err(STANDALONE_TEAM_INTENT_REJECTED_ERROR.to_string());
+    if (context_type == ChatContextType::Standalone
+        || mode == Some(AgentConversationWorkspaceMode::PersonaBuilder))
+        && coordination_mode != CoordinationMode::Solo
+    {
+        return Err(
+            if mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+                "Team mode is not supported for persona builder conversations".to_string()
+            } else {
+                STANDALONE_TEAM_INTENT_REJECTED_ERROR.to_string()
+            },
+        );
     }
     crate::application::agent_capability_validation::validate_agent_capability(
         coordination_mode,
@@ -10411,6 +10467,9 @@ pub async fn create_agent_conversation(
         }
     };
     conversation.set_coordination_mode(coordination_mode);
+    if let Some(mode) = mode {
+        conversation.set_agent_mode(Some(mode));
+    }
 
     if let Some(title) = input
         .title
@@ -10446,6 +10505,11 @@ pub async fn update_agent_conversation_coordination_mode(
         .ok_or_else(|| "Conversation not found".to_string())?;
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change capabilities".to_string());
+    }
+    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && coordination_mode != CoordinationMode::Solo
+    {
+        return Err("Team mode is not supported for persona builder conversations".to_string());
     }
 
     let harness = conversation
@@ -11290,6 +11354,7 @@ mod tests {
                 context_type: ChatContextType::Project.to_string(),
                 context_id: Some(project_id.as_str().to_string()),
                 title: Some("Team conversation".to_string()),
+                mode: None,
                 team_intent: Some(TeamIntent::rx_native(None)),
             },
             app.state(),
@@ -11328,6 +11393,7 @@ mod tests {
                 context_type: ChatContextType::Standalone.to_string(),
                 context_id: None,
                 title: Some("Standalone chat".to_string()),
+                mode: None,
                 team_intent: None,
             },
             app.state(),
@@ -11360,6 +11426,7 @@ mod tests {
                 context_type: ChatContextType::Standalone.to_string(),
                 context_id: None,
                 title: None,
+                mode: None,
                 team_intent: None,
             },
             app.state(),
@@ -11381,6 +11448,7 @@ mod tests {
                 context_type: ChatContextType::Standalone.to_string(),
                 context_id: Some("caller-supplied-id".to_string()),
                 title: None,
+                mode: None,
                 team_intent: None,
             },
             app.state(),
@@ -11402,6 +11470,7 @@ mod tests {
                 context_type: ChatContextType::Standalone.to_string(),
                 context_id: None,
                 title: None,
+                mode: None,
                 team_intent: Some(TeamIntent::rx_native(None)),
             },
             app.state(),
@@ -16947,6 +17016,7 @@ mod tests {
                 context_type: ChatContextType::Project.to_string(),
                 context_id: Some(project_id.as_str().to_string()),
                 title: Some("Created from command".to_string()),
+                mode: None,
                 team_intent: None,
             },
             app.state(),

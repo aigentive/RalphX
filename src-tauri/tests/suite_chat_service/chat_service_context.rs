@@ -5,8 +5,7 @@ use ralphx_lib::application::chat_service::{
     build_resume_command_for_harness, build_resume_initial_prompt, create_assistant_message,
     finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
     format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
-    is_text_file, persona_builder_requires_live_draft_session,
-    provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
+    is_text_file, provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
     resolve_working_directory, ProviderResumeMode, ResolvedChatHarnessLaunch,
 };
 use ralphx_lib::application::persona_ingest::{
@@ -132,31 +131,6 @@ fn mcp_runtime_args(
         .filter_map(|(_, encoded)| serde_json::from_str::<Vec<String>>(encoded).ok())
         .find(|args| args.iter().any(|arg| arg == "--conversation-id"))
         .unwrap_or_default()
-}
-
-#[test]
-fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_fails_closed() {
-    assert!(
-        persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::PersonaBuilder),
-            false
-        ),
-        "PersonaBuilder sends without a live draft session must fail closed before root reads"
-    );
-    assert!(
-        !persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::PersonaBuilder),
-            true
-        ),
-        "a live draft session satisfies the PersonaBuilder read-root guard"
-    );
-    assert!(
-        !persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::Chat),
-            false
-        ),
-        "existing modes must remain inert until PersonaBuilder is introduced"
-    );
 }
 
 async fn persona_read_root_fixture() -> (

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
 use crate::domain::agents::ProviderSessionRef;
@@ -17,13 +17,19 @@ use crate::error::{AppError, AppResult};
 /// In-memory implementation of ChatConversationRepository for testing
 pub struct MemoryChatConversationRepository {
     conversations: RwLock<HashMap<ChatConversationId, ChatConversation>>,
+    failed_get_by_ids: RwLock<HashSet<ChatConversationId>>,
 }
 
 impl MemoryChatConversationRepository {
     pub fn new() -> Self {
         Self {
             conversations: RwLock::new(HashMap::new()),
+            failed_get_by_ids: RwLock::new(HashSet::new()),
         }
+    }
+
+    pub async fn fail_get_by_id(&self, id: ChatConversationId) {
+        self.failed_get_by_ids.write().await.insert(id);
     }
 }
 
@@ -49,6 +55,11 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
     }
 
     async fn get_by_id(&self, id: &ChatConversationId) -> AppResult<Option<ChatConversation>> {
+        if self.failed_get_by_ids.read().await.contains(id) {
+            return Err(AppError::Infrastructure(format!(
+                "injected conversation lookup failure for {id}"
+            )));
+        }
         let convos = self.conversations.read().await;
         Ok(convos.get(id).cloned())
     }

@@ -10,7 +10,8 @@ use crate::application::personas::{
     draft_updated_payload, PersonaService, SavePersonaDraftInput, PERSONA_FEATURE_DISABLED_PREFIX,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversationId, Persona, PersonaId,
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversationId, Persona, PersonaId,
+    ProjectId,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
@@ -82,14 +83,24 @@ pub async fn save_persona_draft(
                         .to_string(),
                 ));
             }
+            let project_id = match conversation.context_type {
+                ChatContextType::Project => {
+                    Some(ProjectId::from_string(conversation.context_id.clone()))
+                }
+                ChatContextType::Standalone => None,
+                _ => {
+                    return Err(HttpError::validation(
+                        "Persona builder drafts require Project or Standalone conversation context"
+                            .to_string(),
+                    ))
+                }
+            };
             service
                 .create_bound_draft(
                     true,
                     &conversation.id,
                     SavePersonaDraftInput {
-                        project_id: Some(crate::domain::entities::ProjectId::from_string(
-                            conversation.context_id.clone(),
-                        )),
+                        project_id,
                         slug: request.slug,
                         content: request.content,
                         source_session_id: Some(conversation.id.as_str()),

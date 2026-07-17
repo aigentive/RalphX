@@ -28,8 +28,13 @@ use ralphx_lib::domain::entities::{
     ProjectId, TaskId, TeamIntent,
 };
 use ralphx_lib::infrastructure::agents::claude::{
-    reset_standalone_conversations_override_for_test, set_standalone_conversations_override,
+    reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
+    set_agent_personas_override, set_standalone_conversations_override,
 };
+use ralphx_lib::infrastructure::sqlite::{
+    DbConnection, SqliteChatConversationRepository, SqlitePersonaRepository,
+};
+use ralphx_lib::testing::SqliteTestDb;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -109,6 +114,7 @@ fn service_start_input(
         parent_conversation_id: None,
         title: None,
         persona_id: None,
+        source_persona_id: None,
         provider_harness: None,
         model_override: None,
         logical_effort: None,
@@ -141,6 +147,7 @@ fn standalone_start_input(
         parent_conversation_id: parent_conversation_id.map(str::to_string),
         title: None,
         persona_id: None,
+        source_persona_id: None,
         provider_harness: None,
         model_override: None,
         logical_effort: None,
@@ -166,6 +173,15 @@ impl Drop for StandaloneConversationsFlagOverrideReset {
     }
 }
 
+struct PersonaFlagsOverrideReset;
+
+impl Drop for PersonaFlagsOverrideReset {
+    fn drop(&mut self) {
+        reset_agent_personas_override_for_test();
+        reset_standalone_conversations_override_for_test();
+    }
+}
+
 struct CapturingFakeClaude {
     _path_guard: super::support::env::EnvVarGuard,
     _capture_guard: super::support::env::EnvVarGuard,
@@ -183,9 +199,13 @@ impl CapturingFakeClaude {
             &cli_path,
             r#"#!/bin/sh
 printf '%s\n' "$@" >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
+pwd >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
 previous=""
 for argument in "$@"; do
   if [ "$previous" = "--append-system-prompt-file" ]; then
+    cat "$argument" >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
+  fi
+  if [ "$previous" = "--mcp-config" ]; then
     cat "$argument" >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
   fi
   previous="$argument"
@@ -252,7 +272,9 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
         description: "start service persona fixture".to_string(),
-        content: "Use the requested project voice.".to_string(),
+        content: format!(
+            "---\nname: {id}-slug\nkind: persona\ndescription: Start service persona fixture\n---\nUse the requested project voice."
+        ),
         status,
         version: 1,
         content_hash: format!("{id}-hash"),
@@ -279,7 +301,9 @@ async fn seed_project_persona(state: &AppState, id: &str, project_id: &ProjectId
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
         description: "scoped start service persona fixture".to_string(),
-        content: "Use the scoped project voice.".to_string(),
+        content: format!(
+            "---\nname: {id}-slug\nkind: persona\ndescription: Scoped start service persona fixture\n---\nUse the scoped project voice."
+        ),
         status: PersonaStatus::Active,
         version: 1,
         content_hash: format!("{id}-hash"),
@@ -652,19 +676,21 @@ async fn start_agent_conversation_standalone_seeded_ownership_rejects_when_proje
 }
 
 #[tokio::test]
-async fn start_agent_conversation_rejects_persona_builder_mode() {
+async fn start_agent_conversation_persona_builder_flag_off_is_rejected() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(false));
     let fake_cli = CapturingFakeClaude::new();
     ralphx_lib::testing::seed_available_harness_probes_for_test_at(
         fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
     );
     let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
-    let project_id = ProjectId::from_string("project-persona-builder-rejected".to_string());
+    let project_id = ProjectId::from_string("project-persona-builder-flag-off".to_string());
 
     let error = start_with_app(
         &app,
         service_start_input(
             &project_id,
-            "reserved mode must not start generically",
+            "flag-off builder must not start",
             "persona_builder",
             None,
             None,
@@ -673,11 +699,461 @@ async fn start_agent_conversation_rejects_persona_builder_mode() {
         ),
     )
     .await
-    .expect_err("generic start must reject PersonaBuilder before any project or workspace work");
+    .expect_err("builder start must reject while agent_personas is disabled");
 
     assert!(
-        error.contains("PersonaBuilder"),
+        error.contains("agent_personas"),
         "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_project_persona_builder_succeeds_through_standard_pipeline() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("seeded-refine-scope-lock");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let project = seed_project(
+        &state,
+        "project-persona-builder-start",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let started = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Interview me before drafting",
+            "persona_builder",
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("project builder should start through the standard pipeline");
+
+    assert_eq!(
+        started.conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    );
+    assert!(started.send_result.was_queued);
+}
+
+#[tokio::test]
+async fn start_agent_conversation_persona_builder_rejects_project_team_intent() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let project_id = ProjectId::from_string("project-builder-team-rejected".to_string());
+    let mut input = service_start_input(
+        &project_id,
+        "Team builder is undefined",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.team_intent = Some(TeamIntent::rx_native(None));
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("Project-context builder Team intent must be rejected");
+    assert!(
+        error.contains("persona builder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn seeded_project_persona_builder_rejects_persisted_team_coordination() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-builder-persisted-team",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let mut seeded = ChatConversation::new_project(project.id.clone());
+    seeded.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    seeded.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("corrupt Project builder seed should persist for the regression");
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Reject persisted Team builder",
+            "persona_builder",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect_err("seeded Project builder with Team coordination must reject");
+    assert!(
+        error.contains("persona builder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn seeded_persona_builder_rejects_chat_mode_as_locked() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-builder-mode-lock".to_string());
+    let mut seeded = ChatConversation::new_project(project_id.clone());
+    seeded.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("seeded builder should persist");
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project_id,
+            "Do not rewrite the persisted builder mode",
+            "chat",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect_err("seeded builder mode must be locked");
+
+    assert!(error.contains("[ralphx:conversation_mode_locked]"));
+    let mut omitted_mode = service_start_input(
+        &project_id,
+        "Omitted mode must not rewrite the persisted builder mode",
+        "chat",
+        None,
+        None,
+        Some(&seeded.id),
+        None,
+    );
+    omitted_mode.mode = None;
+    let omitted_error = start_with_app(&app, omitted_mode)
+        .await
+        .expect_err("omitted seeded builder mode must be locked");
+    assert!(omitted_error.contains("[ralphx:conversation_mode_locked]"));
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&seeded.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    );
+}
+
+#[tokio::test]
+async fn standalone_persona_builder_uses_workspace_cwd_and_filesystem_enforcement() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let result = start_with_app(
+        &app,
+        standalone_start_input(
+            "Build a global persona",
+            Some("persona_builder"),
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("standalone Claude-lane builder should start");
+    let app_data_dir = app
+        .state::<AppState>()
+        .app_paths
+        .app_data_dir()
+        .to_path_buf();
+    let expected_workspace = standalone_workspace_path(
+        &standalone_workspaces_root(&app_data_dir),
+        &result.conversation.id.as_str(),
+    );
+    let captured = fake_cli.captured_prompt().await;
+    assert!(
+        captured.contains(expected_workspace.to_string_lossy().as_ref()),
+        "spawn must run from or expose the private workspace: {captured}"
+    );
+    assert!(
+        captured.contains("--filesystem-enforced") && captured.contains("\"1\""),
+        "builder spawn must enable filesystem enforcement: {captured}"
+    );
+}
+
+#[tokio::test]
+async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("seeded-refine-standard-start");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let project = seed_project(&state, "project-builder-codex", temp.path(), temp.path()).await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let mut standalone = standalone_start_input(
+        "Reject unsafe global lane",
+        Some("persona_builder"),
+        None,
+        None,
+        None,
+    );
+    standalone.provider_harness = Some("codex".to_string());
+    let error = start_with_app(&app, standalone)
+        .await
+        .expect_err("standalone builder must reject Codex");
+    assert!(
+        error.contains("Claude harness"),
+        "unexpected error: {error}"
+    );
+
+    let mut project_input = service_start_input(
+        &project.id,
+        "Project Codex builder is bounded by project context",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    project_input.provider_harness = Some("codex".to_string());
+    let started = start_with_app(&app, project_input)
+        .await
+        .expect("Project-context Codex builder remains allowed");
+    assert!(started.send_result.was_queued);
+}
+
+#[tokio::test]
+async fn source_persona_id_rejects_non_builder_mode() {
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let project_id = ProjectId::from_string("project-source-non-builder".to_string());
+    let mut input = service_start_input(
+        &project_id,
+        "Invalid source",
+        "chat",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.source_persona_id = Some("persona-source".to_string());
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("source_persona_id outside builder mode must reject");
+    assert!(error.contains("source_persona_id"));
+}
+
+#[tokio::test]
+async fn seeded_refine_start_enforces_source_status_and_exact_scope_then_stamps_provenance() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("seeded-refine-scope-lock");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let project_a = seed_project(&state, "project-refine-a", temp.path(), temp.path()).await;
+    let project_b = seed_project(&state, "project-refine-b", temp.path(), temp.path()).await;
+    let global_source = seed_persona(&state, "global-refine-source", PersonaStatus::Active).await;
+    let archived_source =
+        seed_persona(&state, "archived-refine-source", PersonaStatus::Archived).await;
+    let project_source = seed_project_persona(&state, "project-refine-source", &project_a.id).await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let mut missing = service_start_input(
+        &project_a.id,
+        "Missing source",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    missing.source_persona_id = Some("missing-source".to_string());
+    assert!(start_with_app(&app, missing)
+        .await
+        .expect_err("missing source must reject")
+        .contains("not found"));
+
+    let mut archived =
+        standalone_start_input("Archived source", Some("persona_builder"), None, None, None);
+    archived.source_persona_id = Some(archived_source.id.as_str().to_string());
+    assert!(start_with_app(&app, archived)
+        .await
+        .expect_err("archived source must reject")
+        .contains("not active"));
+
+    let mut global_in_project = service_start_input(
+        &project_a.id,
+        "Wrong global scope",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    global_in_project.source_persona_id = Some(global_source.id.as_str().to_string());
+    assert!(start_with_app(&app, global_in_project)
+        .await
+        .expect_err("global source cannot refine in Project context")
+        .contains("PERSONA_REFINE_SCOPE_MISMATCH"));
+
+    let mut project_in_global = standalone_start_input(
+        "Wrong project scope",
+        Some("persona_builder"),
+        None,
+        None,
+        None,
+    );
+    project_in_global.source_persona_id = Some(project_source.id.as_str().to_string());
+    assert!(start_with_app(&app, project_in_global)
+        .await
+        .expect_err("project source cannot refine in Standalone context")
+        .contains("PERSONA_REFINE_SCOPE_MISMATCH"));
+
+    let mut project_a_in_b = service_start_input(
+        &project_b.id,
+        "Wrong project identity",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    project_a_in_b.source_persona_id = Some(project_source.id.as_str().to_string());
+    assert!(start_with_app(&app, project_a_in_b)
+        .await
+        .expect_err("project-A source cannot refine in project-B context")
+        .contains("PERSONA_REFINE_SCOPE_MISMATCH"));
+
+    let mut matching_project = service_start_input(
+        &project_a.id,
+        "Matching project refine",
+        "persona_builder",
+        None,
+        None,
+        None,
+        None,
+    );
+    matching_project.source_persona_id = Some(project_source.id.as_str().to_string());
+    let project_started = start_with_app(&app, matching_project)
+        .await
+        .expect("matching project scope should seed");
+    let project_draft = app
+        .state::<AppState>()
+        .persona_repo
+        .get_by_id(&PersonaId::from(
+            project_started
+                .conversation
+                .builder_draft_id
+                .as_deref()
+                .expect("seeded project draft must be bound"),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(project_draft.project_id.as_ref(), Some(&project_a.id));
+    assert_eq!(
+        project_draft.source_persona_id.as_ref(),
+        Some(&project_source.id)
+    );
+    assert_eq!(
+        project_draft.source_content_hash.as_deref(),
+        Some(project_source.content_hash.as_str())
+    );
+
+    let mut matching_global = standalone_start_input(
+        "Matching global refine",
+        Some("persona_builder"),
+        None,
+        None,
+        None,
+    );
+    matching_global.source_persona_id = Some(global_source.id.as_str().to_string());
+    let global_started = start_with_app(&app, matching_global)
+        .await
+        .expect("matching global scope should seed");
+    let global_draft = app
+        .state::<AppState>()
+        .persona_repo
+        .get_by_id(&PersonaId::from(
+            global_started
+                .conversation
+                .builder_draft_id
+                .as_deref()
+                .expect("seeded global draft must be bound"),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        global_draft.project_id.is_none(),
+        "Standalone seeded draft must remain global"
+    );
+    assert_eq!(
+        global_draft.source_persona_id.as_ref(),
+        Some(&global_source.id)
+    );
+    assert_eq!(
+        global_draft.source_content_hash.as_deref(),
+        Some(global_source.content_hash.as_str())
     );
 }
 

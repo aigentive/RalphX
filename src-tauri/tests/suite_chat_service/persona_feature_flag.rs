@@ -1,22 +1,27 @@
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ralphx_lib::application::app_paths::AppPaths;
 use ralphx_lib::application::chat_service::{
-    AppChatService, ChatService, ChatServiceError, SendMessageOptions,
+    process_queued_messages_for_test, validate_conversation_spawn_harness, AppChatService,
+    ChatService, ChatServiceError, SendMessageOptions, STANDALONE_PERSONA_BUILDER_CODEX_ERROR,
 };
 use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
 };
 use ralphx_lib::application::AppState;
+use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceMode, AgentRunId, ChatContextType, ChatConversation, Persona,
     PersonaId, PersonaStatus, Project,
 };
+use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::infrastructure::agents::claude::{
-    reset_agent_personas_override_for_test, set_agent_personas_override,
+    reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
+    set_agent_personas_override, set_standalone_conversations_override,
 };
-use tauri::Manager;
+use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
+use tauri::{Listener, Manager};
 
 struct PersonaEnvReset {
     key: &'static str,
@@ -46,6 +51,14 @@ struct PersonaFlagOverrideReset;
 impl Drop for PersonaFlagOverrideReset {
     fn drop(&mut self) {
         reset_agent_personas_override_for_test();
+    }
+}
+
+struct StandaloneFlagOverrideReset;
+
+impl Drop for StandaloneFlagOverrideReset {
+    fn drop(&mut self) {
+        reset_standalone_conversations_override_for_test();
     }
 }
 
@@ -84,7 +97,7 @@ fn persona_flag_override_chat_service_keeps_builder_override_and_live_default() 
 }
 
 #[tokio::test]
-async fn persona_builder_send_requires_live_ingest_then_reaches_the_next_guard() {
+async fn persona_builder_send_no_longer_requires_live_ingest() {
     let temp = tempfile::tempdir().expect("persona builder send temp directory");
     let app_data_dir = temp.path().join("app-data");
     let project_directory = temp.path().join("project");
@@ -123,20 +136,18 @@ async fn persona_builder_send_requires_live_ingest_then_reaches_the_next_guard()
         ..Default::default()
     };
 
-    let rejected = service
+    let without_ingest = service
         .send_message(
             ChatContextType::Project,
             project.id.as_str(),
             "Draft a focused reviewer persona.",
             options.clone(),
         )
-        .await
-        .expect_err("a PersonaBuilder send without ingest context must fail closed");
-    assert!(matches!(
-        rejected,
-        ChatServiceError::PersonaUnavailable(message)
-            if message == "[Persona unavailable: PersonaBuilder requires ingested context or a live bound draft]"
-    ));
+        .await;
+    assert!(
+        !matches!(without_ingest, Err(ChatServiceError::PersonaUnavailable(_))),
+        "Phase 5 retires the ingest-liveness send gate unconditionally"
+    );
 
     let ingest_root = persona_ingest_conversation_path(
         &persona_ingest_storage_path(&app_data_dir),
@@ -156,12 +167,12 @@ async fn persona_builder_send_requires_live_ingest_then_reaches_the_next_guard()
         .await;
     assert!(
         !matches!(after_ingest, Err(ChatServiceError::PersonaUnavailable(_))),
-        "a live ingest session must pass the PersonaBuilder guard"
+        "legacy ingest presence must not change the retired gate's behavior"
     );
 }
 
 #[tokio::test]
-async fn persona_builder_send_accepts_only_a_live_bound_draft_without_ingest() {
+async fn persona_builder_send_does_not_reintroduce_the_retired_ingest_gate() {
     let temp = tempfile::tempdir().expect("bound persona builder send temp directory");
     let app_data_dir = temp.path().join("app-data");
     let project_directory = temp.path().join("project");
@@ -253,28 +264,248 @@ async fn persona_builder_send_accepts_only_a_live_bound_draft_without_ingest() {
         .send_message(
             ChatContextType::Project,
             project.id.as_str(),
-            "This send must fail closed.",
+            "This send must continue past the retired ingest gate.",
             options.clone(),
         )
         .await;
-    assert!(matches!(
-        non_draft,
-        Err(ChatServiceError::PersonaUnavailable(_))
-    ));
+    assert!(
+        !matches!(non_draft, Err(ChatServiceError::PersonaUnavailable(_))),
+        "draft status is enforced by draft-write paths, not the retired send gate"
+    );
 
     state.persona_repo.delete(&draft_id).await.unwrap();
     let dangling = service
         .send_message(
             ChatContextType::Project,
             project.id.as_str(),
-            "This dangling binding must also fail closed.",
+            "This dangling binding must also continue past the retired gate.",
             options,
         )
         .await;
+    assert!(
+        matches!(
+            dangling,
+            Err(ChatServiceError::PersonaUnavailable(ref message))
+                if message != "[Persona unavailable: PersonaBuilder requires ingested context or a live bound draft]"
+        ),
+        "a dangling binding remains fail-closed without resurrecting the ingest-era reason: {dangling:?}"
+    );
+}
+
+#[tokio::test]
+async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
+    let _persona_reset = PersonaFlagOverrideReset;
+    let _standalone_reset = StandaloneFlagOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("standalone builder send temp directory");
+    let mut initial_state = AppState::new_test();
+    initial_state.app_paths = AppPaths::new(temp.path().join("app-data"), None);
+    let conversation = initial_state
+        .chat_conversation_repo
+        .create({
+            let mut conversation = ChatConversation::new_standalone();
+            conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+            conversation
+        })
+        .await
+        .expect("create standalone builder conversation");
+    let app = tauri::test::mock_builder()
+        .manage(initial_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build standalone builder app");
+    let service = app
+        .state::<AppState>()
+        .build_chat_service_for_runtime::<tauri::test::MockRuntime>(
+            None,
+            Some(app.handle().clone()),
+        )
+        .with_persona_feature_enabled(true)
+        .with_working_directory(temp.path());
+    let context_id = conversation.id.as_str();
+
+    let error = service
+        .send_message(
+            ChatContextType::Standalone,
+            &context_id,
+            "Do not switch this builder to Codex.",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation.id),
+                harness_override: Some(AgentHarnessKind::Codex),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("standalone builder Codex send must reject");
+
     assert!(matches!(
-        dangling,
-        Err(ChatServiceError::PersonaUnavailable(_))
+        error,
+        ChatServiceError::SpawnFailed(ref message)
+            if message == STANDALONE_PERSONA_BUILDER_CODEX_ERROR
     ));
+}
+
+#[test]
+fn codex_send_guard_allows_project_builder_and_standalone_chat() {
+    let mut project_builder = ChatConversation::new_project(
+        ralphx_lib::domain::entities::ProjectId::from_string("project-builder-codex".to_string()),
+    );
+    project_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    validate_conversation_spawn_harness(&project_builder, AgentHarnessKind::Codex)
+        .expect("Project-context builder must still allow Codex sends");
+
+    let mut standalone_chat = ChatConversation::new_standalone();
+    standalone_chat.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    validate_conversation_spawn_harness(&standalone_chat, AgentHarnessKind::Codex)
+        .expect("Standalone chat must still allow Codex sends");
+}
+
+#[tokio::test]
+async fn standalone_builder_queue_rejects_codex_override_with_agent_error() {
+    let _standalone_reset = StandaloneFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = conversation_repo
+        .create(conversation)
+        .await
+        .expect("create queued standalone builder conversation");
+    let mut initial_state = AppState::new_test();
+    initial_state.chat_conversation_repo = conversation_repo;
+    let context_id = conversation.id.as_str();
+    initial_state
+        .message_queue
+        .queue_with_runtime_overrides_and_project_references(
+            ChatContextType::Standalone,
+            &context_id,
+            "queued unsafe provider switch".to_string(),
+            None,
+            None,
+            Some(AgentHarnessKind::Codex),
+            None,
+            ralphx_lib::domain::entities::PersonaDirective::Inherit,
+            None,
+            None,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+    let app = tauri::test::mock_builder()
+        .manage(initial_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build queued standalone builder app");
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&errors);
+    let _listener = app.listen("agent:error", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let (processed, last_run_id) = process_queued_messages_for_test(
+        app.handle().clone(),
+        ChatContextType::Standalone,
+        AgentHarnessKind::Claude,
+        &context_id,
+        conversation.id,
+        "claude-session",
+        std::path::Path::new("/definitely/missing/ralphx-test-cli"),
+    )
+    .await;
+
+    assert_eq!(processed, 1);
+    assert!(last_run_id.is_none());
+    assert!(errors
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|payload| payload.contains(STANDALONE_PERSONA_BUILDER_CODEX_ERROR)));
+    assert!(app
+        .state::<AppState>()
+        .agent_run_repo
+        .get_by_conversation(&conversation.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(app
+        .state::<AppState>()
+        .message_queue
+        .get_queued(ChatContextType::Standalone, &context_id)
+        .is_empty());
+}
+
+#[tokio::test]
+async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let project = Project::new("Queue lookup failure".to_string(), ".".to_string());
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = conversation_repo
+        .create(conversation)
+        .await
+        .expect("create queued builder conversation");
+    conversation_repo.fail_get_by_id(conversation.id).await;
+    let mut initial_state = AppState::new_test();
+    initial_state.chat_conversation_repo = conversation_repo;
+    let context_id = conversation.id.as_str();
+    initial_state
+        .message_queue
+        .queue_with_runtime_overrides_and_project_references(
+            ChatContextType::Project,
+            &context_id,
+            "queued builder after repository failure".to_string(),
+            None,
+            None,
+            None,
+            None,
+            ralphx_lib::domain::entities::PersonaDirective::Inherit,
+            None,
+            None,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+    let app = tauri::test::mock_builder()
+        .manage(initial_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build queued lookup failure app");
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&errors);
+    let _listener = app.listen("agent:error", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let (processed, last_run_id) = process_queued_messages_for_test(
+        app.handle().clone(),
+        ChatContextType::Project,
+        AgentHarnessKind::Claude,
+        &context_id,
+        conversation.id,
+        "claude-session",
+        std::path::Path::new("/definitely/missing/ralphx-test-cli"),
+    )
+    .await;
+
+    assert_eq!(processed, 1);
+    assert!(last_run_id.is_none());
+    assert!(errors
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|payload| payload.contains("injected conversation lookup failure")));
+    assert!(app
+        .state::<AppState>()
+        .agent_run_repo
+        .get_by_conversation(&conversation.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[cfg(unix)]

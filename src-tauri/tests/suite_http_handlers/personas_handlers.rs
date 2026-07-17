@@ -132,6 +132,10 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
         stored.builder_draft_id.as_deref(),
         Some(created.id.as_str())
     );
+    assert_eq!(
+        created.project_id.as_ref().map(ProjectId::as_str),
+        Some("persona-save-builder-project")
+    );
 
     let updated = save_persona_draft(
         State(state),
@@ -146,6 +150,48 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
     .0;
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.version, 2);
+}
+
+#[tokio::test]
+async fn standalone_builder_save_creates_a_global_draft() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("standalone builder should persist");
+
+    let created = save_persona_draft(
+        State(state.clone()),
+        conversation_headers(&conversation),
+        Json(request(
+            "global-builder-draft",
+            persona_content("global-builder-draft", "Global draft"),
+        )),
+    )
+    .await
+    .expect("standalone builder save should create a bound draft")
+    .0;
+
+    assert!(
+        created.project_id.is_none(),
+        "Standalone builder drafts must stamp NULL/global project scope"
+    );
+    let stored = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.builder_draft_id.as_deref(),
+        Some(created.id.as_str())
+    );
 }
 
 #[tokio::test]

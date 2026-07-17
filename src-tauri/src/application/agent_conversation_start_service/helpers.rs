@@ -5,8 +5,7 @@ use tauri::{Emitter, Runtime};
 
 use super::AgentWorkspaceSourcePullRequestInput;
 use crate::application::agent_conversation_workspace::{
-    reject_persona_builder_workspace_mode, AgentConversationWorkspaceBranchNameHint,
-    AgentConversationWorkspacePrAutomationDefaults,
+    AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspacePrAutomationDefaults,
 };
 use crate::application::agent_planning_session_titles::hydrate_agent_conversation_planning_session_title;
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
@@ -63,8 +62,13 @@ pub(crate) fn parse_agent_workspace_mode(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("edit");
-    reject_persona_builder_workspace_mode(mode)?;
-    mode.parse::<AgentConversationWorkspaceMode>()
+    let mode = mode.parse::<AgentConversationWorkspaceMode>()?;
+    if mode == AgentConversationWorkspaceMode::PersonaBuilder
+        && !crate::infrastructure::agents::claude::agent_personas_enabled()
+    {
+        return Err("PersonaBuilder mode requires the agent_personas feature flag".to_string());
+    }
+    Ok(mode)
 }
 
 pub(crate) fn parse_agent_workspace_base_kind(

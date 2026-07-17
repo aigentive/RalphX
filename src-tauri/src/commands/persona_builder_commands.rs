@@ -7,16 +7,13 @@ use crate::application::persona_ingest::{
     ingest_picked_roots, persona_builder_ingest_session_is_live, persona_ingest_conversation_path,
     persona_ingest_storage_path, PersonaIngestManifest,
 };
-use crate::application::personas::{
-    validate_persona_project_id, PersonaService, SavePersonaDraftInput,
-    PERSONA_FEATURE_DISABLED_PREFIX,
-};
+use crate::application::personas::{PersonaService, PERSONA_FEATURE_DISABLED_PREFIX};
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, AgentConversationResponse,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, PersonaId, PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, PersonaId, PersonaStatus, ProjectId,
 };
 use crate::infrastructure::agents::claude::agent_personas_enabled;
 
@@ -103,98 +100,25 @@ pub async fn create_persona_builder_conversation_for_state(
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<AgentConversationResponse, String> {
-    if !feature_enabled {
-        return Err(crate::error::AppError::FeatureDisabled(format!(
-            "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
-        ))
-        .to_string());
-    }
-    let project_id = validate_persona_project_id(ProjectId::from_string(input.project_id))
-        .map_err(|error| error.to_string())?;
-
-    let source = match input.source_persona_id.as_deref() {
+    let source_id = match input.source_persona_id.as_deref() {
         Some(id) if id.trim().is_empty() => {
             return Err("source persona id cannot be empty".to_string());
         }
-        Some(id) => Some(
-            PersonaService::new(
-                state.db.clone(),
-                state.persona_repo.clone(),
-                state.chat_conversation_repo.clone(),
-            )
-            .ensure_bindable(true, &PersonaId::from(id), &project_id)
-            .await
-            .map_err(|error| error.to_string())?,
-        ),
+        Some(id) => Some(PersonaId::from(id.trim())),
         None => None,
     };
-
-    let existing_draft = if let Some(source) = source.as_ref() {
-        state
-            .persona_repo
-            .get_draft_by_source_persona_id(&source.id)
-            .await
-            .map_err(|error| error.to_string())?
-    } else {
-        None
-    };
-    if let Some(draft) = existing_draft.as_ref() {
-        if let Some(conversation) = state
-            .chat_conversation_repo
-            .get_by_builder_draft_id(draft.id.as_str())
-            .await
-            .map_err(|error| error.to_string())?
-            .filter(|conversation| {
-                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
-            })
-        {
-            return agent_conversation_response_for_state(state, conversation).await;
-        }
-    }
-
-    let mut conversation = ChatConversation::new_project(project_id.clone());
-    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
-    conversation.set_title("Persona builder".to_string());
-    let conversation = state
-        .chat_conversation_repo
-        .create(conversation)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if let Some(draft) = existing_draft {
-        state
-            .chat_conversation_repo
-            .update_builder_draft_binding(&conversation.id, Some(draft.id.as_str()))
-            .await
-            .map_err(|error| error.to_string())?;
-    } else if let Some(source) = source {
-        PersonaService::new(
-            state.db.clone(),
-            state.persona_repo.clone(),
-            state.chat_conversation_repo.clone(),
-        )
-        .create_bound_draft(
-            true,
-            &conversation.id,
-            SavePersonaDraftInput {
-                project_id: source.project_id.clone(),
-                slug: source.slug,
-                content: source.content,
-                source_session_id: Some(conversation.id.as_str()),
-                source_persona_id: Some(source.id),
-                source_content_hash: Some(source.content_hash),
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    }
-
-    let conversation = state
-        .chat_conversation_repo
-        .get_by_id(&conversation.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "PersonaBuilder conversation was not found after creation".to_string())?;
+    let conversation = PersonaService::new(
+        state.db.clone(),
+        state.persona_repo.clone(),
+        state.chat_conversation_repo.clone(),
+    )
+    .create_project_builder_conversation(
+        feature_enabled,
+        ProjectId::from_string(input.project_id),
+        source_id.as_ref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     agent_conversation_response_for_state(state, conversation).await
 }
