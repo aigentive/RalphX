@@ -64,6 +64,11 @@ async fn handle_stream_success<R: Runtime>(
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
     super::handle_stream_success(
         agent_run_id,
         context_type,
@@ -87,6 +92,9 @@ async fn handle_stream_success<R: Runtime>(
         memory_event_repo,
         plan_branch_repo,
         task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
         execution_settings_repo,
         &None,
         &None,
@@ -145,6 +153,11 @@ async fn handle_stream_error<R: Runtime + 'static>(
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) -> bool {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
     super::handle_stream_error(
         error,
         stream_error,
@@ -193,6 +206,9 @@ async fn handle_stream_error<R: Runtime + 'static>(
         interactive_process_registry,
         review_repo,
         task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
         verification_child_registry,
         &None,
     )
@@ -637,6 +653,8 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
         &agent_provider_settings_repo,
         &None,
         &None,
+        &None,
+        &None,
     );
 
     let deps = build_runtime_factory_deps::<MockRuntime>(
@@ -666,8 +684,15 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
 fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
     let app_state = AppState::new_test();
     let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
-    let runtime_support =
-        RuntimeSupportRepos::new(&execution_settings_repo, &None, &None, &None, &None);
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
     let app = mock_builder()
         .manage(app_state.clone())
         .build(mock_context(noop_assets()))
@@ -2210,14 +2235,22 @@ fn test_fetch_step_completion_state_returns_unknown_on_err_and_none() {
 #[test]
 fn test_validated_completion_override_false_when_no_metadata() {
     let task = Task::new(ProjectId::new(), "no metadata".into());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
 fn test_validated_completion_override_false_when_no_validation_cache_key() {
     let mut task = Task::new(ProjectId::new(), "other metadata".into());
     task.metadata = Some(r#"{"some_other_key": true}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2225,7 +2258,11 @@ fn test_validated_completion_override_false_on_malformed_validation_cache() {
     let mut task = Task::new(ProjectId::new(), "malformed cache".into());
     // validation_cache present but not a valid ValidationCacheMetadata shape → parse error path.
     task.metadata = Some(r#"{"validation_cache": {"version": "not-a-number"}}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2238,7 +2275,11 @@ fn test_validated_completion_override_false_when_worktree_path_missing() {
             .unwrap(),
     );
     task.worktree_path = None;
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2252,10 +2293,18 @@ fn test_validated_completion_override_false_for_unsafe_worktree_path() {
     );
 
     task.worktree_path = Some("relative/worktree".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 
     task.worktree_path = Some("/tmp/../escape".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2270,7 +2319,11 @@ fn test_validated_completion_override_false_when_head_sha_unresolvable() {
     // A temp dir that is not a git repo → get_head_sha errors → fail-safe false.
     let tmp = tempfile::tempdir().unwrap();
     task.worktree_path = Some(tmp.path().to_string_lossy().to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
@@ -2647,6 +2700,11 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     handle_stream_success::<MockRuntime>(
         agent_run_id.as_str(),
@@ -2672,7 +2730,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         &None,
         &None,
         &None,
@@ -3056,6 +3114,9 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         false,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &Some(Arc::clone(&state.validation_run_repo)),
+        &Some(Arc::clone(&state.external_events_repo)),
+        &None,
         &interactive_process_registry,
         &verification_child_registry,
     );
@@ -3218,6 +3279,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
         &None,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &None,
+        &None,
+        &None,
         &None,
         &None,
     )
@@ -5328,6 +5392,9 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         None,
         false,
         None,
+        &None,
+        &None,
+        &None,
         &None,
         &None,
         &None,

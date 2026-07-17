@@ -49,6 +49,7 @@ pub(super) fn build_reconciler_for_recovery(
 ///
 /// Determines how a task should be resumed after being stopped mid-execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ResumeCategory {
     /// Directly resume to the original state (spawn agent if needed).
     /// Used for: Executing, ReExecuting, Reviewing, QaRefining, QaTesting
@@ -157,6 +158,8 @@ pub enum RestartResult {
         category: ResumeCategory,
         /// The status the task was resumed to
         resumed_to_status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        disposition: Option<RestartDisposition>,
     },
     /// Validation failed (only for Validated category)
     ValidationFailed {
@@ -165,6 +168,17 @@ pub enum RestartResult {
         /// The stopped_from_status for reference
         stopped_from_status: String,
     },
+    /// Recovery authority could not be established safely; no task state was mutated.
+    Blocked {
+        warnings: Vec<ResumeValidationWarning>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartDisposition {
+    RecoveredToReview,
+    RestartedToReady,
 }
 
 /// Validate resume for Validated category states.

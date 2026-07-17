@@ -6,7 +6,7 @@ use crate::commands::execution_commands::lifecycle::{
 use crate::domain::entities::{
     artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
     ChatConversation, ChatConversationId, GitMode, IdeationAnalysisBaseRefKind, IdeationSession,
-    PlanBranch, PlanBranchId, PlanBranchStatus,
+    PlanBranch, PlanBranchId, PlanBranchStatus, TaskStep,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
@@ -6158,6 +6158,7 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
         task_id.as_str().to_string(),
         false,
         None,
+        None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6193,6 +6194,99 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
 }
 
 #[tokio::test]
+async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_attempt() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    execution_state.pause();
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Failed Restart Project".to_string(),
+        "/tmp/failed-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let missing_worktree_parent = tempfile::tempdir().expect("temp dir");
+    let mut task = Task::new(project.id, "Failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/stale-failed".to_string());
+    task.worktree_path = Some(
+        missing_worktree_parent
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    app_state.task_repo.update(&task).await.unwrap();
+    let pending_step = TaskStep::new(
+        task_id.clone(),
+        "authoritatively incomplete".to_string(),
+        0,
+        "test".to_string(),
+    );
+    app_state.task_step_repo.create(pending_step).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        true,
+        Some("retry failed task".to_string()),
+        Some("team".to_string()),
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should complete");
+
+    match result {
+        RestartResult::Success {
+            disposition,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(disposition, Some(RestartDisposition::RestartedToReady));
+            assert_eq!(resumed_to_status, InternalStatus::Ready.as_str());
+        }
+        other => panic!("expected fresh failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert!(stored.task_branch.is_none());
+    assert!(stored.worktree_path.is_none());
+    assert!(stored.merge_commit_sha.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["agent_variant"], "team");
+}
+
+#[tokio::test]
 async fn restart_task_from_stopped_merge_returns_validation_warning_before_transition() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     let app_state = AppState::new_test();
@@ -6221,6 +6315,7 @@ async fn restart_task_from_stopped_merge_returns_validation_warning_before_trans
     let result = restart_task(
         task_id.as_str().to_string(),
         true,
+        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
@@ -6322,9 +6417,9 @@ fn test_resume_category_serialization() {
     let validated_json = serde_json::to_string(&validated).unwrap();
     let redirect_json = serde_json::to_string(&redirect).unwrap();
 
-    assert!(direct_json.contains("Direct"));
-    assert!(validated_json.contains("Validated"));
-    assert!(redirect_json.contains("Redirect"));
+    assert_eq!(direct_json, "\"direct\"");
+    assert_eq!(validated_json, "\"validated\"");
+    assert_eq!(redirect_json, "\"redirect\"");
 }
 
 // ========================================

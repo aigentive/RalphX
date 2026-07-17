@@ -1,0 +1,554 @@
+use super::*;
+use crate::domain::entities::task_metadata::StopRetryingReason;
+use crate::domain::entities::{
+    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource,
+};
+use crate::domain::entities::{
+    ProjectId, TaskStep, ValidationCacheDecision, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus,
+};
+use crate::infrastructure::memory::{MemoryTaskRepository, MemoryTaskStepRepository};
+
+fn git(path: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_blocks_dirty_current_attempt_without_clearing_refs() {
+    use crate::application::AppState;
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatContextType, ChatConversation, Project,
+    };
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Recovery Classifier".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Preserve dirty work".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recover".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    std::fs::create_dir_all(&worktree).unwrap();
+    git(&worktree, &["init", "-b", "task/recover"]);
+    git(&worktree, &["config", "user.email", "test@example.com"]);
+    git(&worktree, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(worktree.join("tracked.txt"), "initial\n").unwrap();
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "initial"]);
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    let task_id = task.id.clone();
+    state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    // The memory repository applies the transition while recording history; restore the
+    // incident state so the classifier sees the same Failed row as production.
+    state.task_repo.update(&task).await.unwrap();
+
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    state.task_step_repo.create(step).await.unwrap();
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation.id);
+    run.status = AgentRunStatus::Completed;
+    run.completed_at = Some(chrono::Utc::now());
+    state.agent_run_repo.create(run).await.unwrap();
+
+    std::fs::write(worktree.join("tracked.txt"), "uncommitted\n").unwrap();
+    let classification = classify_failed_restart(&state, &task).await;
+    let FailedRestartClassification::Blocked(warnings) = classification else {
+        panic!("dirty current attempt must block, got {classification:?}");
+    };
+    assert_eq!(warnings[0].code, "dirty_worktree");
+
+    let stored = state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Failed);
+    assert_eq!(stored.task_branch.as_deref(), Some("task/recover"));
+    assert_eq!(
+        stored.worktree_path.as_deref(),
+        task.worktree_path.as_deref()
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_blocks_when_execution_attempt_authority_is_missing() {
+    use crate::application::AppState;
+
+    let state = AppState::new_test();
+    let project = crate::domain::entities::Project::new(
+        "Missing attempt authority".to_string(),
+        "/tmp/missing-attempt-authority".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id, "Do not discard preserved work".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/preserved".to_string());
+    task.worktree_path = Some("/tmp/preserved-worktree".to_string());
+    task.merge_commit_sha = Some("preserved-sha".to_string());
+    state.task_repo.create(task.clone()).await.unwrap();
+
+    let classification = classify_failed_restart(&state, &task).await;
+    let FailedRestartClassification::Blocked(warnings) = classification else {
+        panic!("missing attempt authority must block, got {classification:?}");
+    };
+    assert_eq!(warnings[0].code, "missing_execution_episode");
+
+    let stored = state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Failed);
+    assert_eq!(stored.task_branch, task.task_branch);
+    assert_eq!(stored.worktree_path, task.worktree_path);
+    assert_eq!(stored.merge_commit_sha, task.merge_commit_sha);
+}
+
+#[tokio::test]
+async fn failed_recovery_accepts_complete_current_attempt_proof() {
+    use crate::application::AppState;
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatContextType, ChatConversation, Project,
+    };
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Recovery proof".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Recover this attempt".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recover-proof".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    std::fs::create_dir_all(&worktree).unwrap();
+    git(&worktree, &["init", "-b", "task/recover-proof"]);
+    git(&worktree, &["config", "user.email", "test@example.com"]);
+    git(&worktree, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(worktree.join("tracked.txt"), "base\n").unwrap();
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "base"]);
+    let base_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    std::fs::write(worktree.join("tracked.txt"), "completed work\n").unwrap();
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "completed work"]);
+    let promoted_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    state.task_repo.update(&task).await.unwrap();
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    state.task_step_repo.create(step).await.unwrap();
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation.id);
+    agent_run.status = AgentRunStatus::Completed;
+    agent_run.completed_at = Some(chrono::Utc::now());
+    let agent_run = state.agent_run_repo.create(agent_run).await.unwrap();
+
+    let validation_run = ValidationRun {
+        id: "validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project.id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.clone()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.clone()),
+        base_ref: Some("base".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+    };
+    state
+        .validation_run_repo
+        .create_run(&validation_run)
+        .await
+        .unwrap();
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: "validation-command".to_string(),
+            validation_run_id: validation_run.id.clone(),
+            task_id: task_id.clone(),
+            project_id: project.id,
+            command_source: ValidationCommandSource::ProjectAnalysisRef,
+            command_ref: Some("tests".to_string()),
+            command: "cargo test".to_string(),
+            cwd: worktree.to_string_lossy().into_owned(),
+            label: Some("Tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "validation-cache".to_string(),
+            cache_decision: ValidationCacheDecision::Ran,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: None,
+            resolved_shell_path: None,
+            head_sha: Some(promoted_sha.clone()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let classification = classify_failed_restart(&state, &task).await;
+    let FailedRestartClassification::RecoverToReview(evidence) = classification else {
+        panic!("complete current attempt must recover, got {classification:?}");
+    };
+    assert_eq!(evidence.agent_run_id, agent_run.id.as_str());
+    assert_eq!(evidence.validation_run_id, validation_run.id);
+    assert_eq!(evidence.promoted_commit_sha, promoted_sha);
+}
+
+fn stopped_recovery_metadata(auto_recovery_count: u32) -> String {
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Failed;
+    recovery.stop_retrying = true;
+    recovery.auto_recovery_count = auto_recovery_count;
+    recovery.unrecoverable_reason = Some(StopRetryingReason::ManualStop);
+    recovery.append_event(ExecutionRecoveryEvent::new(
+        ExecutionRecoveryEventKind::Failed,
+        ExecutionRecoverySource::System,
+        ExecutionRecoveryReasonCode::Unknown,
+        "stopped before restart",
+    ));
+    recovery.update_task_metadata(None).unwrap()
+}
+
+#[tokio::test]
+async fn failed_ready_restart_clears_stale_refs_and_preserves_completed_steps() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-restart".to_string());
+
+    let mut task = Task::new(project_id, "Failed restart".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/stale".to_string());
+    task.worktree_path = Some("/tmp/stale-worktree".to_string());
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    task.metadata = Some(stopped_recovery_metadata(3));
+    let task_id = task.id.clone();
+    task_repo.create(task.clone()).await.unwrap();
+
+    let mut completed_step = TaskStep::new(
+        task_id.clone(),
+        "completed".to_string(),
+        0,
+        "test".to_string(),
+    );
+    completed_step.status = TaskStepStatus::Completed;
+    task_step_repo.create(completed_step).await.unwrap();
+
+    let mut failed_step =
+        TaskStep::new(task_id.clone(), "failed".to_string(), 1, "test".to_string());
+    failed_step.status = TaskStepStatus::Failed;
+    failed_step.started_at = Some(chrono::Utc::now());
+    failed_step.completed_at = Some(chrono::Utc::now());
+    failed_step.completion_note = Some("failed".to_string());
+    task_step_repo.create(failed_step).await.unwrap();
+
+    let preparation =
+        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+            .await
+            .unwrap();
+    assert_eq!(preparation.cleared_failed_steps, 1);
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert!(updated_task.task_branch.is_none());
+    assert!(updated_task.worktree_path.is_none());
+    assert!(updated_task.merge_commit_sha.is_none());
+
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["trigger_origin"], "retry");
+    assert_eq!(metadata["preserve_steps"], true);
+    assert!(metadata.get("agent_variant").is_none());
+    assert_eq!(
+        metadata["execution_recovery"]["last_state"],
+        serde_json::json!("retrying")
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["auto_recovery_count"],
+        serde_json::json!(3)
+    );
+
+    let steps = task_step_repo.get_by_task(&task_id).await.unwrap();
+    assert_eq!(steps[0].status, TaskStepStatus::Completed);
+    assert_eq!(steps[1].status, TaskStepStatus::Pending);
+    assert!(steps[1].started_at.is_none());
+    assert!(steps[1].completed_at.is_none());
+    assert!(steps[1].completion_note.is_none());
+}
+
+#[tokio::test]
+async fn cancelled_ready_restart_sets_variant_without_preserving_steps() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-cancelled-restart".to_string());
+
+    let mut task = Task::new(project_id, "Cancelled restart".to_string());
+    task.internal_status = InternalStatus::Cancelled;
+    task.task_branch = Some("task/cancelled-stale".to_string());
+    task.worktree_path = Some("/tmp/cancelled-stale-worktree".to_string());
+    task.merge_commit_sha = Some("cafebabe".to_string());
+    task.metadata = Some(stopped_recovery_metadata(2));
+    let task_id = task.id.clone();
+    task_repo.create(task.clone()).await.unwrap();
+
+    let preparation =
+        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, Some("solo"))
+            .await
+            .unwrap();
+
+    assert_eq!(preparation.cleared_failed_steps, 0);
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert!(updated_task.task_branch.is_none());
+    assert!(updated_task.worktree_path.is_none());
+    assert!(updated_task.merge_commit_sha.is_none());
+
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["trigger_origin"], "retry");
+    assert_eq!(metadata["agent_variant"], "solo");
+    assert!(metadata.get("preserve_steps").is_none());
+    assert_eq!(
+        metadata["execution_recovery"]["last_state"],
+        serde_json::json!("retrying")
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["auto_recovery_count"],
+        serde_json::json!(2)
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["events"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["stop_retrying"],
+        serde_json::json!(false)
+    );
+    assert!(metadata["execution_recovery"]
+        .get("unrecoverable_reason")
+        .is_none());
+}
+
+#[tokio::test]
+async fn stopped_ready_restart_clears_stale_refs_without_preserving_steps() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-stopped-restart".to_string());
+
+    let mut task = Task::new(project_id, "Stopped restart".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/stopped-stale".to_string());
+    task.worktree_path = Some("/tmp/stopped-stale-worktree".to_string());
+    task.merge_commit_sha = Some("0badcafe".to_string());
+    task.metadata = Some(stopped_recovery_metadata(4));
+    let task_id = task.id.clone();
+    task_repo.create(task.clone()).await.unwrap();
+
+    let preparation =
+        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+            .await
+            .unwrap();
+
+    assert_eq!(preparation.cleared_failed_steps, 0);
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert!(updated_task.task_branch.is_none());
+    assert!(updated_task.worktree_path.is_none());
+    assert!(updated_task.merge_commit_sha.is_none());
+
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["trigger_origin"], "retry");
+    assert!(metadata.get("preserve_steps").is_none());
+    assert_eq!(
+        metadata["execution_recovery"]["last_state"],
+        serde_json::json!("retrying")
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["auto_recovery_count"],
+        serde_json::json!(4)
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["stop_retrying"],
+        serde_json::json!(false)
+    );
+}
+
+#[tokio::test]
+async fn terminal_ready_restart_rejects_stale_status_without_clearing_refs() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-stale-restart".to_string());
+
+    let mut stale_task = Task::new(project_id, "Stale failed restart".to_string());
+    stale_task.internal_status = InternalStatus::Failed;
+    stale_task.task_branch = Some("task/preserve-on-race".to_string());
+    stale_task.worktree_path = Some("/tmp/missing-stale-worktree".to_string());
+    stale_task.merge_commit_sha = Some("preserve-on-race".to_string());
+
+    let mut concurrent_task = stale_task.clone();
+    concurrent_task.internal_status = InternalStatus::PendingReview;
+    task_repo.create(concurrent_task.clone()).await.unwrap();
+
+    let error = prepare_terminal_task_for_ready_restart(
+        &task_repo,
+        &task_step_repo,
+        &stale_task,
+        Some("team"),
+    )
+    .await
+    .expect_err("stale terminal preparation must lose optimistic authority");
+    assert!(error.to_string().contains("changed concurrently"));
+
+    let stored = task_repo.get_by_id(&stale_task.id).await.unwrap().unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::PendingReview);
+    assert_eq!(stored.task_branch, concurrent_task.task_branch);
+    assert_eq!(stored.worktree_path, concurrent_task.worktree_path);
+    assert_eq!(stored.merge_commit_sha, concurrent_task.merge_commit_sha);
+}
+
+#[tokio::test]
+async fn terminal_ready_restart_blocks_when_existing_worktree_is_dirty() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-dirty-restart".to_string());
+    let worktree = tempfile::tempdir().expect("temp worktree");
+    let git_init = std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .arg(worktree.path())
+        .status()
+        .expect("run git init");
+    assert!(git_init.success(), "git init should succeed");
+    std::fs::write(worktree.path().join("dirty.txt"), "dirty").expect("write dirty file");
+    let worktree_path = worktree.path().to_string_lossy().into_owned();
+
+    let mut task = Task::new(project_id, "Dirty restart".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/dirty-stale".to_string());
+    task.worktree_path = Some(worktree_path.clone());
+    task.merge_commit_sha = Some("baadf00d".to_string());
+    task.metadata = Some(stopped_recovery_metadata(5));
+    let task_id = task.id.clone();
+    task_repo.create(task.clone()).await.unwrap();
+
+    let err = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+        .await
+        .expect_err("dirty restart should be blocked");
+
+    match err {
+        AppError::Validation(message) => {
+            assert!(message.contains("Cannot restart task"));
+            assert!(message.contains("has uncommitted changes"));
+        }
+        other => panic!("expected validation error, got {other:?}"),
+    }
+
+    let stored = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(stored.task_branch.as_deref(), Some("task/dirty-stale"));
+    assert_eq!(
+        stored.worktree_path.as_deref(),
+        Some(worktree_path.as_str())
+    );
+    assert_eq!(stored.merge_commit_sha.as_deref(), Some("baadf00d"));
+}
+
+#[tokio::test]
+async fn non_terminal_ready_restart_preparation_is_noop() {
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let project_id = ProjectId::from_string("project-ready-noop".to_string());
+
+    let mut task = Task::new(project_id, "Ready noop".to_string());
+    task.internal_status = InternalStatus::Ready;
+    task.task_branch = Some("task/keep".to_string());
+    task.worktree_path = Some("/tmp/keep-worktree".to_string());
+    task.merge_commit_sha = Some("feedface".to_string());
+
+    let preparation =
+        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, Some("solo"))
+            .await
+            .unwrap();
+
+    assert_eq!(preparation, ReadyRestartPreparation::default());
+    assert!(
+        task_repo.get_by_id(&task.id).await.unwrap().is_none(),
+        "non-terminal preparation should not persist a task update"
+    );
+}
