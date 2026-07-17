@@ -28,6 +28,32 @@ release_analysis_normalize_version() {
   printf '%s\n' "${version}"
 }
 
+release_analysis_resolve_notes_from_tag() {
+  local latest_tag="$1"
+  local requested_tag="$2"
+  local analysis_from
+
+  analysis_from="$(printf '%s' "${requested_tag}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "${analysis_from}" ]]; then
+    printf '%s\n' "${latest_tag}"
+    return
+  fi
+
+  [[ "${analysis_from}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || release_analysis_die "Invalid release_notes_from '${analysis_from}': must be an exact vX.Y.Z release tag (for recovery, use the last published release tag)."
+
+  git rev-parse -q --verify "refs/tags/${analysis_from}^{commit}" >/dev/null 2>&1 \
+    || release_analysis_die "Invalid release_notes_from '${analysis_from}': tag does not exist (for recovery, use the last published release tag)."
+
+  git merge-base --is-ancestor "${analysis_from}^{commit}" HEAD \
+    || release_analysis_die "Invalid release_notes_from '${analysis_from}': tag is not reachable from HEAD (for recovery, use the last published release tag)."
+
+  git merge-base --is-ancestor "${analysis_from}^{commit}" "${latest_tag}^{commit}" \
+    || release_analysis_die "Invalid release_notes_from '${analysis_from}': tag must be equal to or older than latest tag ${latest_tag} (for recovery, use the last published release tag)."
+
+  printf '%s\n' "${analysis_from}"
+}
+
 release_analysis_compare_versions() {
   local left
   local right
