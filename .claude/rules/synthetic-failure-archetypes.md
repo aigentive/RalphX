@@ -6,7 +6,7 @@ paths:
   - "src-tauri/src/application/chat_service/**"
   - "src-tauri/src/commands/**"
   - "src-tauri/src/http_server/**"
-  - "frontend/src/hooks/useAgentEvents.ts"
+  - "frontend/frontend/src/hooks/useAgentEvents.ts"
   - "frontend/src/components/Chat/**"
   - "agents/ralphx-ideation-team-lead/**"
   - "agents/ralphx-ideation/**"
@@ -83,7 +83,7 @@ Evaluation specialists and plan critics MUST check proposed changes against thes
 | Field | Detail |
 |-------|--------|
 | **Trigger** | New session or agent type added without wiring UI store key, event handlers, or status transitions |
-| **Affected Files** | `src/components/Chat/IntegratedChatPanel.tsx`, `src/hooks/useAgentEvents.ts`, `src-tauri/src/commands/execution_commands.rs` |
+| **Affected Files** | `frontend/src/components/Chat/IntegratedChatPanel.tsx`, `src/hooks/useAgentEvents.ts`, `src-tauri/src/commands/execution_commands.rs` |
 | **Evidence** | Prior agent-status / UI-state mismatches and silent-exit cleanup bugs |
 | **Still Active?** | Periodic — flares up with each new agent type |
 | **Check** | Does this add a new agent/session type? → `.claude/rules/event-coverage-checklist.md` |

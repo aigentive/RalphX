@@ -7,14 +7,14 @@ Task detail views: @../../.claude/rules/task-detail-views.md
 Interaction performance: @../../.claude/rules/frontend-interaction-performance.md
 
 ## Stack
-React 19.1 | TS 5.8 | Zustand 5.0+immer | TanStack Query 5.90 | Tailwind 4.1 | Zod 4.3
-dnd-kit 6.3 | Vite 7.0 | Vitest 4.0 | Testing Library 16.3 | Tauri API 2.x
+React 19.2 | TS 6.0 | Zustand 5.0+immer | TanStack Query 5.100 | Tailwind 4.1 | Zod 4.4
+dnd-kit 6.3 | Vite 8.0 | Vitest 4.1 | Testing Library 16.3 | Tauri API 2.x
 
 ## Key Directories
 ```
 src/
 ├─ api/           # Tauri wrappers
-├─ components/    # UI (Chat/, Task/, Ideation/, ui/)
+├─ components/    # UI (Chat/, tasks/, TaskGraph/, Ideation/, ui/)
 ├─ hooks/         # TanStack Query + custom
 ├─ lib/           # tauri.ts (typedInvoke), queryClient.ts
 ├─ stores/        # Zustand+immer
