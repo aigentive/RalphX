@@ -28,4 +28,4 @@ Prevent regressions where agents or backend code assume the active user project 
 | Generated plugin materialization | `src-tauri/src/infrastructure/agents/claude/generated_plugin.rs` |
 | Runtime log placement | `src-tauri/src/utils/runtime_log_paths.rs`, `plugins/app/ralphx-mcp-server/src/redact.ts` |
 | Delegation policy enforcement | `src-tauri/src/http_server/handlers/coordination/mod.rs` |
-| Regression coverage | `src-tauri/src/infrastructure/agents/harness_agent_catalog_tests.rs`, `src-tauri/tests/delegation_handlers.rs` |
+| Regression coverage | `src-tauri/src/infrastructure/agents/harness_agent_catalog_tests.rs`, `src-tauri/tests/suite_http_handlers/delegation_handlers.rs` |
