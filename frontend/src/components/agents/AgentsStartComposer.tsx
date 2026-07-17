@@ -892,6 +892,8 @@ export function AgentsStartComposer({
 
   const handleResetRoleDefault = useCallback(async () => {
     clearStartError();
+    clearLastRuntimeForProject(projectId);
+    setRoleOverrideKey(null);
     const result = await roleDefaultQuery.refetch();
     if (!result.data) {
       const message =
@@ -901,8 +903,6 @@ export function AgentsStartComposer({
       setError(plainStartComposerError(message));
       return;
     }
-    clearLastRuntimeForProject(projectId);
-    setRoleOverrideKey(null);
     applyRoleDefault(result.data);
   }, [
     applyRoleDefault,
@@ -1480,6 +1480,10 @@ export function AgentsStartComposer({
               onValueChange: (value) => {
                 clearStartError();
                 const nextMode = value as AgentConversationWorkspaceMode;
+                if (nextMode !== mode) {
+                  clearLastRuntimeForProject(projectId);
+                  setRoleOverrideKey(null);
+                }
                 setMode(nextMode);
                 if (nextMode !== "automation") {
                   setAutomationAuthoringMode(null);

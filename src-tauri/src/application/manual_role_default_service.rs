@@ -14,6 +14,7 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
+use super::agent_capability_gate::AgentCapabilityGate;
 use super::manual_router_config::{load_manual_router_file, ManualRouterSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -54,6 +55,7 @@ pub struct ManualRoleDefaultService {
     lane_repo: Arc<dyn AgentLaneSettingsRepository>,
     provider_repo: Arc<dyn AgentProviderSettingsRepository>,
     persona_repo: Arc<dyn PersonaRepository>,
+    capability_gate: Arc<AgentCapabilityGate>,
     personas_enabled: bool,
     global_router_path: PathBuf,
 }
@@ -64,6 +66,7 @@ impl ManualRoleDefaultService {
         lane_repo: Arc<dyn AgentLaneSettingsRepository>,
         provider_repo: Arc<dyn AgentProviderSettingsRepository>,
         persona_repo: Arc<dyn PersonaRepository>,
+        capability_gate: Arc<AgentCapabilityGate>,
         personas_enabled: bool,
         global_router_path: PathBuf,
     ) -> Self {
@@ -72,6 +75,7 @@ impl ManualRoleDefaultService {
             lane_repo,
             provider_repo,
             persona_repo,
+            capability_gate,
             personas_enabled,
             global_router_path,
         }
@@ -157,12 +161,17 @@ impl ManualRoleDefaultService {
             .map_err(|error| repository_error("default provider settings", error))?
             .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(DEFAULT_AGENT_HARNESS));
         let value = provider_default(provider);
-        self.validate_value(role, &value).await?;
+        validate_role_value(role, &value)?;
         Ok(resolved(role, value, ManualDefaultSource::ProviderDefault))
     }
 
     async fn validate_value(&self, role: RoutingRole, value: &ManualRoleDefault) -> AppResult<()> {
         validate_role_value(role, value)?;
+        crate::application::agent_capability_validation::validate_manual_role_runtime_capabilities(
+            value,
+            &self.capability_gate,
+        )
+        .map_err(AppError::Validation)?;
         let Some(persona_id) = value.persona_id.as_ref() else {
             return Ok(());
         };

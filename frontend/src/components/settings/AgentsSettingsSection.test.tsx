@@ -13,6 +13,7 @@ const testState = vi.hoisted(() => ({
   activeProject: null as { id: string; name: string } | null,
   requestedScopes: [] as Array<string | null>,
   isLoading: false,
+  error: null as unknown,
 }));
 
 vi.mock("@/hooks/useManualRoleDefaults", () => ({
@@ -24,8 +25,8 @@ vi.mock("@/hooks/useManualRoleDefaults", () => ({
       roles: roleFixtures,
     },
     isLoading: testState.isLoading,
-    isError: false,
-    error: null,
+    isError: testState.error !== null,
+    error: testState.error,
     isSaving: false,
     updateDefault,
     clearDefault,
@@ -140,6 +141,7 @@ describe("AgentsSettingsSection", () => {
     testState.activeProject = null;
     testState.requestedScopes.length = 0;
     testState.isLoading = false;
+    testState.error = null;
   });
 
   it("renders the seven backend-returned families without a frontend role catalog", () => {
@@ -214,5 +216,37 @@ describe("AgentsSettingsSection", () => {
     expect(
       screen.getAllByText("Persona is limited to Workspace Project conversations in V1").length,
     ).toBeGreaterThan(0);
+  });
+
+  it("filters roles, keeps matching families expanded, and restores collapsed state", async () => {
+    const user = userEvent.setup();
+    renderSection();
+
+    const workspace = screen.getByRole("button", { name: /^Workspace \(1\)$/ });
+    await user.click(workspace);
+    expect(workspace).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "Workspace role provider" }))
+      .not.toBeInTheDocument();
+
+    const search = screen.getByRole("searchbox", { name: "Search agent roles" });
+    await user.type(search, "workspace");
+    expect(workspace).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+
+    await user.clear(search);
+    expect(workspace).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows load failures and an empty search result", async () => {
+    const user = userEvent.setup();
+    testState.error = new Error("Catalog unavailable");
+    renderSection();
+
+    expect(screen.getByText("Catalog unavailable")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search agent roles" }),
+      "missing",
+    );
+    expect(screen.getByText("No agent roles match this search.")).toBeInTheDocument();
   });
 });
