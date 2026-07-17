@@ -3129,6 +3129,40 @@ describe("AgentsArtifactPane", () => {
     ).toBeNull();
   });
 
+  it("colors an approved-anyway blocking Review tab as a warning", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewOutcome: "blocking",
+        reviewGateStatus: "passed",
+        reviewArtifactId: "review-artifact-1",
+        reviewArtifactVersion: 2,
+        reviewGateBypassedAt: "2026-07-10T00:05:00.000Z",
+        reviewGateBypassedTargetScope: "selected_source",
+        reviewGateBypassedDiffFingerprint: "fingerprint-351",
+        reviewGateBypassedArtifactId: "review-artifact-1",
+        reviewGateBypassedArtifactVersion: 2,
+        isCurrent: true,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+    const reviewIcon = reviewTab.querySelector("svg");
+
+    expect(reviewIcon).toHaveStyle({ color: "var(--status-warning)" });
+    expect(reviewIcon).not.toHaveStyle({ color: "var(--status-success)" });
+  });
+
   it("starts an initial Review only from the Run review action", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({

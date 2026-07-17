@@ -118,6 +118,7 @@ import {
 import { AgentReviewPanel } from "./AgentReviewPanel";
 import {
   hasWorkspaceReviewPublishAuthorization,
+  isWorkspaceReviewApprovedAnyway,
   isWorkspaceReviewBlockingPublish,
 } from "./workspaceReviewAuthorization";
 import {
@@ -1331,6 +1332,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewTabIconColor = (() => {
     if (isWorkspaceReviewRunning) return "var(--accent-primary)";
     if (workspaceReviewBlocked) return "var(--status-error)";
+    if (isWorkspaceReviewApprovedAnyway(reviewDisplayContext))
+      return "var(--status-warning)";
     if (hasWorkspaceReviewPublishAuthorization(reviewDisplayContext))
       return "var(--status-success)";
     if (
