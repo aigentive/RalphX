@@ -394,6 +394,7 @@ impl PrPollerRegistry {
         pr_number: i64,
         working_dir: &Path,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> crate::AppResult<bool> {
         let Some(github) = self.github_service.as_ref() else {
@@ -406,6 +407,7 @@ impl PrPollerRegistry {
             pr_number,
             conversation_id,
             workspace_repo,
+            Some(agent_run_repo),
             chat_service,
         )
         .await
@@ -1107,6 +1109,7 @@ async fn agent_workspace_poll_loop(
                     pr_number,
                     &conversation_id,
                     Arc::clone(&workspace_repo),
+                    Some(Arc::clone(&agent_run_repo)),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -2237,17 +2240,15 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &workspace,
         &issue,
     );
+    let send_options =
+        agent_workspace_pr_fixer_send_options(&workspace, working_dir, agent_run_repo.as_ref())
+            .await?;
     chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
             &message,
-            SendMessageOptions {
-                conversation_id_override: Some(workspace.conversation_id.clone()),
-                agent_name_override: Some(AGENT_WORKSPACE_PR_FIXER.to_string()),
-                working_directory_override: Some(working_dir.to_path_buf()),
-                ..Default::default()
-            },
+            send_options,
         )
         .await
         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
@@ -2326,6 +2327,37 @@ async fn agent_workspace_pr_autofix_repair_in_flight(
         .get_active_for_conversation(&workspace.conversation_id)
         .await?
         .is_some())
+}
+
+async fn agent_workspace_pr_fixer_send_options(
+    workspace: &AgentConversationWorkspace,
+    working_directory: &Path,
+    agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
+) -> crate::AppResult<SendMessageOptions> {
+    let latest_run = match agent_run_repo {
+        Some(repo) => {
+            repo.get_latest_for_conversation(&workspace.conversation_id)
+                .await?
+        }
+        None => None,
+    };
+
+    Ok(SendMessageOptions {
+        conversation_id_override: Some(workspace.conversation_id.clone()),
+        agent_name_override: Some(AGENT_WORKSPACE_PR_FIXER.to_string()),
+        harness_override: latest_run.as_ref().and_then(|run| run.harness),
+        model_override: latest_run.as_ref().and_then(|run| {
+            run.logical_model
+                .clone()
+                .or_else(|| run.effective_model_id.clone())
+        }),
+        logical_effort_override: latest_run.as_ref().and_then(|run| run.logical_effort),
+        service_tier_override: latest_run.as_ref().and_then(|run| run.service_tier.clone()),
+        working_directory_override: Some(working_directory.to_path_buf()),
+        force_new_provider_session: true,
+        preserve_conversation_provider_session_ref: true,
+        ..Default::default()
+    })
 }
 
 async fn route_agent_workspace_pr_review_monitor_if_needed(
@@ -3035,6 +3067,7 @@ async fn route_agent_workspace_review_feedback_if_present(
     pr_number: i64,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
@@ -3092,19 +3125,22 @@ async fn route_agent_workspace_review_feedback_if_present(
     } else {
         agent_name_for_workspace_mode(workspace.mode)
     };
+    let send_options = if workspace.pr_autofix_enabled {
+        agent_workspace_pr_fixer_send_options(&workspace, working_dir, agent_run_repo.as_ref())
+            .await?
+    } else {
+        SendMessageOptions {
+            conversation_id_override: Some(workspace.conversation_id.clone()),
+            agent_name_override: Some(agent_name.to_string()),
+            ..Default::default()
+        }
+    };
     chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
             &message,
-            SendMessageOptions {
-                conversation_id_override: Some(workspace.conversation_id.clone()),
-                agent_name_override: Some(agent_name.to_string()),
-                working_directory_override: workspace
-                    .pr_autofix_enabled
-                    .then(|| PathBuf::from(&workspace.worktree_path)),
-                ..Default::default()
-            },
+            send_options,
         )
         .await
         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
@@ -3164,6 +3200,10 @@ fn build_agent_workspace_pr_review_message(
         out.push_str(
             "Start by calling `get_agent_workspace_pr_fix_context`; after committing the fix, call `complete_agent_workspace_pr_fix`.\n\n",
         );
+        out.push_str(&format!(
+            "Conversation ID: {}\n",
+            workspace.conversation_id.as_str()
+        ));
     }
     out.push_str(&format!("Review author: @{}\n", feedback.author));
     if let Some(submitted_at) = feedback.submitted_at.as_deref() {

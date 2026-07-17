@@ -1351,6 +1351,7 @@ async fn recover_one_agent_workspace_pr_poller(
                 pr_number,
                 &worktree_path,
                 Arc::clone(&workspace_repo),
+                Arc::clone(&agent_run_repo),
                 Arc::clone(&chat_service),
             )
             .await

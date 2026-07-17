@@ -219,6 +219,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             72,
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::new(MemoryAgentRunRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -275,6 +276,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             72,
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::new(MemoryAgentRunRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
