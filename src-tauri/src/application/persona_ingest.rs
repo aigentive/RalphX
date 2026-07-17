@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::utils::path_safety::{filesystem_error, require_under_root};
 
 pub use super::persona_ingest_batch::ingest_picked_roots;
 
@@ -491,16 +492,6 @@ fn validate_single_component(path: &Path) -> AppResult<()> {
     }
 }
 
-pub(super) fn require_under_root(path: &Path, root: &Path, label: &str) -> AppResult<()> {
-    if path.starts_with(root) {
-        Ok(())
-    } else {
-        Err(AppError::Validation(format!(
-            "{label} escapes its allowed root"
-        )))
-    }
-}
-
 fn is_denied_binary_path(path: &Path) -> bool {
     if path
         .file_name()
@@ -605,8 +596,4 @@ fn hashed_file_component(canonical_root: &Path, relative_display: &str) -> Strin
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("file-{encoded}")
-}
-
-pub(super) fn filesystem_error(action: &str, error: std::io::Error) -> AppError {
-    AppError::Infrastructure(format!("Failed to {action}: {error}"))
 }

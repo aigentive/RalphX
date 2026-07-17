@@ -777,6 +777,111 @@ async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_en
 }
 
 #[tokio::test]
+async fn legacy_refine_builder_without_ingest_spawns_deny_all_with_draft_tools() {
+    let (root, project_repo, project_id, _project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let cli_path = make_fake_codex_cli(&root);
+    let app_data_dir = root.path().join("app-data");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("legacy-bound-refine-draft".to_string());
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(&app_data_dir),
+    )
+    .await;
+    assert!(
+        roots.is_empty(),
+        "no ingest store must produce deny-all roots"
+    );
+
+    let agent_name =
+        ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+    let resolved_spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            agent_name,
+            Some(project_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Codex),
+            None,
+            None,
+        )
+        .await;
+    let launch = build_launch_plan_for_harness_with_persona_for_test(
+        AgentHarnessKind::Codex,
+        &cli_path,
+        &repo_plugin_dir(),
+        &conversation,
+        "refine this legacy persona",
+        None,
+        Some(agent_name),
+        None,
+        conversation.context_type,
+        conversation.context_id.as_str(),
+        Some(conversation.id.as_str()),
+        None,
+        &working_directory,
+        None,
+        Some(project_id.as_str()),
+        &roots,
+        false,
+        Arc::new(MemoryChatAttachmentRepository::new()),
+        Arc::new(MemoryArtifactRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        &[],
+        0,
+        false,
+        None,
+        &resolved_spawn_settings,
+        None,
+        None,
+    )
+    .await
+    .expect("legacy refine builder should reach the production launch path");
+    let command = match launch {
+        ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
+        ResolvedChatHarnessLaunch::Interactive { .. } => {
+            panic!("Codex legacy refine launch must remain background")
+        }
+    };
+
+    let args = mcp_runtime_args(&command);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--filesystem-enforced", "1"]),
+        "legacy refine must keep filesystem enforcement enabled: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "--filesystem-read-root"),
+        "empty roots must remain deny-all: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()]),
+        "MCP identity must remain conversation-owned: {args:?}"
+    );
+    let rendered = final_spawnable_command(&command);
+    for tool in [
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+    ] {
+        assert!(
+            rendered.contains(tool),
+            "legacy refine must retain interview/draft tool guidance for {tool}: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn resume_command_prompt_includes_bound_persona_block() {
     let (conversation, persona) = bound_project_persona().await;
     let working_dir = tempfile::tempdir().expect("working directory");

@@ -45,6 +45,8 @@ use crate::application::UnavailableClickUpApiClient;
 use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
+
+pub type ApplicationExecutionState = ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,

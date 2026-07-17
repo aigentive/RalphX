@@ -754,7 +754,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
     let (block, roots) = recovery_retry_folder_refs_context(
         &app_handle,
         &conversation,
-        ChatContextType::Project,
         Some(project_id.as_str()),
         &project_root,
         true,
@@ -770,7 +769,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
     let (disabled_block, disabled_roots) = recovery_retry_folder_refs_context(
         &app_handle,
         &conversation,
-        ChatContextType::Project,
         Some(project_id.as_str()),
         &project_root,
         false,
@@ -785,7 +783,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
     let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
         &app_handle,
         &builder,
-        ChatContextType::Project,
         Some(project_id.as_str()),
         &project_root,
         true,

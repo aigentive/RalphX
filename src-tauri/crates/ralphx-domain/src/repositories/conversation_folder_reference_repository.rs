@@ -23,4 +23,9 @@ pub trait ConversationFolderReferenceRepository: Send + Sync {
         id: &ConversationFolderReferenceId,
         conversation_id: &ChatConversationId,
     ) -> AppResult<bool>;
+
+    async fn delete_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()>;
 }

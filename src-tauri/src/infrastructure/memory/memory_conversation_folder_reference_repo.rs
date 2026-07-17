@@ -86,4 +86,15 @@ impl ConversationFolderReferenceRepository for MemoryConversationFolderReference
         reference.removed_at = Some(Utc::now());
         Ok(true)
     }
+
+    async fn delete_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.references
+            .write()
+            .expect("folder references lock")
+            .retain(|_, reference| reference.conversation_id != *conversation_id);
+        Ok(())
+    }
 }

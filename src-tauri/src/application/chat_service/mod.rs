@@ -22,6 +22,7 @@ mod mcp_policy_launch_seam_tests;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
+mod resolved_conversation_spawn_context;
 #[doc(hidden)]
 pub use chat_service_recovery::attempt_session_recovery;
 mod chat_service_replay;
@@ -1541,47 +1542,6 @@ struct ResolvedProviderLaunchSettings {
 pub type ClaudeChatService<R = tauri::Wry> = AppChatService<R>;
 
 impl<R: Runtime> AppChatService<R> {
-    async fn render_folder_refs_prompt_block(
-        &self,
-        conversation: &ChatConversation,
-    ) -> Result<Option<String>, ChatServiceError> {
-        let conversation_id = &conversation.id;
-        if !crate::infrastructure::agents::claude::composer_folder_references_enabled() {
-            return Ok(None);
-        }
-        let skipped_reason = chat_service_context::folder_references_skip_reason(
-            conversation.context_type,
-            conversation.agent_mode,
-        );
-        if let Some(reason) = skipped_reason {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                reason,
-                "folder_refs_skipped"
-            );
-            return Ok(None);
-        }
-        let (Some(repository), Some(app_data_dir)) = (
-            self.conversation_folder_reference_repo.as_ref(),
-            self.folder_reference_app_data_dir.as_ref(),
-        ) else {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
-                "folder_refs_skipped"
-            );
-            return Ok(None);
-        };
-        crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
-            Arc::clone(repository),
-            app_data_dir.clone(),
-            crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
-        )
-        .render_prompt_block(conversation_id)
-        .await
-        .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
-    }
-
     pub fn new(
         chat_message_repo: Arc<dyn ChatMessageRepository>,
         chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
@@ -3962,37 +3922,19 @@ impl<R: Runtime> AppChatService<R> {
             .agent_workspace_prompt_context_for_send(context_type, conversation)
             .await?;
         let persona_ingest_app_data_dir: Option<std::path::PathBuf> = self.resolve_app_data_dir();
-        let conversation_id_for_roots = conversation.id.as_str();
-        let filesystem_read_roots = if let (Some(app_data_dir), Some(folder_reference_repo)) = (
+        let spawn_context = chat_service_context::resolve_conversation_spawn_context(
+            conversation,
+            conversation.agent_mode,
+            project_id,
+            Arc::clone(&self.project_repo),
+            working_directory,
+            persona_ingest_app_data_dir.as_deref(),
             self.folder_reference_app_data_dir.as_deref(),
-            self.conversation_folder_reference_repo.as_ref(),
-        ) {
-            chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
-                context_type,
-                project_id,
-                Arc::clone(&self.project_repo),
-                working_directory,
-                conversation.agent_mode,
-                Some(&conversation_id_for_roots),
-                app_data_dir,
-                Arc::clone(folder_reference_repo),
-                crate::infrastructure::agents::claude::composer_folder_references_enabled(),
-            )
-            .await
-            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
-        } else {
-            chat_service_context::resolve_mcp_filesystem_read_roots(
-                context_type,
-                project_id,
-                Arc::clone(&self.project_repo),
-                working_directory,
-                conversation.agent_mode,
-                Some(&conversation_id_for_roots),
-                persona_ingest_app_data_dir.as_deref(),
-            )
-            .await
-        };
-        let folder_refs_block = self.render_folder_refs_prompt_block(conversation).await?;
+            self.conversation_folder_reference_repo.as_ref().map(Arc::clone),
+            crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+        )
+        .await
+        .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
         let native_persona_injection_skipped_reason =
             crate::infrastructure::agents::claude::persona_injection_skipped_reason(
                 crate::infrastructure::agents::claude::native_agent_flag_enabled(),
@@ -4007,7 +3949,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             persona,
-            folder_refs_block.as_deref(),
+            spawn_context.folder_refs_block.as_deref(),
             agent_name_override,
             agent_profile,
             context_type,
@@ -4017,7 +3959,7 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
             entity_status,
             project_id,
-            &filesystem_read_roots,
+            &spawn_context.folder_roots,
             runtime_team_mode,
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use crate::application::standalone_workspace::{
-    ensure_workspace, standalone_workspaces_root, sweep_orphaned_standalone_workspaces,
+    create_workspace, resolve_workspace, standalone_workspaces_root,
+    sweep_orphaned_standalone_workspaces,
 };
 use crate::domain::entities::{ChatConversation, ProjectId};
 use crate::domain::repositories::ChatConversationRepository;
@@ -20,12 +21,12 @@ fn new_conversation_id() -> String {
 }
 
 #[test]
-fn ensure_workspace_is_idempotent_and_returns_same_path_twice() {
+fn create_workspace_is_idempotent_and_returns_same_path_twice() {
     let app_data_dir = TempDir::new().expect("temp app data dir");
     let conversation_id = new_conversation_id();
 
-    let first = ensure_workspace(app_data_dir.path(), &conversation_id).expect("first ensure");
-    let second = ensure_workspace(app_data_dir.path(), &conversation_id).expect("second ensure");
+    let first = create_workspace(app_data_dir.path(), &conversation_id).expect("first create");
+    let second = create_workspace(app_data_dir.path(), &conversation_id).expect("second create");
 
     assert_eq!(first, second, "ensure_workspace must be idempotent");
     assert!(first.is_dir(), "workspace must exist on disk");
@@ -48,12 +49,12 @@ fn ensure_workspace_is_idempotent_and_returns_same_path_twice() {
 }
 
 #[test]
-fn ensure_workspace_hashes_conversation_id_component() {
+fn create_workspace_hashes_conversation_id_component() {
     let app_data_dir = TempDir::new().expect("temp app data dir");
     let conversation_id = "very-distinctive-raw-conversation-id-marker";
 
-    let workspace = ensure_workspace(app_data_dir.path(), conversation_id)
-        .expect("ensure_workspace with a non-UUID id");
+    let workspace = create_workspace(app_data_dir.path(), conversation_id)
+        .expect("create_workspace with a non-UUID id");
 
     let workspace_display = workspace.to_string_lossy();
     assert!(
@@ -71,7 +72,7 @@ fn ensure_workspace_hashes_conversation_id_component() {
 }
 
 #[test]
-fn ensure_workspace_is_safe_under_concurrent_calls() {
+fn create_workspace_is_safe_under_concurrent_calls() {
     let app_data_dir = TempDir::new().expect("temp app data dir");
     let conversation_id = new_conversation_id();
     let app_data_dir_path = app_data_dir.path().to_path_buf();
@@ -81,8 +82,8 @@ fn ensure_workspace_is_safe_under_concurrent_calls() {
             let app_data_dir_path = app_data_dir_path.clone();
             let conversation_id = conversation_id.clone();
             std::thread::spawn(move || {
-                ensure_workspace(&app_data_dir_path, &conversation_id)
-                    .expect("concurrent ensure_workspace must succeed")
+                create_workspace(&app_data_dir_path, &conversation_id)
+                    .expect("concurrent create_workspace must succeed")
             })
         })
         .collect();
@@ -102,11 +103,11 @@ fn ensure_workspace_is_safe_under_concurrent_calls() {
 }
 
 #[test]
-fn ensure_workspace_path_traversal_conversation_id_stays_contained() {
+fn create_workspace_path_traversal_conversation_id_stays_contained() {
     let app_data_dir = TempDir::new().expect("temp app data dir");
     let malicious_id = "../../../evil";
 
-    let workspace = ensure_workspace(app_data_dir.path(), malicious_id)
+    let workspace = create_workspace(app_data_dir.path(), malicious_id)
         .expect("hashing makes the traversal payload inert");
 
     let canonical_root = standalone_workspaces_root(
@@ -129,12 +130,12 @@ fn ensure_workspace_path_traversal_conversation_id_stays_contained() {
 }
 
 #[test]
-fn ensure_workspace_returns_typed_error_when_root_segment_is_blocked_by_a_file() {
+fn create_workspace_returns_typed_error_when_root_segment_is_blocked_by_a_file() {
     let temp = TempDir::new().expect("temp dir");
     let blocked_app_data_dir = temp.path().join("blocked-app-data");
     fs::write(&blocked_app_data_dir, b"not a directory").expect("write blocking file");
 
-    let result = ensure_workspace(&blocked_app_data_dir, "any-conversation-id");
+    let result = create_workspace(&blocked_app_data_dir, "any-conversation-id");
 
     assert!(
         result.is_err(),
@@ -159,7 +160,7 @@ async fn sweep_removes_workspace_with_no_matching_conversation_row() {
     let repo: Arc<dyn ChatConversationRepository> =
         Arc::new(MemoryChatConversationRepository::new());
     let orphan_conversation_id = new_conversation_id();
-    let workspace = ensure_workspace(app_data_dir.path(), &orphan_conversation_id)
+    let workspace = create_workspace(app_data_dir.path(), &orphan_conversation_id)
         .expect("create orphan workspace");
     assert!(workspace.is_dir());
 
@@ -181,7 +182,7 @@ async fn sweep_retains_workspace_with_live_conversation_row() {
         Arc::new(MemoryChatConversationRepository::new());
     let conversation_id = seed_conversation(&repo).await;
     let workspace =
-        ensure_workspace(app_data_dir.path(), &conversation_id).expect("create live workspace");
+        create_workspace(app_data_dir.path(), &conversation_id).expect("create live workspace");
 
     let summary =
         sweep_orphaned_standalone_workspaces(app_data_dir.path(), Arc::clone(&repo)).await;
@@ -212,7 +213,7 @@ async fn sweep_retains_workspace_for_archived_conversation_with_live_db_row() {
     repo.create(conversation)
         .await
         .expect("seed archived conversation row");
-    let workspace = ensure_workspace(app_data_dir.path(), &conversation_id)
+    let workspace = create_workspace(app_data_dir.path(), &conversation_id)
         .expect("create workspace for archived conversation");
 
     let summary =
@@ -229,7 +230,7 @@ async fn sweep_retains_workspace_for_archived_conversation_with_live_db_row() {
 
     // Restore: clearing archived_at must not require recreating anything, since the
     // workspace was never deleted.
-    let restored = ensure_workspace(app_data_dir.path(), &conversation_id)
+    let restored = resolve_workspace(app_data_dir.path(), &conversation_id)
         .expect("workspace resolution after restore must keep working");
     assert_eq!(restored, workspace);
 }
@@ -282,7 +283,7 @@ async fn sweep_skips_unreadable_manifest_without_blocking_valid_neighbor_removal
 
     // Neighbor B: valid manifest, no matching DB row — must be removed.
     let orphan_conversation_id = new_conversation_id();
-    let valid_orphan_workspace = ensure_workspace(app_data_dir.path(), &orphan_conversation_id)
+    let valid_orphan_workspace = create_workspace(app_data_dir.path(), &orphan_conversation_id)
         .expect("create valid orphan workspace");
 
     let summary =

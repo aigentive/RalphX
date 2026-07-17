@@ -51,6 +51,13 @@ impl ConversationFolderReferenceRepository for FailingListRepository {
     ) -> crate::error::AppResult<bool> {
         unreachable!("test only exercises list_live")
     }
+
+    async fn delete_by_conversation_id(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<()> {
+        unreachable!("test only exercises list_live")
+    }
 }
 
 fn safe_child(root: &Path, name: &str) -> PathBuf {

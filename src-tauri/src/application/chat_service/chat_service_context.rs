@@ -47,7 +47,11 @@ use crate::application::persona_ingest::{
     live_persona_builder_ingest_root, PersonaBuilderIngestSessionLiveness,
 };
 use crate::application::persona_prompt::ResolvedPersona;
-use crate::application::standalone_workspace::ensure_workspace;
+use crate::application::standalone_workspace::resolve_workspace;
+
+pub use super::resolved_conversation_spawn_context::{
+    resolve_conversation_spawn_context, ResolvedConversationSpawnContext,
+};
 
 pub const FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE: &str = "folder_reference_context_unavailable";
 pub const FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE: &str = "folder_reference_prompt_unavailable";
@@ -383,20 +387,20 @@ struct BuildHarnessLaunchRequest<'a> {
     attachment_context_override: Option<&'a str>,
 }
 
-fn finalize_folder_refs_overlay(
+fn finalize_prompt_overlay(
     spawnable: SpawnableCommand,
-    persona_requested: bool,
-    folder_refs_requested: bool,
+    overlay: &crate::infrastructure::agents::persona_overlay::RenderedPromptOverlay,
     conversation_id: &str,
 ) -> SpawnableCommand {
-    if folder_refs_requested && !spawnable.persona_injected() {
+    let delivery = overlay.delivery(spawnable.persona_injected());
+    if overlay.folder_refs_requested && !delivery.folder_refs {
         tracing::warn!(
             conversation_id,
             reason = FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE,
             "folder_refs_skipped"
         );
     }
-    if persona_requested {
+    if overlay.persona_requested {
         spawnable
     } else {
         spawnable.with_persona_injection_outcome(false, None)
@@ -504,17 +508,14 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessCommandRequest<'_>,
     ) -> Result<ProviderSpawnableCommand, String> {
-        let persona_requested = request.persona.is_some();
-        let folder_refs_requested = request.folder_refs_block.is_some();
         let conversation_id = request.conversation.id.as_str();
-        let overlay_block =
-            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
-                request
-                    .persona
-                    .as_ref()
-                    .map(|persona| persona.block.as_str()),
-                request.folder_refs_block,
-            );
+        let overlay = crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay(
+            request
+                .persona
+                .as_ref()
+                .map(|persona| persona.block.as_str()),
+            request.folder_refs_block,
+        );
         match self {
             Self::Claude { cli_path } => Ok(ProviderSpawnableCommand {
                 spawnable: build_command(
@@ -522,7 +523,7 @@ impl ResolvedChatHarnessCli {
                     request.plugin_dir,
                     request.conversation,
                     request.user_message,
-                    overlay_block.as_deref(),
+                    overlay.block.as_deref(),
                     request.working_directory,
                     request.entity_status,
                     request.project_id,
@@ -540,14 +541,7 @@ impl ResolvedChatHarnessCli {
                     request.attachment_context_override,
                 )
                 .await
-                .map(|spawnable| {
-                    finalize_folder_refs_overlay(
-                        spawnable,
-                        persona_requested,
-                        folder_refs_requested,
-                        &conversation_id,
-                    )
-                })?,
+                .map(|spawnable| finalize_prompt_overlay(spawnable, &overlay, &conversation_id))?,
             }),
             Self::Codex {
                 cli_path,
@@ -573,7 +567,7 @@ impl ResolvedChatHarnessCli {
                         request.user_message,
                         request.conversation.bound_agent_name.as_deref(),
                         None,
-                        overlay_block.as_deref(),
+                        overlay.block.as_deref(),
                         None,
                         request.working_directory,
                         request.entity_status,
@@ -591,12 +585,7 @@ impl ResolvedChatHarnessCli {
                     )
                     .await
                     .map(|spawnable| {
-                        finalize_folder_refs_overlay(
-                            spawnable,
-                            persona_requested,
-                            folder_refs_requested,
-                            &conversation_id,
-                        )
+                        finalize_prompt_overlay(spawnable, &overlay, &conversation_id)
                     })?,
                 })
             }
@@ -607,17 +596,14 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessResumeCommandRequest<'_>,
     ) -> Result<ProviderSpawnableCommand, String> {
-        let persona_requested = request.persona.is_some();
-        let folder_refs_requested = request.folder_refs_block.is_some();
         let conversation_id = request.conversation_id;
-        let overlay_block =
-            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
-                request
-                    .persona
-                    .as_ref()
-                    .map(|persona| persona.block.as_str()),
-                request.folder_refs_block,
-            );
+        let overlay = crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay(
+            request
+                .persona
+                .as_ref()
+                .map(|persona| persona.block.as_str()),
+            request.folder_refs_block,
+        );
         match self {
             Self::Claude { cli_path } => {
                 let continuation_effort = request
@@ -642,7 +628,7 @@ impl ResolvedChatHarnessCli {
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
-                        overlay_block.as_deref(),
+                        overlay.block.as_deref(),
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -665,12 +651,7 @@ impl ResolvedChatHarnessCli {
                     )
                     .await
                     .map(|spawnable| {
-                        finalize_folder_refs_overlay(
-                            spawnable,
-                            persona_requested,
-                            folder_refs_requested,
-                            conversation_id,
-                        )
+                        finalize_prompt_overlay(spawnable, &overlay, conversation_id)
                     })?,
                 })
             }
@@ -739,7 +720,7 @@ impl ResolvedChatHarnessCli {
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
-                        overlay_block.as_deref(),
+                        overlay.block.as_deref(),
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -759,12 +740,7 @@ impl ResolvedChatHarnessCli {
                     )
                     .await
                     .map(|spawnable| {
-                        finalize_folder_refs_overlay(
-                            spawnable,
-                            persona_requested,
-                            folder_refs_requested,
-                            conversation_id,
-                        )
+                        finalize_prompt_overlay(spawnable, &overlay, conversation_id)
                     })?,
                 })
             }
@@ -775,14 +751,13 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessLaunchRequest<'_>,
     ) -> Result<ResolvedChatHarnessLaunch, String> {
-        let overlay_block =
-            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
-                request
-                    .persona
-                    .as_ref()
-                    .map(|persona| persona.block.as_str()),
-                request.folder_refs_block,
-            );
+        let overlay = crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay(
+            request
+                .persona
+                .as_ref()
+                .map(|persona| persona.block.as_str()),
+            request.folder_refs_block,
+        );
         match self {
             Self::Claude { cli_path } => {
                 let spawnable = build_interactive_command(
@@ -792,7 +767,7 @@ impl ResolvedChatHarnessCli {
                     request.user_message,
                     request.agent_name_override,
                     request.agent_profile,
-                    overlay_block.as_deref(),
+                    overlay.block.as_deref(),
                     request.agent_run_id,
                     request.working_directory,
                     request.entity_status,
@@ -812,13 +787,8 @@ impl ResolvedChatHarnessCli {
                 )
                 .await?;
 
-                let spawnable = finalize_folder_refs_overlay(
-                    spawnable,
-                    request.persona.is_some(),
-                    request.folder_refs_block.is_some(),
-                    request.conversation_id,
-                );
-
+                let spawnable =
+                    finalize_prompt_overlay(spawnable, &overlay, request.conversation_id);
                 Ok(ResolvedChatHarnessLaunch::Interactive {
                     cli_path,
                     spawnable,
@@ -843,7 +813,7 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
-                            overlay_block.as_deref(),
+                            overlay.block.as_deref(),
                             request.working_directory,
                             session_id,
                             request.project_id,
@@ -872,7 +842,7 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
-                            overlay_block.as_deref(),
+                            overlay.block.as_deref(),
                             request.agent_run_id,
                             request.working_directory,
                             request.entity_status,
@@ -892,13 +862,8 @@ impl ResolvedChatHarnessCli {
                     }
                 };
 
-                let spawnable = finalize_folder_refs_overlay(
-                    spawnable,
-                    request.persona.is_some(),
-                    request.folder_refs_block.is_some(),
-                    request.conversation_id,
-                );
-
+                let spawnable =
+                    finalize_prompt_overlay(spawnable, &overlay, request.conversation_id);
                 Ok(ResolvedChatHarnessLaunch::Background {
                     cli_path,
                     spawnable,
@@ -1934,7 +1899,7 @@ pub async fn resolve_mcp_filesystem_read_roots(
         let (Some(app_data_dir), Some(conversation_id)) = (app_data_dir, conversation_id) else {
             return Vec::new();
         };
-        return match ensure_workspace(app_data_dir, conversation_id) {
+        return match resolve_workspace(app_data_dir, conversation_id) {
             Ok(workspace_root) => vec![workspace_root],
             Err(error) => {
                 tracing::warn!(
@@ -2074,7 +2039,7 @@ pub async fn resolve_working_directory(
                         .to_string(),
                 );
             };
-            return ensure_workspace(app_data_dir, context_id).map_err(|error| {
+            return resolve_workspace(app_data_dir, context_id).map_err(|error| {
                 format!("Standalone workspace unavailable for {context_id}: {error}")
             });
         }
@@ -2673,7 +2638,9 @@ fn escape_xml_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn project_mcp_parent_conversation_id(conversation: &ChatConversation) -> Option<String> {
+pub(super) fn project_mcp_parent_conversation_id(
+    conversation: &ChatConversation,
+) -> Option<String> {
     if conversation.context_type != ChatContextType::Project {
         return None;
     }
@@ -4959,6 +4926,11 @@ mod tests {
         let app_data_dir = TempDir::new().expect("app data dir");
         let default_dir = PathBuf::from("/tmp/default-working-directory");
         let conversation_id = "standalone-conversation-with-workspace";
+        let expected = crate::application::standalone_workspace::create_workspace(
+            app_data_dir.path(),
+            conversation_id,
+        )
+        .expect("workspace creation must succeed before resolution");
 
         let result = resolve_working_directory(
             ChatContextType::Standalone,
@@ -4977,11 +4949,6 @@ mod tests {
             result, default_dir,
             "standalone CWD must never fall back to the generic default working directory"
         );
-        let expected = crate::application::standalone_workspace::ensure_workspace(
-            app_data_dir.path(),
-            conversation_id,
-        )
-        .expect("ensure_workspace must succeed for the same inputs");
         assert_eq!(result, expected);
         assert!(result.is_dir());
     }
@@ -5014,6 +4981,36 @@ mod tests {
         assert!(!error.is_empty());
     }
 
+    #[tokio::test]
+    async fn resolve_working_directory_standalone_deleted_workspace_fails_without_recreating() {
+        let app_data_dir = TempDir::new().expect("app data dir");
+        let conversation_id = "standalone-conversation-with-deleted-workspace";
+        let workspace = crate::application::standalone_workspace::create_workspace(
+            app_data_dir.path(),
+            conversation_id,
+        )
+        .expect("workspace creation should succeed");
+        fs::remove_dir_all(&workspace).expect("fixture workspace should be removed");
+
+        let result = resolve_working_directory(
+            ChatContextType::Standalone,
+            conversation_id,
+            Arc::new(MemoryProjectRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Path::new("/tmp/default-working-directory"),
+            Some(app_data_dir.path()),
+        )
+        .await;
+
+        assert!(result.is_err(), "deleted workspace must fail closed");
+        assert!(
+            !workspace.exists(),
+            "resolution must not recreate the workspace"
+        );
+    }
+
     /// Standalone-context MCP read roots resolve to exactly the conversation's private
     /// workspace — no project directory, no live folder references (non-goal §633 for v1).
     #[tokio::test]
@@ -5021,6 +5018,11 @@ mod tests {
         let app_data_dir = TempDir::new().expect("app data dir");
         let working_directory = PathBuf::from("/tmp/unused-standalone-working-directory");
         let conversation_id = "standalone-read-root-conversation";
+        let expected_root = crate::application::standalone_workspace::create_workspace(
+            app_data_dir.path(),
+            conversation_id,
+        )
+        .expect("workspace creation must succeed before read-root resolution");
 
         let roots = resolve_mcp_filesystem_read_roots(
             ChatContextType::Standalone,
@@ -5033,11 +5035,6 @@ mod tests {
         )
         .await;
 
-        let expected_root = crate::application::standalone_workspace::ensure_workspace(
-            app_data_dir.path(),
-            conversation_id,
-        )
-        .expect("ensure_workspace must succeed");
         assert_eq!(
             roots,
             vec![expected_root],

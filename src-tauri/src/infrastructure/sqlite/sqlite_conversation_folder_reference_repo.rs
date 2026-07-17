@@ -180,4 +180,20 @@ impl ConversationFolderReferenceRepository for SqliteConversationFolderReference
             })
             .await
     }
+
+    async fn delete_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str();
+        self.db
+            .run(move |connection| {
+                connection.execute(
+                    "DELETE FROM conversation_folder_references WHERE conversation_id = ?1",
+                    [conversation_id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
 }

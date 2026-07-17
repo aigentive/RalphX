@@ -9,6 +9,7 @@ use ralphx_lib::application::chat_service::{
 use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
 };
+use ralphx_lib::application::standalone_workspace::create_workspace;
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
@@ -311,6 +312,11 @@ async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
         })
         .await
         .expect("create standalone builder conversation");
+    create_workspace(
+        initial_state.app_paths.app_data_dir(),
+        &conversation.id.as_str(),
+    )
+    .expect("create standalone builder workspace");
     let app = tauri::test::mock_builder()
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

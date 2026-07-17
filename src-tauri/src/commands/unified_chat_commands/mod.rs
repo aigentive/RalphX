@@ -136,6 +136,7 @@ use crate::domain::services::{
     ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
+use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::{
     agent_personas_enabled, git_runtime_config, ui_feature_flags_config,
@@ -3238,6 +3239,18 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
         execution_state.inner(),
         team_service.inner().clone(),
         app,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn abort_seeded_agent_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation(
+        state.inner(),
+        &ChatConversationId::from_string(conversation_id),
     )
     .await
 }

@@ -1,0 +1,439 @@
+use super::*;
+
+pub(super) struct FinishFlow {
+    pub(super) input: StartAgentConversationInput,
+    pub(super) command_started: Instant,
+    pub(super) context_type: ChatContextType,
+    pub(super) context_type_label: &'static str,
+    pub(super) context_log_id: String,
+    pub(super) conversation: ChatConversation,
+    pub(super) should_create_conversation: bool,
+    pub(super) workspace: Option<AgentConversationWorkspace>,
+    pub(super) source_persona_id: Option<PersonaId>,
+    pub(super) persona_id: Option<PersonaId>,
+    pub(super) validated_clickup_task:
+        Option<crate::application::clickup_integration_service::ClickUpTaskContent>,
+    pub(super) project: Option<crate::domain::entities::Project>,
+    pub(super) requested_coordination_mode: Option<CoordinationMode>,
+    pub(super) harness_override: Option<AgentHarnessKind>,
+    pub(super) mode: AgentConversationWorkspaceMode,
+    pub(super) composer_artifact_references: Vec<ComposerArtifactReference>,
+}
+
+impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
+    pub(super) async fn persist_and_spawn(
+        self,
+        flow: FinishFlow,
+    ) -> Result<AgentConversationStartResult, String> {
+        let FinishFlow {
+            input,
+            command_started,
+            context_type,
+            context_type_label,
+            context_log_id,
+            conversation,
+            should_create_conversation,
+            workspace,
+            source_persona_id,
+            persona_id,
+            validated_clickup_task,
+            project,
+            requested_coordination_mode,
+            harness_override,
+            mode,
+            composer_artifact_references,
+        } = flow;
+        let conversation_persist_started = Instant::now();
+        emit_start_agent_conversation_progress(
+            &self.deps.app_handle,
+            context_type_label,
+            &context_log_id,
+            &conversation.id,
+            "persist_conversation",
+            "Saving chat",
+        );
+        let mut conversation = if should_create_conversation {
+            self.deps
+                .state
+                .chat_conversation_repo
+                .create(conversation)
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            self.deps
+                .state
+                .chat_conversation_repo
+                .update_agent_mode(&conversation.id, Some(mode))
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(coordination_mode) = requested_coordination_mode {
+                self.deps
+                    .state
+                    .chat_conversation_repo
+                    .update_coordination_mode(&conversation.id, coordination_mode)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            conversation
+        };
+        if context_type == ChatContextType::Standalone {
+            if let Err(error) = create_workspace(
+                self.deps.state.app_paths.app_data_dir(),
+                &conversation.id.as_str(),
+            ) {
+                if should_create_conversation {
+                    let deleted = match self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await
+                    {
+                        Ok(()) => true,
+                        Err(cleanup_error) => {
+                            tracing::warn!(
+                                conversation_id = %conversation.id,
+                                error = %cleanup_error,
+                                "Failed to delete newly created conversation after workspace creation failed"
+                            );
+                            false
+                        }
+                    };
+                    if deleted {
+                        if let Err(cleanup_error) = remove_workspace_if_present(
+                            self.deps.state.app_paths.app_data_dir(),
+                            &conversation.id.as_str(),
+                        ) {
+                            tracing::warn!(
+                                conversation_id = %conversation.id,
+                                error = %cleanup_error,
+                                "Failed to remove partial standalone workspace after workspace creation failed"
+                            );
+                        }
+                    }
+                }
+                return Err(error.to_string());
+            }
+        }
+        if let Some(source_persona_id) = source_persona_id.as_ref() {
+            if conversation.builder_draft_id.is_some() {
+                return Err(
+                    "source_persona_id cannot replace an existing bound persona draft".to_string(),
+                );
+            }
+            let persona_service = PersonaService::new(
+                self.deps.state.db.clone(),
+                Arc::clone(&self.deps.state.persona_repo),
+                Arc::clone(&self.deps.state.chat_conversation_repo),
+            );
+            if let Err(error) = persona_service
+                .create_seeded_bound_draft(
+                    agent_personas_enabled(),
+                    &conversation,
+                    source_persona_id,
+                )
+                .await
+            {
+                if should_create_conversation {
+                    let deleted = match self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await
+                    {
+                        Ok(()) => true,
+                        Err(cleanup_error) => {
+                            tracing::warn!(
+                                conversation_id = %conversation.id,
+                                error = %cleanup_error,
+                                "Failed to delete newly created conversation after persona draft seeding failed"
+                            );
+                            false
+                        }
+                    };
+                    if deleted && context_type == ChatContextType::Standalone {
+                        if let Err(cleanup_error) = remove_workspace_if_present(
+                            self.deps.state.app_paths.app_data_dir(),
+                            &conversation.id.as_str(),
+                        ) {
+                            tracing::warn!(
+                                conversation_id = %conversation.id,
+                                error = %cleanup_error,
+                                "Failed to remove standalone workspace after persona draft seeding failed"
+                            );
+                        }
+                    }
+                }
+                return Err(error.to_string());
+            }
+            conversation = self
+                .deps
+                .state
+                .chat_conversation_repo
+                .get_by_id(&conversation.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "PersonaBuilder conversation disappeared after draft seeding".to_string()
+                })?;
+        }
+        if let Some(persona_id) = persona_id.as_ref() {
+            self.deps
+                .state
+                .chat_conversation_repo
+                .update_persona_binding(&conversation.id, Some(persona_id.as_str()))
+                .await
+                .map_err(|error| error.to_string())?;
+            conversation.persona_id = Some(persona_id.to_string());
+        }
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "persist_conversation",
+            conversation_persist_started,
+        );
+
+        let workspace_persist_started = Instant::now();
+        if workspace.is_some() {
+            emit_start_agent_conversation_progress(
+                &self.deps.app_handle,
+                context_type_label,
+                &context_log_id,
+                &conversation.id,
+                "persist_workspace",
+                "Saving chat",
+            );
+        }
+        let workspace = match workspace {
+            Some(workspace) => match self
+                .deps
+                .state
+                .agent_conversation_workspace_repo
+                .create_or_update(workspace)
+                .await
+            {
+                Ok(workspace) => Some(workspace),
+                Err(error) => {
+                    if should_create_conversation {
+                        if let Err(cleanup_error) = self
+                            .deps
+                            .state
+                            .chat_conversation_repo
+                            .delete(&conversation.id)
+                            .await
+                        {
+                            tracing::warn!(
+                                conversation_id = %conversation.id,
+                                error = %cleanup_error,
+                                "Failed to delete newly created conversation after workspace persistence failed"
+                            );
+                        }
+                    }
+                    return Err(error.to_string());
+                }
+            },
+            None => None,
+        };
+        ensure_review_pr_monitor_for_workspace(
+            self.deps.state.agent_conversation_workspace_repo.as_ref(),
+            workspace.as_ref(),
+        )
+        .await?;
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "persist_workspace",
+            workspace_persist_started,
+        );
+
+        // validated_clickup_task can only be Some when `project` was resolved
+        // (ClickUp start flows require a Project context).
+        if let (Some(clickup_task), Some(project)) =
+            (validated_clickup_task.as_ref(), project.as_ref())
+        {
+            let head_sha = match workspace.as_ref() {
+                Some(workspace) => {
+                    match resolve_valid_agent_conversation_workspace_path(project, workspace).await
+                    {
+                        Ok(worktree_path) => GitService::get_head_sha(&worktree_path).await.ok(),
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            };
+            let metadata_json = serde_json::json!({
+                "source": "ticket_start",
+                "title": clickup_task.name,
+                "branch": workspace.as_ref().map(|workspace| workspace.branch_name.as_str()),
+                "pr_number": workspace.as_ref().and_then(|workspace| {
+                    workspace.source_pull_request.as_ref().map(|pull_request| pull_request.number)
+                }),
+                "validated_at": chrono::Utc::now().to_rfc3339(),
+            })
+            .to_string();
+            self.deps
+                .state
+                .external_issue_link_service
+                .upsert_ticket_conversation_link(TicketConversationLinkInput {
+                    provider: "clickup".to_string(),
+                    external_kind: "clickup".to_string(),
+                    external_id: clickup_task.id.clone(),
+                    external_key: clickup_task.custom_id.clone(),
+                    external_url: clickup_task.url.clone(),
+                    conversation_id: conversation.id.as_str(),
+                    project_id: project.id.to_string(),
+                    local_sha: head_sha,
+                    local_state: Some("active".to_string()),
+                    metadata_json: Some(metadata_json),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = self.deps.app_handle.emit(
+                "ticketing:cache_invalidated",
+                serde_json::json!({
+                    "provider": "clickup",
+                    "ticketId": clickup_task.id,
+                    "ticketKey": clickup_task.custom_id,
+                    "projectId": project.id.to_string(),
+                    "reason": "conversation_started",
+                    "invalidatedAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        }
+
+        // Standalone is self-keyed: its send/event context_id is the conversation's
+        // own id, not a project id.
+        let send_context_id: String = if context_type == ChatContextType::Standalone {
+            conversation.id.as_str()
+        } else {
+            input
+                .project_id
+                .clone()
+                .expect("Project context requires project_id")
+        };
+
+        let event_emit_started = Instant::now();
+        if should_create_conversation {
+            let _ = self.deps.app_handle.emit(
+                "agent:conversation_created",
+                AgentConversationCreatedPayload {
+                    conversation_id: conversation.id.as_str(),
+                    context_type: context_type.to_string(),
+                    context_id: send_context_id.clone(),
+                },
+            );
+        }
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "emit_conversation_created",
+            event_emit_started,
+        );
+
+        let service_create_started = Instant::now();
+        let mut service = self.deps.state.build_chat_service_for_runtime(
+            Some(Arc::clone(self.deps.execution_state)),
+            Some(self.deps.app_handle.clone()),
+        );
+        if let Some(team_service) = self.deps.team_service {
+            service = service.with_team_service(team_service);
+        }
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "create_chat_service",
+            service_create_started,
+        );
+
+        let runtime_override_prepare_started = Instant::now();
+        let model_override = input
+            .model_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string);
+        let working_directory_override = workspace
+            .as_ref()
+            .map(|workspace| PathBuf::from(&workspace.worktree_path));
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "prepare_runtime_overrides",
+            runtime_override_prepare_started,
+        );
+
+        let runtime_normalize_started = Instant::now();
+        let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
+            self.deps.state,
+            harness_override,
+            model_override,
+            input.logical_effort,
+        )
+        .await?;
+        let service_tier_override =
+            crate::application::chat_service::codex_fast_mode_service_tier_override(
+                input.codex_fast_mode,
+            );
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "normalize_runtime_selection",
+            runtime_normalize_started,
+        );
+
+        let send_message_started = Instant::now();
+        emit_start_agent_conversation_progress(
+            &self.deps.app_handle,
+            context_type_label,
+            &context_log_id,
+            &conversation.id,
+            "send_message",
+            "Starting agent",
+        );
+        let send_result = service
+            .send_message(
+                context_type,
+                &send_context_id,
+                &input.content,
+                SendMessageOptions {
+                    harness_override,
+                    agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
+                    persona_directive: persona_id
+                        .as_ref()
+                        .map(|persona_id| PersonaDirective::Explicit(persona_id.clone()))
+                        .unwrap_or_default(),
+                    model_override,
+                    logical_effort_override,
+                    service_tier_override,
+                    conversation_id_override: Some(conversation.id),
+                    working_directory_override,
+                    composer_project_references: input.composer_project_references.clone(),
+                    composer_integration_references: input.composer_integration_references.clone(),
+                    composer_artifact_references,
+                    team_intent: input.team_intent.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "send_message",
+            send_message_started,
+        );
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            Some(&conversation.id),
+            "command_total",
+            command_started,
+        );
+
+        Ok(AgentConversationStartResult {
+            conversation,
+            workspace,
+            send_result,
+        })
+    }
+}

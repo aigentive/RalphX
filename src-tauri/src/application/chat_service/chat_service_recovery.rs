@@ -321,52 +321,27 @@ pub async fn attempt_session_recovery<R: Runtime>(
     };
 
     let persona_for_attribution = resolved_persona.clone();
-    let folder_refs_enabled =
-        crate::infrastructure::agents::claude::composer_folder_references_enabled();
-    let folder_refs_skip_reason =
-        chat_service_context::folder_references_skip_reason(context_type, conversation.agent_mode);
-    let folder_refs_block = if !folder_refs_enabled {
-        None
-    } else if let Some(reason) = folder_refs_skip_reason {
-        tracing::warn!(
-            conversation_id = conversation_id.as_str(),
-            reason,
-            "folder_refs_skipped"
-        );
-        None
-    } else if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
-        crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
-            Arc::clone(&app_state.conversation_folder_reference_repo),
-            app_state.app_paths.app_data_dir().to_path_buf(),
-            crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
-        )
-        .render_prompt_block(conversation_id)
-        .await?
-    } else {
-        tracing::warn!(
-            conversation_id = conversation_id.as_str(),
-            reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
-            "folder_refs_skipped"
-        );
-        None
-    };
-    let conversation_id_string = conversation_id.as_str();
-    let filesystem_read_roots =
+    let spawn_context =
         if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
-            chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
-                context_type,
+            chat_service_context::resolve_conversation_spawn_context(
+                conversation,
+                conversation.agent_mode,
                 _resolved_project_id.as_deref(),
                 Arc::clone(&app_state.project_repo),
                 working_directory,
-                conversation.agent_mode,
-                Some(&conversation_id_string),
-                app_state.app_paths.app_data_dir(),
-                Arc::clone(&app_state.conversation_folder_reference_repo),
+                Some(app_state.app_paths.app_data_dir()),
+                Some(app_state.app_paths.app_data_dir()),
+                Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
                 crate::infrastructure::agents::claude::composer_folder_references_enabled(),
             )
             .await?
         } else {
-            Vec::new()
+            chat_service_context::ResolvedConversationSpawnContext {
+                folder_refs_block: None,
+                folder_roots: Vec::new(),
+                workspace_root: working_directory.to_path_buf(),
+                enforce_filesystem_roots: false,
+            }
         };
 
     // 4. Spawn fresh provider session with history
@@ -377,11 +352,11 @@ pub async fn attempt_session_recovery<R: Runtime>(
         conversation,
         &bootstrap_prompt,
         resolved_persona,
-        folder_refs_block.as_deref(),
+        spawn_context.folder_refs_block.as_deref(),
         working_directory,
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
-        &filesystem_read_roots,
+        &spawn_context.folder_roots,
         team_mode,
         chat_attachment_repo,
         artifact_repo,

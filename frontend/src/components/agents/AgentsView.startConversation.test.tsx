@@ -2604,6 +2604,9 @@ describe("AgentsView start conversation", () => {
         fileName: "draft.txt",
       }),
     });
+    expect(invoke).toHaveBeenCalledWith("abort_seeded_agent_conversation", {
+      conversationId: "conversation-failed-start",
+    });
     expect(
       queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
     ).toBeUndefined();

@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::application::persona_ingest::{
-    ensure_destination_root, filesystem_error, ingest_validated_picked_root, require_under_root,
-    IngestUsage, PersonaIngestEntry, PersonaIngestManifest, CONTENT_FILE_NAME, MANIFEST_FILE_NAME,
+    ensure_destination_root, ingest_validated_picked_root, IngestUsage, PersonaIngestEntry,
+    PersonaIngestManifest, CONTENT_FILE_NAME, MANIFEST_FILE_NAME,
 };
 use crate::error::{AppError, AppResult};
+use crate::utils::path_safety::{filesystem_error, require_under_root};
 
 static PERSONA_INGEST_LOCK: Mutex<()> = Mutex::new(());
 

@@ -13,19 +13,21 @@ use ralphx_lib::application::agent_conversation_workspace::{
 };
 use ralphx_lib::application::automation::provisioning::AutomationRunProvisioner;
 use ralphx_lib::application::automation::transition::NoopAutomationEventEmitter;
+use ralphx_lib::application::chat_attachment_service::ChatAttachmentService;
+use ralphx_lib::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use ralphx_lib::application::standalone_workspace::{
-    standalone_workspace_path, standalone_workspaces_root,
+    create_workspace, standalone_workspace_path, standalone_workspaces_root,
 };
 use ralphx_lib::application::startup_background::AgentConversationAutomationRunStarter;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::{AppPaths, AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
+    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType,
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
-    IdeationAnalysisBaseRefKind, IdeationSessionFlow, Persona, PersonaId, PersonaStatus, Project,
-    ProjectId, TaskId, TeamIntent,
+    ChatContextType, ChatConversation, ChatConversationId, ConversationFolderReference,
+    CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSessionFlow, Persona, PersonaId,
+    PersonaStatus, Project, ProjectId, TaskId, TeamIntent,
 };
 use ralphx_lib::infrastructure::agents::claude::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
@@ -333,6 +335,129 @@ async fn start_with_app(
     })
     .start(input)
     .await
+}
+
+#[tokio::test]
+async fn abort_seeded_agent_conversation_removes_all_pre_start_state() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("abort fixture directory should be created");
+    let app_data_dir = temp.path().join("app-data");
+    let mut state = AppState::new_test();
+    state.app_paths = AppPaths::new(app_data_dir.clone(), None);
+    state.attachment_storage_path = state.app_paths.attachment_storage_path();
+
+    let draft = seed_persona(&state, "abort-bound-draft", PersonaStatus::Draft).await;
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("abort-seeded-project".to_string()));
+    conversation.builder_draft_id = Some(draft.id.as_str().to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seeded conversation should persist");
+    state
+        .conversation_folder_reference_repo
+        .create_if_below_live_cap(
+            ConversationFolderReference::new(
+                conversation.id,
+                temp.path().join("referenced-folder").to_string_lossy(),
+                "referenced-folder",
+            ),
+            5,
+        )
+        .await
+        .expect("folder reference should persist");
+    let attachment_service = ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
+    );
+    let attachment = attachment_service
+        .upload(
+            &conversation.id,
+            "seed.txt",
+            b"seed",
+            Some("text/plain".to_string()),
+        )
+        .await
+        .expect("seed attachment should upload");
+    let workspace = create_workspace(&app_data_dir, &conversation.id.as_str())
+        .expect("seed workspace should be created");
+
+    abort_seeded_agent_conversation(&state, &conversation.id)
+        .await
+        .expect("never-started seed should abort");
+
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(state
+        .conversation_folder_reference_repo
+        .list_live(&conversation.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(state
+        .chat_attachment_repo
+        .get_by_id(&attachment.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(state
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!workspace.exists(), "aborted workspace must be absent");
+}
+
+#[tokio::test]
+async fn abort_seeded_agent_conversation_refuses_a_started_conversation_without_cleanup() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("abort fixture directory should be created");
+    let app_data_dir = temp.path().join("app-data");
+    let mut state = AppState::new_test();
+    state.app_paths = AppPaths::new(app_data_dir.clone(), None);
+    state.attachment_storage_path = state.app_paths.attachment_storage_path();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::from_string(
+            "abort-started-project".to_string(),
+        )))
+        .await
+        .expect("started conversation should persist");
+    state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id))
+        .await
+        .expect("run proves the conversation started");
+    let workspace = create_workspace(&app_data_dir, &conversation.id.as_str())
+        .expect("started workspace should be created");
+
+    let error = abort_seeded_agent_conversation(&state, &conversation.id)
+        .await
+        .expect_err("started conversation must refuse seeded abort");
+
+    assert!(matches!(
+        error,
+        ralphx_lib::error::AppError::SeededAgentConversationAlreadyStarted { .. }
+    ));
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(state
+        .agent_run_repo
+        .get_latest_for_conversation(&conversation.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(workspace.exists(), "refused abort must preserve workspace");
 }
 
 // ── Standalone (projectless) start arm — Phase 4a.3 ──────────────────────────

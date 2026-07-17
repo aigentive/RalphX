@@ -362,14 +362,10 @@ impl RecoveryRetryAppRepos {
 async fn recovery_retry_folder_refs_context<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
     conversation: &ChatConversation,
-    context_type: ChatContextType,
     project_id: Option<&str>,
     working_directory: &Path,
     enabled: bool,
 ) -> Result<(Option<String>, Vec<PathBuf>), String> {
-    if !enabled {
-        return Ok((None, Vec::new()));
-    }
     let Some(handle) = app_handle else {
         tracing::warn!(
             conversation_id = conversation.id.as_str(),
@@ -379,40 +375,20 @@ async fn recovery_retry_folder_refs_context<R: Runtime>(
         return Ok((None, Vec::new()));
     };
     let app_state = handle.state::<AppState>();
-    if let Some(reason) =
-        chat_service_context::folder_references_skip_reason(context_type, conversation.agent_mode)
-    {
-        tracing::warn!(
-            conversation_id = conversation.id.as_str(),
-            reason,
-            "folder_refs_skipped"
-        );
-        return Ok((None, Vec::new()));
-    }
-    let service = crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
-        Arc::clone(&app_state.conversation_folder_reference_repo),
-        app_state.app_paths.app_data_dir().to_path_buf(),
-        crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
-    );
-    let folder_refs_block = service
-        .render_prompt_block(&conversation.id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let conversation_id = conversation.id.as_str();
-    let roots = chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
-        context_type,
+    let resolved = chat_service_context::resolve_conversation_spawn_context(
+        conversation,
+        conversation.agent_mode,
         project_id,
         Arc::clone(&app_state.project_repo),
         working_directory,
-        conversation.agent_mode,
-        Some(&conversation_id),
-        app_state.app_paths.app_data_dir(),
-        Arc::clone(&app_state.conversation_folder_reference_repo),
+        Some(app_state.app_paths.app_data_dir()),
+        Some(app_state.app_paths.app_data_dir()),
+        Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
         enabled,
     )
     .await
     .map_err(|error| error.to_string())?;
-    Ok((folder_refs_block, roots))
+    Ok((resolved.folder_refs_block, resolved.folder_roots))
 }
 
 async fn resolve_recovery_retry_persona<R: Runtime>(
@@ -2686,7 +2662,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         let retry_folder_refs = recovery_retry_folder_refs_context(
                             app_handle,
                             conv,
-                            context_type,
                             resolved_project_id.as_deref(),
                             working_directory,
                             crate::infrastructure::agents::claude::composer_folder_references_enabled(),

@@ -380,6 +380,7 @@ macro_rules! register_tauri_commands {
             commands::task_commands::query::get_task_agent_workspace,
             // Unified chat commands (new API - consolidates context_chat + execution_chat)
             commands::unified_chat_commands::start_agent_conversation,
+            commands::unified_chat_commands::abort_seeded_agent_conversation,
             commands::unified_chat_commands::fork_agent_conversation,
             commands::unified_chat_commands::switch_agent_conversation_mode,
             commands::unified_chat_commands::switch_agent_conversation_persona,

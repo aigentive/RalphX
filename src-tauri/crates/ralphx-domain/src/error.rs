@@ -112,6 +112,12 @@ pub enum AppError {
         conversation_id: String,
         detail: String,
     },
+
+    #[error("SEEDED_AGENT_CONVERSATION_ALREADY_STARTED: conversation `{conversation_id}` has already started and cannot be aborted as a seed")]
+    SeededAgentConversationAlreadyStarted { conversation_id: String },
+
+    #[error("STANDALONE_WORKSPACE_MISSING: workspace for conversation `{conversation_id}` does not exist")]
+    StandaloneWorkspaceMissing { conversation_id: String },
 }
 
 impl From<AgentError> for AppError {

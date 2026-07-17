@@ -95,10 +95,7 @@ impl ConversationFolderReferenceService {
         let references = self.repository.list_live(conversation_id).await?;
         let mut result = ValidatedFolderReferences::default();
         for reference in references {
-            match revalidate_stored_path_with_reason(
-                Path::new(&reference.folder_path),
-                &self.app_data_dir,
-            ) {
+            match revalidate_stored_path(Path::new(&reference.folder_path), &self.app_data_dir) {
                 Ok(_) => result.references.push(reference),
                 Err(reason) => {
                     tracing::warn!(
@@ -174,11 +171,6 @@ fn validate_registration_path(path: &Path, app_data_dir: &Path) -> AppResult<Pat
     Ok(canonical)
 }
 
-pub fn revalidate_stored_path(path: &Path, app_data_dir: &Path) -> AppResult<PathBuf> {
-    revalidate_stored_path_with_reason(path, app_data_dir)
-        .map_err(|reason| AppError::Validation(reason.to_string()))
-}
-
 fn reject_app_data_path(path: &Path, app_data_dir: &Path) -> AppResult<()> {
     let app_data_dir = fs::canonicalize(app_data_dir).map_err(|error| {
         AppError::ConversationFolderReferenceAppDataUnavailable {
@@ -194,10 +186,7 @@ fn reject_app_data_path(path: &Path, app_data_dir: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn revalidate_stored_path_with_reason(
-    path: &Path,
-    app_data_dir: &Path,
-) -> Result<PathBuf, &'static str> {
+pub fn revalidate_stored_path(path: &Path, app_data_dir: &Path) -> Result<PathBuf, &'static str> {
     validate_absolute_non_root_path(path, "conversation folder reference")
         .map_err(|_| FOLDER_REF_SKIPPED_UNSAFE_PATH)?;
     let metadata = fs::symlink_metadata(path).map_err(|_| FOLDER_REF_SKIPPED_UNAVAILABLE)?;

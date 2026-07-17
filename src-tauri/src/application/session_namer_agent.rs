@@ -384,7 +384,7 @@ async fn resolve_project_working_directory(
     standalone_conversation_id: Option<&str>,
 ) -> AppResult<PathBuf> {
     if let Some(conversation_id) = standalone_conversation_id {
-        return standalone_workspace::ensure_workspace(
+        return standalone_workspace::resolve_workspace(
             state.app_paths.app_data_dir(),
             conversation_id,
         )

@@ -30,8 +30,7 @@ use sha2::{Digest, Sha256};
 use crate::domain::entities::ChatConversationId;
 use crate::domain::repositories::ChatConversationRepository;
 use crate::error::{AppError, AppResult};
-
-use super::persona_ingest::{filesystem_error, require_under_root};
+use crate::utils::path_safety::{filesystem_error, require_under_root};
 
 const STANDALONE_WORKSPACES_DIR: &str = "standalone_workspaces";
 const MANIFEST_FILE_NAME: &str = "manifest.json";
@@ -74,7 +73,7 @@ fn hashed_conversation_component(conversation_id: &str) -> String {
 /// Returns an error when the app-owned root or workspace directory cannot be
 /// created/canonicalized, or when an existing entry at the workspace path is a
 /// symlink (never trusted, never followed).
-pub fn ensure_workspace(app_data_dir: &Path, conversation_id: &str) -> AppResult<PathBuf> {
+pub fn create_workspace(app_data_dir: &Path, conversation_id: &str) -> AppResult<PathBuf> {
     let root = standalone_workspaces_root(app_data_dir);
     // codeql[rust/path-injection]
     fs::create_dir_all(&root)
@@ -112,6 +111,81 @@ pub fn ensure_workspace(app_data_dir: &Path, conversation_id: &str) -> AppResult
     write_manifest_if_missing(&canonical_workspace, conversation_id)?;
 
     Ok(canonical_workspace)
+}
+
+/// Resolves an existing workspace without creating or mutating filesystem state.
+pub fn resolve_workspace(app_data_dir: &Path, conversation_id: &str) -> AppResult<PathBuf> {
+    let root = standalone_workspaces_root(app_data_dir);
+    // codeql[rust/path-injection]
+    let canonical_root = root.canonicalize().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::StandaloneWorkspaceMissing {
+                conversation_id: conversation_id.to_string(),
+            }
+        } else {
+            filesystem_error("canonicalize the standalone workspaces root", error)
+        }
+    })?;
+    let workspace_path = standalone_workspace_path(&canonical_root, conversation_id);
+    require_under_root(&workspace_path, &canonical_root, "standalone workspace")?;
+    // codeql[rust/path-injection]
+    let metadata = fs::symlink_metadata(&workspace_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::StandaloneWorkspaceMissing {
+                conversation_id: conversation_id.to_string(),
+            }
+        } else {
+            filesystem_error("inspect the standalone workspace directory", error)
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Validation(
+            "Standalone workspace path must be a non-symlink directory".to_string(),
+        ));
+    }
+    // codeql[rust/path-injection]
+    let canonical_workspace = workspace_path.canonicalize().map_err(|error| {
+        filesystem_error("canonicalize the standalone workspace directory", error)
+    })?;
+    require_under_root(
+        &canonical_workspace,
+        &canonical_root,
+        "standalone workspace",
+    )?;
+    Ok(canonical_workspace)
+}
+
+/// Removes one conversation workspace when it exists, using the same containment
+/// validation as the orphan sweep.
+pub fn remove_workspace_if_present(app_data_dir: &Path, conversation_id: &str) -> AppResult<()> {
+    let root = standalone_workspaces_root(app_data_dir);
+    // codeql[rust/path-injection]
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(filesystem_error(
+                "canonicalize the standalone workspaces root",
+                error,
+            ))
+        }
+    };
+    let workspace_path = standalone_workspace_path(&canonical_root, conversation_id);
+    require_under_root(&workspace_path, &canonical_root, "standalone workspace")?;
+    // codeql[rust/path-injection]
+    match fs::symlink_metadata(&workspace_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(AppError::Validation(
+                "Standalone workspace path must be a non-symlink directory".to_string(),
+            ))
+        }
+        Ok(_) => remove_workspace_entry(&workspace_path, &canonical_root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(filesystem_error(
+            "inspect the standalone workspace directory",
+            error,
+        )),
+    }
 }
 
 fn write_manifest_if_missing(workspace_root: &Path, conversation_id: &str) -> AppResult<()> {

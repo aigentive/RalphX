@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   chatApi,
@@ -367,6 +368,7 @@ export function useStartAgentConversation({
         effectiveFolders.length > 0;
       let seededStoreKey: string | null = null;
       let seededConversationId: string | null = null;
+      let abortableSeededConversationId: string | null = null;
       try {
         const automationDraft =
           effectiveMode === "automation"
@@ -427,6 +429,7 @@ export function useStartAgentConversation({
                 archivedAt: null,
               }
             : null;
+        abortableSeededConversationId = resultConversationSeed?.id ?? null;
         const activeConversation = seededConversation ?? initialConversation;
         const storeKey = seededConversation
           ? getAgentConversationStoreKey({
@@ -529,6 +532,7 @@ export function useStartAgentConversation({
               ticketRef,
             })
           : await chatApi.startAgentConversation(startInput);
+        abortableSeededConversationId = null;
         const resolvedConversation: ChatConversation = {
           ...result.conversation,
           agentMode: result.conversation.agentMode ?? effectiveMode,
@@ -625,6 +629,18 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
+        if (abortableSeededConversationId) {
+          try {
+            await invoke("abort_seeded_agent_conversation", {
+              conversationId: abortableSeededConversationId,
+            });
+          } catch (abortError) {
+            console.warn(
+              "Failed to abort a never-started seeded agent conversation",
+              abortError,
+            );
+          }
+        }
         const linkedFailure = parseLinkedSetupFailure(err);
         if (linkedFailure) {
           useAgentSessionStore.getState().setStartConversationFailure({

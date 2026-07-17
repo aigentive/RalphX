@@ -322,7 +322,6 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
         .create(conversation)
         .await
         .unwrap();
-
     let spawn = build_session_namer_agent_spawn(
         &state,
         conversation_initial(conversation.id.as_str(), "Name this Codex conversation"),
@@ -1329,6 +1328,11 @@ async fn session_namer_standalone_conversation_resolves_with_project_id_none() {
         .create(ChatConversation::new_standalone())
         .await
         .unwrap();
+    let expected = crate::application::standalone_workspace::create_workspace(
+        app_data_dir.path(),
+        &conversation.id.as_str(),
+    )
+    .unwrap();
 
     let spawn = build_session_namer_agent_spawn(
         &state,
@@ -1337,11 +1341,6 @@ async fn session_namer_standalone_conversation_resolves_with_project_id_none() {
     .await
     .unwrap();
 
-    let expected = crate::application::standalone_workspace::ensure_workspace(
-        app_data_dir.path(),
-        &conversation.id.as_str(),
-    )
-    .unwrap();
     assert_eq!(spawn.config.working_directory, expected);
     assert_eq!(spawn.project_id, None);
 }
