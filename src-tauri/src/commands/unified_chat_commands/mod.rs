@@ -3197,29 +3197,42 @@ mod agent_mode_workspace_tests {
     }
 
     #[test]
-    fn state_owned_workspaces_can_target_ideation_mode() {
-        for target_mode in [
+    fn state_owned_workspaces_remain_in_their_current_mode() {
+        let modes = [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ] {
-            let error = validate_agent_conversation_mode_transition(
-                AgentConversationWorkspaceMode::Chat,
-                target_mode,
-                &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-            )
-            .expect_err("state-owned workspaces should not leave ideation ownership");
-
-            assert!(error.contains("Ideation session is still active"));
-        }
-
-        assert!(validate_agent_conversation_mode_transition(
-            AgentConversationWorkspaceMode::Chat,
+            AgentConversationWorkspaceMode::Tasks,
+            AgentConversationWorkspaceMode::Autopilot,
             AgentConversationWorkspaceMode::Ideation,
-            &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-        )
-        .is_ok());
+            AgentConversationWorkspaceMode::ReviewPr,
+        ];
+
+        for current_mode in modes {
+            assert!(validate_agent_conversation_mode_transition(
+                current_mode,
+                current_mode,
+                &AgentConversationWorkspaceModeLock::locked("Workspace state is still active"),
+            )
+            .is_ok());
+
+            for target_mode in modes {
+                if target_mode == current_mode {
+                    continue;
+                }
+
+                let error = validate_agent_conversation_mode_transition(
+                    current_mode,
+                    target_mode,
+                    &AgentConversationWorkspaceModeLock::locked(
+                        "Workspace state is still active",
+                    ),
+                )
+                .expect_err("state-owned workspaces should remain in their current mode");
+
+                assert!(error.contains("Workspace state is still active"));
+            }
+        }
     }
 }
 
