@@ -330,6 +330,20 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       ? "Collapse terminal"
       : "Expand terminal";
   const terminalPreloadHandler = terminalArchivedReason ? undefined : onPreloadTerminal;
+  const builtInTerminalAction = useMemo(
+    () => ({
+      open: terminalOpen,
+      unavailableReason: terminalUnavailableReason,
+      onToggle: onToggleTerminal,
+      onPreload: terminalPreloadHandler,
+    }),
+    [
+      onToggleTerminal,
+      terminalOpen,
+      terminalPreloadHandler,
+      terminalUnavailableReason,
+    ],
+  );
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -587,6 +601,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             targets={workspaceOpenTargets}
             openingTargetId={openingWorkspaceTargetId}
             onOpenTarget={onOpenWorkspaceTarget}
+            builtInTerminal={builtInTerminalAction}
           />
         )}
 
