@@ -1099,17 +1099,40 @@ jobs:
           fi
 
           echo "Waiting for Codecov patch status on ${COMMIT_SHA}."
+          query_gh_jq() {
+            local label="$1"
+            shift
+            local attempt=1
+            local output
+
+            while (( attempt <= 3 )); do
+              if output="$(gh api "$@" 2>&1)"; then
+                printf '%s' "${output}"
+                return 0
+              fi
+
+              local message="${output//$'\n'/ }"
+              echo "::warning::GitHub API query for ${label} failed on attempt ${attempt}/3: ${message:0:500}" >&2
+              if (( attempt < 3 )); then
+                sleep 2
+              fi
+              attempt=$((attempt + 1))
+            done
+
+            return 1
+          }
+
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             status_state="$(
-              gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              query_gh_jq "codecov/patch commit status" "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
                 --jq 'map(select(.context == "codecov/patch"))[0].state // ""'
-            )"
+            )" || status_state=""
             check_state="$(
-              gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              query_gh_jq "codecov/patch check run" --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
                 -f check_name="codecov/patch" \
                 --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] | if . == null then "" elif .status != "completed" then "pending" else .conclusion end'
-            )"
+            )" || check_state=""
 
             state=""
             failure_state=""
@@ -1159,19 +1182,25 @@ jobs:
           done
 
           echo "Timed out waiting for Codecov patch status to pass."
+          final_status_error=false
           final_status="$(
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+            query_gh_jq "final codecov/patch commit status" "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
               --jq 'map(select(.context == "codecov/patch"))[0] // empty'
-          )"
+          )" || final_status_error=true
+          final_check_error=false
           final_check="$(
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+            query_gh_jq "final codecov/patch check run" --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
               -f check_name="codecov/patch" \
               --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] // empty'
-          )"
+          )" || final_check_error=true
           printf '%s\n' "${final_status}"
           printf '%s\n' "${final_check}"
 
           if [[ -z "${final_status}" && -z "${final_check}" ]]; then
+            if [[ "${final_status_error}" == "true" || "${final_check_error}" == "true" ]]; then
+              echo "::warning::Codecov patch status could not be confirmed because GitHub API polling returned non-JSON or transport errors after retries; treating the unavailable external status as non-blocking after successful coverage uploads."
+              exit 0
+            fi
             echo "::warning::Codecov did not post codecov/patch after successful coverage uploads; treating the missing external status as non-blocking."
             exit 0
           fi
