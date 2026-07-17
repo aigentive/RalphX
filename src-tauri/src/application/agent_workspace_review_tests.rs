@@ -2745,7 +2745,7 @@ async fn complete_review_run_rejects_stale_active_review_run_id() {
     assert!(result
         .expect_err("stale run id should be rejected")
         .to_string()
-        .contains("does not match the active review run"));
+        .contains("does not match the active workspace Review run"));
 }
 
 #[tokio::test]
@@ -3050,6 +3050,7 @@ async fn complete_review_run_carries_workspace_review_forward_after_same_pr_merg
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3229,6 +3230,7 @@ async fn complete_review_run_preserves_blocking_outcome_after_same_pr_merges() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3399,6 +3401,7 @@ async fn complete_review_run_rejects_merged_pr_when_reviewed_head_differs() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3477,6 +3480,7 @@ async fn complete_review_run_rejects_unmerged_pr_target_drift() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)

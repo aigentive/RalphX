@@ -363,6 +363,8 @@
             AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
         monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
         monitor.last_run_id = Some("run-current".to_string());
+        monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        monitor.current_diff_fingerprint = Some("fingerprint-current".to_string());
 
         assert_eq!(
             validate_workspace_review_tool_run_id(
@@ -401,8 +403,7 @@
             None,
             "workspace Review completion",
         )
-        .expect("idle monitor should not require an active child run id")
-        .is_none());
+        .is_err());
     }
 
     #[test]

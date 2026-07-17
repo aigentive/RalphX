@@ -59,7 +59,7 @@ fn noninteractive_specialist_override_drives_runtime_settings_resolution() {
     );
     assert_eq!(
         noninteractive_agent_name(ChatContextType::Project, None, None),
-        "ralphx-general-worker"
+        AGENT_CHAT_PROJECT
     );
 }
 
