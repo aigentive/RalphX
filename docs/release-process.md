@@ -107,10 +107,13 @@ Manual testing:
 3. Use `dry_run=true` to verify Codex proposal, version bump, and note generation without committing, tagging, pushing, or dispatching the build.
 4. Optionally set `release_bump` to force `patch`, `minor`, or `major`; `major` is the required approval path for a normal `1.0.0` jump.
 5. Optionally set `release_version` to force an exact version such as `0.42.0`, `0.100.42`, or `v1.0.0`; do not combine it with `release_bump`.
-6. Optionally set `linux_runner` to choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
-7. Optionally set `arm_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS ARM build job.
-8. Optionally set `intel_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS Intel build job. Blacksmith and Depot use Apple Silicon and cross-build the Intel artifact with the `x86_64-apple-darwin` target.
-9. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
+6. For failed-tag recovery, optionally set `release_notes_from` to the last published `vX.Y.Z` tag. This changes the proposal, curated notes, and GitHub metadata range without changing the version base.
+7. Optionally set `linux_runner` to choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
+8. Optionally set `arm_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS ARM build job.
+9. Optionally set `intel_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS Intel build job. Blacksmith and Depot use Apple Silicon and cross-build the Intel artifact with the `x86_64-apple-darwin` target.
+10. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
+
+Scheduled runs and manual runs with a blank `release_notes_from` use the latest reachable release tag for both version selection and release notes. When the override is set, version selection and release-worthiness still use the latest reachable tag; only release analysis and notes start from the validated older tag.
 
 Skipping scheduled release for maintenance-only commits:
 
@@ -349,6 +352,16 @@ Current tap contract:
 ---
 
 ## Troubleshooting
+
+### Failed Daily Release Left a Tag Without a GitHub Release
+
+If a failed release attempt pushed a tag but did not publish its GitHub Release, keep that tag and recover through a manual `Daily Release` run:
+
+1. Run with `dry_run=true`, `release_notes_from` set to the last published release tag (for example, `v0.69.0`), and `release_bump=auto` unless a specific bump or version is required.
+2. Confirm the dry-run proposal and generated note cover the cumulative range from that published tag through `HEAD`, while the proposed version is newer than the failed tag.
+3. Re-run without dry run using the same `release_notes_from` value.
+
+Do not delete, move, or rewrite the failed tag during normal recovery. The workflow treats it as an occupied version while using the older published tag only as the release-notes comparison base.
 
 ### Build Failures
 
