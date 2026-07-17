@@ -260,6 +260,20 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        let mut conversations = self.conversations.write().await;
+        let conversation = conversations.get_mut(id).ok_or_else(|| {
+            crate::error::AppError::NotFound("Chat conversation not found".to_string())
+        })?;
+        conversation.bound_agent_name = bound_agent_name.map(str::to_string);
+        conversation.updated_at = Utc::now();
+        Ok(())
+    }
+
     async fn update_persona_binding(
         &self,
         id: &ChatConversationId,

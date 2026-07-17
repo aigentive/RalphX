@@ -117,6 +117,11 @@ import {
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
 import {
+  hasWorkspaceReviewPublishAuthorization,
+  isWorkspaceReviewApprovedAnyway,
+  isWorkspaceReviewBlockingPublish,
+} from "./workspaceReviewAuthorization";
+import {
   AgentsArtifactTabCustomizer,
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
@@ -242,23 +247,6 @@ function getPlanRuntimeControlCounts(tasks: readonly Task[]): {
     }
   }
   return { paused, running };
-}
-
-type WorkspaceReviewPassState = Pick<
-  AgentWorkspaceReviewContext | StartAgentWorkspaceReviewResult,
-  "monitor" | "isCurrent"
->;
-
-function hasPassedWorkspaceReview(
-  context: WorkspaceReviewPassState | null,
-): boolean {
-  const gateStatus = context?.monitor.reviewGateStatus ?? null;
-  if (gateStatus) {
-    return gateStatus === "passed";
-  }
-  return Boolean(
-    context?.isCurrent && context.monitor.reviewOutcome === "passed",
-  );
 }
 
 function hasGeneratingConversationRuntime(
@@ -953,6 +941,47 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }
     },
   });
+  const approveWorkspaceReviewAnywayMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      targetScope,
+      diffFingerprint,
+      artifactId,
+      artifactVersion,
+    }: {
+      conversationId: string;
+      targetScope: "selected_source" | "workspace_delta";
+      diffFingerprint: string;
+      artifactId: string;
+      artifactVersion: number;
+    }) =>
+      chatApi.approveAgentWorkspaceReviewAnyway(conversationId, {
+        targetScope,
+        diffFingerprint,
+        artifactId,
+        artifactVersion,
+      }),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspaceReview(variables.conversationId),
+        (previous: AgentWorkspaceReviewContext | undefined) =>
+          previous ? { ...previous, monitor: result.monitor } : previous,
+      );
+      toast.success("Review approved anyway for the current changes");
+      void invalidateWorkspaceQueries(queryClient, variables.conversationId);
+    },
+    onError: (error, variables) => {
+      toast.error(
+        extractErrorMessage(
+          error,
+          "The Review changed before it could be approved. Refresh and try again.",
+        ),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
+      });
+    },
+  });
   const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] = useState<
     string | null
   >(() => readSelectedTaskForConversation(conversationId));
@@ -1272,6 +1301,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     startWorkspaceReviewFixerMutation.variables?.conversationId === conversationId
       ? startWorkspaceReviewFixerMutation.error
       : null;
+  const isWorkspaceReviewApproveAnywayPending =
+    approveWorkspaceReviewAnywayMutation.isPending &&
+    approveWorkspaceReviewAnywayMutation.variables?.conversationId ===
+      conversationId;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
     conversationId,
@@ -1295,15 +1328,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const workspaceReviewBlocked =
     Boolean(workspaceReviewStartError) ||
     Boolean(workspaceReviewFixIssuesError) ||
-    reviewDisplayContext?.monitor.status === "blocked" ||
-    reviewDisplayContext?.monitor.reviewGateStatus === "blocking" ||
-    reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
-    reviewDisplayContext?.monitor.reviewOutcome === "blocking" ||
-    reviewDisplayContext?.monitor.reviewOutcome === "run_failed";
+    isWorkspaceReviewBlockingPublish(reviewDisplayContext);
   const reviewTabIconColor = (() => {
     if (isWorkspaceReviewRunning) return "var(--accent-primary)";
     if (workspaceReviewBlocked) return "var(--status-error)";
-    if (hasPassedWorkspaceReview(reviewDisplayContext))
+    if (isWorkspaceReviewApprovedAnyway(reviewDisplayContext))
+      return "var(--status-warning)";
+    if (hasWorkspaceReviewPublishAuthorization(reviewDisplayContext))
       return "var(--status-success)";
     if (
       reviewDisplayContext?.isOutdated ||
@@ -1484,6 +1515,35 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     isWorkspaceReviewFixIssuesPending,
     isWorkspaceRuntimeGenerating,
     startWorkspaceReviewFixerMutation,
+  ]);
+  const handleApproveReviewAnyway = useCallback(async () => {
+    const target = reviewDisplayContext?.target;
+    const monitor = reviewDisplayContext?.monitor;
+    if (
+      !conversationId ||
+      !target ||
+      !monitor?.reviewArtifactId ||
+      !monitor.reviewArtifactVersion ||
+      isWorkspaceReviewApproveAnywayPending ||
+      isWorkspaceRuntimeGenerating ||
+      isPublishingWorkspace
+    ) {
+      return;
+    }
+    await approveWorkspaceReviewAnywayMutation.mutateAsync({
+      conversationId,
+      targetScope: target.scope,
+      diffFingerprint: target.diffFingerprint,
+      artifactId: monitor.reviewArtifactId,
+      artifactVersion: monitor.reviewArtifactVersion,
+    });
+  }, [
+    approveWorkspaceReviewAnywayMutation,
+    conversationId,
+    isPublishingWorkspace,
+    isWorkspaceReviewApproveAnywayPending,
+    isWorkspaceRuntimeGenerating,
+    reviewDisplayContext,
   ]);
   const handleFocusWorkspaceReview = useCallback(() => {
     const reviewConversationId =
@@ -1835,11 +1895,19 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           isFixIssuesActionPending={
             isReviewPrWorkspace ? false : isWorkspaceReviewFixIssuesPending
           }
+          isApproveAnywayActionPending={
+            isReviewPrWorkspace
+              ? false
+              : isWorkspaceReviewApproveAnywayPending
+          }
           isWorkspaceRuntimeGenerating={
             isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
           }
           onStartReview={isReviewPrWorkspace ? () => {} : handleStartReview}
           onFixIssues={isReviewPrWorkspace ? () => {} : handleFixReviewIssues}
+          onApproveAnyway={
+            isReviewPrWorkspace ? async () => {} : handleApproveReviewAnyway
+          }
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -1917,9 +1985,11 @@ type ArtifactContentProps = {
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
   isFixIssuesActionPending: boolean;
+  isApproveAnywayActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
+  onApproveAnyway: () => Promise<void>;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -1990,9 +2060,11 @@ function ArtifactContent({
   isReviewLoading,
   isReviewActionPending,
   isFixIssuesActionPending,
+  isApproveAnywayActionPending,
   isWorkspaceRuntimeGenerating,
   onStartReview,
   onFixIssues,
+  onApproveAnyway,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -2130,11 +2202,13 @@ function ArtifactContent({
         isReviewLoading={isReviewLoading}
         isReviewActionPending={isReviewActionPending}
         isFixIssuesActionPending={isFixIssuesActionPending}
+        isApproveAnywayActionPending={isApproveAnywayActionPending}
         isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
         isPublishingWorkspace={isPublishingWorkspace}
         onOpenPublish={onOpenPublish}
         onStartReview={onStartReview}
         onFixIssues={onFixIssues}
+        onApproveAnyway={onApproveAnyway}
       />
     );
   }

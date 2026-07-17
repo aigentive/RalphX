@@ -32,7 +32,9 @@ use crate::application::agent_workspace_review_auto_merge::{
     start_guarded_agent_workspace_review, WorkspaceReviewStartConfirmation,
     WorkspaceReviewStartOrigin,
 };
-use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
+use crate::application::agent_workspace_review_publish_handoff::{
+    resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
+};
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -56,10 +58,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope, Artifact, ArtifactId,
-    ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, NewNotification,
-    NotificationCategory, NotificationSeverity, NotificationTarget, NotificationTargetKind,
-    PlanBranch, ProjectId,
+    AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
 };
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
@@ -539,6 +540,11 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub review_artifact_id: Option<String>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<String>,
+    pub review_gate_bypassed_at: Option<String>,
+    pub review_gate_bypassed_target_scope: Option<String>,
+    pub review_gate_bypassed_diff_fingerprint: Option<String>,
+    pub review_gate_bypassed_artifact_id: Option<String>,
+    pub review_gate_bypassed_artifact_version: Option<u32>,
     pub reviewed_head_sha: Option<String>,
     pub reviewed_diff_fingerprint: Option<String>,
     pub selected_source_base_ref: Option<String>,
@@ -590,6 +596,17 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             review_artifact_updated_at: value
                 .review_artifact_updated_at
                 .map(|value| value.to_rfc3339()),
+            review_gate_bypassed_at: value
+                .review_gate_bypassed_at
+                .map(|value| value.to_rfc3339()),
+            review_gate_bypassed_target_scope: value
+                .review_gate_bypassed_target_scope
+                .map(|scope| scope.to_string()),
+            review_gate_bypassed_diff_fingerprint: value.review_gate_bypassed_diff_fingerprint,
+            review_gate_bypassed_artifact_id: value
+                .review_gate_bypassed_artifact_id
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            review_gate_bypassed_artifact_version: value.review_gate_bypassed_artifact_version,
             reviewed_head_sha: value.reviewed_head_sha,
             reviewed_diff_fingerprint: value.reviewed_diff_fingerprint,
             selected_source_base_ref: value.selected_source_base_ref,
@@ -2121,16 +2138,8 @@ pub async fn complete_agent_workspace_review_run(
         summary_bytes,
         "Handled workspace Review completion"
     );
-    resume_pr_fix_publish_after_workspace_review(&state, &conversation_id, &workspace, &monitor)
+    settle_workspace_review_publish_authorization(&state, &conversation_id, &workspace, &monitor)
         .await?;
-    // R2: resume an initial (no-PR-yet) armed/automation publish once the gate is Passed.
-    resume_initial_auto_publish_after_workspace_review(
-        &state,
-        &conversation_id,
-        &workspace,
-        &monitor,
-    )
-    .await?;
     // R3: on a Blocking/Failed gate for an automation-owned conversation, pause the automation and
     // terminalize the stuck run. Classify by the gate ENUM, never the blocker string. No-op for
     // non-automation conversations (handled inside the helper via the run bridge).
@@ -4066,11 +4075,21 @@ async fn resume_initial_auto_publish_after_workspace_review(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> Result<(), JsonError> {
+    let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let Some(authorization_kind) = review_context
+        .target
+        .as_ref()
+        .and_then(|target| workspace_review_authorization_kind(monitor, target))
+    else {
+        return Ok(());
+    };
     if !auto_publish_can_resume_after_workspace_review(workspace, monitor) {
         return Ok(());
     }
 
-    let publishing_message = "Workspace Review passed; publishing initial pull request.";
+    let publishing_message = authorization_kind.publishing_message("initial pull request");
     state
         .app_state
         .agent_conversation_workspace_repo
@@ -4079,7 +4098,7 @@ async fn resume_initial_auto_publish_after_workspace_review(
             "initial_auto_publish_workspace_review_passed",
             "publishing",
             publishing_message,
-            Some("workspace_review_passed".to_string()),
+            Some(authorization_kind.classification()),
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
@@ -4127,6 +4146,18 @@ async fn resume_initial_auto_publish_after_workspace_review(
             Ok(())
         }
     }
+}
+
+pub(crate) async fn settle_workspace_review_publish_authorization(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> Result<(), JsonError> {
+    resume_pr_fix_publish_after_workspace_review(state, conversation_id, workspace, monitor)
+        .await?;
+    resume_initial_auto_publish_after_workspace_review(state, conversation_id, workspace, monitor)
+        .await
 }
 
 fn auto_publish_can_resume_after_workspace_review(
@@ -4609,29 +4640,13 @@ fn validate_workspace_review_tool_run_id(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
-        return Ok(created_by_run_id);
-    }
-    let Some(active_run_id) = monitor.last_run_id.as_deref() else {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            format!("{operation} requires an active workspace Review run id"),
-            None,
-        ));
-    };
-    match created_by_run_id.as_deref() {
-        Some(run_id) if run_id == active_run_id => Ok(created_by_run_id),
-        Some(_) => Err(json_error(
-            StatusCode::CONFLICT,
-            format!("{operation} run id does not match the active workspace Review run"),
-            None,
-        )),
-        None => Err(json_error(
-            StatusCode::BAD_REQUEST,
-            format!("{operation} requires created_by_run_id for the active workspace Review run"),
-            None,
-        )),
-    }
+    crate::application::agent_workspace_review::ensure_workspace_review_run_is_active(
+        monitor,
+        created_by_run_id.as_deref(),
+        operation,
+    )
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
+    Ok(created_by_run_id)
 }
 
 fn validate_workspace_review_tool_target_metadata(
@@ -5604,7 +5619,7 @@ pub async fn complete_agent_workspace_repair(
                 &publish_target.worktree_path,
                 &publish_target.branch_name,
             )
-                .await
+            .await
             {
                 Ok(()) => {
                     state
