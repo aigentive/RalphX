@@ -1,8 +1,17 @@
 use super::*;
+use crate::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+};
+use crate::application::AppState;
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind, Project,
+};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::process::Command;
 use std::sync::Mutex;
+use tauri::Manager;
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -49,6 +58,91 @@ fn write_fake_cursor(bin_dir: &Path, body: &str) -> PathBuf {
         std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
     }
     cursor
+}
+
+fn git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should spawn");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn setup_workspace_open_repo(repo_path: &Path) {
+    std::fs::create_dir_all(repo_path).expect("create repo");
+    git(repo_path, &["init", "-b", "main"]);
+    git(repo_path, &["config", "user.email", "test@example.com"]);
+    git(repo_path, &["config", "user.name", "Test User"]);
+    std::fs::write(repo_path.join("README.md"), "workspace open\n").expect("write readme");
+    git(repo_path, &["add", "README.md"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+}
+
+fn workspace_open_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+async fn seed_workspace_open_state(
+    repo_path: &Path,
+    worktree_parent: &Path,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    ChatConversation,
+    PathBuf,
+) {
+    let state = AppState::new_test();
+    setup_workspace_open_repo(repo_path);
+    let mut project = Project::new(
+        "Workspace open project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("conversation should persist");
+    let workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("workspace should prepare");
+    let workspace_path = PathBuf::from(&workspace.worktree_path);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    (
+        workspace_open_command_app(state),
+        conversation,
+        workspace_path,
+    )
 }
 
 #[test]
@@ -622,4 +716,63 @@ fn launch_workspace_open_item_target_accepts_background_process() {
     let _path = EnvGuard::set_os("PATH", &bin_dir);
 
     launch_workspace_open_item_target("cursor", &file_path).expect("launch should spawn");
+}
+
+#[tokio::test]
+async fn open_agent_conversation_workspace_command_launches_resolved_workspace() {
+    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    write_fake_cursor(
+        &bin_dir,
+        r#"if [ "$1" != "$RALPHX_EXPECTED_WORKSPACE" ]; then exit 42; fi
+exit 0"#,
+    );
+    let (app, conversation, workspace_dir) =
+        seed_workspace_open_state(&repo_dir, &worktree_parent).await;
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+    let _expected_workspace = EnvGuard::set_os("RALPHX_EXPECTED_WORKSPACE", &workspace_dir);
+
+    open_agent_conversation_workspace(
+        conversation.id.as_str().to_string(),
+        "cursor".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("workspace command should launch fake cursor");
+}
+
+#[tokio::test]
+async fn open_agent_conversation_workspace_path_command_resolves_relative_items() {
+    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    write_fake_cursor(
+        &bin_dir,
+        r#"if [ "$1" != "$RALPHX_EXPECTED_ITEM" ]; then exit 42; fi
+exit 0"#,
+    );
+    let (app, conversation, workspace_dir) =
+        seed_workspace_open_state(&repo_dir, &worktree_parent).await;
+    let src_dir = workspace_dir.join("src");
+    let file_path = src_dir.join("main.rs");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(&file_path, "fn main() {}\n").expect("write source file");
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+    let _expected_item = EnvGuard::set_os("RALPHX_EXPECTED_ITEM", &file_path);
+
+    open_agent_conversation_workspace_path(
+        conversation.id.as_str().to_string(),
+        "cursor".to_string(),
+        "src/main.rs".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("workspace path command should launch fake cursor");
 }
