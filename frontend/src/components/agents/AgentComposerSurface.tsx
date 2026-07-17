@@ -251,6 +251,12 @@ export interface AgentComposerSurfaceProps {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  runtimeDefault?: {
+    source?: string | null;
+    isResetting?: boolean;
+    disabled?: boolean;
+    onReset: () => Promise<unknown> | void;
+  };
   onSend: (
     message: string,
     options?: AgentComposerSendOptions,
@@ -325,6 +331,7 @@ export function AgentComposerSurface({
   provider,
   model,
   effort,
+  runtimeDefault,
   onSend,
   onStop,
   placeholder = "Ask the agent to plan, build, debug, or review something",
@@ -1907,6 +1914,7 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                {...(runtimeDefault ? { runtimeDefault } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
                 surfaceRef={surfaceRef}

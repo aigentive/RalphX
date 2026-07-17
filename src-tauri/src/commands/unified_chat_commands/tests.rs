@@ -1353,6 +1353,9 @@ async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
 
     let options = service.get_sent_options().await;
     assert_eq!(options.len(), 1);
+    assert_eq!(options[0].harness_override, None);
+    assert_eq!(options[0].model_override, None);
+    assert_eq!(options[0].logical_effort_override, None);
     assert_eq!(
         options[0].working_directory_override.as_deref(),
         Some(Path::new("/tmp/project-repo"))

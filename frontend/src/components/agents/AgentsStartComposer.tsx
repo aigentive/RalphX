@@ -19,9 +19,11 @@ import type {
   TeamIntent,
 } from "@/api/chat";
 import type { AutomationAuthoringMode } from "@/api/automations";
+import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   PERSONA_UNAVAILABLE_PREFIX,
@@ -102,6 +104,7 @@ interface AgentsStartComposerSubmitInput {
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
+  useRoleDefault?: boolean;
   mode: AgentConversationWorkspaceMode;
   automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
@@ -271,7 +274,9 @@ export function AgentsStartComposer({
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
+  const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
   const [personaId, setPersonaId] = useState<string | null>(null);
+  const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
@@ -311,6 +316,12 @@ export function AgentsStartComposer({
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
   );
+  const persistedRuntimeOverride = useAgentSessionStore((s) =>
+    projectId ? s.lastRuntimeByProjectId[projectId] : undefined
+  );
+  const clearLastRuntimeForProject = useAgentSessionStore(
+    (s) => s.clearLastRuntimeForProject
+  );
   const startConversationDraft = useAgentSessionStore(
     (s) => s.startConversationDraft
   );
@@ -333,6 +344,11 @@ export function AgentsStartComposer({
 
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const roleDefaultQuery = useStartComposerRoleDefault(projectId, mode);
+  const currentRoleKey = `${projectId}:${mode}`;
+  const hasLocalRoleOverride = roleOverrideKey === currentRoleKey;
+  const hasRoleOverride =
+    Boolean(persistedRuntimeOverride) || hasLocalRoleOverride;
   const providerOptions = useMemo(
     () =>
       buildAgentProviderAvailabilityOptions({
@@ -440,6 +456,78 @@ export function AgentsStartComposer({
     featureFlags.agentConversationWorkflows,
   ]);
 
+  const runtimeForRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault) => {
+      const nextProvider = toAgentProvider(roleDefault.value.provider);
+      if (!nextProvider) {
+        throw new Error(
+          `Unsupported provider in ${roleDefault.role} default: ${roleDefault.value.provider}`,
+        );
+      }
+      return normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId:
+            roleDefault.value.model ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              supportedModelAliasesForProvider(providerOptions, nextProvider),
+            ),
+          ...(roleDefault.value.effort
+            ? { effort: roleDefault.value.effort as AgentEffort }
+            : {}),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, nextProvider),
+        supportedModelAliasesForProvider(providerOptions, nextProvider),
+      );
+    },
+    [modelRegistry, providerOptions],
+  );
+
+  const applyRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault, preserveRuntime = false) => {
+      const nextRuntime = runtimeForRoleDefault(roleDefault);
+      if (!preserveRuntime) {
+        setProvider(nextRuntime.provider);
+        setModelId(nextRuntime.modelId);
+        setEffort(nextRuntime.effort);
+      }
+      setCodexFastModeOverride(
+        roleDefault.value.serviceTier === "provider_default"
+          ? null
+          : roleDefault.value.serviceTier === "fast",
+      );
+      const nextCapability = roleDefault.value.coordinationMode ?? "solo";
+      setCapabilityMode(
+        capabilityOptions.some((option) => option.id === nextCapability)
+          ? (nextCapability as CapabilityIntent["coordinationMode"])
+          : "solo",
+      );
+      setPersonaId(
+        featureFlags.agentPersonas ? roleDefault.value.personaId : null,
+      );
+    },
+    [
+      capabilityOptions,
+      featureFlags.agentPersonas,
+      runtimeForRoleDefault,
+    ],
+  );
+
+  useEffect(() => {
+    if (!roleDefaultQuery.data || hasLocalRoleOverride) {
+      return;
+    }
+    applyRoleDefault(roleDefaultQuery.data, Boolean(persistedRuntimeOverride));
+  }, [
+    applyRoleDefault,
+    hasLocalRoleOverride,
+    persistedRuntimeOverride,
+    roleDefaultQuery.data,
+  ]);
+
   useEffect(() => {
     const available = capabilityOptions.some(
       (option) => option.id === capabilityMode,
@@ -465,6 +553,9 @@ export function AgentsStartComposer({
     setStartConversationFailure(null);
     setError(null);
   }, [setStartConversationFailure]);
+  const markRoleOverride = useCallback(() => {
+    setRoleOverrideKey(currentRoleKey);
+  }, [currentRoleKey]);
   const handleCapabilityChange = useCallback(
     async (next: CapabilityIntent["coordinationMode"]) => {
       if (next === capabilityMode) {
@@ -482,9 +573,10 @@ export function AgentsStartComposer({
         }
       }
       clearStartError();
+      markRoleOverride();
       setCapabilityMode(next);
     },
-    [capabilityMode, clearStartError, confirm],
+    [capabilityMode, clearStartError, confirm, markRoleOverride],
   );
   const openPersonaSettings = useCallback(() => {
     openModal("settings", { section: "personas" });
@@ -539,10 +631,13 @@ export function AgentsStartComposer({
   }, [startConversationFailure]);
 
   useEffect(() => {
+    if (roleDefaultQuery.data && !hasRoleOverride) {
+      return;
+    }
     setProvider(normalizedRuntime.provider);
     setModelId(normalizedRuntime.modelId);
     setEffort(normalizedRuntime.effort);
-  }, [normalizedRuntime]);
+  }, [hasRoleOverride, normalizedRuntime, roleDefaultQuery.data]);
 
   const modelOptions = useMemo(
     () =>
@@ -653,9 +748,8 @@ export function AgentsStartComposer({
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
-    [clearStartError, effort, modelId, persistRuntimePreference, provider]
+    [clearStartError]
   );
 
   const handleProviderChange = useCallback(
@@ -665,6 +759,7 @@ export function AgentsStartComposer({
         return;
       }
       clearStartError();
+      markRoleOverride();
       const remembered = lastModelEffortByProvider[nextProvider];
       const nextProviderModelAliases = supportedModelAliasesForProvider(
         providerOptions,
@@ -695,6 +790,7 @@ export function AgentsStartComposer({
       clearStartError,
       lastModelEffortByProvider,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       providerOptions,
@@ -704,6 +800,7 @@ export function AgentsStartComposer({
   const handleModelChange = useCallback(
     (nextModelId: string) => {
       clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -722,6 +819,7 @@ export function AgentsStartComposer({
     [
       clearStartError,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -733,6 +831,7 @@ export function AgentsStartComposer({
   const handleEffortChange = useCallback(
     (nextEffort: AgentEffort) => {
       clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -752,6 +851,7 @@ export function AgentsStartComposer({
       clearStartError,
       modelId,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -797,6 +897,41 @@ export function AgentsStartComposer({
     },
     [clearStartError, composerIntegrationReferences]
   );
+
+  const handleResetRoleDefault = useCallback(async () => {
+    clearStartError();
+    setIsResettingRoleDefault(true);
+    try {
+      const result = await roleDefaultQuery.refetch();
+      if (result.isError || !result.data) {
+        const message =
+          result.error instanceof Error
+            ? result.error.message
+            : "Failed to load the current role default";
+        setError(plainStartComposerError(message));
+        return;
+      }
+      clearLastRuntimeForProject(projectId);
+      setRoleOverrideKey(null);
+      applyRoleDefault(result.data);
+    } catch (error) {
+      setError(
+        plainStartComposerError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load the current role default",
+        ),
+      );
+    } finally {
+      setIsResettingRoleDefault(false);
+    }
+  }, [
+    applyRoleDefault,
+    clearLastRuntimeForProject,
+    clearStartError,
+    projectId,
+    roleDefaultQuery,
+  ]);
 
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
@@ -1113,7 +1248,11 @@ export function AgentsStartComposer({
       return;
     }
     setPersonaId(null);
-    await submitStartInput({ ...lastAttempt, personaId: null });
+    await submitStartInput({
+      ...lastAttempt,
+      useRoleDefault: false,
+      personaId: null,
+    });
   }, [submitStartInput]);
 
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
@@ -1154,21 +1293,50 @@ export function AgentsStartComposer({
           ),
         }
       : null;
+    let launchRuntime: AgentRuntimeSelection = { provider, modelId, effort };
+    let launchCapabilityMode = capabilityMode;
+    let launchCodexFastMode =
+      provider === "codex" ? selectableCodexFastMode : null;
+    let launchPersonaId =
+      featureFlags.agentPersonas && personaId ? personaId : null;
+    if (!hasLocalRoleOverride && roleDefaultQuery.data) {
+      const resolvedDefault = roleDefaultQuery.data;
+      if (!persistedRuntimeOverride) {
+        launchRuntime = runtimeForRoleDefault(resolvedDefault);
+      }
+      const defaultCapability =
+        resolvedDefault.value.coordinationMode ?? "solo";
+      launchCapabilityMode = capabilityOptions.some(
+        (option) => option.id === defaultCapability,
+      )
+        ? (defaultCapability as CapabilityIntent["coordinationMode"])
+        : "solo";
+      launchCodexFastMode =
+        launchRuntime.provider === "codex"
+          ? resolvedDefault.value.serviceTier === "provider_default"
+            ? codexProviderFastMode
+            : resolvedDefault.value.serviceTier === "fast"
+          : null;
+      launchPersonaId = featureFlags.agentPersonas
+        ? resolvedDefault.value.personaId
+        : null;
+    }
     const capabilityIntent = {
-      coordinationMode: capabilityMode,
+      coordinationMode: launchCapabilityMode,
     } satisfies CapabilityIntent;
     await submitStartInput({
       projectId,
       content: message.trim(),
-      runtime: { provider, modelId, effort },
+      runtime: launchRuntime,
+      useRoleDefault: !hasRoleOverride,
       mode,
       ...(mode === "automation" && automationAuthoringMode
         ? { automationAuthoringMode }
         : {}),
       base,
       files: attachments.map((attachment) => attachment.file),
-      codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
-      ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
+      codexFastMode: launchCodexFastMode,
+      ...(launchPersonaId ? { personaId: launchPersonaId } : {}),
       capabilityIntent,
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
@@ -1333,6 +1501,10 @@ export function AgentsStartComposer({
               onValueChange: (value) => {
                 clearStartError();
                 const nextMode = value as AgentConversationWorkspaceMode;
+                if (nextMode !== mode) {
+                  clearLastRuntimeForProject(projectId);
+                  setRoleOverrideKey(null);
+                }
                 setMode(nextMode);
                 if (nextMode !== "automation") {
                   setAutomationAuthoringMode(null);
@@ -1358,6 +1530,7 @@ export function AgentsStartComposer({
                       personaId={personaId}
                       onValueChange={(nextPersonaId) => {
                         clearStartError();
+                        markRoleOverride();
                         setPersonaId(nextPersonaId);
                       }}
                       onOpenPersonas={openPersonaSettings}
@@ -1412,7 +1585,10 @@ export function AgentsStartComposer({
               fastMode: {
                 visible: provider === "codex",
                 value: selectableCodexFastMode,
-                onValueChange: setCodexFastModeOverride,
+                onValueChange: (value) => {
+                  markRoleOverride();
+                  setCodexFastModeOverride(value);
+                },
                 disabled:
                   !providerSettingsReady ||
                   !codexFastModeAvailability.supported,
@@ -1433,7 +1609,17 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
-            sendDisabledReason={providerStatusMessage}
+            runtimeDefault={{
+              source: roleDefaultQuery.data?.source ?? null,
+              isResetting: roleDefaultQuery.isFetching || isResettingRoleDefault,
+              disabled: !projectId,
+              onReset: handleResetRoleDefault,
+            }}
+            sendDisabledReason={
+              isResettingRoleDefault
+                ? "Resetting the current role default"
+                : providerStatusMessage
+            }
           />
 
           {providerStatusMessage && (

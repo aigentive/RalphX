@@ -682,7 +682,7 @@ pub async fn spawn_project_analyzer(
     app_handle: Option<tauri::AppHandle>,
 ) {
     use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
-    use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+    use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
     use crate::infrastructure::agents::claude::agent_names;
 
     let prompt = format!(
@@ -714,8 +714,16 @@ pub async fn spawn_project_analyzer(
         }
     };
 
+    let working_directory = PathBuf::from(working_directory);
     let runtime = match state
-        .resolve_project_analyzer_runtime_for_project(Some(project_id))
+        .resolve_manual_role_background_agent_runtime(
+            Some(project_id),
+            Some(working_directory.as_path()),
+            RoutingRole::UtilityProjectAnalyzer,
+            agent_names::AGENT_PROJECT_ANALYZER,
+            "project analyzer",
+            None,
+        )
         .await
     {
         Ok(runtime) => runtime,
@@ -729,7 +737,6 @@ pub async fn spawn_project_analyzer(
             return;
         }
     };
-    let working_directory = PathBuf::from(working_directory);
     let bootstrap = resolve_harness_agent_bootstrap(
         runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
         agent_names::AGENT_PROJECT_ANALYZER,
