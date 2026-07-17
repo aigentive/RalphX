@@ -1,7 +1,14 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::application::AppState;
+pub(crate) use crate::application::agent_task_pipeline_service::validate_complete_task_pipeline_proposal_selection;
+use crate::application::{
+    agent_task_pipeline_service::{
+        activate_agent_task_pipeline as activate_agent_task_pipeline_service,
+        validate_supervised_task_pipeline,
+    },
+    AppState,
+};
 use crate::commands::agent_composer_commands::plan_references::session_can_reference_plan;
 use crate::commands::ideation_commands::{
     apply_proposals_to_kanban_for_state, ApplyProposalsInput, ApplyProposalsResultResponse,
@@ -173,6 +180,7 @@ pub async fn start_agent_task_pipeline(
             proposal_ids: input.proposal_ids,
             target_column: "auto".to_string(),
             base_branch_override: input.base_branch_override,
+            supervised_task_pipeline_conversation_id: Some(input.conversation_id),
         },
         &state,
         &app,
@@ -181,163 +189,14 @@ pub async fn start_agent_task_pipeline(
 }
 
 #[doc(hidden)]
-pub(crate) async fn validate_complete_task_pipeline_proposal_selection(
-    state: &AppState,
-    session_id: &str,
-    requested_ids: &[String],
-) -> Result<(), String> {
-    let session_id = IdeationSessionId::from_string(session_id.to_string());
-    let expected_ids = state
-        .task_proposal_repo
-        .get_by_session(&session_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|proposal| proposal.archived_at.is_none() && proposal.created_task_id.is_none())
-        .map(|proposal| proposal.id.as_str().to_string())
-        .collect::<std::collections::HashSet<_>>();
-    let requested_ids = requested_ids
-        .iter()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    if expected_ids.is_empty() {
-        return Err("Task pipeline has no proposals to start".to_string());
-    }
-    if requested_ids != expected_ids {
-        return Err(
-            "Start Tasks must apply the complete current proposal set; refresh and review the graph"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-#[doc(hidden)]
 pub(crate) async fn activate_agent_task_pipeline_for_state(
     input: ActivateAgentTaskPipelineInput,
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
-    if let Some(existing) = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        let requested_session = IdeationSessionId::from_string(input.session_id.clone());
-        if existing.mode == AgentConversationWorkspaceMode::Tasks
-            && existing.task_pipeline_session_id.as_ref() == Some(&requested_session)
-        {
-            validate_supervised_task_pipeline(
-                state,
-                &input.conversation_id,
-                &input.session_id,
-                AgentConversationWorkspaceMode::Tasks,
-            )
+    let workspace =
+        activate_agent_task_pipeline_service(state, &input.conversation_id, &input.session_id)
             .await?;
-            return agent_workspace_response_for_state(state, existing).await;
-        }
-    }
-    let mut workspace = validate_supervised_task_pipeline(
-        state,
-        &input.conversation_id,
-        &input.session_id,
-        AgentConversationWorkspaceMode::Plan,
-    )
-    .await?;
-    let session_id = IdeationSessionId::from_string(input.session_id);
-
-    if workspace.task_pipeline_session_id.is_some() {
-        return Err("This conversation already has a different task pipeline".to_string());
-    }
-
-    workspace.mode = AgentConversationWorkspaceMode::Tasks;
-    workspace.task_pipeline_session_id = Some(session_id);
-    workspace.updated_at = chrono::Utc::now();
-    state
-        .chat_conversation_repo
-        .update_agent_mode(
-            &workspace.conversation_id,
-            Some(AgentConversationWorkspaceMode::Tasks),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    let workspace = match state
-        .agent_conversation_workspace_repo
-        .create_or_update(workspace)
-        .await
-    {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            let _ = state
-                .chat_conversation_repo
-                .update_agent_mode(&conversation_id, Some(AgentConversationWorkspaceMode::Plan))
-                .await;
-            return Err(error.to_string());
-        }
-    };
     agent_workspace_response_for_state(state, workspace).await
-}
-
-async fn validate_supervised_task_pipeline(
-    state: &AppState,
-    conversation_id: &str,
-    session_id: &str,
-    required_mode: AgentConversationWorkspaceMode,
-) -> Result<crate::domain::entities::AgentConversationWorkspace, String> {
-    let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
-    let session_id = IdeationSessionId::from_string(session_id.to_string());
-    let workspace = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Agent workspace not found".to_string())?;
-    if workspace.mode != required_mode {
-        return Err(format!("Agent workspace must be in {required_mode} mode"));
-    }
-    let attached_session = match required_mode {
-        AgentConversationWorkspaceMode::Plan => workspace.linked_ideation_session_id.as_ref(),
-        AgentConversationWorkspaceMode::Tasks => workspace.task_pipeline_session_id.as_ref(),
-        _ => None,
-    };
-    if attached_session != Some(&session_id) {
-        return Err("Task pipeline session does not belong to this conversation".to_string());
-    }
-    let session = state
-        .ideation_session_repo
-        .get_by_id(&session_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Task pipeline session not found".to_string())?;
-    if session.project_id != workspace.project_id {
-        return Err("Task pipeline session belongs to a different project".to_string());
-    }
-    let plan_id = session
-        .plan_artifact_id
-        .as_ref()
-        .ok_or_else(|| "Task pipeline session has no current plan".to_string())?;
-    let latest_id = state
-        .artifact_repo
-        .resolve_latest_artifact_id(plan_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let latest = state
-        .artifact_repo
-        .get_by_id(&latest_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Current plan artifact not found".to_string())?;
-    let approval = state
-        .plan_approval_repo
-        .get_by_session(&session_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Current plan is not approved".to_string())?;
-    if approval.artifact_id != latest.id || approval.artifact_version != latest.metadata.version {
-        return Err("Current plan version is not approved".to_string());
-    }
-    Ok(workspace)
 }
 
 #[doc(hidden)]

@@ -712,6 +712,7 @@ async fn restart_core_discards_dirty_current_attempt_merge_worktree() {
             proposal_ids: vec![proposal.id.as_str().to_string()],
             target_column: "auto".to_string(),
             base_branch_override: None,
+            supervised_task_pipeline_conversation_id: None,
         },
     )
     .await

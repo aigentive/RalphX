@@ -257,6 +257,7 @@ async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_mi
     seed_conversation(&db, &second_id);
     let mut second = make_workspace(second_id.clone());
     second.linked_ideation_session_id = Some(session_id.clone());
+    second.task_pipeline_session_id = Some(session_id.clone());
     second.branch_name = "ralphx/project/agent-second".to_string();
     second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
     repo.create_or_update(second).await.unwrap();
@@ -269,11 +270,23 @@ async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_mi
     assert_eq!(loaded.conversation_id, second_id);
     assert_eq!(loaded.branch_name, "ralphx/project/agent-second");
 
+    let task_pipeline = repo
+        .get_by_task_pipeline_session_id(&session_id)
+        .await
+        .unwrap()
+        .expect("durably attached Tasks workspace should load");
+    assert_eq!(task_pipeline.conversation_id, second_id);
+
     let missing = repo
         .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
         .await
         .unwrap();
     assert!(missing.is_none());
+    assert!(repo
+        .get_by_task_pipeline_session_id(&IdeationSessionId::from_string("missing-session"))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

@@ -95,7 +95,7 @@ describe("isConversationModeLocked", () => {
     expect(isConversationModeLocked(conversation(), workspace())).toBe(false);
   });
 
-  it("locks a durable Tasks pipeline when the backend projection is absent", () => {
+  it("does not treat durable Tasks return context as an active ownership lock", () => {
     expect(
       isConversationModeLocked(
         conversation({ agentMode: "tasks" }),
@@ -104,7 +104,7 @@ describe("isConversationModeLocked", () => {
           taskPipelineSessionId: "session-1",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("locks automation and persona builder conversations without workspace rows", () => {

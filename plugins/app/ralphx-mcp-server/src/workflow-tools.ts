@@ -483,11 +483,11 @@ export const WORKFLOW_TOOLS: Tool[] = [
         },
         source_conversation_id: {
           type: "string",
-          description: "Optional source conversation ID for traceability.",
+          description: "Source conversation ID. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
         },
         source_message_id: {
           type: "string",
-          description: "Optional source message ID for traceability.",
+          description: "Exact user message ID authorizing the follow-up. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
         },
       },
       required: ["project_id", "session_id", "title", "steps", "acceptance_criteria"],

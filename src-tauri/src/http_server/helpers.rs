@@ -842,7 +842,7 @@ pub async fn archive_proposal_impl(
 pub async fn finalize_proposals_impl(
     state: &AppState,
     session_id: &str,
-    is_external: bool,
+    _is_external: bool,
 ) -> AppResult<crate::http_server::types::FinalizeProposalsResponse> {
     // Fetch session and validate it is Active
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
@@ -852,20 +852,15 @@ pub async fn finalize_proposals_impl(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
-    if !is_external {
-        let workspace = state
-            .agent_conversation_workspace_repo
-            .get_by_linked_ideation_session_id(&session_id_typed)
-            .await?;
-        if workspace.is_some_and(|workspace| {
-            workspace.mode == AgentConversationWorkspaceMode::Tasks
-                && workspace.task_pipeline_session_id.as_ref() == Some(&session_id_typed)
-        }) {
-            return Err(AppError::Validation(
-                "This supervised task pipeline is waiting for the user to choose Start Tasks"
-                    .to_string(),
-            ));
-        }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session_id_typed)
+        .await?;
+    if workspace.is_some_and(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks) {
+        return Err(AppError::Validation(
+            "This supervised task pipeline is waiting for the user to choose Start Tasks"
+                .to_string(),
+        ));
     }
 
     if session.status != IdeationSessionStatus::Active {
@@ -998,6 +993,7 @@ pub async fn finalize_proposals_impl(
         proposal_ids,
         target_column: "auto".to_string(),
         base_branch_override: None,
+        supervised_task_pipeline_conversation_id: None,
     };
 
     let result = apply_proposals_core(state, input).await?;
@@ -1125,6 +1121,7 @@ pub async fn apply_pending_proposals_core_for_session(
         proposal_ids,
         target_column: "auto".to_string(),
         base_branch_override: None,
+        supervised_task_pipeline_conversation_id: None,
     };
 
     apply_pending_proposals_core(state, input).await

@@ -532,6 +532,52 @@ async fn tasks_follow_up_requires_owning_user_message_and_rejects_replay() {
 }
 
 #[tokio::test]
+async fn tasks_owned_pipeline_rejects_append_without_source_identity() {
+    let fixture = accepted_plan_fixture(InternalStatus::Blocked).await;
+    attach_tasks_conversation(&fixture, Some("open")).await;
+    let task_count_before = fixture
+        .state
+        .task_repo
+        .get_by_ideation_session(&fixture.session_id)
+        .await
+        .unwrap()
+        .len();
+
+    let error = append_ideation_plan_task_core(
+        &fixture.state,
+        AppendIdeationPlanTaskInput {
+            project_id: Some(fixture.project_id.as_str().to_string()),
+            session_id: fixture.session_id.as_str().to_string(),
+            title: "Bypass explicit Tasks consent".to_string(),
+            description: None,
+            steps: vec![],
+            acceptance_criteria: vec![],
+            depends_on_task_ids: vec![],
+            priority: None,
+            source_conversation_id: None,
+            source_message_id: None,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("require an explicit source user message"));
+    assert_eq!(
+        fixture
+            .state
+            .task_repo
+            .get_by_ideation_session(&fixture.session_id)
+            .await
+            .unwrap()
+            .len(),
+        task_count_before,
+        "missing Tasks consent must not create a follow-up task",
+    );
+}
+
+#[tokio::test]
 async fn tasks_follow_up_rejects_closed_pr_without_creating_task() {
     let fixture = accepted_plan_fixture(InternalStatus::Blocked).await;
     let (conversation_id, message_id) = attach_tasks_conversation(&fixture, Some("closed")).await;

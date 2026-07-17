@@ -75,7 +75,7 @@ fn file_plan(name: &str, path: &str, version: u32) -> Artifact {
 async fn setup_target_workspace(
     mode: AgentConversationWorkspaceMode,
 ) -> (AppState, Project, ChatConversation, TempDir) {
-    let state = AppState::new_sqlite_test();
+    let state = AppState::new_sqlite_for_apply_test();
     let test_root = tempfile::tempdir().expect("test root should be created");
     let project_dir = test_root.path().join("project");
     let worktree_parent = test_root.path().join("worktrees");
@@ -94,6 +94,7 @@ async fn setup_target_workspace(
         .create(conversation)
         .await
         .unwrap();
+    seed_sql_conversation_projection(&state, &conversation, mode).await;
     let workspace_path =
         resolve_agent_conversation_workspace_path(&project, &conversation.id).unwrap();
     std::fs::create_dir_all(workspace_path.parent().unwrap()).unwrap();
@@ -126,6 +127,48 @@ async fn setup_target_workspace(
         .await
         .unwrap();
     (state, project, conversation, test_root)
+}
+
+async fn seed_sql_conversation_projection(
+    state: &AppState,
+    conversation: &ChatConversation,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let conversation_id = conversation.id.as_str().to_string();
+    let context_id = conversation.context_id.clone();
+    let agent_mode = mode.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO chat_conversations (id, context_type, context_id, agent_mode)
+                 VALUES (?1, 'project', ?2, ?3)",
+                rusqlite::params![conversation_id, context_id, agent_mode],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+async fn set_sql_conversation_mode(
+    state: &AppState,
+    conversation: &ChatConversation,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let conversation_id = conversation.id.as_str().to_string();
+    let agent_mode = mode.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE chat_conversations SET agent_mode = ?2 WHERE id = ?1",
+                rusqlite::params![conversation_id, agent_mode],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 async fn seed_source_plan(
@@ -245,6 +288,7 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
         })
         .await
         .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
 
     let input = || ActivateAgentTaskPipelineInput {
         conversation_id: conversation.id.as_str().to_string(),
@@ -278,6 +322,135 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
             .is_empty(),
         "Create Proposals authority must not create Kanban tasks",
     );
+}
+
+#[tokio::test]
+async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Atomic activation".to_string(),
+            content: "# Atomic activation".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    state
+        .db
+        .run(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_tasks_conversation_activation
+                 BEFORE UPDATE OF agent_mode ON chat_conversations
+                 WHEN NEW.agent_mode = 'tasks'
+                 BEGIN SELECT RAISE(FAIL, 'conversation activation failed'); END;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    let stored_conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored_conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::Plan),
+        "failed activation must not leave the conversation projection in Tasks",
+    );
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn stale_conversation_projection_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Stale projection".to_string(),
+            content: "# Stale projection".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        error,
+        "Conflict: Task pipeline conversation projection changed before activation",
+    );
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
 }
 
 #[tokio::test]

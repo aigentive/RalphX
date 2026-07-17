@@ -451,6 +451,8 @@ pub struct ApplyProposalsInput {
     /// Per-plan override for base branch (None = use project default)
     #[serde(default)]
     pub base_branch_override: Option<String>,
+    #[serde(skip)]
+    pub(crate) supervised_task_pipeline_conversation_id: Option<String>,
 }
 
 /// Core result of apply proposals — transport-agnostic, usable from Tauri IPC and HTTP contexts.
