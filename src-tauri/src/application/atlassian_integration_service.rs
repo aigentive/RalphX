@@ -16,6 +16,8 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 
+use super::jira_agile_types::{JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary};
+
 const ATLASSIAN_TOKEN_SECRET_REF: &str = "integrations/atlassian/default/api-token";
 const ATLASSIAN_OAUTH_CLIENT_SECRET_REF: &str =
     "integrations/atlassian/default/oauth-client-secret";
@@ -320,6 +322,30 @@ pub trait AtlassianApiClient: Send + Sync {
         _limit: usize,
     ) -> Result<Vec<JiraIssueDetail>, String> {
         Err("Jira project issues are not available for this client".to_string())
+    }
+
+    async fn list_jira_boards(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+    ) -> Result<Vec<JiraBoardSummary>, String> {
+        Err("Jira board enumeration is not available for this client".to_string())
+    }
+
+    async fn get_jira_board_configuration(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _board_id: &str,
+    ) -> Result<JiraBoardConfiguration, String> {
+        Err("Jira board configuration is not available for this client".to_string())
+    }
+
+    async fn list_jira_active_sprints(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _board_id: &str,
+    ) -> Result<Vec<JiraSprintSummary>, String> {
+        Err("Jira sprint enumeration is not available for this client".to_string())
     }
 
     async fn exchange_oauth_code(
@@ -1050,6 +1076,50 @@ impl AtlassianIntegrationService {
         self.client
             .list_jira_project_issues(&auth, project_key, limit)
             .await
+    }
+
+    /// Lists Jira Software boards associated with a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects or returns an invalid paginated response.
+    pub async fn list_jira_boards(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<JiraBoardSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_boards(&auth, project_key).await
+    }
+
+    /// Reads the ordered status-to-column mapping for a Jira Software board.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or the board configuration is unavailable or malformed.
+    pub async fn get_jira_board_configuration(
+        &self,
+        board_id: &str,
+    ) -> Result<JiraBoardConfiguration, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .get_jira_board_configuration(&auth, board_id)
+            .await
+    }
+
+    /// Lists active sprints for a Jira Software board.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects or returns an invalid paginated response.
+    pub async fn list_jira_active_sprints(
+        &self,
+        board_id: &str,
+    ) -> Result<Vec<JiraSprintSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_active_sprints(&auth, board_id).await
     }
 
     pub async fn expand_references_for_prompt(

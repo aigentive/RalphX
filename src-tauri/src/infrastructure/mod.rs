@@ -5,7 +5,10 @@ pub mod agents;
 pub mod atlassian_client;
 pub mod clickup_client;
 pub(crate) mod git_auth;
+#[cfg(test)]
+mod git_auth_tests;
 pub mod granola_client;
+pub(crate) mod jira_agile_client;
 pub mod linear_client;
 pub mod login_shell_env;
 pub mod memory;
@@ -38,6 +41,8 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
 #[cfg(test)]
 mod atlassian_client_tests;
+#[cfg(test)]
+mod jira_agile_client_tests;
 #[cfg(test)]
 mod clickup_client_tests;
 #[cfg(test)]

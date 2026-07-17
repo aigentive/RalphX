@@ -207,7 +207,7 @@ function mergePartialTextBlock(
   return next;
 }
 
-function mergeStreamingTextSnapshot(snapshotText: string, liveText: string): string {
+export function mergeStreamingTextSnapshot(snapshotText: string, liveText: string): string {
   if (liveText.length === 0) {
     return snapshotText;
   }

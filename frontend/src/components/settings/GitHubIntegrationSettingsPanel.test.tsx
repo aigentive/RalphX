@@ -32,6 +32,8 @@ describe("GitHubIntegrationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     githubStatusHook.state.data = {
+      state: "authenticated",
+      diagnostic: null,
       ghInstalled: true,
       authenticated: true,
       host: "github.com",
@@ -57,6 +59,8 @@ describe("GitHubIntegrationSettingsPanel", () => {
 
   it("shows gh auth login guidance when gh is installed but unauthenticated", () => {
     githubStatusHook.state.data = {
+      state: "unauthenticated",
+      diagnostic: "missing_credentials",
       ghInstalled: true,
       authenticated: false,
       host: "github.com",
@@ -73,6 +77,8 @@ describe("GitHubIntegrationSettingsPanel", () => {
 
   it("distinguishes missing gh from an unauthenticated gh install", () => {
     githubStatusHook.state.data = {
+      state: "cli_unavailable",
+      diagnostic: "cli_launch",
       ghInstalled: false,
       authenticated: false,
       host: null,
@@ -84,6 +90,26 @@ describe("GitHubIntegrationSettingsPanel", () => {
     expect(screen.getByText("GitHub CLI unavailable")).toBeInTheDocument();
     expect(screen.getByText("gh missing")).toBeInTheDocument();
     expect(screen.getByText("Host unknown")).toBeInTheDocument();
+  });
+
+  it("shows transient provider failures without gh auth login guidance", () => {
+    githubStatusHook.state.data = {
+      state: "provider_unavailable",
+      diagnostic: "http5xx",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    };
+
+    renderPanel();
+
+    expect(screen.getByText("GitHub temporarily unavailable")).toBeInTheDocument();
+    expect(screen.getByText("State provider_unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("gh auth login")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Refresh this status before signing in again/i),
+    ).toBeInTheDocument();
   });
 
   it("refreshes the live status on demand", async () => {
