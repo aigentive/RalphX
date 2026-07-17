@@ -118,7 +118,7 @@ Skipping scheduled release for maintenance-only commits:
 - The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
 - Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
 
-Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
+Scheduled runs use `gpt-5.6-terra`, `draft=false`, `prerelease=false`, the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
 If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
 
 Runner labels:

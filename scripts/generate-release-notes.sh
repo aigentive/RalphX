@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/release-notes-codex-prompt.md"
 COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
-DEFAULT_MODEL="${RELEASE_NOTES_MODEL:-gpt-5.5}"
+DEFAULT_MODEL="${RELEASE_NOTES_MODEL:-gpt-5.6-terra}"
 DEFAULT_REASONING_EFFORT="${RELEASE_NOTES_REASONING_EFFORT:-xhigh}"
 
 usage() {
@@ -22,7 +22,7 @@ Arguments:
 Options:
   --from <ref>          Explicit start ref/tag/commit for the compare range
   --to <ref>            End ref/tag/commit for the compare range (default: HEAD)
-  --model <model>       Codex model to use (default: RELEASE_NOTES_MODEL or gpt-5.5)
+  --model <model>       Codex model to use (default: RELEASE_NOTES_MODEL or gpt-5.6-terra)
   --reasoning-effort <level>
                         Codex reasoning effort to use (default: RELEASE_NOTES_REASONING_EFFORT or xhigh)
   --output <file>       Output markdown path (default: release-notes/v<version>.md)
@@ -36,6 +36,8 @@ Notes:
 EOF
 }
 
+# shellcheck source=scripts/release-analysis-common.sh
+# shellcheck disable=SC1091
 source "${COMMON_FILE}"
 
 version=""
@@ -137,6 +139,7 @@ trap 'rm -f "${tmp_context}" "${tmp_final_input}"' EXIT
   printf -- '- Use the raw commit bodies as the primary source of truth.\n'
   printf -- '- Group related bullets into coherent product areas instead of echoing commit subjects line by line.\n'
   printf -- '- Use commit subjects and diff stat only to fill gaps when the raw bodies are sparse.\n'
+  # shellcheck disable=SC2016
   printf -- '- Do not assume every `feat:` bullet means a net-new surface; many are expansions of existing behavior.\n'
   printf -- '- Keep internal-only work out of User-Facing Changes and Fixes And Polish unless the shipped impact is explicit in the commit bodies.\n'
   printf -- '- Clearly separate developer-facing work under Developer And Maintainer Changes after the user-facing sections.\n'

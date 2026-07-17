@@ -76,7 +76,7 @@ on:
       codex_model:
         description: "Codex model for version proposal and release notes"
         required: true
-        default: gpt-5.5
+        default: gpt-5.6-terra
       codex_reasoning_effort:
         description: "Codex reasoning effort for version proposal and release notes"
         required: true
@@ -105,8 +105,8 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
-      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
-      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
+      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.6-terra' }}
+      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.6-terra' }}
       RELEASE_PROPOSAL_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
       RELEASE_NOTES_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
       MANUAL_RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_bump || 'auto' }}
