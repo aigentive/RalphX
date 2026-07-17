@@ -479,6 +479,9 @@ mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716202015_workspace_review_bypass_and_bound_agent;
 #[cfg(test)]
 mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716210000_supervised_native_task_pipeline;
+#[cfg(test)]
+mod v20260716210000_supervised_native_task_pipeline_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -573,7 +576,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260716202015;
+pub const SCHEMA_VERSION: i64 = 20260716210000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1582,6 +1585,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716202015,
         name: "workspace_review_bypass_and_bound_agent",
         migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
+    },
+    Migration {
+        version: 20260716210000,
+        name: "supervised_native_task_pipeline",
+        migrate: v20260716210000_supervised_native_task_pipeline::migrate,
     },
 ];
 

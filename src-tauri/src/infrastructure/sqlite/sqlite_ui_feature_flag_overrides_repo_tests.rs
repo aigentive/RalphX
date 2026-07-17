@@ -14,7 +14,8 @@ fn connection() -> Connection {
                 id INTEGER PRIMARY KEY CHECK(id = 1),
                 agent_personas INTEGER NULL,
                 agent_conversation_team INTEGER NOT NULL DEFAULT 0,
-                agent_conversation_workflows INTEGER NOT NULL DEFAULT 0
+                agent_conversation_workflows INTEGER NOT NULL DEFAULT 0,
+                agent_conversation_autopilot INTEGER NOT NULL DEFAULT 0
              );",
         )
         .expect("create feature flag schema");
@@ -29,6 +30,7 @@ async fn missing_overrides_default_and_persona_values_round_trip() {
     assert_eq!(defaults.agent_personas, None);
     assert!(!defaults.agent_conversation_team);
     assert!(!defaults.agent_conversation_workflows);
+    assert!(!defaults.agent_conversation_autopilot);
 
     repository
         .set_agent_personas(Some(true))
@@ -76,7 +78,7 @@ async fn capability_updates_preserve_omitted_values_and_persona_override() {
         SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::new(Mutex::new(connection())));
 
     let team_enabled = repository
-        .update_agent_capabilities(Some(true), None)
+        .update_agent_capabilities(Some(true), None, None)
         .await
         .expect("enable team capability");
     assert!(team_enabled.agent_conversation_team);
@@ -88,15 +90,16 @@ async fn capability_updates_preserve_omitted_values_and_persona_override() {
         .await
         .expect("enable personas");
     let workflows_enabled = repository
-        .update_agent_capabilities(None, Some(true))
+        .update_agent_capabilities(None, Some(true), Some(true))
         .await
         .expect("enable workflow capability");
     assert!(workflows_enabled.agent_conversation_team);
     assert!(workflows_enabled.agent_conversation_workflows);
+    assert!(workflows_enabled.agent_conversation_autopilot);
     assert_eq!(workflows_enabled.agent_personas, Some(true));
 
     let team_disabled = repository
-        .update_agent_capabilities(Some(false), None)
+        .update_agent_capabilities(Some(false), None, None)
         .await
         .expect("disable team capability");
     assert!(!team_disabled.agent_conversation_team);

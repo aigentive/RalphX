@@ -7,7 +7,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::AppResult;
-use crate::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+use crate::infrastructure::agents::claude::agent_names::{
+    AGENT_CHAT_PROJECT, AGENT_PERSONA_EXTRACTOR, AGENT_TASK_MANAGER,
+};
 use crate::infrastructure::memory::MemoryPlanBranchRepository;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,6 +19,18 @@ fn agent_name_maps_resolve_persona_builder_to_extractor() {
     assert_eq!(
         agent_name_for_workspace_mode(AgentConversationWorkspaceMode::PersonaBuilder),
         AGENT_PERSONA_EXTRACTOR
+    );
+}
+
+#[test]
+fn supervised_modes_route_to_their_canonical_agents() {
+    assert_eq!(
+        agent_name_for_workspace_mode(AgentConversationWorkspaceMode::Tasks),
+        AGENT_TASK_MANAGER,
+    );
+    assert_eq!(
+        agent_name_for_workspace_mode(AgentConversationWorkspaceMode::Autopilot),
+        AGENT_CHAT_PROJECT,
     );
 }
 

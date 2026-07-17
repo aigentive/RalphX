@@ -61,6 +61,8 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "chat",
   "edit",
   "plan",
+  "tasks",
+  "autopilot",
   "ideation",
   "review_pr",
   "automation",

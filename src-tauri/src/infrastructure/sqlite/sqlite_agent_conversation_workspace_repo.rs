@@ -82,6 +82,9 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         linked_ideation_session_id: row
             .get::<_, Option<String>>("linked_ideation_session_id")?
             .map(IdeationSessionId::from_string),
+        task_pipeline_session_id: row
+            .get::<_, Option<String>>("task_pipeline_session_id")?
+            .map(IdeationSessionId::from_string),
         linked_plan_branch_id: row
             .get::<_, Option<String>>("linked_plan_branch_id")?
             .map(PlanBranchId::from_string),
@@ -438,6 +441,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .linked_ideation_session_id
             .as_ref()
             .map(|id| id.as_str().to_string());
+        let task_pipeline_session_id = workspace
+            .task_pipeline_session_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
         let linked_plan_branch_id = workspace
             .linked_plan_branch_id
             .as_ref()
@@ -496,7 +503,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     "INSERT INTO agent_conversation_workspaces (
                         conversation_id, project_id, mode, branch_mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
-                        linked_ideation_session_id, linked_plan_branch_id,
+                        linked_ideation_session_id, task_pipeline_session_id, linked_plan_branch_id,
                         source_pr_number, source_pr_url, source_pr_title,
                         source_pr_head_ref, source_pr_base_ref, source_pr_head_sha,
                         publication_pr_number, publication_pr_url, publication_pr_status,
@@ -507,7 +514,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -519,6 +526,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         branch_name=excluded.branch_name,
                         worktree_path=excluded.worktree_path,
                         linked_ideation_session_id=excluded.linked_ideation_session_id,
+                        task_pipeline_session_id=COALESCE(agent_conversation_workspaces.task_pipeline_session_id, excluded.task_pipeline_session_id),
                         linked_plan_branch_id=excluded.linked_plan_branch_id,
                         source_pr_number=excluded.source_pr_number,
                         source_pr_url=excluded.source_pr_url,
@@ -555,6 +563,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         branch_name,
                         worktree_path,
                         linked_ideation_session_id,
+                        task_pipeline_session_id,
                         linked_plan_branch_id,
                         source_pr_number,
                         source_pr_url,
@@ -702,6 +711,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE linked_ideation_session_id = ?1
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![ideation_session_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_workspace(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let ideation_session_id = ideation_session_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE task_pipeline_session_id = ?1
                      ORDER BY updated_at DESC
                      LIMIT 1",
                 )?;

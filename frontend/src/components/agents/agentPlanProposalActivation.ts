@@ -63,38 +63,38 @@ export async function activateAgentPlanProposals({
 }: ActivateAgentPlanProposalsParams): Promise<SendAgentMessageResult> {
   const conversationId = workspace?.conversationId ?? null;
   const ownsSession =
-    Boolean(conversationId) && workspace?.linkedIdeationSessionId === sessionId;
-  let workspaceIsIdeation = workspace?.mode === "ideation";
+    Boolean(conversationId) &&
+    (workspace?.taskPipelineSessionId === sessionId ||
+      workspace?.linkedIdeationSessionId === sessionId);
+  let workspaceIsTasks = workspace?.mode === "tasks";
 
   if (
     canPromoteWorkspace &&
     ownsSession &&
     workspace &&
-    workspace.mode !== "ideation" &&
+    workspace.mode !== "tasks" &&
     conversationId
   ) {
-    const result = await chatApi.switchAgentConversationMode({
+    const activatedWorkspace = await chatApi.activateAgentTaskPipeline({
       conversationId,
-      mode: "ideation",
+      sessionId,
     });
-    if (result.workspace) {
-      queryClient.setQueryData(
-        agentWorkspaceKeys.workspace(conversationId),
-        result.workspace,
-      );
-    }
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace(conversationId),
+      activatedWorkspace,
+    );
     onConversationModeSwitched?.(
       conversationId,
-      "ideation",
-      result.workspace ?? null,
+      "tasks",
+      activatedWorkspace,
     );
     void invalidateWorkspaceQueries(queryClient, conversationId);
-    workspaceIsIdeation = result.workspace?.mode === "ideation";
-  } else if (ownsSession && workspaceIsIdeation && conversationId) {
-    onConversationModeSwitched?.(conversationId, "ideation", workspace);
+    workspaceIsTasks = activatedWorkspace.mode === "tasks";
+  } else if (ownsSession && workspaceIsTasks && conversationId) {
+    onConversationModeSwitched?.(conversationId, "tasks", workspace);
   }
 
-  if (ownsSession && workspaceIsIdeation && conversationId) {
+  if (ownsSession && workspaceIsTasks && conversationId) {
     onFocusIdeationSessionForConversation?.(conversationId, sessionId);
   }
 
