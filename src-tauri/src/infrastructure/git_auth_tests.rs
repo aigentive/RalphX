@@ -46,13 +46,23 @@ fn write_fake_gh(path: &Path, body: &str) {
 }
 
 async fn probe_with_fake_gh(script_body: &str) -> GithubConnectionStatus {
-    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let fake_gh = temp_dir.path().join("gh");
-    write_fake_gh(&fake_gh, script_body);
-    let _path = EnvGuard::set_os("PATH", temp_dir.path().as_os_str());
+    let script_body = script_body.to_owned();
 
-    probe_github_connection_status().await
+    tokio::task::spawn_blocking(move || {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fake_gh = temp_dir.path().join("gh");
+        write_fake_gh(&fake_gh, &script_body);
+        let _path = EnvGuard::set_os("PATH", temp_dir.path().as_os_str());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(probe_github_connection_status())
+    })
+    .await
+    .expect("probe task")
 }
 
 #[test]
