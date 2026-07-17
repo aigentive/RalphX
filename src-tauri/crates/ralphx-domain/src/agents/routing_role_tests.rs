@@ -35,6 +35,32 @@ fn catalog_contains_all_documented_roles_once_in_seven_families() {
 }
 
 #[test]
+fn routing_role_family_keys_and_labels_are_stable() {
+    let expected = [
+        (RoutingRoleFamily::Workspace, "workspace", "Workspace"),
+        (RoutingRoleFamily::Automation, "automation", "Automation"),
+        (
+            RoutingRoleFamily::FeedbackLoops,
+            "feedback_loops",
+            "Feedback Loops",
+        ),
+        (RoutingRoleFamily::Ideation, "ideation", "Ideation"),
+        (RoutingRoleFamily::Delegation, "delegation", "Delegation"),
+        (RoutingRoleFamily::Execution, "execution", "Execution"),
+        (RoutingRoleFamily::Utility, "utility", "Utility"),
+    ];
+
+    for (family, key, display_name) in expected {
+        assert_eq!(family.key(), key);
+        assert_eq!(family.display_name(), display_name);
+        assert_eq!(
+            serde_json::from_str::<RoutingRoleFamily>(&format!("\"{key}\"")).unwrap(),
+            family
+        );
+    }
+}
+
+#[test]
 fn every_role_round_trips_through_display_parse_and_serde() {
     for role in ROUTING_ROLES {
         let key = role.to_string();
@@ -112,4 +138,15 @@ fn manual_service_tier_distinguishes_provider_default_standard_and_fast() {
         ManualServiceTier::default(),
         ManualServiceTier::ProviderDefault
     );
+}
+
+#[test]
+fn manual_service_tier_rejects_unknown_strings() {
+    assert_eq!(
+        ManualServiceTier::from_str("provider_default")
+            .unwrap()
+            .to_string(),
+        "provider_default"
+    );
+    assert!(ManualServiceTier::from_str("turbo").is_err());
 }

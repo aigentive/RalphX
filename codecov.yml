@@ -149,6 +149,7 @@ coverage:
           # pattern; parser/DTO helpers are sidecar-unit tested and IPC contracts cover
           # the command surface under the Rust IPC coverage shard.
           - "!src-tauri/src/commands/automation_commands.rs"
+          - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
