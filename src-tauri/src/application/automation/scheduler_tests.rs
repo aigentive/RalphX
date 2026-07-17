@@ -3494,6 +3494,64 @@ async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalizat
 }
 
 #[tokio::test]
+async fn automation_scheduler_does_not_park_current_plan_artifact_before_turn_completion() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Running,
+        Some(conversation_id.clone()),
+    );
+    let phase_started_at = Utc::now() - chrono::Duration::seconds(1);
+    run.agent_phase_started_at = Some(phase_started_at);
+    run_repo.create_run(run).await.unwrap();
+    let (workspace, session) =
+        plan_workspace_with_session(&conversation_id, Some("plan-artifact-current"));
+    session_repo.create(session).await.unwrap();
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let mut active_turn = agent_run_with_status(conversation_id, AgentRunStatus::Running);
+    active_turn.started_at = phase_started_at + chrono::Duration::milliseconds(1);
+    agent_run_repo.create(active_turn).await.unwrap();
+    let scheduler = scheduler_with_judge_agent_runs_and_plan_deps(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        session_repo,
+        Arc::new(MemoryPlanArtifactApprovalRepository::new()),
+        Arc::new(RecordingResumer::default()),
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 0);
+    assert_eq!(summary.judges_started, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(latest.plan_last_parked_artifact_id, None);
+    assert_eq!(latest.plan_revision_round, 0);
+}
+
+#[tokio::test]
 async fn automation_scheduler_redelivers_restart_orphaned_plan_run_at_zero_reminders() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(

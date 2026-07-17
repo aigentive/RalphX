@@ -26,6 +26,12 @@ const GOAL_AUTHORITY_JUDGE_STATES = new Set<AutomationRun["judgeState"]>([
   "done",
 ]);
 
+export const AUTOMATION_CANCEL_CONFIRMATION_DESCRIPTION =
+  "Cancels any open run and stops automatic scheduling. Work, artifacts, conversations, branches, and PRs created so far are retained. The cancelled run cannot be resumed. Restart creates a new run.";
+
+export const CANCELLED_RUN_RESTART_DESCRIPTION =
+  "The last run was cancelled. Run now starts a new run from that run's prompt; it does not resume the cancelled run.";
+
 export const AUTOMATION_RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
   pending: "Pending",
   provisioning: "Provisioning",
@@ -168,7 +174,7 @@ export function getAutomationRunStatusLabel(run: AutomationRun | null): string {
   }
   if (run.status === "awaiting_plan_approval") {
     if (run.planJudgeState === "in_progress") {
-      return "Judging plan";
+      return "Plan judge running";
     }
     if (run.planRevisionPending) {
       return "Revision pending";
@@ -196,25 +202,88 @@ export function getAutomationRunStatusTone(
   return "neutral";
 }
 
-export function getAutomationRunJudgeLabel(run: AutomationRun | null): string | null {
+export function getAutomationRunJudgeLabel(
+  run: AutomationRun | null,
+  automation: Automation | null = null,
+): string | null {
   if (!run) {
     return null;
   }
   if (run.status === "cancelled") {
     return null;
   }
+  if (run.status === "awaiting_plan_approval") {
+    if (automation?.planApprovalMode !== "automatic" && run.planJudgeState === "none") {
+      return null;
+    }
+    switch (run.planJudgeState) {
+      case "none":
+        return "Plan judge pending";
+      case "in_progress":
+        return "Plan judge running";
+      case "done":
+        return "Plan judge complete";
+      case "failed":
+        return "Plan judge failed";
+    }
+  }
+  if (!REAL_SIGNAL_TERMINAL_STATUS_SET.has(run.status)) {
+    return null;
+  }
   switch (run.judgeState) {
     case "none":
-      return "Judge pending";
+      return "Terminal judge pending";
     case "in_progress":
-      return "Judging";
+      return "Terminal judge running";
     case "done":
-      return "Judge done";
+      return "Terminal judge complete";
     case "failed":
-      return "Judge failed";
+      return "Terminal judge failed";
     case "skipped":
-      return "Judge skipped";
+      return "Terminal judge skipped";
   }
+}
+
+export type AutomationJudgeRecoveryKind = "plan" | "terminal";
+
+export interface AutomationJudgeRecovery {
+  kind: AutomationJudgeRecoveryKind;
+  statusLabel: string;
+  description: string;
+  actionLabel: "Retry plan judge" | "Retry terminal judge";
+}
+
+export function getAutomationJudgeRecovery(
+  automation: Automation,
+  run: AutomationRun | null,
+): AutomationJudgeRecovery | null {
+  if (
+    run?.status === "awaiting_plan_approval" &&
+    automation.planApprovalMode === "automatic" &&
+    run.planJudgeState === "failed"
+  ) {
+    return {
+      kind: "plan",
+      statusLabel: "Plan judge failed",
+      description:
+        "The plan judge did not complete. Retry evaluates the current run plan.",
+      actionLabel: "Retry plan judge",
+    };
+  }
+  if (
+    run &&
+    REAL_SIGNAL_TERMINAL_STATUS_SET.has(run.status) &&
+    run.judgeState === "failed"
+  ) {
+    return {
+      kind: "terminal",
+      statusLabel: "Terminal judge failed",
+      description:
+        "The terminal judge did not complete. Retry evaluates this finished run.",
+      actionLabel: "Retry terminal judge",
+    };
+  }
+  return null;
 }
 
 export interface AutomationRunPrView {
@@ -252,7 +321,7 @@ export function getAutomationRunView(
     composerReadOnly: isAutomationRunComposerReadOnly(run),
     statusLabel: getAutomationRunStatusLabel(run),
     statusTone: getAutomationRunStatusTone(run),
-    judgeLabel: getAutomationRunJudgeLabel(run),
+    judgeLabel: getAutomationRunJudgeLabel(run, automation),
     stageLabel: describeAutomationStage(automation, run),
     pr: getAutomationRunPrView(run),
   };
@@ -287,18 +356,24 @@ export function describeAutomationStage(
     if (run.planApprovedAt || run.planApprovedArtifactVersion !== null) {
       return "Approved — resuming";
     }
-    return run.planJudgeState === "in_progress"
-      ? "Judging plan"
+    if (run.planJudgeState === "in_progress") {
+      return "Plan judge running";
+    }
+    if (run.planJudgeState === "failed") {
+      return "Plan judge failed";
+    }
+    return automation.planApprovalMode === "automatic"
+      ? "Plan judge pending"
       : "Awaiting plan approval";
   }
   if (run.status === "cancelled") {
     return "Cancelled";
   }
   if (run.judgeState === "in_progress") {
-    return "Judging";
+    return "Terminal judge running";
   }
   if (run.judgeState === "failed") {
-    return "Paused: judge failed";
+    return "Terminal judge failed";
   }
   if (["pending", "provisioning", "running"].includes(run.status)) {
     return run.planPhase
@@ -306,7 +381,7 @@ export function describeAutomationStage(
       : `Run ${run.runIndex} in progress`;
   }
   if (run.status === "completed" && run.judgeState === "none") {
-    return "Waiting for judge";
+    return "Terminal judge pending";
   }
   if (run.status === "published") {
     return run.prNumber
@@ -314,7 +389,7 @@ export function describeAutomationStage(
       : "Waiting for PR merge";
   }
   if (run.judgeState === "none") {
-    return "Waiting for judge";
+    return "Terminal judge pending";
   }
   return "Scheduling next run";
 }
