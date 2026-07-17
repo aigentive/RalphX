@@ -450,6 +450,22 @@ fn chat_launch_inventory_maps_every_context_without_an_unnamed_fallback() {
             RoutingRole::WorkspacePlan,
         ),
         (
+            "ralphx-task-manager",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Tasks),
+            false,
+            RoutingRole::UtilityLightweight,
+        ),
+        (
+            "ralphx-chat-project",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Autopilot),
+            false,
+            RoutingRole::WorkspaceIdeation,
+        ),
+        (
             "ralphx-chat-project",
             ChatContextType::Project,
             None,

@@ -66,6 +66,8 @@ pub fn routing_role_for_chat_launch(
             Some(AgentConversationWorkspaceMode::Chat) => RoutingRole::WorkspaceChat,
             Some(AgentConversationWorkspaceMode::Edit) => RoutingRole::WorkspaceEdit,
             Some(AgentConversationWorkspaceMode::Plan) => RoutingRole::WorkspacePlan,
+            Some(AgentConversationWorkspaceMode::Tasks) => RoutingRole::UtilityLightweight,
+            Some(AgentConversationWorkspaceMode::Autopilot) => RoutingRole::WorkspaceIdeation,
             Some(AgentConversationWorkspaceMode::Ideation) => RoutingRole::WorkspaceIdeation,
             Some(AgentConversationWorkspaceMode::ReviewPr) => RoutingRole::WorkspaceReviewPr,
             Some(AgentConversationWorkspaceMode::Automation) => RoutingRole::WorkspaceAutomation,

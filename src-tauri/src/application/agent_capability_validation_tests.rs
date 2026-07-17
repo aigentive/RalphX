@@ -181,6 +181,7 @@ fn manual_role_workflow_validation_tracks_the_live_gate() {
     gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     assert!(validate_manual_role_runtime_capabilities(&value, &gate).is_ok());
 }

@@ -4135,6 +4135,7 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = seed_ticketing_project(&state, "role-default-start").await;
