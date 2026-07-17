@@ -77,9 +77,5 @@ export function isConversationModeLocked(
   if (workspace.modeSwitchLocked !== undefined) {
     return workspace.modeSwitchLocked;
   }
-  return Boolean(
-    workspace.taskPipelineSessionId
-      || workspace.linkedIdeationSessionId
-      || workspace.linkedPlanBranchId,
-  );
+  return Boolean(workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId);
 }

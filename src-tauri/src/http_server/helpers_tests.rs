@@ -1,11 +1,13 @@
-use super::{automation_bridge_finalize_authorized, get_task_context_impl};
+use super::{
+    automation_bridge_finalize_authorized, finalize_proposals_impl, get_task_context_impl,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, Automation,
     AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
     AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationSession, InternalStatus, ProjectId, Task, VerificationStatus,
+    IdeationSession, InternalStatus, Project, ProjectId, Task, VerificationStatus,
 };
 use chrono::Utc;
 
@@ -58,6 +60,69 @@ async fn get_task_context_impl_filters_resolved_blockers_and_keeps_active_ones()
             .any(|hint| hint.contains("Merged Blocker")),
         "resolved blockers must not be emitted as active HTTP context blockers"
     );
+}
+
+#[tokio::test]
+async fn native_finalize_rejects_durably_owned_tasks_pipeline_without_transient_link() {
+    let state = AppState::new_sqlite_for_apply_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Tasks finalize guard".to_string(),
+            "/tmp/ralphx-tasks-finalize-guard".to_string(),
+        ))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Tasks));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id,
+        AgentConversationWorkspaceMode::Tasks,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/test/tasks-finalize-guard".to_string(),
+        "/tmp/ralphx-tasks-finalize-guard".to_string(),
+    );
+    workspace.task_pipeline_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let error = finalize_proposals_impl(&state, session.id.as_str(), false)
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("waiting for the user to choose Start Tasks"));
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session.id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let external_route_error = finalize_proposals_impl(&state, session.id.as_str(), true)
+        .await
+        .unwrap_err();
+    assert!(external_route_error
+        .to_string()
+        .contains("waiting for the user to choose Start Tasks"));
 }
 
 #[tokio::test]

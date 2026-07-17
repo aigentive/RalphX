@@ -31,6 +31,7 @@ impl From<ExternalApplyProposalsRequest> for ApplyProposalsInput {
             proposal_ids: req.proposal_ids,
             target_column: req.target_column,
             base_branch_override: req.base_branch_override,
+            supervised_task_pipeline_conversation_id: None,
         }
     }
 }

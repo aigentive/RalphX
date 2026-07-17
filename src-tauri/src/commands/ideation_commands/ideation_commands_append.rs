@@ -54,76 +54,77 @@ pub async fn append_ideation_plan_task_core(
     }
 
     let session_id = IdeationSessionId::from_string(input.session_id.clone());
-    let tasks_source_identity = match (
-        input.source_conversation_id.as_deref(),
-        input.source_message_id.as_deref(),
-    ) {
-        (Some(conversation_id), Some(message_id))
-            if !conversation_id.trim().is_empty() && !message_id.trim().is_empty() =>
-        {
-            let workspace = app_state
-                .agent_conversation_workspace_repo
-                .get_by_conversation_id(&ChatConversationId::from_string(
-                    conversation_id.to_string(),
-                ))
-                .await?;
-            match workspace {
-                Some(workspace) if workspace.mode == AgentConversationWorkspaceMode::Tasks => {
-                    if workspace.task_pipeline_session_id.as_ref() != Some(&session_id) {
-                        return Err(AppError::Validation(
-                            "Tasks conversation is not attached to this pipeline".to_string(),
-                        ));
-                    }
-                    if workspace
-                        .publication_pr_status
-                        .as_deref()
-                        .is_some_and(|status| matches!(status, "closed" | "merged"))
-                    {
-                        return Err(AppError::Validation(
-                            "Cannot append after the attached pull request is closed or merged"
-                                .to_string(),
-                        ));
-                    }
-                    let source_message = app_state
-                        .chat_message_repo
-                        .get_by_id(&ChatMessageId::from_string(message_id.to_string()))
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::Validation(
-                                "Tasks follow-up source message was not found".to_string(),
-                            )
-                        })?;
-                    if source_message.role != MessageRole::User
-                        || source_message.conversation_id.as_ref()
-                            != Some(&workspace.conversation_id)
-                    {
-                        return Err(AppError::Validation(
-                            "Tasks follow-ups must reference a user message from the owning conversation"
-                                .to_string(),
-                        ));
-                    }
-                    Some((conversation_id.to_string(), message_id.to_string()))
-                }
-                _ => None,
-            }
-        }
-        (Some(conversation_id), _) => {
-            let workspace = app_state
-                .agent_conversation_workspace_repo
-                .get_by_conversation_id(&ChatConversationId::from_string(
-                    conversation_id.to_string(),
-                ))
-                .await?;
-            if workspace
-                .is_some_and(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks)
-            {
-                return Err(AppError::Validation(
+    let tasks_owner = app_state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session_id)
+        .await?
+        .filter(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks);
+    let tasks_source_identity = if let Some(workspace) = tasks_owner {
+        let conversation_id = input
+            .source_conversation_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
                     "Tasks follow-ups require an explicit source user message".to_string(),
-                ));
-            }
-            None
+                )
+            })?;
+        let message_id = input
+            .source_message_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Tasks follow-ups require an explicit source user message".to_string(),
+                )
+            })?;
+        if conversation_id != workspace.conversation_id.as_str() {
+            return Err(AppError::Validation(
+                "Tasks follow-ups must come from the owning conversation".to_string(),
+            ));
         }
-        _ => None,
+        if workspace
+            .publication_pr_status
+            .as_deref()
+            .is_some_and(|status| matches!(status, "closed" | "merged"))
+        {
+            return Err(AppError::Validation(
+                "Cannot append after the attached pull request is closed or merged".to_string(),
+            ));
+        }
+        let source_message = app_state
+            .chat_message_repo
+            .get_by_id(&ChatMessageId::from_string(message_id.to_string()))
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Tasks follow-up source message was not found".to_string())
+            })?;
+        if source_message.role != MessageRole::User
+            || source_message.conversation_id.as_ref() != Some(&workspace.conversation_id)
+        {
+            return Err(AppError::Validation(
+                "Tasks follow-ups must reference a user message from the owning conversation"
+                    .to_string(),
+            ));
+        }
+        Some((conversation_id.to_string(), message_id.to_string()))
+    } else if let Some(conversation_id) = input.source_conversation_id.as_deref() {
+        let workspace = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                conversation_id.to_string(),
+            ))
+            .await?;
+        if workspace
+            .is_some_and(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks)
+        {
+            return Err(AppError::Validation(
+                "Tasks conversation is not attached to this pipeline".to_string(),
+            ));
+        }
+        None
+    } else {
+        None
     };
     let _attempt_mutation_guard =
         super::ideation_commands_restart::RestartInFlightGuard::acquire(&session_id)?;

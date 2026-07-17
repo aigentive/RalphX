@@ -6,6 +6,7 @@ use tauri::{Manager, State};
 
 use crate::application::{
     agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path,
+    agent_task_pipeline_service::validate_start_authority_sync,
     session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget},
     spawn_ready_task_scheduler_if_needed, AppState, TaskCleanupService,
 };
@@ -118,6 +119,24 @@ pub(super) fn phase_insert_execution_plan(
     conn: &rusqlite::Connection,
     session_id_str: &str,
 ) -> AppResult<ExecutionPlan> {
+    let active_plan_exists = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM execution_plans
+                WHERE session_id = ?1 AND status = 'active'
+             )",
+            [session_id_str],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| {
+            AppError::Database(format!("Failed to check active execution plan: {error}"))
+        })?;
+    if active_plan_exists {
+        return Err(AppError::Conflict(
+            "This task pipeline already has an active execution plan".to_string(),
+        ));
+    }
+
     let exec_plan = ExecutionPlan::new(IdeationSessionId::from_string(session_id_str.to_string()));
     conn.execute(
         "INSERT INTO execution_plans (id, session_id, status, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -518,12 +537,18 @@ pub(super) async fn load_linked_agent_conversation_workspace(
             ))
         })?;
 
-    Ok(workspaces.into_iter().find(|workspace| {
-        workspace
-            .linked_ideation_session_id
-            .as_ref()
-            .is_some_and(|linked_session_id| linked_session_id == session_id)
-    }))
+    Ok(workspaces
+        .iter()
+        .find(|workspace| {
+            workspace.mode == AgentConversationWorkspaceMode::Tasks
+                && workspace.task_pipeline_session_id.as_ref() == Some(session_id)
+        })
+        .cloned()
+        .or_else(|| {
+            workspaces
+                .into_iter()
+                .find(|workspace| workspace.linked_ideation_session_id.as_ref() == Some(session_id))
+        }))
 }
 
 /// Core apply-proposals logic — no Tauri types.
@@ -564,6 +589,8 @@ async fn apply_proposals_core_inner(
     input: ApplyProposalsInput,
     require_pending_confirmation: bool,
 ) -> AppResult<ApplyProposalsResult> {
+    let supervised_task_pipeline_conversation_id =
+        input.supervised_task_pipeline_conversation_id.clone();
     let session_id = IdeationSessionId::from_string(input.session_id);
 
     // Status will be determined automatically based on dependencies:
@@ -617,6 +644,10 @@ async fn apply_proposals_core_inner(
         .into_iter()
         .map(TaskProposalId::from_string)
         .collect();
+    let requested_proposal_ids = proposal_ids
+        .iter()
+        .map(|proposal_id| proposal_id.as_str().to_string())
+        .collect::<Vec<_>>();
 
     // Validate that all proposals exist and belong to this session
     let all_proposals = app_state
@@ -915,6 +946,8 @@ async fn apply_proposals_core_inner(
     let require_verification_for_accept_tx = effective_policy.require_verification_for_accept;
     let session_converted_tx = session_converted;
     let proposals_tx = proposals_to_apply.clone();
+    let supervised_conversation_id_tx = supervised_task_pipeline_conversation_id;
+    let requested_proposal_ids_tx = requested_proposal_ids;
     // Convert to String-keyed map so the closure is 'static
     let proposal_deps_tx: HashMap<String, Vec<String>> = proposal_deps
         .iter()
@@ -929,6 +962,14 @@ async fn apply_proposals_core_inner(
     let tx_output = app_state
         .db
         .run_transaction(move |conn| {
+            if let Some(conversation_id) = supervised_conversation_id_tx.as_deref() {
+                validate_start_authority_sync(
+                    conn,
+                    conversation_id,
+                    &session_id_str,
+                    &requested_proposal_ids_tx,
+                )?;
+            }
             recheck_exact_plan_verification(
                 conn,
                 &session_id_str,
