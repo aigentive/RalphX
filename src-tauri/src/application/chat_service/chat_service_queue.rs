@@ -1530,39 +1530,48 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     }
                 }
             };
-            let attachment_context =
-                match chat_service_context::format_attachments_for_agent(&turn_attachments).await {
-                    Ok(context) => context,
-                    Err(error) => {
-                        tracing::error!(
-                            error = %error,
-                            queued_message_id = %queued_msg.id,
-                            "[QUEUE] Failed to format queued message attachments"
+            let app_data_dir = app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<AppState>())
+                .map(|state| state.app_paths.app_data_dir().to_path_buf());
+            let attachment_context = match chat_service_context::format_attachments_for_agent(
+                &turn_attachments,
+                queued_agent_context.effective_mode,
+                app_data_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        queued_message_id = %queued_msg.id,
+                        "[QUEUE] Failed to format queued message attachments"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: Some(queued_run_id.clone()),
+                                error: error.clone(),
+                                stderr: None,
+                            },
                         );
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                "agent:error",
-                                AgentErrorPayload {
-                                    conversation_id: Some(conversation_id.as_str().to_string()),
-                                    context_type: context_type.to_string(),
-                                    context_id: context_id.to_string(),
-                                    agent_run_id: Some(queued_run_id.clone()),
-                                    error: error.clone(),
-                                    stderr: None,
-                                },
-                            );
-                        }
-                        fail_queued_agent_run(
-                            agent_run_repo,
-                            running_agent_registry,
-                            &queue_registry_key,
-                            &queued_run_id,
-                            &error,
-                        )
-                        .await;
-                        continue;
                     }
-                };
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &error,
+                    )
+                    .await;
+                    continue;
+                }
+            };
 
             // Persist user message at enqueue time so replayed timelines match live ordering.
             if !resume_in_place {
@@ -1909,12 +1918,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     }
                 }
             } else {
-                chat_service_context::ResolvedConversationSpawnContext {
-                    folder_refs_block: None,
-                    folder_roots: Vec::new(),
-                    workspace_root: working_directory.to_path_buf(),
-                    enforce_filesystem_roots: false,
-                }
+                chat_service_context::ResolvedConversationSpawnContext::without_app_state(
+                    context_type,
+                    queued_agent_context.effective_mode,
+                    working_directory,
+                )
             };
             let persona_for_attribution = resolved_persona.clone();
             let queued_effort_override = queued_msg

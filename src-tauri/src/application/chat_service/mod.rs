@@ -137,8 +137,8 @@ pub use chat_service_context::{
     build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
     build_resume_command_for_harness, build_resume_initial_prompt, format_attachments_for_agent,
     format_session_history, get_entity_status_for_resume, is_text_file,
-    provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
-    resolve_working_directory, ProviderResumeMode,
+    provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
+    resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
@@ -1972,8 +1972,14 @@ impl<R: Runtime> AppChatService<R> {
     async fn format_attachment_context(
         &self,
         attachments: &[ChatAttachment],
+        conversation: &ChatConversation,
     ) -> Result<String, ChatServiceError> {
-        chat_service_context::format_attachments_for_agent(attachments)
+        let app_data_dir = self.resolve_app_data_dir();
+        chat_service_context::format_attachments_for_agent(
+            attachments,
+            conversation.agent_mode,
+            app_data_dir.as_deref(),
+        )
             .await
             .map_err(ChatServiceError::SpawnFailed)
     }
@@ -4930,7 +4936,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 self.load_turn_attachments(&conversation.id, &options.attachment_ids)
                     .await?
             };
-            let attachment_context = self.format_attachment_context(&turn_attachments).await?;
+            let attachment_context = self
+                .format_attachment_context(&turn_attachments, &conversation)
+                .await?;
             let persisted_metadata = persisted_user_metadata(&options);
             let pending_user_message = (!resume_in_place).then(|| {
                 chat_service_context::create_user_message(
@@ -5842,7 +5850,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Err(error) => cleanup_and_err!(error),
             }
         };
-        let attachment_context = match self.format_attachment_context(&turn_attachments).await {
+        let attachment_context = match self
+            .format_attachment_context(&turn_attachments, &conversation)
+            .await
+        {
             Ok(context) => context,
             Err(error) => cleanup_and_err!(error),
         };

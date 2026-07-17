@@ -119,24 +119,43 @@ impl ConversationFolderReferenceService {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<String>> {
         let references = self.list_live_validated(conversation_id).await?.references;
-        if references.is_empty() {
-            return Ok(None);
-        }
-        let entries = references
-            .iter()
-            .map(|reference| {
-                format!(
-                    "  <folder path=\"{}\" display_name=\"{}\" />",
-                    escape_xml(&reference.folder_path),
-                    escape_xml(&reference.display_name)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(Some(format!(
-            "<referenced_folders>\n{entries}\n</referenced_folders>"
-        )))
+        Ok(render_prompt_block(&references))
     }
+
+    pub async fn render_prompt_block_for_roots(
+        &self,
+        conversation_id: &ChatConversationId,
+        roots: &[PathBuf],
+    ) -> AppResult<Option<String>> {
+        let references = self
+            .list_live_validated(conversation_id)
+            .await?
+            .references
+            .into_iter()
+            .filter(|reference| roots.contains(&PathBuf::from(&reference.folder_path)))
+            .collect::<Vec<_>>();
+        Ok(render_prompt_block(&references))
+    }
+}
+
+fn render_prompt_block(references: &[ConversationFolderReference]) -> Option<String> {
+    if references.is_empty() {
+        return None;
+    }
+    let entries = references
+        .iter()
+        .map(|reference| {
+            format!(
+                "  <folder path=\"{}\" display_name=\"{}\" />",
+                escape_xml(&reference.folder_path),
+                escape_xml(&reference.display_name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "<referenced_folders>\n{entries}\n</referenced_folders>"
+    ))
 }
 
 fn validate_display_name(display_name: &str) -> AppResult<()> {

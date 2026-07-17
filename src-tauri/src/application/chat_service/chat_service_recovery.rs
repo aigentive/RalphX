@@ -336,12 +336,11 @@ pub async fn attempt_session_recovery<R: Runtime>(
             )
             .await?
         } else {
-            chat_service_context::ResolvedConversationSpawnContext {
-                folder_refs_block: None,
-                folder_roots: Vec::new(),
-                workspace_root: working_directory.to_path_buf(),
-                enforce_filesystem_roots: false,
-            }
+            chat_service_context::ResolvedConversationSpawnContext::without_app_state(
+                conversation.context_type,
+                conversation.agent_mode,
+                working_directory,
+            )
         };
 
     // 4. Spawn fresh provider session with history

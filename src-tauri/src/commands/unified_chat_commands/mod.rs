@@ -10498,6 +10498,34 @@ pub async fn create_agent_conversation(
         .create(conversation)
         .await
         .map_err(|e| e.to_string())?;
+    if conversation.context_type == ChatContextType::Standalone
+        || conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    {
+        if let Err(error) = crate::application::standalone_workspace::create_workspace(
+            state.app_paths.app_data_dir(),
+            &conversation.id.as_str(),
+        ) {
+            if let Err(cleanup_error) = state.chat_conversation_repo.delete(&conversation.id).await {
+                tracing::warn!(
+                    conversation_id = %conversation.id,
+                    %cleanup_error,
+                    "Failed to delete seeded conversation after private workspace creation failed"
+                );
+            } else if let Err(cleanup_error) =
+                crate::application::standalone_workspace::remove_workspace_if_present(
+                    state.app_paths.app_data_dir(),
+                    &conversation.id.as_str(),
+                )
+            {
+                tracing::warn!(
+                    conversation_id = %conversation.id,
+                    %cleanup_error,
+                    "Failed to remove partial private workspace after conversation creation failed"
+                );
+            }
+            return Err(error.to_string());
+        }
+    }
     agent_conversation_response_for_state(state.inner(), conversation).await
 }
 

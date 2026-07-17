@@ -15,6 +15,7 @@ mod common;
 
 mod agent_conversation_start_service;
 mod api_key_commands;
+mod chat_attachment_commands;
 mod conversation_folder_reference_commands;
 mod harness_provider_commands;
 mod persona_builder_commands;

@@ -95,12 +95,10 @@ pub async fn add_conversation_folder_reference_for_state(
         .ok_or_else(|| {
             AppError::NotFound(format!("Conversation {conversation_id} was not found"))
         })?;
-    if conversation.context_type != ChatContextType::Project {
+    let is_builder =
+        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    if conversation.context_type != ChatContextType::Project && !is_builder {
         return Err(AppError::ConversationFolderReferenceUnsupportedContext);
-    }
-    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) {
-        // Phase 5 may lift this after builder roots use the enforced folder-reference path.
-        return Err(AppError::ConversationFolderReferenceUnsupportedMode);
     }
     service(state)
         .add(

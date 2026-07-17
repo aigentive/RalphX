@@ -1005,6 +1005,12 @@ async fn create_agent_conversation_persona_builder_is_flag_gated_and_persists_mo
         .await
         .expect("builder create should use the standard pipeline when enabled");
     assert_eq!(created.agent_mode.as_deref(), Some("persona_builder"));
+    let state = app.state::<AppState>();
+    let app_data_dir = state.app_paths.app_data_dir();
+    let workspace =
+        ralphx_lib::application::standalone_workspace::resolve_workspace(app_data_dir, &created.id)
+            .expect("builder pre-send creation must materialize its private workspace");
+    assert!(workspace.join("manifest.json").is_file());
     reset_agent_personas_override_for_test();
 }
 

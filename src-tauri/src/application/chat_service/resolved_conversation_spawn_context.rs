@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::domain::entities::{AgentConversationWorkspaceMode, ChatConversation};
+use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType, ChatConversation};
 use crate::domain::repositories::{ConversationFolderReferenceRepository, ProjectRepository};
 
 use super::chat_service_context::{
@@ -18,6 +18,22 @@ pub struct ResolvedConversationSpawnContext {
     pub enforce_filesystem_roots: bool,
 }
 
+impl ResolvedConversationSpawnContext {
+    pub(crate) fn without_app_state(
+        context_type: ChatContextType,
+        effective_mode: Option<AgentConversationWorkspaceMode>,
+        working_directory: &Path,
+    ) -> Self {
+        Self {
+            folder_refs_block: None,
+            folder_roots: Vec::new(),
+            workspace_root: working_directory.to_path_buf(),
+            enforce_filesystem_roots: context_type == ChatContextType::Standalone
+                || super::is_persona_builder_conversation(effective_mode),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_conversation_spawn_context(
     conversation: &ChatConversation,
@@ -30,6 +46,36 @@ pub async fn resolve_conversation_spawn_context(
     folder_reference_repo: Option<Arc<dyn ConversationFolderReferenceRepository>>,
     folder_references_enabled: bool,
 ) -> crate::error::AppResult<ResolvedConversationSpawnContext> {
+    let conversation_id = conversation.id.as_str();
+    let folder_roots = match (folder_reference_app_data_dir, folder_reference_repo.clone()) {
+        (Some(app_data_dir), Some(folder_reference_repo)) => {
+            resolve_mcp_filesystem_read_roots_with_folder_references(
+                conversation.context_type,
+                project_id,
+                project_repo,
+                working_directory,
+                effective_mode,
+                Some(&conversation_id),
+                runtime_app_data_dir,
+                app_data_dir,
+                folder_reference_repo,
+                folder_references_enabled,
+            )
+            .await?
+        }
+        _ => {
+            resolve_mcp_filesystem_read_roots(
+                conversation.context_type,
+                project_id,
+                project_repo,
+                working_directory,
+                effective_mode,
+                Some(&conversation_id),
+                runtime_app_data_dir,
+            )
+            .await
+        }
+    };
     let folder_refs_block = if !folder_references_enabled {
         None
     } else if let Some(reason) =
@@ -50,7 +96,7 @@ pub async fn resolve_conversation_spawn_context(
             app_data_dir.to_path_buf(),
             crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
         )
-        .render_prompt_block(&conversation.id)
+        .render_prompt_block_for_roots(&conversation.id, &folder_roots)
         .await?
     } else {
         tracing::warn!(
@@ -59,35 +105,6 @@ pub async fn resolve_conversation_spawn_context(
             "folder_refs_skipped"
         );
         None
-    };
-    let conversation_id = conversation.id.as_str();
-    let folder_roots = match (folder_reference_app_data_dir, folder_reference_repo) {
-        (Some(app_data_dir), Some(folder_reference_repo)) => {
-            resolve_mcp_filesystem_read_roots_with_folder_references(
-                conversation.context_type,
-                project_id,
-                project_repo,
-                working_directory,
-                effective_mode,
-                Some(&conversation_id),
-                app_data_dir,
-                folder_reference_repo,
-                folder_references_enabled,
-            )
-            .await?
-        }
-        _ => {
-            resolve_mcp_filesystem_read_roots(
-                conversation.context_type,
-                project_id,
-                project_repo,
-                working_directory,
-                effective_mode,
-                Some(&conversation_id),
-                runtime_app_data_dir,
-            )
-            .await
-        }
     };
     let enforce_filesystem_roots = build_mcp_runtime_context(
         conversation.context_type,

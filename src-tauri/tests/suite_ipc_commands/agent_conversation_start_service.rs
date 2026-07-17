@@ -13,10 +13,12 @@ use ralphx_lib::application::agent_conversation_workspace::{
 };
 use ralphx_lib::application::automation::provisioning::AutomationRunProvisioner;
 use ralphx_lib::application::automation::transition::NoopAutomationEventEmitter;
+use ralphx_lib::application::builder_attachment_materializer::materialized_builder_attachment_path;
 use ralphx_lib::application::chat_attachment_service::ChatAttachmentService;
 use ralphx_lib::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use ralphx_lib::application::standalone_workspace::{
     create_workspace, standalone_workspace_path, standalone_workspaces_root,
+    sweep_orphaned_standalone_workspaces,
 };
 use ralphx_lib::application::startup_background::AgentConversationAutomationRunStarter;
 use ralphx_lib::application::{AppPaths, AppState, TeamService, TeamStateTracker};
@@ -844,6 +846,10 @@ async fn start_agent_conversation_project_persona_builder_succeeds_through_stand
     state.db = DbConnection::from_shared(Arc::clone(&shared));
     state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
     state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let isolated_app_data = temp.path().join("app-data");
+    std::fs::create_dir(&isolated_app_data).expect("create isolated app data");
+    state.app_paths = AppPaths::new(isolated_app_data, None);
+    state.attachment_storage_path = state.app_paths.attachment_storage_path();
     let project = seed_project(
         &state,
         "project-persona-builder-start",
@@ -875,6 +881,113 @@ async fn start_agent_conversation_project_persona_builder_succeeds_through_stand
         Some(AgentConversationWorkspaceMode::PersonaBuilder)
     );
     assert!(started.send_result.was_queued);
+
+    let app_data_dir = app
+        .state::<AppState>()
+        .app_paths
+        .app_data_dir()
+        .to_path_buf();
+    let workspace = standalone_workspace_path(
+        &standalone_workspaces_root(&app_data_dir),
+        &started.conversation.id.as_str(),
+    );
+    assert!(
+        workspace.join("manifest.json").is_file(),
+        "Project builders must receive the same private workspace as standalone builders"
+    );
+    let summary = sweep_orphaned_standalone_workspaces(
+        &app_data_dir,
+        Arc::clone(&app.state::<AppState>().chat_conversation_repo),
+    )
+    .await;
+    assert!(summary.retained >= 1);
+    assert!(
+        workspace.is_dir(),
+        "a live Project builder workspace must survive the sweep"
+    );
+    app.state::<AppState>()
+        .chat_conversation_repo
+        .delete(&started.conversation.id)
+        .await
+        .expect("delete Project builder conversation");
+    let orphan_summary = sweep_orphaned_standalone_workspaces(
+        &app_data_dir,
+        Arc::clone(&app.state::<AppState>().chat_conversation_repo),
+    )
+    .await;
+    assert!(orphan_summary.removed >= 1);
+    assert!(
+        !workspace.exists(),
+        "the same Project builder workspace must sweep once its conversation row is absent"
+    );
+}
+
+#[tokio::test]
+async fn seeded_project_builder_start_syncs_pre_cleanup_text_attachment_into_workspace() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("builder-start-attachment-sync");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let project = seed_project(
+        &state,
+        "project-builder-attachment-sync",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let mut seeded = ChatConversation::new_project(project.id.clone());
+    seeded.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("seed pre-cleanup builder row");
+    let attachment = ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
+    )
+    .upload(
+        &seeded.id,
+        "pre-send.txt",
+        b"pre-send builder attachment",
+        Some("text/plain".to_string()),
+    )
+    .await
+    .expect("seed attachment without attach-time materialization");
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let started = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Use the pre-send context",
+            "persona_builder",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect("seeded Project builder starts");
+    assert!(started.send_result.was_queued);
+    let materialized = materialized_builder_attachment_path(
+        app.state::<AppState>().app_paths.app_data_dir(),
+        &attachment,
+    )
+    .expect("materialized attachment path");
+    assert_eq!(
+        std::fs::read_to_string(materialized).expect("read materialized text"),
+        "pre-send builder attachment"
+    );
 }
 
 #[tokio::test]

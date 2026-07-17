@@ -118,6 +118,9 @@ pub enum AppError {
 
     #[error("STANDALONE_WORKSPACE_MISSING: workspace for conversation `{conversation_id}` does not exist")]
     StandaloneWorkspaceMissing { conversation_id: String },
+
+    #[error("The persona builder can only read text context — PDFs/images aren't supported")]
+    PersonaBuilderTextAttachmentOnly,
 }
 
 impl From<AgentError> for AppError {

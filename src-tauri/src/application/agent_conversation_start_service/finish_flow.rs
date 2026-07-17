@@ -76,7 +76,9 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             }
             conversation
         };
-        if context_type == ChatContextType::Standalone {
+        let needs_private_workspace = context_type == ChatContextType::Standalone
+            || mode == AgentConversationWorkspaceMode::PersonaBuilder;
+        if needs_private_workspace {
             if let Err(error) = create_workspace(
                 self.deps.state.app_paths.app_data_dir(),
                 &conversation.id.as_str(),
@@ -110,6 +112,45 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                                 "Failed to remove partial standalone workspace after workspace creation failed"
                             );
                         }
+                    }
+                }
+                return Err(error.to_string());
+            }
+        }
+        if mode == AgentConversationWorkspaceMode::PersonaBuilder {
+            if let Err(error) = sync_builder_attachments(
+                self.deps.state.app_paths.app_data_dir(),
+                &self.deps.state.attachment_storage_path,
+                &conversation.id,
+                Arc::clone(&self.deps.state.chat_attachment_repo),
+            )
+            .await
+            {
+                if should_create_conversation {
+                    match self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await
+                    {
+                        Ok(()) => {
+                            if let Err(cleanup_error) = remove_workspace_if_present(
+                                self.deps.state.app_paths.app_data_dir(),
+                                &conversation.id.as_str(),
+                            ) {
+                                tracing::warn!(
+                                    conversation_id = %conversation.id,
+                                    error = %cleanup_error,
+                                    "Failed to remove builder workspace after attachment sync failed"
+                                );
+                            }
+                        }
+                        Err(cleanup_error) => tracing::warn!(
+                            conversation_id = %conversation.id,
+                            error = %cleanup_error,
+                            "Failed to delete newly created builder conversation after attachment sync failed"
+                        ),
                     }
                 }
                 return Err(error.to_string());

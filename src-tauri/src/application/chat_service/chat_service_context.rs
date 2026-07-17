@@ -43,9 +43,7 @@ use crate::application::harness_runtime_registry::{
     resolve_chat_harness_cli, ResolvedChatHarnessCli,
 };
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
-use crate::application::persona_ingest::{
-    live_persona_builder_ingest_root, PersonaBuilderIngestSessionLiveness,
-};
+use crate::application::persona_ingest::live_persona_builder_ingest_root;
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::standalone_workspace::resolve_workspace;
 
@@ -56,16 +54,15 @@ pub use super::resolved_conversation_spawn_context::{
 pub const FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE: &str = "folder_reference_context_unavailable";
 pub const FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE: &str = "folder_reference_prompt_unavailable";
 pub const FOLDER_REFS_SKIPPED_NON_PROJECT: &str = "folder_reference_non_project_context";
-pub const FOLDER_REFS_SKIPPED_PERSONA_BUILDER: &str = "folder_reference_persona_builder_mode";
 
 pub fn folder_references_skip_reason(
     context_type: ChatContextType,
     effective_mode: Option<AgentConversationWorkspaceMode>,
 ) -> Option<&'static str> {
-    if context_type != ChatContextType::Project {
+    if super::is_persona_builder_conversation(effective_mode) {
+        None
+    } else if context_type != ChatContextType::Project {
         Some(FOLDER_REFS_SKIPPED_NON_PROJECT)
-    } else if super::is_persona_builder_conversation(effective_mode) {
-        Some(FOLDER_REFS_SKIPPED_PERSONA_BUILDER)
     } else {
         None
     }
@@ -1841,54 +1838,37 @@ pub async fn resolve_mcp_filesystem_read_roots(
     conversation_id: Option<&str>,
     app_data_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
-    // Mode arm first (D9.3 precedence): a PersonaBuilder-mode conversation keeps its
-    // ingest-store read root regardless of context type. Only non-PersonaBuilder
-    // Standalone conversations fall through to the context arm below.
-    if super::is_persona_builder_conversation(effective_mode) {
-        // Fail closed: without an app-owned data dir there is no ingest store.
-        let Some(app_data_dir) = app_data_dir else {
+    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    let builder_workspace = if builder_mode {
+        let (Some(app_data_dir), Some(conversation_id)) = (app_data_dir, conversation_id) else {
             return Vec::new();
         };
-        let Some(conversation_id) = conversation_id else {
-            return Vec::new();
-        };
-        let ingest_root =
-            match live_persona_builder_ingest_root(Some(app_data_dir), conversation_id) {
-                Ok(path) => path,
-                Err(PersonaBuilderIngestSessionLiveness::InvalidRoot) => {
-                    tracing::warn!(
-                        conversation_id,
-                        "Skipping invalid PersonaBuilder MCP filesystem read root"
-                    );
-                    return Vec::new();
-                }
-                Err(PersonaBuilderIngestSessionLiveness::MissingRoot) => {
-                    tracing::warn!(
-                        conversation_id,
-                        "Skipping missing PersonaBuilder MCP filesystem read root"
-                    );
-                    return Vec::new();
-                }
-                Err(PersonaBuilderIngestSessionLiveness::UnreadableRoot) => {
-                    tracing::warn!(
-                        conversation_id,
-                        "Skipping unreadable PersonaBuilder MCP filesystem read root"
-                    );
-                    return Vec::new();
-                }
-                Err(PersonaBuilderIngestSessionLiveness::EmptyRoot) => {
-                    tracing::warn!(
-                        conversation_id,
-                        "Skipping empty PersonaBuilder MCP filesystem read root"
-                    );
-                    return Vec::new();
-                }
-                Err(PersonaBuilderIngestSessionLiveness::MissingAppDataDirectory) => {
-                    return Vec::new()
-                }
-            };
+        resolve_workspace(app_data_dir, conversation_id).ok()
+    } else {
+        None
+    };
 
-        return vec![ingest_root];
+    // D9 mode precedence: only a live ingest store selects the legacy arm. Missing,
+    // empty, or invalid legacy stores fall through to context resolution.
+    if builder_mode {
+        let app_data_dir = app_data_dir.expect("builder app data checked above");
+        let conversation_id = conversation_id.expect("builder conversation id checked above");
+        if let Ok(ingest_root) =
+            live_persona_builder_ingest_root(Some(app_data_dir), conversation_id)
+        {
+            let mut roots = vec![ingest_root];
+            if let Some(workspace) = builder_workspace {
+                roots.push(workspace);
+            }
+            return roots;
+        }
+        if builder_workspace.is_none() {
+            tracing::warn!(
+                conversation_id,
+                "Skipping workspace-less PersonaBuilder MCP filesystem read roots"
+            );
+            return Vec::new();
+        }
     }
 
     if context_type == ChatContextType::Standalone {
@@ -1899,12 +1879,13 @@ pub async fn resolve_mcp_filesystem_read_roots(
         let (Some(app_data_dir), Some(conversation_id)) = (app_data_dir, conversation_id) else {
             return Vec::new();
         };
-        return match resolve_workspace(app_data_dir, conversation_id) {
-            Ok(workspace_root) => vec![workspace_root],
-            Err(error) => {
+        return match builder_workspace
+            .or_else(|| resolve_workspace(app_data_dir, conversation_id).ok())
+        {
+            Some(workspace_root) => vec![workspace_root],
+            None => {
                 tracing::warn!(
                     conversation_id,
-                    %error,
                     "Skipping unavailable Standalone MCP filesystem read root"
                 );
                 Vec::new()
@@ -1949,11 +1930,17 @@ pub async fn resolve_mcp_filesystem_read_roots(
         "MCP working directory",
     )
     .unwrap_or_else(|_| working_directory.to_path_buf());
-    if project_path == normalized_working_directory {
+    if project_path == normalized_working_directory && !builder_mode {
         return Vec::new();
     }
 
-    vec![project_path]
+    let mut roots = vec![project_path];
+    if let Some(workspace) = builder_workspace {
+        if !roots.contains(&workspace) {
+            roots.push(workspace);
+        }
+    }
+    roots
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1964,7 +1951,8 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
     working_directory: &Path,
     effective_mode: Option<AgentConversationWorkspaceMode>,
     conversation_id: Option<&str>,
-    app_data_dir: &Path,
+    runtime_app_data_dir: Option<&Path>,
+    folder_reference_app_data_dir: &Path,
     folder_reference_repo: Arc<
         dyn crate::domain::repositories::ConversationFolderReferenceRepository,
     >,
@@ -1977,13 +1965,14 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
         working_directory,
         effective_mode,
         conversation_id,
-        Some(app_data_dir),
+        runtime_app_data_dir,
     )
     .await;
-    if !folder_references_enabled
-        || context_type != ChatContextType::Project
-        || super::is_persona_builder_conversation(effective_mode)
-    {
+    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    if !folder_references_enabled || (context_type != ChatContextType::Project && !builder_mode) {
+        return Ok(roots);
+    }
+    if builder_mode && roots.is_empty() {
         return Ok(roots);
     }
     let Some(conversation_id) = conversation_id else {
@@ -1991,18 +1980,19 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
     };
     let service = crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
         folder_reference_repo,
-        app_data_dir.to_path_buf(),
+        folder_reference_app_data_dir.to_path_buf(),
         crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
     );
     let references = service
         .list_live_validated(&ChatConversationId::from_string(conversation_id))
         .await?
         .references;
-    roots.extend(
-        references
-            .into_iter()
-            .map(|reference| PathBuf::from(reference.folder_path)),
-    );
+    for reference in references {
+        let path = PathBuf::from(reference.folder_path);
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
     Ok(roots)
 }
 
@@ -2354,12 +2344,21 @@ pub fn is_text_file(mime_type: Option<&str>, file_name: &str) -> bool {
 #[doc(hidden)]
 pub async fn format_attachments_for_agent(
     attachments: &[ChatAttachment],
+    effective_mode: Option<AgentConversationWorkspaceMode>,
+    app_data_dir: Option<&Path>,
 ) -> Result<String, String> {
     if attachments.is_empty() {
         return Ok(String::new());
     }
 
     let mut output = String::from("\n\n<attachments>\n");
+    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    if builder_mode && app_data_dir.is_none() {
+        return Err(
+            "Persona builder attachment formatting requires an app-owned data directory"
+                .to_string(),
+        );
+    }
 
     for attachment in attachments {
         output.push_str("<attachment>\n");
@@ -2369,7 +2368,15 @@ pub async fn format_attachments_for_agent(
             output.push_str(&format!("<mime_type>{}</mime_type>\n", mime));
         }
 
-        if is_text_file(attachment.mime_type.as_deref(), &attachment.file_name) {
+        if builder_mode {
+            let path = crate::application::builder_attachment_materializer::materialized_builder_attachment_path(
+                app_data_dir.expect("builder app data checked above"),
+                attachment,
+            )
+            .map_err(|error| error.to_string())?;
+            output.push_str(&format!("<file_path>{}</file_path>\n", path.display()));
+            output.push_str("<note>Read this text context with fs_read_file</note>\n");
+        } else if is_text_file(attachment.mime_type.as_deref(), &attachment.file_name) {
             // Read and include content for text files
             match tokio::fs::read_to_string(&attachment.file_path).await {
                 Ok(content) => {
@@ -2395,6 +2402,15 @@ pub async fn format_attachments_for_agent(
 
     output.push_str("</attachments>");
     Ok(output)
+}
+
+fn builder_app_data_dir_from_read_roots(read_roots: &[PathBuf]) -> Option<PathBuf> {
+    read_roots.iter().find_map(|root| {
+        let workspaces_root = root.parent()?;
+        (workspaces_root.file_name()?.to_str()? == "standalone_workspaces")
+            .then(|| workspaces_root.parent().map(Path::to_path_buf))
+            .flatten()
+    })
 }
 
 /// Apply the standard set of RalphX env vars to a spawnable command.
@@ -2714,7 +2730,13 @@ pub async fn build_command(
                 .filter(|a| a.message_id.is_none())
                 .collect::<Vec<_>>();
 
-            format_attachments_for_agent(&attachments).await?
+            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
+            format_attachments_for_agent(
+                &attachments,
+                conversation.agent_mode,
+                app_data_dir.as_deref(),
+            )
+            .await?
         }
     };
     let resolved_spawn_settings =
@@ -3037,7 +3059,13 @@ pub async fn build_codex_command(
                 "chat_service.build_codex_command phase completed"
             );
             let attachment_context_started = Instant::now();
-            let attachment_context = format_attachments_for_agent(&attachments).await?;
+            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
+            let attachment_context = format_attachments_for_agent(
+                &attachments,
+                conversation.agent_mode,
+                app_data_dir.as_deref(),
+            )
+            .await?;
             tracing::info!(
                 context_type = %conversation.context_type,
                 context_id = %conversation.context_id,
@@ -3723,7 +3751,13 @@ pub async fn build_interactive_command(
             );
 
             let attachment_context_started = Instant::now();
-            let attachment_context = format_attachments_for_agent(&attachments).await?;
+            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
+            let attachment_context = format_attachments_for_agent(
+                &attachments,
+                conversation.agent_mode,
+                app_data_dir.as_deref(),
+            )
+            .await?;
             log_claude_launch_plan_phase(
                 conversation,
                 "format_pending_attachments",
@@ -5091,6 +5125,11 @@ mod tests {
         fs::create_dir_all(&ingest_root).expect("create ingest root");
         fs::write(ingest_root.join("content"), "approved ingest text")
             .expect("seed ingest content");
+        let workspace = crate::application::standalone_workspace::create_workspace(
+            &app_data_dir,
+            conversation_id,
+        )
+        .expect("create builder workspace");
 
         let working_directory = root.path().join("agent-workspace");
         fs::create_dir_all(&working_directory).expect("create working dir");
@@ -5106,7 +5145,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(roots, vec![ingest_root]);
+        assert_eq!(roots, vec![ingest_root, workspace]);
     }
 
     #[test]

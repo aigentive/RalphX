@@ -80,7 +80,7 @@ async fn folder_reference_commands_run_through_managed_tauri_state() {
 }
 
 #[tokio::test]
-async fn folder_reference_commands_gate_feature_context_and_builder_mode() {
+async fn folder_reference_commands_gate_feature_and_context_while_allowing_builders() {
     let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
         .expect("temp directory");
     let app_data = validate_absolute_non_root_path(
@@ -108,6 +108,14 @@ async fn folder_reference_commands_gate_feature_context_and_builder_mode() {
     builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
     let builder_id = builder.id;
     state.chat_conversation_repo.create(builder).await.unwrap();
+    let mut standalone_builder = ChatConversation::new_standalone();
+    standalone_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let standalone_builder_id = standalone_builder.id;
+    state
+        .chat_conversation_repo
+        .create(standalone_builder)
+        .await
+        .unwrap();
 
     let input = |conversation_id: ChatConversationId| AddConversationFolderReferenceInput {
         conversation_id: conversation_id.as_str(),
@@ -140,10 +148,12 @@ async fn folder_reference_commands_gate_feature_context_and_builder_mode() {
         add_conversation_folder_reference_for_state(input(ideation_id), &state, true).await,
         Err(AppError::ConversationFolderReferenceUnsupportedContext)
     ));
-    assert!(matches!(
-        add_conversation_folder_reference_for_state(input(builder_id), &state, true).await,
-        Err(AppError::ConversationFolderReferenceUnsupportedMode)
-    ));
+    add_conversation_folder_reference_for_state(input(builder_id), &state, true)
+        .await
+        .expect("Project builder add succeeds");
+    add_conversation_folder_reference_for_state(input(standalone_builder_id), &state, true)
+        .await
+        .expect("Standalone builder add succeeds");
     add_conversation_folder_reference_for_state(input(project_id), &state, true)
         .await
         .expect("enabled Project non-builder add succeeds");

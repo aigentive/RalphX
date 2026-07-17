@@ -11,6 +11,7 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::builder_attachment_materializer::sync_builder_attachments;
 use crate::application::clickup_git_association::{
     clickup_identity_from_task, resolve_clickup_ticket_start, ClickUpTicketStartResolution,
 };

@@ -5,13 +5,16 @@ use ralphx_lib::application::chat_service::{
     build_resume_command_for_harness, build_resume_initial_prompt, create_assistant_message,
     finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
     format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
-    is_text_file, provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
-    resolve_working_directory, ProviderResumeMode, ResolvedChatHarnessLaunch,
+    is_text_file, provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
+    resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
+    ResolvedChatHarnessLaunch,
 };
+use ralphx_lib::application::conversation_folder_reference_service::ConversationFolderReferenceService;
 use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
 };
 use ralphx_lib::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
+use ralphx_lib::application::standalone_workspace::create_workspace;
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{self, *};
@@ -180,6 +183,8 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
         &conversation.id.as_str(),
     );
     write_file(&ingest_root.join("content"), "approved ingest text");
+    let workspace = create_workspace(&app_data_dir, &conversation.id.as_str())
+        .expect("legacy builder workspace");
 
     let roots = resolve_mcp_filesystem_read_roots(
         ChatContextType::Project,
@@ -192,7 +197,7 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
     )
     .await;
 
-    assert_eq!(roots, vec![ingest_root.clone()]);
+    assert_eq!(roots, vec![ingest_root.clone(), workspace.clone()]);
     assert!(
         !roots.contains(&project_directory),
         "PersonaBuilder must not expose the project working directory"
@@ -277,7 +282,7 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
 
 #[tokio::test]
 async fn persona_builder_without_ingest_session_resolves_zero_roots() {
-    let (root, project_repo, project_id, _project_directory, working_directory) =
+    let (root, project_repo, project_id, project_directory, working_directory) =
         persona_read_root_fixture().await;
     let app_data_dir = root.path().join("app-data");
 
@@ -302,6 +307,8 @@ async fn persona_builder_without_ingest_session_resolves_zero_roots() {
         "persona-builder-no-ingest",
     );
     fs::create_dir_all(&empty_ingest_root).expect("create empty ingest destination");
+    let workspace = create_workspace(&app_data_dir, "persona-builder-no-ingest")
+        .expect("new-pipeline builder workspace");
     let roots = resolve_mcp_filesystem_read_roots(
         ChatContextType::Project,
         Some(project_id.as_str()),
@@ -313,9 +320,149 @@ async fn persona_builder_without_ingest_session_resolves_zero_roots() {
     )
     .await;
 
+    assert_eq!(roots, vec![project_directory, workspace]);
+}
+
+#[tokio::test]
+async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockstep() {
+    let (root, project_repo, project_id, project_directory, _working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+    let folder_reference_app_data_dir = root.path().join("folder-reference-app-data");
+    fs::create_dir_all(&folder_reference_app_data_dir).expect("create folder-reference app data");
+    let folder = root.path().join("live-folder-ref");
+    fs::create_dir_all(&folder).expect("create folder ref");
+    let folder_repo = Arc::new(MemoryConversationFolderReferenceRepository::new());
+
+    let project_builder = ChatConversation::new_project(project_id.clone());
+    let effective_builder_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let project_workspace = create_workspace(&app_data_dir, &project_builder.id.as_str())
+        .expect("project builder workspace");
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(project_builder.id, &folder, "Live folder".to_string())
+    .await
+    .expect("add project builder folder");
+    let project_context = resolve_conversation_spawn_context(
+        &project_builder,
+        effective_builder_mode,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+        true,
+    )
+    .await
+    .expect("resolve Project builder context");
+    assert_eq!(
+        project_context.folder_roots,
+        vec![project_directory.clone(), project_workspace, folder.clone()],
+        "enforced Project builders must retain the project root even when it equals CWD"
+    );
+    let project_block = project_context
+        .folder_refs_block
+        .expect("reachable folder root must render a prompt hint");
+    assert!(project_block.contains(folder.to_string_lossy().as_ref()));
+    assert!(project_context.enforce_filesystem_roots);
+
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &project_builder.id.as_str(),
+    );
+    write_file(&ingest_root.join("legacy.txt"), "legacy ingest context");
+    let legacy_context = resolve_conversation_spawn_context(
+        &project_builder,
+        effective_builder_mode,
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+        true,
+    )
+    .await
+    .expect("resolve legacy ingest builder context");
+    assert_eq!(
+        legacy_context.folder_roots,
+        vec![
+            ingest_root,
+            create_workspace(&app_data_dir, &project_builder.id.as_str())
+                .expect("resolve project builder workspace"),
+            folder.clone(),
+        ]
+    );
+    assert!(legacy_context
+        .folder_refs_block
+        .expect("legacy folder hint")
+        .contains(folder.to_string_lossy().as_ref()));
+
+    let mut standalone_builder = ChatConversation::new_standalone();
+    standalone_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let standalone_workspace = create_workspace(&app_data_dir, &standalone_builder.id.as_str())
+        .expect("standalone builder workspace");
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(standalone_builder.id, &folder, "Live folder".to_string())
+    .await
+    .expect("add standalone builder folder");
+    let standalone_context = resolve_conversation_spawn_context(
+        &standalone_builder,
+        standalone_builder.agent_mode,
+        None,
+        Arc::new(MemoryProjectRepository::new()),
+        &standalone_workspace,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
+        true,
+    )
+    .await
+    .expect("resolve Standalone builder context");
+    assert_eq!(
+        standalone_context.folder_roots,
+        vec![standalone_workspace, folder.clone()]
+    );
+    assert!(standalone_context
+        .folder_refs_block
+        .expect("standalone folder hint")
+        .contains(folder.to_string_lossy().as_ref()));
+
+    let mut workspace_less = ChatConversation::new_project(project_id.clone());
+    workspace_less.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    ConversationFolderReferenceService::new(
+        Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>,
+        folder_reference_app_data_dir.clone(),
+        5,
+    )
+    .add(workspace_less.id, &folder, "Unreachable folder".to_string())
+    .await
+    .expect("store legacy folder ref");
+    let workspace_less_context = resolve_conversation_spawn_context(
+        &workspace_less,
+        workspace_less.agent_mode,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &project_directory,
+        Some(&app_data_dir),
+        Some(&folder_reference_app_data_dir),
+        Some(folder_repo as Arc<dyn ConversationFolderReferenceRepository>),
+        true,
+    )
+    .await
+    .expect("resolve workspace-less legacy builder");
+    assert!(workspace_less_context.folder_roots.is_empty());
     assert!(
-        roots.is_empty(),
-        "empty PersonaBuilder ingest destination must provide no MCP read roots"
+        workspace_less_context.folder_refs_block.is_none(),
+        "a folder hint must never render when its enforced root is absent"
     );
 }
 
@@ -1647,7 +1794,7 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
 #[tokio::test]
 async fn test_format_attachments_empty() {
     let attachments: Vec<ChatAttachment> = vec![];
-    let result = format_attachments_for_agent(&attachments).await;
+    let result = format_attachments_for_agent(&attachments, None, None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "");
 }
@@ -1663,7 +1810,7 @@ async fn test_format_attachments_binary_file() {
         Some("image/png".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result = format_attachments_for_agent(&[attachment], None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1694,7 +1841,7 @@ async fn test_format_attachments_text_file() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result = format_attachments_for_agent(&[attachment], None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1737,7 +1884,8 @@ async fn test_format_attachments_multiple_files() {
         Some("image/png".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[text_attachment, binary_attachment]).await;
+    let result =
+        format_attachments_for_agent(&[text_attachment, binary_attachment], None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1764,7 +1912,7 @@ async fn test_format_attachments_file_read_error() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment]).await;
+    let result = format_attachments_for_agent(&[attachment], None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
