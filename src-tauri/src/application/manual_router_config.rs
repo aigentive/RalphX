@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
@@ -10,6 +10,7 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{CoordinationMode, PersonaId};
 use crate::error::{AppError, AppResult};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Default)]
 pub struct ManualRouterSnapshot {
@@ -62,6 +63,9 @@ pub fn load_manual_router_file(
     owned_root: &Path,
     router_path: &Path,
 ) -> AppResult<ManualRouterSnapshot> {
+    let (owned_root, router_path) = validate_router_path(owned_root, router_path)?;
+
+    // codeql[rust/path-injection]
     if !router_path.exists() {
         return Ok(ManualRouterSnapshot::default());
     }
@@ -92,6 +96,27 @@ pub fn load_manual_router_file(
         ))
     })?;
     parse_manual_router(&contents)
+}
+
+fn validate_router_path(owned_root: &Path, router_path: &Path) -> AppResult<(PathBuf, PathBuf)> {
+    let owned_root = validate_absolute_non_root_path(owned_root, "router config root")?;
+    let router_path = validate_absolute_non_root_path(router_path, "router config")?;
+    let relative_path = router_path.strip_prefix(&owned_root).map_err(|_| {
+        AppError::Validation(format!(
+            "Router config escapes its owned root: {}",
+            router_path.display()
+        ))
+    })?;
+    if relative_path != Path::new("router.yaml")
+        && relative_path != Path::new(".ralphx").join("router.yaml")
+    {
+        return Err(AppError::Validation(format!(
+            "Router config must use a supported path under its owned root: {}",
+            router_path.display()
+        )));
+    }
+
+    Ok((owned_root, router_path))
 }
 
 fn parse_manual_router(contents: &str) -> AppResult<ManualRouterSnapshot> {

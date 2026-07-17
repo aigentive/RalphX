@@ -1,6 +1,7 @@
 use std::fs;
 
 use crate::domain::agents::{ManualServiceTier, RoutingRole};
+use crate::error::AppError;
 
 use super::manual_router_config::load_manual_router_file;
 
@@ -56,4 +57,37 @@ fn rejects_a_router_symlink_that_escapes_the_owned_root() {
 
     #[cfg(unix)]
     assert!(load_manual_router_file(root.path(), &config_dir.join("router.yaml")).is_err());
+}
+
+#[test]
+fn accepts_a_missing_router_at_the_owned_root() {
+    let root = tempfile::tempdir().unwrap();
+
+    let snapshot = load_manual_router_file(root.path(), &root.path().join("router.yaml")).unwrap();
+
+    assert!(snapshot.entries.is_empty());
+    assert!(snapshot.diagnostics.is_empty());
+}
+
+#[test]
+fn rejects_a_missing_router_outside_the_owned_root() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_path = outside.path().join("router.yaml");
+
+    let error = load_manual_router_file(root.path(), &outside_path).unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("owned root")));
+}
+
+#[test]
+fn rejects_a_router_path_with_parent_traversal() {
+    let root = tempfile::tempdir().unwrap();
+    let traversing_path = root.path().join(".ralphx").join("..").join("router.yaml");
+
+    let error = load_manual_router_file(root.path(), &traversing_path).unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("unsafe components"))
+    );
 }
