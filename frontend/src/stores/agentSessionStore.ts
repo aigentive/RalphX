@@ -29,6 +29,7 @@ export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/ag
 export type AgentArtifactTab =
   | "review"
   | "automation"
+  | "persona"
   | "issues"
   | "plan"
   | "verification"
@@ -45,6 +46,7 @@ export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
   "verification",
   "tasks",
   "automation",
+  "persona",
   "pr",
   "jira",
   "linear",

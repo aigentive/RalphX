@@ -528,12 +528,14 @@ describe("chat api", () => {
     });
   });
 
-  it("accepts persona_builder mode and threads nullable persona_id to personaId", async () => {
+  it("accepts persona_builder mode and transforms its persona bindings", async () => {
     mockInvoke.mockResolvedValue([
       {
         ...planSeedConversationResponse(),
         agent_mode: "persona_builder",
         persona_id: null,
+        builder_draft_id: "draft-1",
+        builder_result_persona_id: "persona-1",
       },
     ]);
 
@@ -542,6 +544,8 @@ describe("chat api", () => {
     expect(result[0]).toMatchObject({
       agentMode: "persona_builder",
       personaId: null,
+      builderDraftId: "draft-1",
+      builderResultPersonaId: "persona-1",
     });
   });
 

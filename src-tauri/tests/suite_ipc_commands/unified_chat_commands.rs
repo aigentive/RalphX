@@ -26,9 +26,9 @@ use ralphx_lib::commands::unified_chat_commands::{
     switch_agent_conversation_persona_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_with_provider_session_reset,
     update_agent_conversation_coordination_mode, validate_persona_builder_team_intent_for_send,
-    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
-    CreateAgentConversationInput, ModeSwitchInitiator, QueuedMessageResponse,
-    SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    AgentConversationResponse, AgentRunStatusResponse, AgentWorkspacePostRepairAction,
+    AgentWorkspaceRepairRuntimeOverrides, CreateAgentConversationInput, ModeSwitchInitiator,
+    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
     SwitchAgentConversationPersonaInput, UpdateAgentConversationCoordinationModeInput,
     AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
@@ -160,6 +160,32 @@ fn test_response_serialization() {
     assert!(json.contains("agent_run_id"));
     assert!(json.contains("is_new_conversation"));
     assert!(json.contains("queued_as_pending"));
+}
+
+#[test]
+fn agent_conversation_response_serializes_builder_result_persona_id_present() {
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    conversation.builder_result_persona_id = Some("persona-approved".to_string());
+
+    let json = serde_json::to_value(AgentConversationResponse::from(conversation))
+        .expect("conversation response should serialize");
+
+    assert_eq!(json["builder_draft_id"], serde_json::Value::Null);
+    assert_eq!(json["builder_result_persona_id"], "persona-approved");
+}
+
+#[test]
+fn agent_conversation_response_serializes_builder_result_persona_id_absent_as_null() {
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+
+    let json = serde_json::to_value(AgentConversationResponse::from(conversation))
+        .expect("conversation response should serialize");
+
+    assert!(json.get("builder_result_persona_id").is_some());
+    assert_eq!(json["builder_draft_id"], serde_json::Value::Null);
+    assert_eq!(json["builder_result_persona_id"], serde_json::Value::Null);
 }
 
 fn test_agent_workspace() -> AgentConversationWorkspace {

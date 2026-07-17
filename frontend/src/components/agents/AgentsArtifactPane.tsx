@@ -14,6 +14,7 @@ import {
   Sparkles,
   Square,
   Ticket,
+  UserRound,
   Workflow,
   X,
 } from "lucide-react";
@@ -128,6 +129,7 @@ import {
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
 import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
+import { isPersonaArtifactConversation } from "./personaArtifactTab";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -341,6 +343,28 @@ const LazyAgentsAutomationPanel = lazy(() =>
     default: module.AgentsAutomationPanel,
   })),
 );
+const LazyPersonaArtifactPanel = lazy(() =>
+  import("@/components/agents/PersonaArtifactPanel").then((module) => ({
+    default: module.PersonaArtifactPanel,
+  })),
+);
+
+function PersonaArtifactSkeletonFallback() {
+  return (
+    <section className="flex h-full min-h-0 flex-col" aria-labelledby="persona-artifact-loading-heading">
+      <div className="shrink-0 border-b border-[var(--border-subtle)] px-5 py-4">
+        <h2 id="persona-artifact-loading-heading" className="text-sm font-semibold text-[var(--text-primary)]">
+          Persona
+        </h2>
+      </div>
+      <div className="space-y-4 p-5" aria-label="Loading persona">
+        <div className="h-5 w-40 animate-pulse rounded bg-[var(--bg-elevated)]" />
+        <div className="h-8 w-full animate-pulse rounded bg-[var(--bg-elevated)]" />
+        <div className="h-24 w-full animate-pulse rounded bg-[var(--bg-elevated)]" />
+      </div>
+    </section>
+  );
+}
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -362,6 +386,12 @@ const AUTOMATION_TAB = {
   id: "automation" as const,
   label: "Automation",
   icon: Workflow,
+};
+
+const PERSONA_TAB = {
+  id: "persona" as const,
+  label: "Persona",
+  icon: UserRound,
 };
 
 const PUBLISH_TAB = {
@@ -403,6 +433,7 @@ const PR_TAB = {
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
+  PERSONA_TAB,
   PR_TAB,
   JIRA_TAB,
   LINEAR_TAB,
@@ -418,6 +449,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
+  persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
   jira: "Appears when Jira is connected and a ticket is attached.",
   linear: "Appears when Linear is connected and a ticket is attached.",
@@ -449,6 +481,7 @@ function baseTabDefinition(id: AgentArtifactTab): Omit<
     ...ARTIFACT_TABS,
     REVIEW_TAB,
     AUTOMATION_TAB,
+    PERSONA_TAB,
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
@@ -1193,6 +1226,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               availableArtifactTabIds.includes(tab.id),
             ).map(visibleTab),
             ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+            ...(isPersonaArtifactConversation(conversation)
+              ? [visibleTab(PERSONA_TAB)]
+              : []),
             ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
             ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
             ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
@@ -1208,6 +1244,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
+      conversation?.agentMode,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,
@@ -1251,6 +1288,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? automationRunTabPolicy.defaultTab
       : automationId && conversation?.agentMode === "automation"
       ? "automation"
+      : isPersonaArtifactConversation(conversation)
+        ? "persona"
       : isReviewPrWorkspace || workspaceReviewContext?.shouldShowTab || reviewArtifactId
         ? "review"
         : showPullRequestTab
@@ -1837,8 +1876,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           </div>
         ) : (
           <ArtifactContent
-          activeTab={effectiveActiveTab}
-          tasksEnabled={tasksEnabled}
+            activeTab={effectiveActiveTab}
+            tasksEnabled={tasksEnabled}
+            conversation={conversation}
           workspace={scopedWorkspace}
           conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
@@ -1955,6 +1995,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   tasksEnabled: boolean;
+  conversation: AgentConversation | null;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -2039,6 +2080,7 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   tasksEnabled,
+  conversation,
   workspace,
   conversationId,
   activeWorkspaceFreshness,
@@ -2099,6 +2141,18 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
+  if (
+    activeTab === "persona" &&
+    conversation &&
+    isPersonaArtifactConversation(conversation)
+  ) {
+    return (
+      <Suspense fallback={<PersonaArtifactSkeletonFallback />}>
+        <LazyPersonaArtifactPanel conversation={conversation} />
+      </Suspense>
+    );
+  }
+
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense

@@ -109,6 +109,7 @@ export const ChatConversationSchema = z.object({
   boundAgentName: z.string().nullable().optional(),
   personaId: z.string().nullable().optional(),
   builderDraftId: z.string().nullable().optional(),
+  builderResultPersonaId: z.string().nullable().optional(),
   lastRunPersonaRunId: z.string().nullable().optional(),
   lastRunPersonaId: z.string().nullable().optional(),
   lastRunPersonaSlug: z.string().nullable().optional(),

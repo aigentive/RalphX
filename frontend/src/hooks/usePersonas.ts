@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
+import { personaArtifactKeys } from "@/hooks/usePersonaArtifact";
 import {
   IngestPersonaContextInputSchema,
   PersonaIngestManifestSchema,
@@ -50,6 +51,10 @@ export type UpdatePersonaDraftInput = {
   id: string;
   content: string;
   expectedContentHash: string;
+};
+export type ApprovePersonaAsNewInput = {
+  id: string;
+  newSlug?: string;
 };
 export type { IngestPersonaContextInput } from "@/types/persona";
 export type SwitchConversationPersonaInput = {
@@ -105,6 +110,18 @@ export async function updatePersonaDraft(
 
 export async function approvePersona(id: string): Promise<Persona> {
   const raw = await invoke<unknown>("approve_persona", { input: { id } });
+  return parsePersona(raw);
+}
+
+export async function approvePersonaAsNew(
+  input: ApprovePersonaAsNewInput,
+): Promise<Persona> {
+  const raw = await invoke<unknown>("approve_persona_as_new", {
+    input: {
+      id: input.id,
+      ...(input.newSlug !== undefined && { newSlug: input.newSlug }),
+    },
+  });
   return parsePersona(raw);
 }
 
@@ -196,10 +213,38 @@ export function useUpdatePersonaDraft() {
 }
 
 export function useApprovePersona() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, string>({
     mutationFn: approvePersona,
-    onSuccess: invalidateList,
+    onSuccess: (persona) => {
+      queryClient.setQueryData(personaKeys.detail(persona.id), persona);
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+      if (persona.artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: personaArtifactKeys.history(persona.artifactId),
+        });
+      }
+    },
+  });
+}
+
+export function useApprovePersonaAsNew() {
+  const queryClient = useQueryClient();
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, ApprovePersonaAsNewInput>({
+    mutationFn: approvePersonaAsNew,
+    onSuccess: (persona) => {
+      queryClient.setQueryData(personaKeys.detail(persona.id), persona);
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+      if (persona.artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: personaArtifactKeys.history(persona.artifactId),
+        });
+      }
+    },
   });
 }
 

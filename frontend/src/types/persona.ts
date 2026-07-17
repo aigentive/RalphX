@@ -5,6 +5,7 @@ export const PersonaStatusSchema = z.enum(["draft", "active", "archived"]);
 /** Frontend persona model after the snake_case IPC response is transformed. */
 export const PersonaSchema = z.object({
   id: z.string().min(1),
+  artifactId: z.string().min(1).nullable().default(null),
   slug: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
@@ -25,6 +26,7 @@ export type Persona = z.infer<typeof PersonaSchema>;
 /** Raw IPC response. `Persona` has no Rust `rename_all`, so it serializes snake_case. */
 export const PersonaResponseSchema = z.object({
   id: z.string().min(1),
+  artifact_id: z.string().min(1).nullable().optional(),
   slug: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
@@ -45,6 +47,7 @@ export type PersonaResponse = z.infer<typeof PersonaResponseSchema>;
 export function transformPersona(raw: PersonaResponse): Persona {
   return PersonaSchema.parse({
     id: raw.id,
+    artifactId: raw.artifact_id ?? null,
     slug: raw.slug,
     name: raw.name,
     description: raw.description,
@@ -96,6 +99,7 @@ export const PersonaDraftUpdatedEventSchema = z.object({
   draft_id: z.string().min(1),
   version: z.number().int(),
   content_hash: z.string().min(1),
+  artifact_id: z.string().min(1).nullable().optional(),
 });
 
 export type PersonaDraftUpdatedEvent = z.infer<
