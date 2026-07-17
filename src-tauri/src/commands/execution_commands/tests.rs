@@ -5,10 +5,16 @@ use crate::commands::execution_commands::lifecycle::{
 };
 use crate::domain::entities::{
     artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    ChatConversation, ChatConversationId, GitMode, IdeationAnalysisBaseRefKind, IdeationSession,
-    PlanBranch, PlanBranchId, PlanBranchStatus, TaskStep,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, GitMode,
+    IdeationAnalysisBaseRefKind, IdeationSession, PlanBranch, PlanBranchId, PlanBranchStatus,
+    TaskStep, TaskStepStatus, ValidationCacheDecision, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
+use crate::utils::path_safety::validate_absolute_non_root_path;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -6122,6 +6128,172 @@ fn stopped_task_metadata(from_status: InternalStatus) -> String {
     .merge_into(None)
 }
 
+fn create_restart_test_dir(path: &Path) {
+    let safe_path =
+        validate_absolute_non_root_path(path, "execution restart test directory").unwrap();
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(&safe_path).unwrap();
+}
+
+fn write_restart_test_file(path: &Path, contents: &str) {
+    let safe_path = validate_absolute_non_root_path(path, "execution restart test file").unwrap();
+    // codeql[rust/path-injection]
+    std::fs::write(&safe_path, contents).unwrap();
+}
+
+fn restart_test_git(path: &Path, args: &[&str]) {
+    let safe_path =
+        validate_absolute_non_root_path(path, "execution restart test git repository").unwrap();
+    let output = std::process::Command::new("git")
+        .args(args)
+        // codeql[rust/path-injection]
+        .current_dir(&safe_path)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn seed_completed_failed_attempt(
+    app_state: &AppState,
+    root: &tempfile::TempDir,
+) -> (TaskId, String) {
+    let mut project = Project::new(
+        "Recovered Failed Restart Project".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Recover failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recover-command".to_string());
+    task.blocked_reason = Some("provider exited after validation".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_restart_test_dir(&worktree);
+    restart_test_git(&worktree, &["init", "-b", "task/recover-command"]);
+    restart_test_git(&worktree, &["config", "user.email", "test@example.com"]);
+    restart_test_git(&worktree, &["config", "user.name", "RalphX Test"]);
+    write_restart_test_file(&worktree.join("tracked.txt"), "base\n");
+    restart_test_git(&worktree, &["add", "tracked.txt"]);
+    restart_test_git(&worktree, &["commit", "-m", "base"]);
+    let base_sha = crate::application::git_service::GitService::get_head_sha(&worktree)
+        .await
+        .unwrap();
+    write_restart_test_file(&worktree.join("tracked.txt"), "completed work\n");
+    restart_test_git(&worktree, &["add", "tracked.txt"]);
+    restart_test_git(&worktree, &["commit", "-m", "completed work"]);
+    let promoted_sha = crate::application::git_service::GitService::get_head_sha(&worktree)
+        .await
+        .unwrap();
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    app_state.task_repo.update(&task).await.unwrap();
+    let episode_entered_at = app_state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    app_state.task_step_repo.create(step).await.unwrap();
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation.id);
+    agent_run.status = AgentRunStatus::Completed;
+    agent_run.completed_at = Some(chrono::Utc::now());
+    app_state.agent_run_repo.create(agent_run).await.unwrap();
+
+    let validation_run = ValidationRun {
+        id: "restart-validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project.id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.clone()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.clone()),
+        base_ref: Some("base".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+    };
+    app_state
+        .validation_run_repo
+        .create_run(&validation_run)
+        .await
+        .unwrap();
+    app_state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: "restart-validation-command".to_string(),
+            validation_run_id: validation_run.id,
+            task_id: task_id.clone(),
+            project_id: project.id,
+            command_source: ValidationCommandSource::ProjectAnalysisRef,
+            command_ref: Some("tests".to_string()),
+            command: "cargo test".to_string(),
+            cwd: worktree.to_string_lossy().into_owned(),
+            label: Some("Tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "validation-cache".to_string(),
+            cache_decision: ValidationCacheDecision::Ran,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: None,
+            resolved_shell_path: None,
+            head_sha: Some(promoted_sha.clone()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    (task_id, promoted_sha)
+}
+
 #[tokio::test]
 async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_stale_refs() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
@@ -6284,6 +6456,125 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
     let metadata: serde_json::Value =
         serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
     assert_eq!(metadata["agent_variant"], "team");
+}
+
+#[tokio::test]
+async fn restart_task_from_failed_with_current_completion_proof_recovers_to_review() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (task_id, promoted_sha) = seed_completed_failed_attempt(&app_state, &root).await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should recover completed work");
+
+    match result {
+        RestartResult::Success {
+            disposition,
+            category,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(disposition, Some(RestartDisposition::RecoveredToReview));
+            assert_eq!(category, ResumeCategory::Redirect);
+            assert_eq!(resumed_to_status, InternalStatus::PendingReview.as_str());
+        }
+        other => panic!("expected recovered failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(stored.internal_status, InternalStatus::Failed);
+    assert!(stored.blocked_reason.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata["failed_completion_recovery"]["promoted_commit_sha"],
+        promoted_sha
+    );
+    assert_eq!(
+        metadata["failed_completion_recovery"]["reason_code"],
+        "validated_completed_work"
+    );
+}
+
+#[tokio::test]
+async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Blocked Failed Restart Project".to_string(),
+        "/tmp/blocked-failed-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id, "Blocked failed execution".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/preserved".to_string());
+    task.worktree_path = Some("/tmp/preserved-failed-worktree".to_string());
+    task.merge_commit_sha = Some("preserved-sha".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        Some("team".to_string()),
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("failed restart should return blocked result");
+
+    match result {
+        RestartResult::Blocked { warnings } => {
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].code, "missing_execution_episode");
+        }
+        other => panic!("expected blocked failed-task restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::Failed);
+    assert_eq!(stored.task_branch, task.task_branch);
+    assert_eq!(stored.worktree_path, task.worktree_path);
+    assert_eq!(stored.merge_commit_sha, task.merge_commit_sha);
 }
 
 #[tokio::test]

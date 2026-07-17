@@ -1,14 +1,15 @@
 use super::*;
 use crate::domain::entities::task_metadata::StopRetryingReason;
 use crate::domain::entities::{
-    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryReasonCode,
-    ExecutionRecoverySource,
-};
-use crate::domain::entities::{
-    ProjectId, TaskStep, ValidationCacheDecision, ValidationCommandCategory,
+    AgentRun, AgentRunStatus, ChatContextType, ChatConversation, ProjectId, TaskStep,
+    ValidationCacheDecision, ValidationCacheMetadata, ValidationCommandCategory,
     ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
     ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
     ValidationRunStatus,
+};
+use crate::domain::entities::{
+    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource,
 };
 use crate::infrastructure::memory::{MemoryTaskRepository, MemoryTaskStepRepository};
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -42,6 +43,76 @@ fn write_test_file(path: &std::path::Path, contents: &str) {
         .expect("test file path should be safe");
     // codeql[rust/path-injection]
     std::fs::write(&path, contents).unwrap();
+}
+
+#[cfg(unix)]
+fn symlink_test_path(target: &std::path::Path, link: &std::path::Path) {
+    let target = validate_absolute_non_root_path(target, "task restart test symlink target")
+        .expect("test symlink target should be safe");
+    let link = validate_absolute_non_root_path(link, "task restart test symlink link")
+        .expect("test symlink link should be safe");
+    // codeql[rust/path-injection]
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+}
+
+async fn persist_failed_episode(
+    state: &crate::application::AppState,
+    task: &Task,
+) -> chrono::DateTime<chrono::Utc> {
+    state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .task_repo
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    state.task_repo.update(task).await.unwrap();
+    state
+        .task_repo
+        .get_status_last_entered_at(&task.id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+async fn add_completed_step(state: &crate::application::AppState, task_id: &TaskId) {
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    state.task_step_repo.create(step).await.unwrap();
+}
+
+async fn add_task_execution_run(
+    state: &crate::application::AppState,
+    task_id: &TaskId,
+    status: AgentRunStatus,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> AgentRun {
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation.id);
+    run.status = status;
+    run.started_at = started_at;
+    if status == AgentRunStatus::Completed {
+        run.completed_at = Some(chrono::Utc::now());
+    }
+    state.agent_run_repo.create(run).await.unwrap()
+}
+
+fn first_warning_code(classification: &FailedRestartClassification) -> &str {
+    match classification {
+        FailedRestartClassification::RestartRequired(warnings)
+        | FailedRestartClassification::Blocked(warnings) => warnings[0].code.as_str(),
+        FailedRestartClassification::RecoverToReview(_) => "recover_to_review",
+    }
 }
 
 #[tokio::test]
@@ -148,6 +219,382 @@ async fn failed_recovery_blocks_when_execution_attempt_authority_is_missing() {
     assert_eq!(stored.task_branch, task.task_branch);
     assert_eq!(stored.worktree_path, task.worktree_path);
     assert_eq!(stored.merge_commit_sha, task.merge_commit_sha);
+}
+
+#[tokio::test]
+async fn failed_recovery_reports_early_authority_guards() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Authority guards".to_string(),
+        "/tmp/authority-guards".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let ready_task = Task::new(project.id.clone(), "Wrong status".to_string());
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &ready_task).await),
+        "task_not_failed"
+    );
+
+    let mut task = Task::new(project.id.clone(), "Missing conversation".to_string());
+    task.internal_status = InternalStatus::Failed;
+    persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_execution_conversation"
+    );
+
+    let mut conversation = ChatConversation::new_task(task.id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_agent_run"
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_requires_current_completed_agent_run() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Agent run guards".to_string(),
+        "/tmp/agent-run-guards".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Running agent run".to_string());
+    task.internal_status = InternalStatus::Failed;
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at - chrono::Duration::seconds(1),
+    )
+    .await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "agent_run_not_current"
+    );
+
+    let state = AppState::new_test();
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id, "Incomplete agent run".to_string());
+    task.internal_status = InternalStatus::Failed;
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Running,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "agent_run_not_completed"
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_reports_project_and_worktree_guards() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let mut missing_project_task = Task::new(ProjectId::new(), "Missing project".to_string());
+    missing_project_task.internal_status = InternalStatus::Failed;
+    let episode_entered_at = persist_failed_episode(&state, &missing_project_task).await;
+    add_completed_step(&state, &missing_project_task.id).await;
+    add_task_execution_run(
+        &state,
+        &missing_project_task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &missing_project_task).await),
+        "project_missing"
+    );
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Worktree guards".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Missing worktree".to_string());
+    task.internal_status = InternalStatus::Failed;
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_worktree"
+    );
+
+    task.worktree_path = Some(
+        project
+            .task_worktree_path(task.id.as_str())
+            .to_string_lossy()
+            .into_owned(),
+    );
+    state.task_repo.update(&task).await.unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_task_branch"
+    );
+
+    task.task_branch = Some("task/expected".to_string());
+    task.worktree_path = Some(root.path().join("wrong").to_string_lossy().into_owned());
+    state.task_repo.update(&task).await.unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "worktree_path_mismatch"
+    );
+
+    task.worktree_path = Some(
+        project
+            .task_worktree_path(task.id.as_str())
+            .to_string_lossy()
+            .into_owned(),
+    );
+    state.task_repo.update(&task).await.unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_worktree"
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_reports_git_and_validation_guards() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Git guards".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Branch mismatch".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/expected".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_test_dir(&worktree);
+    git(&worktree, &["init", "-b", "task/actual"]);
+    git(&worktree, &["config", "user.email", "test@example.com"]);
+    git(&worktree, &["config", "user.name", "RalphX Test"]);
+    write_test_file(&worktree.join("tracked.txt"), "base\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "base"]);
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "task_branch_mismatch"
+    );
+
+    task.task_branch = Some("task/actual".to_string());
+    state.task_repo.update(&task).await.unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "task_diff_not_recoverable"
+    );
+
+    let base_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "changed\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "change"]);
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    state.task_repo.update(&task).await.unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "missing_validation_evidence"
+    );
+
+    let stale_validation = ValidationRun {
+        id: "validation-stale".to_string(),
+        task_id: task.id.clone(),
+        project_id: project.id,
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some("stale".to_string()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some("stale".to_string()),
+        base_ref: Some("base".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+    };
+    state
+        .validation_run_repo
+        .create_run(&stale_validation)
+        .await
+        .unwrap();
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "validation_evidence_not_current"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_recovery_blocks_worktree_symlink_that_resolves_to_root() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Root Escape".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Root escape".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/root-escape".to_string());
+    let expected_worktree = project.task_worktree_path(task.id.as_str());
+    create_test_dir(expected_worktree.parent().unwrap());
+    symlink_test_path(root.path(), &expected_worktree);
+    task.worktree_path = Some(expected_worktree.to_string_lossy().into_owned());
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "worktree_root_escape"
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_blocks_when_git_branch_cannot_be_read() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Unreadable Head".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "No HEAD".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/no-head".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_test_dir(&worktree);
+    git(&worktree, &["init", "-b", "task/no-head"]);
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "task_branch_read_failed"
+    );
+}
+
+#[tokio::test]
+async fn failed_recovery_blocks_malformed_legacy_validation_cache() {
+    use crate::application::AppState;
+    use crate::domain::entities::Project;
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Malformed Cache".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Malformed cache".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/malformed-cache".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_test_dir(&worktree);
+    git(&worktree, &["init", "-b", "task/malformed-cache"]);
+    git(&worktree, &["config", "user.email", "test@example.com"]);
+    git(&worktree, &["config", "user.name", "RalphX Test"]);
+    write_test_file(&worktree.join("tracked.txt"), "base\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "base"]);
+    let base_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "changed\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "change"]);
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    task.metadata = Some(r#"{"validation_cache":{"version":"bad"}}"#.to_string());
+    let episode_entered_at = persist_failed_episode(&state, &task).await;
+    add_completed_step(&state, &task.id).await;
+    add_task_execution_run(
+        &state,
+        &task.id,
+        AgentRunStatus::Completed,
+        episode_entered_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+
+    assert_eq!(
+        first_warning_code(&classify_failed_restart(&state, &task).await),
+        "legacy_validation_cache_read_failed"
+    );
 }
 
 #[tokio::test]
@@ -285,6 +732,98 @@ async fn failed_recovery_accepts_complete_current_attempt_proof() {
     };
     assert_eq!(evidence.agent_run_id, agent_run.id.as_str());
     assert_eq!(evidence.validation_run_id, validation_run.id);
+    assert_eq!(evidence.promoted_commit_sha, promoted_sha);
+}
+
+#[tokio::test]
+async fn failed_recovery_accepts_legacy_validation_cache_when_validation_run_is_absent() {
+    use crate::application::AppState;
+    use crate::domain::entities::{
+        AgentRun, AgentRunStatus, ChatContextType, ChatConversation, Project,
+    };
+
+    let state = AppState::new_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut project = Project::new(
+        "Legacy recovery proof".to_string(),
+        root.path().join("project").to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(root.path().to_string_lossy().into_owned());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Recover legacy proof".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recover-legacy-proof".to_string());
+    let worktree = project.task_worktree_path(task.id.as_str());
+    create_test_dir(&worktree);
+    git(&worktree, &["init", "-b", "task/recover-legacy-proof"]);
+    git(&worktree, &["config", "user.email", "test@example.com"]);
+    git(&worktree, &["config", "user.name", "RalphX Test"]);
+    write_test_file(&worktree.join("tracked.txt"), "base\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "base"]);
+    let base_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "completed legacy work\n");
+    git(&worktree, &["add", "tracked.txt"]);
+    git(&worktree, &["commit", "-m", "completed legacy work"]);
+    let promoted_sha = GitService::get_head_sha(&worktree).await.unwrap();
+    task.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    task.task_branch_base_ref = Some("base".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .unwrap();
+    let cache = ValidationCacheMetadata {
+        version: 1,
+        commit_sha: promoted_sha.clone(),
+        tests_ran: true,
+        tests_passed: true,
+        test_summary: None,
+        captured_at: episode_entered_at + chrono::Duration::milliseconds(1),
+        captured_by: "execution_complete".to_string(),
+    };
+    task.metadata = Some(
+        cache
+            .update_task_metadata(task.metadata.as_deref())
+            .unwrap(),
+    );
+    state.task_repo.update(&task).await.unwrap();
+
+    let mut step = TaskStep::new(task_id.clone(), "done".to_string(), 0, "test".to_string());
+    step.status = TaskStepStatus::Completed;
+    state.task_step_repo.create(step).await.unwrap();
+    let mut conversation = ChatConversation::new_task(task_id.clone());
+    conversation.context_type = ChatContextType::TaskExecution;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation.id);
+    agent_run.status = AgentRunStatus::Completed;
+    agent_run.completed_at = Some(chrono::Utc::now());
+    state.agent_run_repo.create(agent_run).await.unwrap();
+
+    let classification = classify_failed_restart(&state, &task).await;
+    let FailedRestartClassification::RecoverToReview(evidence) = classification else {
+        panic!("legacy validation cache should recover, got {classification:?}");
+    };
+    assert_eq!(evidence.validation_run_id, "legacy_validation_cache");
     assert_eq!(evidence.promoted_commit_sha, promoted_sha);
 }
 

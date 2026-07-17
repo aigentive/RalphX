@@ -19,7 +19,9 @@ use crate::domain::entities::{
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
     IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
     NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
-    VerificationStatus,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -27,11 +29,12 @@ use crate::domain::repositories::{
     ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
     PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
     StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
+use crate::infrastructure::memory::MemoryValidationRunRepository;
 use tauri::{AppHandle, Runtime};
 
 #[allow(clippy::too_many_arguments)]
@@ -1387,6 +1390,73 @@ fn validation_cache_fixture_at(
     }
 }
 
+fn validation_run_fixture(
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    promoted_sha: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationRun {
+    ValidationRun {
+        id: "validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.to_string()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.to_string()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: episode_entered_at + chrono::Duration::milliseconds(1),
+        completed_at: Some(episode_entered_at + chrono::Duration::seconds(1)),
+    }
+}
+
+fn validation_command_fixture(
+    run_id: &str,
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    head_sha: &str,
+    cwd: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationCommandResult {
+    ValidationCommandResult {
+        id: "validation-command".to_string(),
+        validation_run_id: run_id.to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        command_source: ValidationCommandSource::ProjectAnalysisRef,
+        command_ref: Some("tests".to_string()),
+        command: "cargo test".to_string(),
+        cwd: cwd.to_string(),
+        label: Some("Tests".to_string()),
+        category: ValidationCommandCategory::Test,
+        reason: None,
+        related_files: Vec::new(),
+        cache_key: "validation-cache".to_string(),
+        cache_decision: ValidationCacheDecision::Ran,
+        status: ValidationCommandStatus::Passed,
+        exit_code: Some(0),
+        duration_ms: Some(1),
+        stdout_snippet: None,
+        stderr_snippet: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
+        launcher_kind: None,
+        resolved_shell_path: None,
+        head_sha: Some(head_sha.to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        created_at: episode_entered_at + chrono::Duration::seconds(1),
+    }
+}
+
 fn git_worktree_with_initial_commit() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("temp git dir");
     Command::new("git")
@@ -2323,6 +2393,64 @@ fn test_validated_completion_override_false_when_head_sha_unresolvable() {
         &task,
         Utc::now(),
         &None,
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_accepts_current_validation_run() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let project_id = ProjectId::new();
+    let task_id = TaskId::new();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let repo = Arc::new(MemoryValidationRunRepository::new());
+    let run_record = validation_run_fixture(&task_id, &project_id, &head_sha, episode_entered_at);
+    let command = validation_command_fixture(
+        &run_record.id,
+        &task_id,
+        &project_id,
+        &head_sha,
+        &worktree.path().to_string_lossy(),
+        episode_entered_at,
+    );
+    run(repo.create_run(&run_record)).unwrap();
+    run(repo.add_command_result(&command)).unwrap();
+
+    let mut task = Task::new(project_id, "first-class validation".into());
+    task.id = task_id;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> = repo;
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_uses_legacy_cache_when_no_run_exists() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let cache = validation_cache_fixture_at(
+        &head_sha,
+        true,
+        true,
+        episode_entered_at + chrono::Duration::seconds(1),
+    );
+    let mut task = Task::new(ProjectId::new(), "legacy validation cache".into());
+    task.metadata = Some(
+        cache
+            .update_task_metadata(task.metadata.as_deref())
+            .unwrap(),
+    );
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> =
+        Arc::new(MemoryValidationRunRepository::new());
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
     )));
 }
 
