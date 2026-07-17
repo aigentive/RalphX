@@ -26,6 +26,7 @@ capabilities:
   internal_skills:
     allowed:
       - ralphx-agent-workspace-swe
+      - ralphx-agent-workspace-automation
 harnesses:
   claude:
     model: sonnet

@@ -777,6 +777,24 @@ pub fn load_canonical_agent_definition_for_profile(
     Some(profile.overlay_onto(definition))
 }
 
+pub fn canonical_agent_allows_internal_skill(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+    skill_name: &str,
+) -> bool {
+    load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
+        .map(|definition| {
+            definition
+                .capabilities
+                .internal_skills
+                .allowed
+                .iter()
+                .any(|allowed| allowed == skill_name)
+        })
+        .unwrap_or(false)
+}
+
 pub fn list_canonical_prompt_backed_agents(
     project_root: &Path,
     harness: AgentPromptHarness,

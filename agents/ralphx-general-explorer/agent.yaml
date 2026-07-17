@@ -17,6 +17,9 @@ capabilities:
     - search_memories
     - get_memory
     - get_memories_for_paths
+  internal_skills:
+    allowed:
+      - ralphx-agent-workspace-automation
 harnesses:
   claude:
     model: sonnet
