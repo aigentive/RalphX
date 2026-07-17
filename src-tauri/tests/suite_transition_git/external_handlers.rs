@@ -27,9 +27,9 @@ use ralphx_lib::domain::entities::{
     project::{GitMode, Project},
     task::Task,
     types::ProjectId,
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority, ProposalCategory,
-    TaskProposal, VerificationRunSnapshot,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority,
+    ProposalCategory, TaskProposal, VerificationRunSnapshot,
 };
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::error::AppError;
@@ -3573,8 +3573,7 @@ async fn test_trigger_verification_no_plan() {
 
 #[tokio::test]
 async fn test_trigger_verification_already_running() {
-    // Session with plan + verification_in_progress=true → "already_running"
-    // Uses SQLite-backed state so trigger_auto_verify_sync can operate on the DB.
+    // A running model-native verification action returns "already_running".
     let state = setup_sqlite_test_state().await;
 
     let pid = ProjectId::from_string("proj-verify-running".to_string());
@@ -3601,15 +3600,20 @@ async fn test_trigger_verification_already_running() {
         .await
         .unwrap();
 
-    // Mark verification_in_progress = true via update_verification_state
+    let conversation = ChatConversation::new_ideation(created.id.clone());
+    let conversation_id = conversation.id;
     state
         .app_state
-        .ideation_session_repo
-        .update_verification_state(&created.id, VerificationStatus::Reviewing, true)
+        .chat_conversation_repo
+        .create(conversation)
         .await
         .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(created.id.as_str().to_string());
+    run.action_target_id = Some("artifact-x".to_string());
+    state.app_state.agent_run_repo.create(run).await.unwrap();
 
-    // Trigger: session in_progress=1 → trigger_auto_verify_sync returns None → "already_running"
     let result = trigger_verification_http(
         State(state),
         unrestricted_scope(),
@@ -3625,7 +3629,7 @@ async fn test_trigger_verification_already_running() {
 }
 
 #[tokio::test]
-async fn test_trigger_verification_uses_snapshot_truth_when_summary_is_stale() {
+async fn test_trigger_verification_uses_agent_run_truth_when_legacy_summary_is_stale() {
     let state = setup_sqlite_test_state().await;
 
     let pid = ProjectId::from_string("proj-verify-stale-snapshot".to_string());
@@ -3678,6 +3682,20 @@ async fn test_trigger_verification_uses_snapshot_truth_when_summary_is_stale() {
         .await
         .unwrap();
 
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.as_str().to_string());
+    run.action_target_id = Some("artifact-x".to_string());
+    state.app_state.agent_run_repo.create(run).await.unwrap();
+
     let result = trigger_verification_http(
         State(state.clone()),
         unrestricted_scope(),
@@ -3691,7 +3709,7 @@ async fn test_trigger_verification_uses_snapshot_truth_when_summary_is_stale() {
     let response = result.unwrap().0;
     assert_eq!(
         response.status, "already_running",
-        "active-generation snapshot must block duplicate external verification starts"
+        "a running verification action must block duplicate external verification starts"
     );
 
     let refreshed = state
@@ -3703,7 +3721,7 @@ async fn test_trigger_verification_uses_snapshot_truth_when_summary_is_stale() {
         .expect("session should still exist");
     assert_eq!(
         refreshed.verification_generation, 2,
-        "stale summary must not trigger a new verification generation"
+        "model-native admission must not mutate legacy generation state"
     );
 }
 

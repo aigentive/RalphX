@@ -2068,6 +2068,7 @@ async fn test_restart_ideation_implementation_core_rebuilds_current_attempt_only
 
 #[tokio::test]
 async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting() {
+    use crate::support::mock_github_service::MockGithubService;
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
         AgentConversationWorkspaceBaseSelection,
@@ -2078,8 +2079,12 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
         IdeationSession, PlanBranchStatus, Priority, Project, ProposalCategory, TaskProposal,
     };
+    use ralphx_lib::domain::services::github_service::{
+        GithubServiceTrait, PrStatus as RemotePrStatus,
+    };
+    use std::sync::Arc;
 
-    let state = setup_apply_test_state();
+    let mut state = setup_apply_test_state();
     let repo_dir = setup_git_repo_for_apply_test();
     let origin_dir = tempfile::TempDir::new().unwrap();
     git_ok(
@@ -2320,6 +2325,14 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         .await
         .expect("test should record plan branch cleanup provenance");
 
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(RemotePrStatus::Merged {
+        merge_commit_sha: Some("merged-before-restart".to_string()),
+        merged_at: Some("2026-07-17T10:00:00Z".to_string()),
+    });
+    let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_service);
+
     let second_restart =
         restart_ideation_implementation_core(&state, session.id.as_str().to_string())
             .await
@@ -2366,6 +2379,8 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
             .expect("plan branch cleanup status should load"),
         None
     );
+    assert_eq!(*github.check_pr_status_calls.lock().unwrap(), 1);
+    assert_eq!(*github.close_pr_calls.lock().unwrap(), 0);
 }
 
 #[tokio::test]

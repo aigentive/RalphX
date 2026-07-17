@@ -316,19 +316,19 @@ async fn test_non_ideation_agent_bypasses_db_model_resolution() {
     );
 }
 
-// --- PO#5: verifier subagent cap is unaffected by ideation_subagent_model ---
+// --- Retired verifier lane does not override the active ideation subagent lane ---
 
 #[tokio::test]
-async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
-    // ralphx-plan-verifier must use IdeationVerifierSubagent lane model ("opus"),
-    // NOT IdeationSubagent lane model ("haiku"), for CLAUDE_CODE_SUBAGENT_MODEL.
-    // Tested on BOTH build_command AND build_resume_command.
+async fn test_retired_verifier_lane_does_not_override_ideation_subagent() {
+    // Persisted IdeationVerifierSubagent settings remain readable for compatibility, but
+    // model-native verification runs in the active ideation conversation and therefore uses
+    // the normal IdeationSubagent lane on both build and resume.
     use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
     use ralphx_lib::domain::repositories::AgentLaneSettingsRepository;
     use ralphx_lib::infrastructure::memory::MemoryAgentLaneSettingsRepository;
 
     let lane_repo = Arc::new(MemoryAgentLaneSettingsRepository::new());
-    // IdeationVerifierSubagent=opus, IdeationSubagent=haiku — must not bleed into verifier
+    // A stale verifier-lane value must not override the active ideation subagent lane.
     lane_repo
         .upsert_global(
             AgentLane::IdeationVerifierSubagent,
@@ -360,7 +360,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
     let session_id = IdeationSessionId::new();
     let conv = ChatConversation::new_ideation(session_id.clone());
 
-    // --- build_command: entity_status="verification" → ralphx-plan-verifier ---
+    // Legacy status strings no longer route to a dedicated verifier agent.
     let build_result = build_command(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
@@ -397,18 +397,16 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         .map(|(_, v)| v.to_string_lossy().into_owned());
     assert_eq!(
         build_subagent.as_deref(),
-        Some("opus"),
-        "build_command ralphx-plan-verifier: CLAUDE_CODE_SUBAGENT_MODEL must be IdeationVerifierSubagent lane model (opus), not IdeationSubagent lane model (haiku)"
+        Some("haiku"),
+        "build_command must use the active IdeationSubagent lane"
     );
     assert_ne!(
         build_subagent.as_deref(),
-        Some("haiku"),
-        "IdeationSubagent lane (haiku) must NOT bleed into ralphx-plan-verifier CLAUDE_CODE_SUBAGENT_MODEL"
+        Some("opus"),
+        "the retired verifier lane must not override the active ideation lane"
     );
 
-    // --- build_resume_command: same assertion ---
-    // Seed a verification IdeationSession so get_entity_status_for_resume returns "verification",
-    // which routes to ralphx-plan-verifier (and thus uses IdeationVerifierSubagent lane, not IdeationSubagent lane).
+    // A persisted legacy child also resumes through the normal ideation agent.
     let verification_session = IdeationSessionBuilder::new()
         .id(session_id.clone())
         .project_id(ProjectId("proj-1".to_string()))
@@ -447,7 +445,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         &[],
         0,
         None,
-        None, // model_override: agent selection comes from session_purpose, not this field
+        None,
         None, // attachment_context_override
     )
     .await;
@@ -464,13 +462,13 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         .map(|(_, v)| v.to_string_lossy().into_owned());
     assert_eq!(
         resume_subagent.as_deref(),
-        Some("opus"),
-        "build_resume_command ralphx-plan-verifier: CLAUDE_CODE_SUBAGENT_MODEL must be IdeationVerifierSubagent lane model (opus)"
+        Some("haiku"),
+        "build_resume_command must use the active IdeationSubagent lane"
     );
     assert_ne!(
         resume_subagent.as_deref(),
-        Some("haiku"),
-        "IdeationSubagent lane (haiku) must NOT bleed into ralphx-plan-verifier in resume command"
+        Some("opus"),
+        "the retired verifier lane must not override resume routing"
     );
 }
 

@@ -355,6 +355,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
