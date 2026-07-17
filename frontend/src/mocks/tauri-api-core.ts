@@ -515,6 +515,104 @@ function mockAgentHarnessAvailability(projectId: string | null) {
   }));
 }
 
+const mockManualRoleFamilies = [
+  ["workspace", "Workspace", "workspace_edit", "Workspace Edit"],
+  ["automation", "Automation", "automation_plan_judge", "Plan Judge"],
+  ["feedback_loops", "Feedback Loops", "workspace_repair", "Workspace Repair"],
+  ["ideation", "Ideation", "ideation_primary", "Ideation Primary"],
+  ["delegation", "Delegation", "delegated_subagent", "Delegated Subagent"],
+  ["execution", "Execution", "execution_worker", "Execution Worker"],
+  ["utility", "Utility", "utility_lightweight", "Utility Lightweight"],
+] as const;
+
+const mockManualRoleDefault = {
+  provider: "codex",
+  model: "gpt-5.5",
+  effort: "xhigh",
+  service_tier: "provider_default",
+  coordination_mode: "solo",
+  persona_id: null,
+  approval_policy: "never",
+  sandbox_mode: "danger-full-access",
+};
+
+const mockManualRoleDefaultStore = new Map<string, Record<string, unknown>>();
+
+function mockManualRoleScopeKey(projectId: string | null, role: string) {
+  return `${projectId ?? "__global__"}:${role}`;
+}
+
+function mockManualRoleControls(family: string) {
+  const workspaceRole = family === "workspace";
+  return {
+    capabilities: [
+      { value: "solo", enabled: true, disabled_reason: null },
+      {
+        value: "rx_native_team",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Team is available only for Workspace root roles",
+      },
+      {
+        value: "rx_native_workflow",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Workflow is available only for Workspace root roles",
+      },
+      {
+        value: "codex_native_ultra",
+        enabled: workspaceRole,
+        disabled_reason: workspaceRole
+          ? null
+          : "Codex Ultra is available only for Workspace root roles",
+      },
+    ],
+    speeds: [
+      { value: "provider_default", enabled: true, disabled_reason: null },
+      { value: "standard", enabled: true, disabled_reason: null },
+      {
+        value: "fast",
+        enabled: true,
+        disabled_reason: null,
+      },
+    ],
+    persona: {
+      enabled: workspaceRole,
+      disabled_reason: workspaceRole
+        ? null
+        : "Persona is limited to Workspace Project conversations in V1",
+    },
+  };
+}
+
+function mockManualRoleDefaults(projectId: string | null) {
+  return {
+    project_id: projectId,
+    roles: mockManualRoleFamilies.map(
+      ([family, familyDisplayName, role, displayName]) => {
+        const configured =
+          mockManualRoleDefaultStore.get(mockManualRoleScopeKey(projectId, role)) ??
+          (projectId === null && role === "workspace_edit"
+            ? mockManualRoleDefault
+            : null);
+        return {
+          role,
+          display_name: displayName,
+          family,
+          family_display_name: familyDisplayName,
+          configured,
+          effective: configured ?? mockManualRoleDefault,
+          source: configured ? "global_ui" : "provider_default",
+          diagnostics: [],
+          controls: mockManualRoleControls(family),
+        };
+      },
+    ),
+  };
+}
+
 const mockWorkspaceReviewRuntimeSettings: Record<
   string,
   Array<{
@@ -1790,6 +1888,41 @@ const commandHandlers: Record<
     return mockAgentProviderSettings;
   },
   list_agent_models: async () => mockAgentModels,
+  get_manual_role_defaults: async (args) =>
+    mockManualRoleDefaults((args.projectId as string | null | undefined) ?? null),
+  update_manual_role_default: async (args) => {
+    const input = args.input as {
+      projectId?: string | null;
+      role: string;
+      value: Record<string, unknown>;
+    };
+    mockManualRoleDefaultStore.set(
+      mockManualRoleScopeKey(input.projectId ?? null, input.role),
+      input.value,
+    );
+    return input.value;
+  },
+  clear_manual_role_default: async (args) => {
+    const input = args.input as { projectId?: string | null; role: string };
+    return mockManualRoleDefaultStore.delete(
+      mockManualRoleScopeKey(input.projectId ?? null, input.role),
+    );
+  },
+  get_start_composer_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
+  get_agent_conversation_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
+  reset_agent_conversation_role_default: async () => ({
+    role: "workspace_edit",
+    source: "global_ui",
+    value: mockManualRoleDefault,
+  }),
   get_agent_lane_settings: async (args) =>
     mockAgentLaneSettings(
       (args.projectId as string | null | undefined) ?? null,
