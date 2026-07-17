@@ -173,6 +173,37 @@ describe("AgentReviewPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    [
+      "paused_for_review",
+      "GitHub auto-merge is paused until this Review is resolved.",
+    ],
+    [
+      "awaiting_publish",
+      "GitHub auto-merge will resume after these reviewed changes are published.",
+    ],
+    [
+      "restore_failed",
+      "GitHub auto-merge is still paused and restoration will retry.",
+    ],
+    ["pausing", "Updating GitHub auto-merge…"],
+    ["restoring", "Updating GitHub auto-merge…"],
+  ] as const)(
+    "shows the %s auto-merge guard detail",
+    (autoMergeGuardStatus, expectedDetail) => {
+      renderPanel({
+        reviewContext: reviewContext({
+          monitor: reviewMonitor({
+            autoMergeGuardStatus,
+            autoMergeGuardLastError: null,
+          }),
+        }),
+      });
+
+      expect(screen.getByText(expectedDetail)).toBeInTheDocument();
+    },
+  );
+
   it("does not duplicate conversation-active skipped text beside the disabled action", () => {
     renderPanel({
       isWorkspaceRuntimeGenerating: true,

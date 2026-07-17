@@ -367,6 +367,16 @@ pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
                 "Periodic recovery: failed to recover stale transient publish statuses"
             );
         }
+
+        if let Err(err) = crate::application::agent_workspace_review_auto_merge::
+            reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+        {
+            tracing::warn!(
+                error = %err,
+                "Periodic recovery: failed to reconcile workspace Review auto-merge guards"
+            );
+        }
     }
 }
 

@@ -21,6 +21,39 @@ fn queued_message_pre_upgrade_payload_without_persona_keys_deserializes_to_inher
 
     assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
     assert_eq!(queued.agent_name_override, None);
+    assert_eq!(queued.composer_selection_snapshot, None);
+}
+
+#[test]
+fn queued_message_round_trips_selection_snapshot() {
+    let mut queued = QueuedMessage::new("Review the selected lines".to_string());
+    queued.composer_selection_snapshot = Some(ComposerSelectionSnapshot {
+        source_type: "ticket".to_string(),
+        source_kind: "linear".to_string(),
+        source_id: "issue-42".to_string(),
+        source_title: Some("Queue recovery".to_string()),
+        source_key: Some("RX-42".to_string()),
+        provider: Some("linear".to_string()),
+        artifact_version: None,
+        source_revision: Some("2026-07-16T09:00:00Z".to_string()),
+        start_line: 7,
+        end_line: 8,
+        content: "first\nsecond".to_string(),
+    });
+
+    let serialized = serde_json::to_string(&queued).expect("serialize queued selection");
+    let restored: QueuedMessage =
+        serde_json::from_str(&serialized).expect("deserialize queued selection");
+
+    assert_eq!(
+        restored.composer_selection_snapshot,
+        queued.composer_selection_snapshot
+    );
+    let value: serde_json::Value = serde_json::from_str(&serialized).expect("queued json");
+    assert_eq!(value["composer_selection_snapshot"]["startLine"], 7);
+    assert!(value["composer_selection_snapshot"]
+        .get("start_line")
+        .is_none());
 }
 
 #[test]
@@ -472,6 +505,7 @@ fn test_remove_stale_drops_old_messages() {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
@@ -491,6 +525,7 @@ fn test_remove_stale_drops_old_messages() {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             attachment_ids: Vec::new(),
         });
     }
@@ -798,6 +833,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        None,
         Vec::new(),
     );
 
@@ -837,6 +873,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             attachment_ids: Vec::new(),
         });
     }

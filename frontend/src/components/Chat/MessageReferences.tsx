@@ -7,6 +7,15 @@ import {
   Ticket,
 } from "lucide-react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
@@ -15,6 +24,7 @@ export function MessageReferences({
   projectReferences,
   integrationReferences,
   artifactReferences,
+  selectionSnapshot,
 }: MessageComposerReferences) {
   const setTicketProvider = useTicketingStore((s) => s.setProvider);
   const setSelectedTicketRef = useTicketingStore((s) => s.setSelectedTicketRef);
@@ -23,7 +33,8 @@ export function MessageReferences({
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
-    artifactReferences.length === 0
+    artifactReferences.length === 0 &&
+    !selectionSnapshot
   ) {
     return null;
   }
@@ -122,7 +133,79 @@ export function MessageReferences({
           />
         );
       })}
+      {selectionSnapshot ? (
+        <SelectionSnapshotReference snapshot={selectionSnapshot} />
+      ) : null}
     </div>
+  );
+}
+
+function SelectionSnapshotReference({
+  snapshot,
+}: {
+  snapshot: NonNullable<MessageComposerReferences["selectionSnapshot"]>;
+}) {
+  const sourceLabel = getComposerSelectionSourceLabel(snapshot);
+  const lineLabel =
+    snapshot.startLine === snapshot.endLine
+      ? `L${snapshot.startLine}`
+      : `L${snapshot.startLine}–${snapshot.endLine}`;
+
+  return (
+    <Dialog>
+      <div
+        className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-xs"
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--bg-hover)",
+          borderStyle: "solid",
+          borderWidth: 1,
+          color: "var(--text-primary)",
+        }}
+        data-testid="message-selection-snapshot"
+      >
+        <ScrollText className="h-3 w-3 shrink-0" />
+        <span
+          className="truncate whitespace-nowrap"
+          title={`Selection · ${sourceLabel} · ${lineLabel}`}
+        >{`Selection · ${sourceLabel} · ${lineLabel}`}</span>
+        <DialogTrigger asChild>
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 font-medium hover:bg-[var(--bg-hover)]"
+            aria-label="View selection snapshot"
+          >
+            View
+          </button>
+        </DialogTrigger>
+      </div>
+      <DialogContent className="max-h-[min(80vh,720px)] max-w-3xl overflow-hidden">
+        <DialogHeader className="block pr-12">
+          <DialogTitle>{sourceLabel}</DialogTitle>
+          <DialogDescription>
+            Frozen selection · {lineLabel}
+          </DialogDescription>
+        </DialogHeader>
+        <div
+          className="max-h-[60vh] overflow-auto px-4 py-4 font-mono text-xs"
+          style={{ backgroundColor: "var(--bg-base)" }}
+        >
+          {snapshot.content.split("\n").map((line, index) => (
+            <div key={snapshot.startLine + index} className="flex min-w-max leading-5">
+              <span
+                className="mr-4 w-10 shrink-0 select-none text-right tabular-nums"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {snapshot.startLine + index}
+              </span>
+              <span className="whitespace-pre" style={{ color: "var(--text-primary)" }}>
+                {line || " "}
+              </span>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

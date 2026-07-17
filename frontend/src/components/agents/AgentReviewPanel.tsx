@@ -367,6 +367,21 @@ export function AgentReviewPanel({
     isFixerActive,
   });
   const targetLabel = reviewTargetLabel(displayContext);
+  const autoMergeGuardDetail = (() => {
+    switch (displayContext?.monitor.autoMergeGuardStatus) {
+      case "paused_for_review":
+        return "GitHub auto-merge is paused until this Review is resolved.";
+      case "awaiting_publish":
+        return "GitHub auto-merge will resume after these reviewed changes are published.";
+      case "restore_failed":
+        return displayContext.monitor.autoMergeGuardLastError ?? "GitHub auto-merge is still paused and restoration will retry.";
+      case "pausing":
+      case "restoring":
+        return "Updating GitHub auto-merge…";
+      default:
+        return null;
+    }
+  })();
   const skippedReason = reviewStartResult?.skippedReason ?? null;
   const versionLabel = displayContext?.monitor.reviewArtifactVersion
     ? `v${displayContext.monitor.reviewArtifactVersion}`
@@ -619,7 +634,7 @@ export function AgentReviewPanel({
                 className="mt-1 text-xs"
                 style={{ color: "var(--text-muted)" }}
               >
-                {errorMessage ?? status.detail}
+                {errorMessage ?? autoMergeGuardDetail ?? status.detail}
               </p>
               {(targetLabel || reviewUpdatedAt) && (
                 <p

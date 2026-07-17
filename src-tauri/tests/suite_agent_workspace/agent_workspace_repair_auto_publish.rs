@@ -1,8 +1,8 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use axum::{extract::Path, Json};
 use crate::common::MockGithubService;
+use axum::{extract::Path, Json};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
@@ -466,4 +466,15 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         .expect("query plan branch")
         .expect("plan branch exists");
     assert_eq!(refreshed_plan_branch.pr_push_status, PrPushStatus::Pushed);
+    let events = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("query publication events");
+    assert!(events.iter().any(|event| {
+        event.step == "published"
+            && event.status == "succeeded"
+            && event.classification.as_deref() == Some("published:90")
+    }));
 }
