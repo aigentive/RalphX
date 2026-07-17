@@ -2342,7 +2342,7 @@ describe("AgentsArtifactPane", () => {
       "aria-disabled",
       "true",
     );
-    expect(screen.queryByTestId("agents-artifact-tab-publish")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-jira")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-granola")).not.toBeInTheDocument();
@@ -2374,7 +2374,7 @@ describe("AgentsArtifactPane", () => {
         automationId: "automation-1",
         automationRunId: "run-1",
       },
-      { hiddenTabs: ["automation"] },
+      { hiddenTabs: ["automation", "publish"] },
     );
 
     await waitFor(() =>
@@ -2417,6 +2417,70 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.getByTestId("agents-artifact-tab-automation"),
     ).toBeInTheDocument();
+  });
+
+  it("shows the versioned setup spec as a Plan tab", async () => {
+    const queryClient = createTestQueryClient();
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        automation: automationFixture({ specArtifactId: "spec-artifact-2" }),
+      }),
+    );
+    const setupPlan = {
+      ...draftPlanArtifact(),
+      id: "spec-artifact-2",
+      name: "Automation setup plan",
+      content: {
+        type: "inline" as const,
+        text: "# Automation setup plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "automation-setup-agent",
+        version: 2,
+      },
+    };
+    getArtifactMock.mockResolvedValue(setupPlan);
+    queryClient.setQueryData(
+      ["agents", "artifact", "spec-artifact-2"],
+      setupPlan,
+    );
+
+    renderPane(
+      "plan",
+      workspace({ mode: "automation" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(await screen.findByText("Automation setup plan")).toBeInTheDocument();
+  });
+
+  it("reuses Commit & Publish for the automation setup workspace", async () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "automation" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
   });
 
   it("selects task details from an external task focus request", async () => {
@@ -2527,7 +2591,7 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
     expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
-    expect(screen.getByText("No ideation run attached")).toBeInTheDocument();
+    expect(await screen.findByText("No ideation run attached")).toBeInTheDocument();
   });
 
   it("keeps a focused automation run scoped to its Plan tab from the setup conversation", async () => {

@@ -119,10 +119,10 @@ describe("describeAutomationStage", () => {
   it("describes judging and judge-failed runs", () => {
     expect(
       describeAutomationStage(automation(), run({ judgeState: "in_progress" })),
-    ).toBe("Judging");
+    ).toBe("Terminal judge running");
     expect(
       describeAutomationStage(automation(), run({ judgeState: "failed" })),
-    ).toBe("Paused: judge failed");
+    ).toBe("Terminal judge failed");
   });
 
   it("describes an in-progress run", () => {
@@ -147,7 +147,7 @@ describe("describeAutomationStage", () => {
           judgeState: "none",
         }),
       ),
-    ).toBe("Judging plan");
+    ).toBe("Plan judge running");
     expect(
       describeAutomationStage(
         automation(),
@@ -189,7 +189,7 @@ describe("describeAutomationStage", () => {
   it("describes merged runs awaiting or past the judge", () => {
     expect(
       describeAutomationStage(automation(), run({ status: "merged", judgeState: "none" })),
-    ).toBe("Waiting for judge");
+    ).toBe("Terminal judge pending");
     expect(
       describeAutomationStage(automation(), run({ status: "merged", judgeState: "done" })),
     ).toBe("Scheduling next run");
