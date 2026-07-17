@@ -377,6 +377,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 Arc::clone(&agent_conversation_workspace_repo),
                 Arc::clone(&conversation_repo),
                 Arc::clone(&agent_provider_settings_repo),
+                Arc::new(app_state.manual_role_default_service()),
                 agent_clients.clone(),
             );
         crate::application::pr_startup_recovery::recover_missing_draft_prs(

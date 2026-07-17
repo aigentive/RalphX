@@ -11,6 +11,7 @@ pub mod agent_conversation_workspace_repository;
 #[cfg(test)]
 mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
+pub mod manual_role_default_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;
 pub mod agent_provider_settings_repository;
@@ -80,6 +81,7 @@ pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepo
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
+pub use manual_role_default_repository::ManualRoleDefaultRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;

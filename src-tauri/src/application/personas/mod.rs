@@ -107,21 +107,21 @@ impl PersonaService {
         }
         let now = Utc::now();
         Ok(Persona {
-                id: PersonaId::new(),
-                slug: input.slug,
-                name: parsed.frontmatter.name,
-                description: parsed.frontmatter.description,
-                content: input.content,
-                status: PersonaStatus::Draft,
-                version: 1,
-                content_hash: parsed.content_hash,
-                source_session_id: input.source_session_id,
-                source_persona_id: input.source_persona_id,
-                source_content_hash: input.source_content_hash,
-                source_json: "{}".to_string(),
-                created_at: now,
-                updated_at: now,
-            })
+            id: PersonaId::new(),
+            slug: input.slug,
+            name: parsed.frontmatter.name,
+            description: parsed.frontmatter.description,
+            content: input.content,
+            status: PersonaStatus::Draft,
+            version: 1,
+            content_hash: parsed.content_hash,
+            source_session_id: input.source_session_id,
+            source_persona_id: input.source_persona_id,
+            source_content_hash: input.source_content_hash,
+            source_json: "{}".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
     }
 
     pub async fn update_draft(
@@ -197,6 +197,7 @@ impl PersonaService {
             .run_transaction(move |conn| {
                 persona_set_status_sync(conn, &id_value, PersonaStatus::Archived)?;
                 clear_persona_bindings_sync(conn, &id_value)?;
+                clear_manual_role_persona_defaults_sync(conn, &id_value)?;
                 Ok(())
             })
             .await?;
@@ -295,6 +296,18 @@ impl PersonaService {
         }
         Ok(persona)
     }
+}
+
+fn clear_manual_role_persona_defaults_sync(
+    conn: &rusqlite::Connection,
+    persona_id: &str,
+) -> AppResult<usize> {
+    conn.execute(
+        "DELETE FROM manual_role_defaults
+         WHERE json_extract(value_json, '$.personaId') = ?1",
+        [persona_id],
+    )
+    .map_err(|error| AppError::Database(error.to_string()))
 }
 
 fn ensure_enabled(feature_enabled: bool) -> AppResult<()> {

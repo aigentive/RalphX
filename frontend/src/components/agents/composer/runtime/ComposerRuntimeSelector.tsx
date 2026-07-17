@@ -6,7 +6,7 @@ import {
   type RefObject,
 } from "react";
 
-import { ChevronRight, Zap } from "lucide-react";
+import { ChevronRight, Loader2, RotateCcw, Zap } from "lucide-react";
 
 import {
   Popover,
@@ -40,6 +40,12 @@ interface ComposerRuntimeSelectorProps {
   provider: ComposerRuntimeProviderField;
   model: ComposerRuntimeModelField;
   effort: ComposerRuntimeEffortField;
+  runtimeDefault?: {
+    source?: string | null;
+    isResetting?: boolean;
+    disabled?: boolean;
+    onReset: () => Promise<unknown> | void;
+  };
   compact?: boolean;
   className?: string;
   surfaceRef: RefObject<HTMLDivElement | null>;
@@ -110,6 +116,7 @@ export function ComposerRuntimeSelector({
   provider,
   model,
   effort,
+  runtimeDefault,
   compact = false,
   className,
   surfaceRef,
@@ -351,6 +358,44 @@ export function ComposerRuntimeSelector({
                     <span>Advanced</span>
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
+                  {runtimeDefault && (
+                    <Tooltip delayDuration={180}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="Reset runtime to current role default"
+                          data-testid="agent-composer-runtime-reset"
+                          disabled={
+                            runtimeDefault.disabled || runtimeDefault.isResetting
+                          }
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--bg-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent-muted)] disabled:cursor-not-allowed disabled:opacity-45"
+                          style={{
+                            backgroundColor: "transparent",
+                            borderColor: "var(--border-subtle)",
+                            borderStyle: "solid",
+                            borderWidth: "1px",
+                          }}
+                          onClick={() => void runtimeDefault.onReset()}
+                        >
+                          {runtimeDefault.isResetting ? (
+                            <Loader2
+                              className="h-4 w-4 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-64 leading-snug">
+                        Reset provider, model, effort, speed, capability, and
+                        persona to the current role default
+                        {runtimeDefault.source
+                          ? ` (${runtimeDefault.source})`
+                          : ""}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                   <ComposerRuntimeFastModeButton model={model} />
                 </div>
                 {effort.options.length > 0 && (

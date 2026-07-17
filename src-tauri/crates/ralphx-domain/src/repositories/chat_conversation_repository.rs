@@ -147,6 +147,15 @@ pub trait ChatConversationRepository: Send + Sync {
         mode: CoordinationMode,
     ) -> AppResult<()>;
 
+    /// Atomically replace the conversation bindings owned by a role default.
+    async fn update_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()>;
+
     /// Compatibility helper for legacy Claude-specific callers.
     async fn update_claude_session_id(
         &self,

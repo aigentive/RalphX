@@ -1106,6 +1106,7 @@ fn build_pr_sync_services(state: &HttpServerState) -> PlanBranchPrSyncServices {
                 Arc::clone(&state.app_state.agent_conversation_workspace_repo),
                 Arc::clone(&state.app_state.chat_conversation_repo),
                 Arc::clone(&state.app_state.agent_provider_settings_repo),
+                Arc::new(state.app_state.manual_role_default_service()),
                 state.app_state.agent_clients.clone(),
             ),
         ),

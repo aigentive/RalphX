@@ -62,7 +62,9 @@ use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -1157,6 +1159,9 @@ pub(crate) fn team_intent_for_persisted_coordination_mode(
 /// Options for customizing message sending behavior.
 #[derive(Debug, Default, Clone)]
 pub struct SendMessageOptions {
+    /// Backend-owned semantic role for orchestrated launches whose parent context
+    /// cannot be reconstructed from the delegated conversation alone.
+    pub routing_role_override: Option<RoutingRole>,
     /// Optional JSON metadata string to attach to the user message.
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
@@ -1401,6 +1406,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    manual_role_default_service:
+        Option<Arc<crate::application::manual_role_default_service::ManualRoleDefaultService>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
@@ -1498,6 +1505,7 @@ impl<R: Runtime> AppChatService<R> {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
             granola_integration_service: None,
@@ -1790,6 +1798,14 @@ impl<R: Runtime> AppChatService<R> {
         repo: Arc<dyn AgentProviderSettingsRepository>,
     ) -> Self {
         self.agent_provider_settings_repo = Some(repo);
+        self
+    }
+
+    pub fn with_manual_role_default_service(
+        mut self,
+        service: Arc<crate::application::manual_role_default_service::ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
         self
     }
 
@@ -5881,42 +5897,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             project_id_started,
         );
 
-        if context_type == ChatContextType::Ideation {
-            let Some(lane_repo) = self.agent_lane_settings_repo.as_ref() else {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(
-                    "Unified ideation chat service requires agent lane settings repo".to_string(),
-                ));
-            };
-            let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() else {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(
-                    "Unified ideation chat service requires agent provider settings repo"
-                        .to_string(),
-                ));
-            };
-            let probes =
-                match crate::application::provider_aware_runtime_probes_for_repo(provider_repo)
-                    .await
-                {
-                    Ok(probes) => probes,
-                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(error)),
-                };
-            let lane_config = crate::application::resolve_lane_harness_config(
-                lane_repo,
-                project_id.as_deref(),
-                AgentLane::IdeationPrimary,
-            )
-            .await;
-            let lane_availability =
-                crate::application::build_lane_harness_availability(lane_config, &probes);
-            if !lane_availability.available {
-                let error = lane_availability
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "Configured ideation harness is not available".to_string());
-                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
-            }
-        }
-
         // 7. Increment running count for task execution contexts BEFORE spawning
         // This tracks concurrency for agent-active states (Executing, Reviewing, ReExecuting)
         // The count is decremented in TransitionHandler::on_exit when leaving these states
@@ -5934,17 +5914,76 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         // 7a. Build and spawn command
         let spawn_settings_started = Instant::now();
-        let mut resolved_spawn_settings =
-            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+        let ideation_verification = if context_type == ChatContextType::Ideation {
+            match self
+                .ideation_session_repo
+                .get_by_id(&IdeationSessionId::from_string(context_id.to_string()))
+                .await
+            {
+                Ok(Some(session)) => session.session_purpose == SessionPurpose::Verification,
+                Ok(None) => false,
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
+                }
+            }
+        } else {
+            false
+        };
+        let routing_role = options.routing_role_override.unwrap_or_else(|| {
+            crate::application::agent_lane_resolution::routing_role_for_chat_launch(
                 agent_name,
-                project_id.as_deref(),
                 context_type,
                 entity_status.as_deref(),
-                spawn_harness_override,
-                options.model_override.as_deref(),
-                self.agent_lane_settings_repo.as_ref(),
+                agent_conversation_mode,
+                ideation_verification,
             )
-            .await;
+        });
+        let project_root = match project_id.as_deref() {
+            Some(project_id) => match self
+                .project_repo
+                .get_by_id(&ProjectId::from_string(project_id.to_string()))
+                .await
+            {
+                Ok(Some(project)) => Some(PathBuf::from(project.working_directory)),
+                Ok(None) => cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                    "Project not found while resolving {routing_role}: {project_id}"
+                ))),
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
+                }
+            },
+            None => None,
+        };
+        let mut resolved_spawn_settings =
+            if let Some(defaults) = self.manual_role_default_service.as_ref() {
+                match crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+                    agent_name,
+                    project_id.as_deref(),
+                    project_root.as_deref(),
+                    routing_role,
+                    spawn_harness_override,
+                    options.model_override.as_deref(),
+                    defaults,
+                )
+                .await
+                {
+                    Ok(resolved) => resolved,
+                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                        "Failed to resolve manual default for {routing_role}: {error}"
+                    ))),
+                }
+            } else {
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_name,
+                    project_id.as_deref(),
+                    context_type,
+                    entity_status.as_deref(),
+                    spawn_harness_override,
+                    options.model_override.as_deref(),
+                    self.agent_lane_settings_repo.as_ref(),
+                )
+                .await
+            };
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
         log_send_message_spawn_prep_phase(
             context_type,
