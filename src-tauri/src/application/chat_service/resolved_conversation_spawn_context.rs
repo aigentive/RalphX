@@ -24,12 +24,27 @@ impl ResolvedConversationSpawnContext {
         effective_mode: Option<AgentConversationWorkspaceMode>,
         working_directory: &Path,
     ) -> Self {
+        let enforce_filesystem_roots = build_mcp_runtime_context(
+            context_type,
+            "",
+            None,
+            "",
+            None,
+            working_directory,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            effective_mode,
+        )
+        .enforce_filesystem_roots;
+
         Self {
             folder_refs_block: None,
             folder_roots: Vec::new(),
             workspace_root: working_directory.to_path_buf(),
-            enforce_filesystem_roots: context_type == ChatContextType::Standalone
-                || super::is_persona_builder_conversation(effective_mode),
+            enforce_filesystem_roots,
         }
     }
 }

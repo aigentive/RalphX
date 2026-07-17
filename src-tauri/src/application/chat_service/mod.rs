@@ -9278,4 +9278,6 @@ mod freshness_routing_tests;
 #[cfg(test)]
 mod interactive_runtime_tests;
 #[cfg(test)]
+mod resolved_conversation_spawn_context_tests;
+#[cfg(test)]
 mod task_runtime_context_tests;

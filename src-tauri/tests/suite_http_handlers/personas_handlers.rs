@@ -10,8 +10,9 @@ use ralphx_lib::application::personas::{PersonaService, SavePersonaDraftInput};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, ChatConversation, PersonaScopeFilter, PersonaStatus, ProjectId,
 };
+use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::delegation::DelegationService;
 use ralphx_lib::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
 use ralphx_lib::http_server::handlers::{
@@ -159,6 +160,115 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
     .0;
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.version, 2);
+}
+
+#[tokio::test]
+async fn first_bound_draft_claim_conflict_rolls_back_persona_and_artifact() {
+    let state = setup_state(None);
+    let service = persona_service(&state);
+    let (conversation, _) = persona_builder_headers(&state).await;
+
+    let winner = service
+        .create_bound_draft(
+            true,
+            &conversation.id,
+            SavePersonaDraftInput {
+                project_id: Some(ProjectId::from_string(conversation.context_id.clone())),
+                slug: "claim-winner".to_string(),
+                content: persona_content("claim-winner", "Winner"),
+                source_session_id: Some(conversation.id.as_str()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect("the first authority should claim the conversation");
+
+    let stale_error = service
+        .create_bound_draft(
+            true,
+            &conversation.id,
+            SavePersonaDraftInput {
+                project_id: Some(ProjectId::from_string(conversation.context_id.clone())),
+                slug: "claim-loser".to_string(),
+                content: persona_content("claim-loser", "Loser"),
+                source_session_id: Some(conversation.id.as_str()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect_err("stale first-save authority must not replace the winner");
+    assert!(matches!(stale_error, AppError::Conflict(_)));
+
+    let mut finished_conversation = ChatConversation::new_standalone();
+    finished_conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let finished_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(finished_conversation)
+        .await
+        .expect("finished conversation fixture should persist");
+    let winner_id = winner.id.as_str().to_string();
+    let finished_id = finished_conversation.id.as_str().to_string();
+    state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE chat_conversations SET builder_result_persona_id = ?1 WHERE id = ?2",
+                rusqlite::params![winner_id, finished_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("finished binding fixture should persist");
+    let finished_error = service
+        .create_bound_draft(
+            true,
+            &finished_conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "finished-claim-loser".to_string(),
+                content: persona_content("finished-claim-loser", "Loser"),
+                source_session_id: Some(finished_conversation.id.as_str()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect_err("a completed builder binding must reject a new draft claim");
+    assert!(matches!(finished_error, AppError::Conflict(_)));
+
+    let stored = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("winner binding should remain readable")
+        .expect("winner conversation should remain");
+    assert_eq!(stored.builder_draft_id.as_deref(), Some(winner.id.as_str()));
+    assert!(stored.builder_result_persona_id.is_none());
+    let personas = service
+        .list_personas(true, PersonaScopeFilter::All)
+        .await
+        .expect("personas should remain readable");
+    assert_eq!(personas.len(), 1, "losing personas must roll back");
+    assert_eq!(personas[0].id, winner.id);
+    let artifact_count: i64 = state
+        .app_state
+        .db
+        .run(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE type = 'persona'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(AppError::from)
+        })
+        .await
+        .expect("artifact count should remain readable");
+    assert_eq!(artifact_count, 1, "losing artifacts must roll back");
 }
 
 #[tokio::test]

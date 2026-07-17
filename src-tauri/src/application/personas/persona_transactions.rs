@@ -7,7 +7,7 @@ use crate::domain::entities::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::sqlite_artifact_repo::SqliteArtifactRepository;
 use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::{
-    clear_persona_bindings_sync, finish_builder_binding_sync, update_builder_draft_binding_sync,
+    claim_builder_draft_binding_sync, clear_persona_bindings_sync, finish_builder_binding_sync,
 };
 use crate::infrastructure::sqlite::sqlite_persona_repo::{
     map_live_slug_unique_error, persona_create_sync, persona_from_row, persona_set_status_sync,
@@ -260,7 +260,7 @@ impl PersonaService {
         self.db
             .run_transaction(move |conn| {
                 let persona = create_persona_with_artifact_sync(conn, persona, CREATED_BY_AGENT)?;
-                update_builder_draft_binding_sync(conn, &conversation_id, Some(&draft_id))?;
+                claim_builder_draft_binding_sync(conn, &conversation_id, &draft_id)?;
                 Ok(persona)
             })
             .await

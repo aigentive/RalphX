@@ -190,6 +190,10 @@ fn map_app_error(error: AppError) -> HttpError {
         AppError::PersonaAlreadyApproved => {
             HttpError::validation(AppError::PersonaAlreadyApproved.to_string())
         }
+        AppError::Conflict(message) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(message),
+        },
         AppError::NotFound(_) => HttpError::from(StatusCode::NOT_FOUND),
         _ => HttpError::from(StatusCode::INTERNAL_SERVER_ERROR),
     }
