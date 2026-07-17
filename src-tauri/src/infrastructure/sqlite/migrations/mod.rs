@@ -479,6 +479,9 @@ mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
 #[cfg(test)]
 mod v20260716154318_manual_role_defaults_tests;
+mod v20260716202015_workspace_review_bypass_and_bound_agent;
+#[cfg(test)]
+mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
@@ -1591,6 +1594,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716154318,
         name: "manual_role_defaults",
         migrate: v20260716154318_manual_role_defaults::migrate,
+    },
+    Migration {
+        version: 20260716202015,
+        name: "workspace_review_bypass_and_bound_agent",
+        migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
     },
     Migration {
         version: 20260716210000,
