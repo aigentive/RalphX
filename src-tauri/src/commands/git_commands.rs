@@ -629,6 +629,10 @@ async fn execute_merge_retry_background(
 
     let deps = RuntimeFactoryDeps {
         task_repo: Arc::clone(&task_repo),
+        task_step_repo: None,
+        validation_run_repo: None,
+        external_events_repo: None,
+        webhook_publisher: None,
         task_dependency_repo: Arc::clone(&task_dependency_repo),
         project_repo: Arc::clone(&project_repo),
         artifact_repo: Arc::clone(&artifact_repo),

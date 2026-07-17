@@ -24,6 +24,7 @@ use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
+use crate::application::task_restart::FailedRecoveryEvidence;
 use crate::application::{
     AppChatService, AppState, ChatService, GitService, InteractiveProcessRegistry,
 };
@@ -33,8 +34,8 @@ use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory,
-    TaskId,
+    ExecutionRecoveryState, InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType,
+    Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -43,6 +44,7 @@ use crate::domain::repositories::{
     ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ValidationRunRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -1408,7 +1410,13 @@ impl TaskTransitionService {
 
     /// Set the task step repository (builder pattern).
     pub fn with_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
+        self.chat_service.set_task_step_repo(Arc::clone(&repo));
         self.step_repo = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        self.chat_service.set_validation_run_repo(repo);
         self
     }
 
@@ -1661,6 +1669,10 @@ impl TaskTransitionService {
         };
         self.event_emitter = Arc::new(emitter);
         self.external_events_repo = Some(repo);
+        self.chat_service.set_completion_event_delivery(
+            self.external_events_repo.as_ref().map(Arc::clone),
+            self.webhook_publisher.as_ref().map(Arc::clone),
+        );
         self
     }
 
@@ -1720,6 +1732,10 @@ impl TaskTransitionService {
         publisher: Arc<dyn WebhookPublisher>,
     ) -> Self {
         self.webhook_publisher = Some(publisher);
+        self.chat_service.set_completion_event_delivery(
+            self.external_events_repo.as_ref().map(Arc::clone),
+            self.webhook_publisher.as_ref().map(Arc::clone),
+        );
         self
     }
 
@@ -1757,6 +1773,7 @@ impl TaskTransitionService {
         async move {
             self.transition_task_with_metadata_from_caller(task_id, new_status, None, caller)
                 .await
+                .map(|(task, _changed)| task)
         }
     }
 
@@ -1790,7 +1807,210 @@ impl TaskTransitionService {
                 caller,
             )
             .await
+            .map(|(task, _changed)| task)
         }
+    }
+
+    /// Finalize one accepted execution attempt and emit completion side effects only for
+    /// the caller that wins the optimistic status transition.
+    pub async fn transition_execution_completed_to_review(
+        &self,
+        task_id: &TaskId,
+        agent_run_id: &str,
+    ) -> AppResult<Task> {
+        let caller = Location::caller();
+        let (task, changed) = self
+            .transition_task_with_metadata_from_caller(
+                task_id,
+                InternalStatus::PendingReview,
+                None,
+                caller,
+            )
+            .await?;
+
+        if changed {
+            let payload = serde_json::json!({
+                "task_id": task_id.as_str(),
+                "project_id": task.project_id.as_str(),
+                "agent_run_id": agent_run_id,
+                "outcome": "completed",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            let ui_payload = serde_json::json!({
+                "task_id": task_id.as_str(),
+                "agent_run_id": agent_run_id,
+            });
+            if let Some(ref event_sink) = self.event_sink {
+                event_sink.emit("execution:completed", ui_payload);
+            } else if let Some(ref handle) = self._app_handle {
+                let _ = handle.emit("execution:completed", ui_payload);
+            }
+            let publish_completion = if let Some(ref repo) = self.external_events_repo {
+                match repo
+                    .insert_event_once_for_attempt(
+                        &EventType::TaskExecutionCompleted.to_string(),
+                        task.project_id.as_str(),
+                        agent_run_id,
+                        &payload.to_string(),
+                    )
+                    .await
+                {
+                    Ok(inserted) => inserted,
+                    Err(error) => {
+                        tracing::warn!(%error, task_id = task_id.as_str(), "Failed to persist accepted task execution completion event");
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            if publish_completion {
+                if let Some(ref publisher) = self.webhook_publisher {
+                    publisher
+                        .publish(
+                            EventType::TaskExecutionCompleted,
+                            task.project_id.as_str(),
+                            payload,
+                        )
+                        .await;
+                }
+            }
+        }
+
+        Ok(task)
+    }
+
+    /// Correct a false terminal failure when the restart preflight has proved that the
+    /// preserved execution attempt is complete. This deliberately does not widen the
+    /// global state-machine transition table.
+    pub async fn recover_failed_completed_task_to_review(
+        &self,
+        task_id: &TaskId,
+        evidence: &FailedRecoveryEvidence,
+    ) -> AppResult<Task> {
+        let mut task =
+            self.task_repo.get_by_id(task_id).await?.ok_or_else(|| {
+                AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
+            })?;
+        if task.internal_status != InternalStatus::Failed {
+            return Err(AppError::Validation(format!(
+                "Failed-task recovery lost authority because task {} is now '{}'",
+                task_id.as_str(),
+                task.internal_status.as_str()
+            )));
+        }
+
+        let old_status = task.internal_status;
+        let original_failure = task
+            .metadata
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("failure_error")
+                    .or_else(|| metadata.get("last_agent_error"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| task.blocked_reason.clone());
+        let mut execution_recovery =
+            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+                .map_err(|error| {
+                    AppError::Validation(format!(
+                        "Invalid execution recovery metadata during failed-task recovery: {error}"
+                    ))
+                })?
+                .unwrap_or_default();
+        execution_recovery.stop_retrying = false;
+        execution_recovery.unrecoverable_reason = None;
+        execution_recovery.append_event_with_state(
+            ExecutionRecoveryEvent::new(
+                ExecutionRecoveryEventKind::CompletedWorkRecovered,
+                ExecutionRecoverySource::User,
+                ExecutionRecoveryReasonCode::ValidatedCompletedWork,
+                format!(
+                    "Recovered validated completed work from failed task; agent_run_id={}, validation_run_id={}, promoted_commit_sha={}, original_failure={}",
+                    evidence.agent_run_id,
+                    evidence.validation_run_id,
+                    evidence.promoted_commit_sha,
+                    original_failure.as_deref().unwrap_or("unknown")
+                ),
+            ),
+            ExecutionRecoveryState::Succeeded,
+        );
+        let metadata_with_recovery = execution_recovery
+            .update_task_metadata(task.metadata.as_deref())
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "Failed to record failed-task recovery audit metadata: {error}"
+                ))
+            })?;
+        task.internal_status = InternalStatus::PendingReview;
+        task.blocked_reason = None;
+        task.touch();
+        task.metadata = Some(
+            MetadataUpdate::new()
+                .with_null("failure_error")
+                .with_null("last_agent_error")
+                .with_value(
+                    "failed_completion_recovery",
+                    serde_json::json!({
+                        "recovered_at": chrono::Utc::now().to_rfc3339(),
+                        "agent_run_id": evidence.agent_run_id,
+                        "validation_run_id": evidence.validation_run_id,
+                        "promoted_commit_sha": evidence.promoted_commit_sha,
+                        "episode_entered_at": evidence.episode_entered_at.to_rfc3339(),
+                        "original_failure": original_failure,
+                        "reason_code": "validated_completed_work",
+                    }),
+                )
+                .merge_into(Some(&metadata_with_recovery)),
+        );
+
+        if !self
+            .task_repo
+            .update_with_expected_status(&task, InternalStatus::Failed)
+            .await?
+        {
+            return Err(AppError::Validation(format!(
+                "Failed-task recovery lost authority because task {} changed concurrently",
+                task_id.as_str()
+            )));
+        }
+
+        let history_entry_id = self
+            .task_repo
+            .persist_status_change(
+                task_id,
+                InternalStatus::Failed,
+                InternalStatus::PendingReview,
+                "user_recovery",
+            )
+            .await
+            .ok();
+        self.emit_task_event(serde_json::json!({
+            "type": "status_changed",
+            "taskId": task_id.as_str(),
+            "from": old_status.as_str(),
+            "to": InternalStatus::PendingReview.as_str(),
+            "changedBy": "user_recovery",
+        }));
+        self.event_emitter
+            .emit_status_change(
+                task_id.as_str(),
+                old_status.as_str(),
+                InternalStatus::PendingReview.as_str(),
+            )
+            .await;
+        self.execute_entry_actions_with_notification_context(
+            task_id,
+            &task,
+            InternalStatus::PendingReview,
+            history_entry_id,
+        )
+        .await;
+
+        Ok(task)
     }
 
     async fn transition_task_with_metadata_from_caller(
@@ -1799,7 +2019,7 @@ impl TaskTransitionService {
         new_status: InternalStatus,
         metadata_update: Option<MetadataUpdate>,
         caller: &'static Location<'static>,
-    ) -> AppResult<Task> {
+    ) -> AppResult<(Task, bool)> {
         tracing::debug!(
             task_id = task_id.as_str(),
             new_status = new_status.as_str(),
@@ -1831,7 +2051,7 @@ impl TaskTransitionService {
         // 2. If status is the same, no transition needed
         if old_status == new_status {
             tracing::debug!("Status unchanged, skipping transition");
-            return Ok(task);
+            return Ok((task, false));
         }
 
         tracing::debug!(
@@ -1882,7 +2102,7 @@ impl TaskTransitionService {
             let current = self.task_repo.get_by_id(task_id).await?.ok_or_else(|| {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
-            return Ok(current);
+            return Ok((current, false));
         }
 
         // 4.1 Record state transition history for time-travel feature
@@ -1948,7 +2168,7 @@ impl TaskTransitionService {
 
         tracing::debug!("Task transition complete");
 
-        Ok(task)
+        Ok((task, true))
     }
 
     /// Transition a task to Stopped status with context capture for smart resume.
@@ -1992,6 +2212,7 @@ impl TaskTransitionService {
                 caller,
             )
             .await
+            .map(|(task, _changed)| task)
         }
     }
 

@@ -39,14 +39,15 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
+use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +82,9 @@ pub(super) struct BackgroundRunRepos {
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    pub external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    pub webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
 }
 
@@ -958,6 +962,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             message_queue,
             running_agent_registry,
             task_step_repo,
+            validation_run_repo,
+            external_events_repo,
+            webhook_publisher,
             review_repo,
         } = repos;
 
@@ -1420,6 +1427,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &memory_event_repo,
                     &plan_branch_repo,
                     &task_step_repo,
+                    &validation_run_repo,
+                    &external_events_repo,
+                    &webhook_publisher,
                     &execution_settings_repo,
                     &agent_lane_settings_repo,
                     &agent_provider_settings_repo,
@@ -1999,6 +2009,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &interactive_process_registry,
                     &review_repo,
                     &task_step_repo,
+                    &validation_run_repo,
+                    &external_events_repo,
+                    &webhook_publisher,
                     &verification_child_registry,
                     &notification_service,
                 )

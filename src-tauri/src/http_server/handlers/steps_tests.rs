@@ -162,6 +162,7 @@ async fn execution_complete_accepts_clean_committed_worktree() {
     task.task_branch_base_ref = Some("main".to_string());
     task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
+    let project_id = task.project_id.as_str().to_string();
     app_state.task_repo.create(task).await.unwrap();
 
     let response = execution_complete_http(
@@ -176,6 +177,17 @@ async fn execution_complete_accepts_clean_committed_worktree() {
     .unwrap();
 
     assert!(response.0.success);
+    let events = app_state
+        .external_events_repo
+        .get_events_after_cursor(&[project_id], 0, 100)
+        .await
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != "task:execution_completed"),
+        "execution_complete acknowledgement must not emit completion before the finalizer transition wins"
+    );
 }
 
 #[tokio::test]

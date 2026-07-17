@@ -61,6 +61,8 @@ pub mod sqlite_execution_plan_repo;
 mod sqlite_execution_plan_repo_tests;
 pub mod sqlite_execution_settings_repo;
 pub mod sqlite_external_events_repo;
+#[cfg(test)]
+mod sqlite_external_events_repo_tests;
 pub mod sqlite_external_issue_link_repo;
 pub mod sqlite_granola_integration_settings_repo;
 #[cfg(test)]
