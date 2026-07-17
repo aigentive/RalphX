@@ -12,6 +12,7 @@ import {
   Archive,
   ArrowDownUp,
   Check,
+  CircleOff,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -803,7 +804,7 @@ interface AgentsSidebarProps {
   selectedConversationId: string | null;
   pinnedConversation?: AgentConversation | null;
   onFocusProject: (projectId: string) => void;
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onCreateAgent: () => void;
   onCreateProject: () => void;
   onArchiveProject: (projectId: string) => void | Promise<void>;
@@ -889,7 +890,7 @@ export function AgentsSidebar({
     Record<string, true>
   >({});
   const handleSelectVisibleConversation = useCallback(
-    (projectId: string, conversation: AgentConversation) => {
+    (projectId: string | null, conversation: AgentConversation) => {
       setSidebarSelectedConversationIds((selectedIds) =>
         selectedIds[conversation.id]
           ? selectedIds
@@ -1026,6 +1027,15 @@ export function AgentsSidebar({
     sidebarGroupBy,
   ]);
   const fillFilteredProjectSidebar = expandedProjectIdForFill !== null;
+  const standaloneGroupQuery = useAgentSidebarProjectGroup({
+    projectId: "__no_project__",
+    archivedOnly: showArchived,
+    search: normalizedSearch,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds: selectedPriorityConversationIds,
+    enabled: sidebarGroupBy === "project",
+  });
 
   useEffect(() => {
     if (showArchived) {
@@ -1199,7 +1209,7 @@ export function AgentsSidebar({
             : "flex-1 overflow-y-auto px-3 pb-3 pt-0.5"
         }
       >
-        {projects.length === 0 ? (
+        {projects.length === 0 && sidebarGroupBy !== "project" ? (
           <div className="h-full px-5 flex flex-col items-center justify-center text-center gap-3">
             <div className="space-y-1">
               <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
@@ -1256,7 +1266,8 @@ export function AgentsSidebar({
             showArchived={showArchived}
           />
         ) : (
-          orderedProjects.map((project) => (
+          <>
+            {orderedProjects.map((project) => (
             <ProjectSessionGroup
               key={project.id}
               project={project}
@@ -1283,7 +1294,25 @@ export function AgentsSidebar({
               showProjectNameInMeta={false}
               fillAvailableHeight={expandedProjectIdForFill === project.id}
             />
-          ))
+            ))}
+            <StandaloneSessionGroup
+              groupQuery={standaloneGroupQuery}
+              isSidebarVisible={isVisible}
+              selectedConversationId={selectedConversationId}
+              searchQuery={normalizedSearch}
+              onSelectConversation={handleSelectVisibleConversation}
+              onAutoRenameConversation={onAutoRenameConversation}
+              onRenameConversation={onRenameConversation}
+              onArchiveConversation={onArchiveConversation}
+              onRestoreConversation={onRestoreConversation}
+              onForkConversation={handleForkConversation}
+              onTogglePinnedConversation={togglePinnedConversation}
+              pinnedConversationIds={pinnedConversationIds}
+              showArchived={showArchived}
+              showEmptyState={projects.length === 0}
+              onCreateAgent={onCreateAgent}
+            />
+          </>
         )}
       </div>
 
@@ -1763,7 +1792,7 @@ interface AgentSidebarConversationRowsPanelProps {
   selectedConversationId: string | null;
   showProjectNameInMeta: boolean;
   testId: string;
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
@@ -1871,7 +1900,9 @@ function AgentSidebarConversationRowsPanel({
   const renderRow = useCallback(
     (row: AgentSidebarConversationRow) => {
       const conversation = toProjectAgentConversation(row.conversation);
-      const project = projectById.get(conversation.projectId);
+      const project = conversation.projectId
+        ? projectById.get(conversation.projectId)
+        : undefined;
       const rowKey = getAgentConversationStoreKey(conversation);
       const activeConversationId = activeConversationIds[rowKey] ?? null;
       const agentStatus = agentStatuses[rowKey] ?? "idle";
@@ -2052,7 +2083,7 @@ interface PublicationStateGroupsProps {
   selectedConversationId: string | null;
   searchQuery: string;
   selectedPublicationStates: AgentSidebarPublicationState[];
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
@@ -2152,7 +2183,7 @@ interface PublicationStateGroupProps {
   searchQuery: string;
   selectedConversationId: string | null;
   showArchived: boolean;
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
@@ -2318,7 +2349,7 @@ interface AutomationGroupsProps {
   selectedConversationId: string | null;
   searchQuery: string;
   selectedPublicationStates: AgentSidebarPublicationState[];
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
@@ -2434,7 +2465,7 @@ interface AutomationGroupProps {
   selectedConversationId: string | null;
   selectedPublicationStates: AgentSidebarPublicationState[];
   showArchived: boolean;
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
@@ -2871,6 +2902,121 @@ function AgentSessionRow({
 
 const MemoizedAgentSessionRow = memo(AgentSessionRow);
 
+interface StandaloneSessionGroupProps {
+  groupQuery: ReturnType<typeof useAgentSidebarProjectGroup>;
+  isSidebarVisible: boolean;
+  selectedConversationId: string | null;
+  searchQuery: string;
+  onSelectConversation: (
+    projectId: string | null,
+    conversation: AgentConversation,
+  ) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: ArchiveConversationHandler;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onTogglePinnedConversation: (conversationId: string) => void;
+  pinnedConversationIds: Record<string, true>;
+  showArchived: boolean;
+  showEmptyState: boolean;
+  onCreateAgent: () => void;
+}
+
+function StandaloneSessionGroup({
+  groupQuery,
+  isSidebarVisible,
+  selectedConversationId,
+  searchQuery,
+  onSelectConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onArchiveConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onTogglePinnedConversation,
+  pinnedConversationIds,
+  showArchived,
+  showEmptyState,
+  onCreateAgent,
+}: StandaloneSessionGroupProps) {
+  const expandedProjectIds = useAgentSessionStore((state) => state.expandedProjectIds);
+  const setProjectExpanded = useAgentSessionStore((state) => state.setProjectExpanded);
+  const expanded = searchQuery.length > 0 || (expandedProjectIds.__no_project__ ?? true);
+  const rows = groupQuery.group.rows;
+
+  if (!groupQuery.isLoading && rows.length === 0) {
+    if (!showEmptyState) {
+      return null;
+    }
+    return (
+      <div className="h-full px-5 flex flex-col items-center justify-center text-center gap-3">
+        <div className="space-y-1">
+          <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            No agent conversations yet.
+          </div>
+          <div className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+            Open the starter from the + button to begin a conversation.
+          </div>
+        </div>
+        <Button type="button" size="sm" onClick={onCreateAgent} className="gap-2">
+          <Plus className="w-4 h-4" />
+          Open starter
+        </Button>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="my-1 flex flex-col gap-0.5" data-testid="agents-project-__no_project__">
+      <button
+        type="button"
+        className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)]"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} No project`}
+        onClick={() => setProjectExpanded("__no_project__", !expanded)}
+        data-testid="agents-project-row-__no_project__"
+      >
+        <ChevronRight
+          className={`h-2.5 w-2.5 transition-transform ${expanded ? "rotate-90" : ""}`}
+          aria-hidden="true"
+        />
+        <CircleOff className="h-3.5 w-3.5" aria-hidden="true" />
+        <span>No project</span>
+        <span className="agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]">
+          {groupQuery.group.total}
+        </span>
+      </button>
+      <AgentSidebarConversationRowsPanel
+        rows={rows}
+        fetchNextPage={groupQuery.fetchNextPage}
+        hasNextPage={Boolean(groupQuery.hasNextPage)}
+        isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+        isLoading={Boolean(groupQuery.isLoading)}
+        expanded={expanded}
+        isSidebarVisible={isSidebarVisible}
+        projectById={new Map()}
+        pinnedConversationIds={pinnedConversationIds}
+        scrollKey={`project::__no_project__::${showArchived ? "archived" : "active"}::${searchQuery}`}
+        selectedConversationId={selectedConversationId}
+        showProjectNameInMeta={false}
+        testId="agents-sidebar-session-list-__no_project__"
+        onArchiveConversation={onArchiveConversation}
+        onAutoRenameConversation={onAutoRenameConversation}
+        onRenameConversation={onRenameConversation}
+        onRestoreConversation={onRestoreConversation}
+        onForkConversation={onForkConversation}
+        onSelectConversation={onSelectConversation}
+        onTogglePinnedConversation={onTogglePinnedConversation}
+      />
+    </div>
+  );
+}
+
 interface ProjectSessionGroupProps {
   project: Project;
   isFocused: boolean;
@@ -2878,7 +3024,7 @@ interface ProjectSessionGroupProps {
   selectedConversationId: string | null;
   searchQuery: string;
   onFocusProject: (projectId: string) => void;
-  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onArchiveProject: (projectId: string) => void | Promise<void>;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;

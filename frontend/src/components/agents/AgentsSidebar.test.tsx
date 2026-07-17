@@ -963,6 +963,44 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-add-project").className).toContain("rounded-[6px]");
   });
 
+  it("renders the data-driven No project group and selects its standalone row without a project id", async () => {
+    const standalone = conversation({
+      id: "standalone-1",
+      contextType: "standalone",
+      contextId: "standalone-1",
+      projectId: null,
+      title: "Private exploration",
+    });
+    conversationsByProject.set("__no_project__", {
+      data: [standalone],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    const onSelectConversation = vi.fn();
+
+    renderSidebar([], { onSelectConversation });
+
+    expect(screen.getByTestId("agents-project-__no_project__")).toHaveTextContent(
+      "No project",
+    );
+    expect(screen.getByText("Private exploration")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Private exploration"));
+    expect(onSelectConversation).toHaveBeenCalledWith(null, standalone);
+    expect(runningStatesHook).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "standalone-1", contextType: "standalone" })],
+      true,
+    );
+  });
+
+  it("omits the No project group when its backend group has no rows", () => {
+    renderSidebar([project()]);
+
+    expect(screen.queryByTestId("agents-project-__no_project__")).not.toBeInTheDocument();
+  });
+
   it("orders sessions by created time and shows created time instead of provider", () => {
     const older = conversation({
       id: "older",

@@ -21,6 +21,7 @@ export const CONTEXT_TYPE_VALUES = [
   "ideation",
   "task",
   "project",
+  "standalone",
   "task_execution",
   "review",
   "merge",

@@ -651,6 +651,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
  * Delegates to the chat-context-registry's buildStoreKey for consistent key formatting.
  */
 export function getContextKey(context: ChatContext): string {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return buildStoreKey(context.contextTypeOverride, context.contextIdOverride);
+  }
   if (context.view === "ideation" && context.ideationSessionId) {
     return buildStoreKey("ideation", context.ideationSessionId);
   }

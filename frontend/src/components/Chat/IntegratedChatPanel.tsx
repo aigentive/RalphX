@@ -188,7 +188,10 @@ function automationProposalApplyOptionIndex(
 
 interface IntegratedChatPanelProps {
   /** Project ID for context */
-  projectId: string;
+  projectId: string | null;
+  /** Explicit non-project conversation context owned by the host. */
+  contextTypeOverride?: ContextType | undefined;
+  contextIdOverride?: string | undefined;
   /** Optional ideation session ID - when set, uses ideation context */
   ideationSessionId?: string;
   /** Custom empty state component */
@@ -304,6 +307,8 @@ export interface IntegratedChatComposerRenderProps {
 
 export function IntegratedChatPanel({
   projectId,
+  contextTypeOverride,
+  contextIdOverride,
   ideationSessionId,
   emptyState,
   showHelperTextAlways = false,
@@ -369,8 +374,8 @@ export function IntegratedChatPanel({
     : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data
-  const { data: tasks = EMPTY_TASKS } = useTasks(projectId, {
-    enabled: Boolean(selectedTaskId),
+  const { data: tasks = EMPTY_TASKS } = useTasks(projectId ?? "", {
+    enabled: Boolean(projectId && selectedTaskId),
   });
 
   // Read from Zustand store (event-updated, sync) — same pattern as TaskDetailOverlay
@@ -473,6 +478,8 @@ export function IntegratedChatPanel({
     // overrideAgentRunId is available but we use taskHistoryState.timestamp for scroll positioning
   } = useChatPanelContext({
     projectId,
+    contextTypeOverride,
+    contextIdOverride,
     ideationSessionId,
     selectedTaskId: selectedTaskId ?? undefined,
     isExecutionMode,
@@ -1711,7 +1718,7 @@ export function IntegratedChatPanel({
                               ? "task"
                               : "project"
                   }
-                  contextId={ideationSessionId || selectedTaskId || projectId}
+                  contextId={currentContextId}
                   conversations={conversations.data ?? []}
                   activeConversationId={activeConversationId}
                   onSelectConversation={handleSelectConversation}

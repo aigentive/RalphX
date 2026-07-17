@@ -37,6 +37,7 @@ import {
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
+import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
 import { conversationFolderReferencesApi } from "@/api/conversation-folder-references";
 import type { ChatConversation } from "@/types/chat-conversation";
 
@@ -76,7 +77,7 @@ type SupportedStartIntegrationTab = Extract<
 interface HandleAutoManagedTitleArgs {
   content: string;
   conversationId: string;
-  targetProjectId: string;
+  targetProjectId: string | null;
   shouldSpawnSessionNamer: boolean;
   providerHarness?: string | null;
 }
@@ -85,7 +86,7 @@ interface UseStartAgentConversationArgs {
   handleAutoManagedTitle: (args: HandleAutoManagedTitleArgs) => void;
   invalidateProjectConversations: (targetProjectId: string) => Promise<unknown>;
   queryClient: QueryClient;
-  selectConversation: (projectId: string, conversationId: string) => void;
+  selectConversation: (projectId: string | null, conversationId: string) => void;
   setActiveConversation: (contextKey: string, conversationId: string | null) => void;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
@@ -95,7 +96,7 @@ interface UseStartAgentConversationArgs {
   >;
   setRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
   onJiraLinked?: (conversationId: string) => void;
@@ -148,7 +149,6 @@ export function useStartAgentConversation({
       content,
       runtime,
       runtimeProviderContext,
-      useRoleDefault = false,
       mode,
       automationAuthoringMode,
       base,
@@ -162,11 +162,10 @@ export function useStartAgentConversation({
       composerIntegrationReferences,
       composerProjectReferences,
     }: {
-      projectId: string;
+      projectId: string | null;
       content: string;
       runtime: AgentRuntimeSelection;
       runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
-      useRoleDefault?: boolean | undefined;
       mode: AgentConversationWorkspaceMode;
       automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
@@ -180,6 +179,13 @@ export function useStartAgentConversation({
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
+      const isStandalone = targetProjectId === null;
+      const conversationContextType = isStandalone ? "standalone" : "project";
+      const effectiveMode = isStandalone ? "chat" : mode;
+      const effectiveFolders = isStandalone ? [] : folders;
+      const effectiveProjectReferences = isStandalone
+        ? undefined
+        : composerProjectReferences;
       const persistenceRuntime = normalizeRuntimeForPersistence(
         runtime,
         modelRegistry,
@@ -308,23 +314,24 @@ export function useStartAgentConversation({
 
       const now = new Date().toISOString();
       const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
-        projectReferences: composerProjectReferences,
+        projectReferences: effectiveProjectReferences,
         integrationReferences: composerIntegrationReferences,
         artifactReferences: composerArtifactReferences,
       });
       const optimisticCoordinationMode =
         capabilityIntent?.coordinationMode ?? teamIntent?.coordinationMode ?? "solo";
+      const optimisticConversationId = createOptimisticConversationId();
       const initialConversation: ChatConversation = {
-        id: createOptimisticConversationId(),
-        contextType: "project",
-        contextId: targetProjectId,
+        id: optimisticConversationId,
+        contextType: conversationContextType,
+        contextId: targetProjectId ?? optimisticConversationId,
         claudeSessionId: null,
         providerSessionId: null,
         providerHarness: normalizedRuntime.provider,
         coordinationMode: optimisticCoordinationMode,
         upstreamProvider: null,
         providerProfile: null,
-        agentMode: mode,
+        agentMode: effectiveMode,
         title: null,
         messageCount: 1,
         lastMessageAt: now,
@@ -353,14 +360,18 @@ export function useStartAgentConversation({
       setAgentRunning(optimisticStoreKey, true);
       setSending(optimisticStoreKey, true);
 
-      const requiresSeededConversation = mode === "automation" || files.length > 0 || folders.length > 0;
+      const requiresSeededConversation =
+        isStandalone ||
+        effectiveMode === "automation" ||
+        files.length > 0 ||
+        effectiveFolders.length > 0;
       let seededStoreKey: string | null = null;
       let seededConversationId: string | null = null;
       try {
         const automationDraft =
-          mode === "automation"
+          effectiveMode === "automation"
             ? await automationsApi.createDraft({
-                projectId: targetProjectId,
+                projectId: targetProjectId!,
                 name: automationDraftNameFromContent(content),
                 ...(automationAuthoringMode
                   ? { authoringMode: automationAuthoringMode }
@@ -368,7 +379,7 @@ export function useStartAgentConversation({
               })
             : null;
         const setupConversationId = automationDraft?.setupConversationId ?? null;
-        if (mode === "automation" && !setupConversationId) {
+        if (effectiveMode === "automation" && !setupConversationId) {
           throw new Error("Automation draft did not create a setup conversation");
         }
         if (automationDraft) {
@@ -381,20 +392,23 @@ export function useStartAgentConversation({
         }
 
         const resultConversationSeed =
-          requiresSeededConversation && mode !== "automation"
-            ? await chatApi.createConversation("project", targetProjectId)
+          requiresSeededConversation && effectiveMode !== "automation"
+            ? await chatApi.createConversation(
+                conversationContextType,
+                targetProjectId,
+              )
             : null;
         const seededConversation: ChatConversation | null = resultConversationSeed
           ? {
               ...resultConversationSeed,
-              agentMode: mode,
+              agentMode: effectiveMode,
               coordinationMode: optimisticCoordinationMode,
             }
           : automationDraft
             ? {
                 id: setupConversationId!,
                 contextType: "project",
-                contextId: targetProjectId,
+                contextId: targetProjectId!,
                 claudeSessionId: null,
                 providerSessionId: null,
                 providerHarness: normalizedRuntime.provider,
@@ -417,8 +431,8 @@ export function useStartAgentConversation({
         const storeKey = seededConversation
           ? getAgentConversationStoreKey({
               id: seededConversation.id,
-              contextType: "project",
-              contextId: targetProjectId,
+              contextType: seededConversation.contextType,
+              contextId: seededConversation.contextId,
             })
           : optimisticStoreKey;
         const activeOptimisticUserMessage = seededConversation
@@ -452,12 +466,12 @@ export function useStartAgentConversation({
         }
 
         let uploadedAttachmentIds: string[] = [];
-        if (folders.length > 0) {
+        if (effectiveFolders.length > 0) {
           if (!seededConversation) {
             throw new Error("Folder registration requires a draft conversation");
           }
           await Promise.all(
-            folders.map((folder) =>
+            effectiveFolders.map((folder) =>
               conversationFolderReferencesApi.add({
                 conversationId: seededConversation.id,
                 folderPath: folder.folderPath,
@@ -478,28 +492,24 @@ export function useStartAgentConversation({
         }
 
         const startInput = {
-          projectId: targetProjectId,
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
           content,
           ...(seededConversation ? { conversationId: seededConversation.id } : {}),
-          ...(!useRoleDefault
+          providerHarness: normalizedRuntime.provider,
+          modelId: normalizedRuntime.modelId,
+          logicalEffort: normalizedRuntime.effort,
+          ...(codexFastMode !== undefined
             ? {
-                providerHarness: normalizedRuntime.provider,
-                modelId: normalizedRuntime.modelId,
-                logicalEffort: normalizedRuntime.effort,
-                ...(codexFastMode !== undefined
-                  ? {
-                      codexFastMode:
-                        normalizedRuntime.provider === "codex" ? codexFastMode : null,
-                    }
-                  : {}),
-                ...(personaId ? { personaId } : {}),
-                ...(capabilityIntent ? { capabilityIntent } : {}),
-                ...(teamIntent ? { teamIntent } : {}),
+                codexFastMode:
+                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
               }
             : {}),
-          mode,
-          ...(composerProjectReferences?.length
-            ? { composerProjectReferences }
+          ...(!isStandalone && personaId ? { personaId } : {}),
+          mode: effectiveMode,
+          ...(!isStandalone && capabilityIntent ? { capabilityIntent } : {}),
+          ...(!isStandalone && teamIntent ? { teamIntent } : {}),
+          ...(effectiveProjectReferences?.length
+            ? { composerProjectReferences: effectiveProjectReferences }
             : {}),
           ...(composerIntegrationReferences?.length
             ? { composerIntegrationReferences }
@@ -507,17 +517,21 @@ export function useStartAgentConversation({
           ...(composerArtifactReferences?.length
             ? { composerArtifactReferences }
             : {}),
-          ...(base ? { base } : {}),
+          ...(!isStandalone && base ? { base } : {}),
         };
         const ticketRef = ticketRefFromIntegrationReferences(
           composerIntegrationReferences,
         );
-        const result = ticketRef
-          ? await ticketingApi.startWorkFromTicket({ ...startInput, ticketRef })
+        const result = ticketRef && targetProjectId
+          ? await ticketingApi.startWorkFromTicket({
+              ...startInput,
+              projectId: targetProjectId,
+              ticketRef,
+            })
           : await chatApi.startAgentConversation(startInput);
         const resolvedConversation: ChatConversation = {
           ...result.conversation,
-          agentMode: result.conversation.agentMode ?? mode,
+          agentMode: result.conversation.agentMode ?? effectiveMode,
         };
         const resolvedConversationId = resolvedConversation.id;
         const optimisticWorkspace = result.workspace;
@@ -596,7 +610,13 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
-        await invalidateProjectConversations(targetProjectId);
+        if (targetProjectId) {
+          await invalidateProjectConversations(targetProjectId);
+        } else {
+          await queryClient.invalidateQueries({
+            queryKey: agentSidebarConversationKeys.all,
+          });
+        }
         handleAutoManagedTitle({
           content,
           conversationId: resolvedConversationId,
@@ -615,11 +635,9 @@ export function useStartAgentConversation({
               content,
               runtime: normalizedRuntime,
               runtimeProviderContext,
-              useRoleDefault,
-              mode,
+              mode: effectiveMode,
               base,
               codexFastMode,
-              personaId,
               capabilityIntent,
               teamIntent,
               composerArtifactReferences,

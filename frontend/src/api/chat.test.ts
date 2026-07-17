@@ -1376,6 +1376,28 @@ describe("chat api", () => {
     });
   });
 
+  it("creates a self-keyed standalone conversation without sending contextId", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-1",
+      context_type: "standalone",
+      context_id: "standalone-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone" },
+    });
+  });
+
   it("updates conversation title", async () => {
     mockInvoke.mockResolvedValue({
       id: "c-title",
@@ -3984,6 +4006,19 @@ describe("getConversationActiveState", () => {
 });
 
 describe("startAgentConversationInvokeInput", () => {
+  it("omits projectId for standalone chat starts", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "hello",
+        conversationId: "standalone-1",
+        mode: "chat",
+      }),
+    ).toEqual({
+      content: "hello",
+      conversationId: "standalone-1",
+      mode: "chat",
+    });
+  });
   it("includes only projectId and content when all optional fields are absent", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",

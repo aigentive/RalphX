@@ -197,6 +197,7 @@ describe("useFeatureFlags", () => {
       agentConversationTeam: false,
       agentConversationWorkflows: false,
       composerFolderReferences: false,
+      standaloneConversations: false,
     });
   });
 
@@ -223,6 +224,7 @@ describe("useFeatureFlags", () => {
       agentConversationTeam: false,
       agentConversationWorkflows: false,
       composerFolderReferences: false,
+      standaloneConversations: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -255,6 +257,7 @@ describe("useFeatureFlags", () => {
       agentConversationTeam: false,
       agentConversationWorkflows: false,
       composerFolderReferences: false,
+      standaloneConversations: false,
     });
   });
 });

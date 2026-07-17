@@ -1535,7 +1535,7 @@ export async function getConversationStats(
  */
 export async function createConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string,
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
@@ -1543,7 +1543,7 @@ export async function createConversation(
     {
       input: {
         contextType,
-        contextId,
+        ...(contextId ? { contextId } : {}),
         ...(title !== undefined &&
           title.trim().length > 0 && { title: title.trim() }),
       },
@@ -1965,7 +1965,7 @@ export interface WorkspaceOpenTarget {
 }
 
 export interface StartAgentConversationInput {
-  projectId: string;
+  projectId?: string | null;
   content: string;
   conversationId?: string | null;
   parentConversationId?: string | null;
@@ -3017,7 +3017,7 @@ export function startAgentConversationInvokeInput(
   input: StartAgentConversationInput,
 ) {
   return {
-    projectId: input.projectId,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     content: input.content,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
     ...(input.providerHarness

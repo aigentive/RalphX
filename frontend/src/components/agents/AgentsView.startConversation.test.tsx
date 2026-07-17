@@ -178,6 +178,62 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
+  it("keeps standalone reachable with zero projects and prevents project-only controls", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({
+        standaloneConversations: true,
+        agentPersonas: true,
+        agentConversationTeam: true,
+        composerFolderReferences: true,
+      }),
+    );
+
+    await screen.findByTestId("agents-start-project");
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-project")).not.toBeDisabled(),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    expect(screen.getByTestId("agents-start-project-standalone")).toHaveTextContent(
+      "No project (standalone)",
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+
+    expect(screen.getByText("Runs in a private workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Chat");
+    expect(
+      screen.getByText(/Project-requiring modes are unavailable without a project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-base")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeDisabled();
+    expect(screen.getAllByText("Requires a project").length).toBeGreaterThan(0);
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "/" },
+    });
+    expect(screen.queryByTestId("agent-composer-command-menu")).not.toBeInTheDocument();
+  });
+
+  it("keeps the zero-project picker disabled when standalone is flag-off", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    renderAgentsView();
+
+    expect(await screen.findByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.queryByTestId("agents-start-project-standalone")).not.toBeInTheDocument();
+  });
+
   it("prefills and consumes a pending start conversation draft", async () => {
     mockAgentViewData();
     loadBranchBaseOptionsMock.mockResolvedValueOnce({
@@ -1730,6 +1786,93 @@ describe("AgentsView start conversation", () => {
         modelId: "gpt-5.5",
         logicalEffort: "xhigh",
       })
+    );
+  });
+
+  it("seeds and starts a standalone chat without project or Team intent and wires its queue key", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const standaloneConversation = conversation({
+      id: "standalone-1",
+      contextType: "standalone",
+      contextId: "standalone-1",
+      projectId: null,
+      agentMode: "chat",
+    });
+    createConversationMock.mockResolvedValue(standaloneConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: standaloneConversation,
+      workspace: null,
+      sendResult: {
+        conversationId: "standalone-1",
+        agentRunId: "run-standalone-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-standalone-1",
+      },
+    });
+    const selectConversation = vi.fn();
+    const handleAutoManagedTitle = vi.fn();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle,
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation,
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    await result.current({
+      projectId: null,
+      content: "Explore privately",
+      runtime: { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+      mode: "edit",
+      base: null,
+      files: [],
+      capabilityIntent: { coordinationMode: "rx_native_team" },
+      composerProjectReferences: [
+        {
+          projectId: "stale-project",
+          projectName: "Stale project",
+        },
+      ],
+    });
+
+    expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Explore privately",
+        conversationId: "standalone-1",
+        mode: "chat",
+      }),
+    );
+    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(startInput).not.toHaveProperty("projectId");
+    expect(startInput).not.toHaveProperty("capabilityIntent");
+    expect(startInput).not.toHaveProperty("teamIntent");
+    expect(startInput).not.toHaveProperty("composerProjectReferences");
+    expect(selectConversation).toHaveBeenCalledWith(null, "standalone-1");
+    expect(useChatStore.getState().queuedMessages["standalone:standalone-1"]).toEqual([
+      expect.objectContaining({ id: "queued-standalone-1", content: "Explore privately" }),
+    ]);
+    expect(handleAutoManagedTitle).toHaveBeenCalledWith(
+      expect.objectContaining({ targetProjectId: null }),
     );
   });
 

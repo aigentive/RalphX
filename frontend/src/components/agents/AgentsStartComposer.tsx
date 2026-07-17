@@ -99,7 +99,7 @@ interface PendingAttachment {
 }
 
 interface AgentsStartComposerSubmitInput {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
@@ -230,7 +230,7 @@ export function AgentsStartComposer({
     defaultRuntime,
     modelRegistry,
   );
-  const [projectId, setProjectId] = useState(defaultProjectId ?? "");
+  const [projectId, setProjectId] = useState<string | null>(defaultProjectId);
   const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
@@ -491,8 +491,34 @@ export function AgentsStartComposer({
   }, [openModal]);
 
   useEffect(() => {
-    setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
-  }, [defaultProjectId, projects]);
+    setProjectId((currentProjectId) => {
+      if (currentProjectId === null && featureFlags.standaloneConversations) {
+        return null;
+      }
+      if (currentProjectId && projects.some((project) => project.id === currentProjectId)) {
+        return currentProjectId;
+      }
+      return defaultProjectId ?? projects[0]?.id ?? null;
+    });
+  }, [defaultProjectId, featureFlags.standaloneConversations, projects]);
+
+  useEffect(() => {
+    if (projectId !== null) {
+      return;
+    }
+    setCapabilityMode("solo");
+    setPersonaId(null);
+    setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, []);
+    if (mode !== "chat") {
+      setMode("chat");
+      setAutomationAuthoringMode(null);
+      setError(
+        plainStartComposerError(
+          "Project-requiring modes are unavailable without a project. Switched to Chat.",
+        ),
+      );
+    }
+  }, [mode, projectId, setComposerDraftFolders]);
 
   useEffect(() => {
     if (!startConversationDraft) {
@@ -648,12 +674,14 @@ export function AgentsStartComposer({
   ]);
 
   const handleProjectChange = useCallback(
-    (nextProjectId: string) => {
+    (nextProjectId: string | null) => {
       clearStartError();
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      if (nextProjectId) {
+        persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      }
     },
     [clearStartError, effort, modelId, persistRuntimePreference, provider]
   );
@@ -689,7 +717,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -717,7 +745,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -746,7 +774,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -1136,7 +1164,7 @@ export function AgentsStartComposer({
     message,
     options,
   ) => {
-    if (!projectId) {
+    if (projectId === null && !featureFlags.standaloneConversations) {
       setError(plainStartComposerError("Project is required"));
       return;
     }
@@ -1186,7 +1214,7 @@ export function AgentsStartComposer({
       folders,
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
       ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
-      capabilityIntent,
+      ...(projectId ? { capabilityIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1358,10 +1386,18 @@ export function AgentsStartComposer({
                   setAutomationAuthoringMode(null);
                 }
               },
-              options: AGENT_START_MODE_OPTIONS,
+              options: AGENT_START_MODE_OPTIONS.map((option) => ({
+                ...option,
+                ...(projectId === null && option.requiresProject
+                  ? {
+                      disabled: true,
+                      disabledReason: "Requires a project",
+                    }
+                  : {}),
+              })),
               testId: "agents-start-mode",
             }}
-            {...(capabilityOptions.length > 1
+            {...(projectId && capabilityOptions.length > 1
               ? {
                   capability: {
                     value: capabilityMode,
@@ -1398,7 +1434,9 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               })),
               placeholder: projects.length === 0 ? "No projects yet" : "Select project",
-              disabled: isLoadingProjects || projects.length === 0,
+              disabled:
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
               className: "max-w-[300px] flex-none",
               endAction: (
@@ -1496,36 +1534,45 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               }))}
               placeholder={projects.length === 0 ? "No projects yet" : "Select project"}
-              disabled={isLoadingProjects || projects.length === 0}
+              disabled={
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations)
+              }
               testId="agents-start-project"
+              allowNoProject={featureFlags.standaloneConversations === true}
+              standaloneCaption="Runs in a private workspace"
             />
-            <BranchBasePicker
-              value={selectedStartFromKey}
-              onValueChange={handleStartFromChange}
-              options={startFromOptions}
-              enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestStartFromOptions}
-              isLoadingPullRequests={isLoadingPullRequestStartFrom}
-              pullRequestMessage={pullRequestStartFromMessage}
-              onPullRequestSearch={searchPullRequestStartFromOptions}
-              placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
-              disabled={!activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)}
-              testId="agents-start-base"
-              isLoading={isLoadingStartFrom}
-              onIntent={ensureStartFromOptionsLoaded}
-              onOpenChange={(open) => {
-                if (open) {
-                  ensureStartFromOptionsLoaded();
+            {projectId && (
+              <BranchBasePicker
+                value={selectedStartFromKey}
+                onValueChange={handleStartFromChange}
+                options={startFromOptions}
+                enablePullRequests={Boolean(activeProjectId)}
+                pullRequestOptions={pullRequestStartFromOptions}
+                isLoadingPullRequests={isLoadingPullRequestStartFrom}
+                pullRequestMessage={pullRequestStartFromMessage}
+                onPullRequestSearch={searchPullRequestStartFromOptions}
+                placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
+                disabled={
+                  !activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)
                 }
-              }}
-              closeOnSelect={false}
-              isolatedBranch={effectiveStartFromIsolatedBranch}
-              isolatedBranchDisabled={startFromForcesIsolatedBranch}
-              onIsolatedBranchChange={(value) => {
-                clearStartError();
-                setIsStartFromIsolatedBranch(value);
-              }}
-            />
+                testId="agents-start-base"
+                isLoading={isLoadingStartFrom}
+                onIntent={ensureStartFromOptionsLoaded}
+                onOpenChange={(open) => {
+                  if (open) {
+                    ensureStartFromOptionsLoaded();
+                  }
+                }}
+                closeOnSelect={false}
+                isolatedBranch={effectiveStartFromIsolatedBranch}
+                isolatedBranchDisabled={startFromForcesIsolatedBranch}
+                onIsolatedBranchChange={(value) => {
+                  clearStartError();
+                  setIsStartFromIsolatedBranch(value);
+                }}
+              />
+            )}
           </div>
 
           {error?.kind === "linked_setup" ? (

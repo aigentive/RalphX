@@ -389,6 +389,32 @@ describe("agentSessionStore", () => {
       expect(consumeStartConversationDraft()).toBeNull();
     });
 
+    it("round-trips a standalone start draft without inventing a project id", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+    });
+
+    it("selects a standalone conversation without project focus bookkeeping", () => {
+      useAgentSessionStore.getState().selectConversation(null, "standalone-1");
+
+      const state = useAgentSessionStore.getState();
+      expect(state.selectedProjectId).toBeNull();
+      expect(state.focusedProjectId).toBeNull();
+      expect(state.selectedConversationId).toBe("standalone-1");
+      expect(state.lastSelectedConversationByProjectId).toEqual({});
+    });
+
     it("selectConversation pins focus + remembers per-project last conversation", () => {
       const { selectConversation, clearSelection } = useAgentSessionStore.getState();
 

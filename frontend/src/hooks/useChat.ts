@@ -847,6 +847,12 @@ function getContextTypeAndId(context: ChatContext): {
   contextType: ContextType;
   contextId: string;
 } {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return {
+      contextType: context.contextTypeOverride,
+      contextId: context.contextIdOverride,
+    };
+  }
   switch (context.view) {
     case "ideation":
       if (!context.ideationSessionId) {

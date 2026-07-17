@@ -129,7 +129,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
-  if (activeProjectId && selectedConversationId && activeConversation) {
+  if (selectedConversationId && activeConversation) {
     return (
       <AgentsActiveConversationPanel
         activeConversation={activeConversation}

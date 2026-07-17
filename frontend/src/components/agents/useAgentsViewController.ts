@@ -256,7 +256,7 @@ export function useAgentsViewController({
   });
   const selectedConversationIdRef = useRef<string | null>(null);
   const selectConversation = useCallback(
-    (projectId: string, conversationId: string) => {
+    (projectId: string | null, conversationId: string) => {
       selectedConversationIdRef.current = conversationId;
       selectStoredConversation(projectId, conversationId);
     },
@@ -905,6 +905,7 @@ export function useAgentsViewController({
     if (
       !activeConversation?.automationId ||
       !activeConversation.automationRunId ||
+      !activeConversation.projectId ||
       chatFocus.type === "automation_run"
     ) {
       return;
@@ -1313,12 +1314,12 @@ export function useAgentsViewController({
               forkRuntime,
             );
           }
-          selectConversation(agentConversation.projectId, agentConversation.id);
+          selectConversation(agentConversation.projectId!, agentConversation.id);
           setActiveConversation(
             getAgentConversationStoreKey(agentConversation),
             agentConversation.id,
           );
-          void invalidateProjectConversations(agentConversation.projectId);
+          void invalidateProjectConversations(agentConversation.projectId!);
         })
         .catch(() => {
           // Manual /fork already handles errors. This listener only keeps

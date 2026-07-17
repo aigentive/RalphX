@@ -30,6 +30,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   agentConversationTeam: false,
   agentConversationWorkflows: false,
   composerFolderReferences: false,
+  standaloneConversations: false,
 };
 
 export function useFeatureFlags() {

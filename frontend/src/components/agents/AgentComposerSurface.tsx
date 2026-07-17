@@ -23,6 +23,7 @@ import {
   ChevronDown,
   FileText,
   FolderOpen,
+  CircleOff,
   GitFork,
   Loader2,
   Paperclip,
@@ -165,14 +166,16 @@ function skillMatchesComposerQuery(
 }
 
 interface ProjectFieldConfig {
-  value: string;
-  onValueChange: (value: string) => void;
+  value: string | null;
+  onValueChange: (value: string | null) => void;
   options: ComposerOption[];
   placeholder: string;
   disabled?: boolean;
   endAction?: ReactNode;
   testId?: string;
   className?: string;
+  allowNoProject?: boolean;
+  standaloneCaption?: string;
 }
 
 type ProviderFieldConfig = ComposerRuntimeProviderField;
@@ -428,7 +431,7 @@ export function AgentComposerSurface({
   const folderReferencesSupported =
     featureFlags.composerFolderReferences === true &&
     mode?.value !== "persona_builder" &&
-    project.value.trim().length > 0;
+    Boolean(project.value?.trim());
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode
@@ -439,7 +442,7 @@ export function AgentComposerSurface({
     [cursorPosition, value],
   );
   const composerAssistEnabled =
-    !isReadOnly && !questionMode && project.value.trim().length > 0;
+    !isReadOnly && !questionMode && Boolean(project.value?.trim());
   const pathQuery = activeTrigger?.kind === "path" ? activeTrigger.query : "";
   const integrationQuery =
     activeTrigger?.kind === "integration" ? activeTrigger.query : "";
@@ -449,7 +452,7 @@ export function AgentComposerSurface({
       ? activeTrigger.integrationKind
       : null;
   const pathEntriesQuery = useAgentComposerEntries({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     query: pathQuery,
     enabled:
@@ -464,13 +467,13 @@ export function AgentComposerSurface({
       activeTrigger?.kind === "integration",
   });
   const planReferencesQuery = useAgentComposerPlanReferences({
-    projectId: project.value,
+    projectId: project.value ?? "",
     query: planQuery,
     enabled:
       composerAssistEnabled && isFocused && activeTrigger?.kind === "plan",
   });
   const skillsQuery = useAgentComposerSkills({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     providerHarness: provider.value,
     mode: mode?.value ?? null,
@@ -2921,10 +2924,13 @@ export function AgentComposerProjectLine({
   placeholder,
   disabled = false,
   testId,
+  allowNoProject = false,
+  standaloneCaption,
 }: ProjectFieldConfig) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const selectedProject = options.find((option) => option.id === value) ?? null;
+  const isStandalone = value === null;
   const filteredOptions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) {
@@ -2958,7 +2964,11 @@ export function AgentComposerProjectLine({
       data-theme-button-skip="true"
       aria-label="Project"
     >
-      <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      {isStandalone ? (
+        <CircleOff className="h-3.5 w-3.5 shrink-0" />
+      ) : (
+        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      )}
       <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
         Project
       </span>
@@ -2970,17 +2980,27 @@ export function AgentComposerProjectLine({
             : "var(--text-secondary)",
         }}
       >
-        {selectedProject?.label ?? placeholder}
+        {isStandalone ? "No project" : (selectedProject?.label ?? placeholder)}
       </span>
       {!disabled && <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
     </button>
   );
 
   if (disabled) {
-    return trigger;
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        {trigger}
+        {isStandalone && standaloneCaption && (
+          <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+            {standaloneCaption}
+          </span>
+        )}
+      </div>
+    );
   }
 
   return (
+    <div className="flex min-w-0 items-center gap-2">
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
@@ -3062,9 +3082,40 @@ export function AgentComposerProjectLine({
                 })}
               </div>
             )}
+            {allowNoProject && (
+              <>
+                <div className="my-1 h-px bg-[var(--border-subtle)]" />
+                <button
+                  type="button"
+                  className={cn(
+                    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors",
+                    isStandalone
+                      ? "bg-[var(--accent-muted)] text-[var(--accent-primary)]"
+                      : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                  )}
+                  onClick={() => {
+                    onValueChange(null);
+                    setOpen(false);
+                    setSearchQuery("");
+                  }}
+                  data-testid={`${testId ?? "project"}-standalone`}
+                >
+                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    {isStandalone ? <Check className="h-3.5 w-3.5" /> : <CircleOff className="h-3.5 w-3.5" />}
+                  </span>
+                  <span>No project (standalone)</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </PopoverContent>
     </Popover>
+    {isStandalone && standaloneCaption && (
+      <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+        {standaloneCaption}
+      </span>
+    )}
+    </div>
   );
 }

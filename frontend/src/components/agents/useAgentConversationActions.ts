@@ -13,6 +13,7 @@ import { ideationApi } from "@/api/ideation";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
+import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
 import type { Project } from "@/types/project";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
@@ -45,7 +46,7 @@ interface UseAgentConversationActionsArgs {
   projectId: string;
   projects: Project[];
   queryClient: QueryClient;
-  selectConversation: (projectId: string, conversationId: string) => void;
+  selectConversation: (projectId: string | null, conversationId: string) => void;
   selectedConversationId: string | null;
   selectedProjectId: string | null;
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
@@ -57,7 +58,7 @@ interface UseAgentConversationActionsArgs {
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
   setRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
 }
@@ -107,8 +108,20 @@ export function useAgentConversationActions({
   setOptimisticSelectedConversationId,
   setRuntimeForConversation,
 }: UseAgentConversationActionsArgs) {
+  const invalidateConversationLists = useCallback(
+    async (conversationProjectId: string | null) => {
+      if (conversationProjectId) {
+        await invalidateProjectConversations(conversationProjectId);
+        return;
+      }
+      await queryClient.invalidateQueries({
+        queryKey: agentSidebarConversationKeys.all,
+      });
+    },
+    [invalidateProjectConversations, queryClient],
+  );
   const handleSelectConversation = useCallback(
-    (conversationProjectId: string, conversation: AgentConversation) => {
+    (conversationProjectId: string | null, conversation: AgentConversation) => {
       if (
         selectedProjectId === conversationProjectId &&
         selectedConversationId === conversation.id
@@ -178,7 +191,7 @@ export function useAgentConversationActions({
   );
 
   const handleSidebarSelectConversation = useCallback(
-    (conversationProjectId: string, conversation: AgentConversation) => {
+    (conversationProjectId: string | null, conversation: AgentConversation) => {
       if (selectedConversationId === conversation.id) {
         showStarterComposer(conversationProjectId);
       } else {
@@ -239,7 +252,7 @@ export function useAgentConversationActions({
           conversation.id
         );
         invalidateConversationDataQueries(queryClient, conversation.id);
-        void invalidateProjectConversations(conversationProjectId);
+        void invalidateConversationLists(conversationProjectId);
         return result;
       } catch (error) {
         toast.error("Failed to fork conversation", {
@@ -253,7 +266,7 @@ export function useAgentConversationActions({
       }
     },
     [
-      invalidateProjectConversations,
+      invalidateConversationLists,
       queryClient,
       selectConversation,
       setActiveConversation,
@@ -308,7 +321,7 @@ export function useAgentConversationActions({
         if (selectedConversationId === conversation.id) {
           clearAgentConversationSelection();
         }
-        await invalidateProjectConversations(conversation.projectId);
+        await invalidateConversationLists(conversation.projectId);
         if (result.cleanup.localCleanup === "failed_unsafe") {
           toast.warning(
             "Session archived, but RalphX refused unsafe local workspace cleanup. Review the workspace metadata before retrying."
@@ -325,7 +338,7 @@ export function useAgentConversationActions({
         toast.error(err instanceof Error ? err.message : "Failed to archive session");
       }
     },
-    [clearAgentConversationSelection, invalidateProjectConversations, selectedConversationId]
+    [clearAgentConversationSelection, invalidateConversationLists, selectedConversationId]
   );
 
   const handleBulkArchiveConversations = useCallback(
@@ -438,12 +451,12 @@ export function useAgentConversationActions({
           await ideationApi.sessions.reopen(conversation.contextId);
         }
         await chatApi.restoreConversation(conversation.id);
-        await invalidateProjectConversations(conversation.projectId);
+        await invalidateConversationLists(conversation.projectId);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to restore session");
       }
     },
-    [invalidateProjectConversations]
+    [invalidateConversationLists]
   );
 
   const handleRenameConversation = useCallback(
@@ -462,13 +475,15 @@ export function useAgentConversationActions({
         await chatApi.updateConversationTitle(conversationId, trimmed);
       }
       clearAutoManagedTitle(conversationId);
-      await invalidateProjectConversations(conversation?.projectId ?? activeProjectId ?? projectId);
+      await invalidateConversationLists(
+        conversation?.projectId ?? activeProjectId ?? projectId,
+      );
     },
     [
       activeProjectId,
       clearAutoManagedTitle,
       findConversationById,
-      invalidateProjectConversations,
+      invalidateConversationLists,
       projectId,
     ]
   );
@@ -488,7 +503,7 @@ export function useAgentConversationActions({
           conversation.providerHarness ?? result.conversation.providerHarness ?? null
         );
         clearAutoManagedTitle(conversation.id);
-        await invalidateProjectConversations(conversation.projectId);
+        await invalidateConversationLists(conversation.projectId);
         toast.success("Auto rename started");
       } catch (error) {
         toast.error(
@@ -497,7 +512,7 @@ export function useAgentConversationActions({
         throw error;
       }
     },
-    [clearAutoManagedTitle, invalidateProjectConversations]
+    [clearAutoManagedTitle, invalidateConversationLists]
   );
 
   return {

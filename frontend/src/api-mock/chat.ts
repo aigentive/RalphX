@@ -703,13 +703,14 @@ export async function mockGetConversationStats(
 
 export async function mockCreateConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string
 ): Promise<ChatConversation> {
+  const id = generateTestUuid();
   const conversation: ChatConversation = {
-    id: generateTestUuid(),
+    id,
     contextType,
-    contextId,
+    contextId: contextId ?? id,
     ...normalizeConversationProviderMetadata({}),
     coordinationMode: "solo",
     title: title?.trim() || null,
@@ -871,10 +872,12 @@ export async function mockSendAgentMessage(
 export async function mockStartAgentConversation(
   input: StartAgentConversationInput
 ): Promise<StartAgentConversationResult> {
+  const contextType = input.projectId ? "project" : "standalone";
+  const contextId = input.projectId ?? null;
   const conversation = input.conversationId
     ? mockConversations.get(input.conversationId) ??
-      (await mockCreateConversation("project", input.projectId))
-    : await mockCreateConversation("project", input.projectId);
+      (await mockCreateConversation(contextType, contextId))
+    : await mockCreateConversation(contextType, contextId);
   const mode = input.mode ?? "edit";
   const modeConversation: ChatConversation = {
     ...conversation,
@@ -892,7 +895,9 @@ export async function mockStartAgentConversation(
     queuedAsPending: false,
   };
 
-  const workspace = createMockWorkspace(modeConversation, input.projectId, mode, input.base);
+  const workspace = input.projectId
+    ? createMockWorkspace(modeConversation, input.projectId, mode, input.base)
+    : null;
   if (workspace) {
     mockWorkspaces.set(conversation.id, workspace);
   }
