@@ -1,4 +1,4 @@
-use super::ChatRuntimeFactoryDeps;
+use super::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::AppState;
 
 #[test]
@@ -10,5 +10,25 @@ fn app_state_chat_factory_dependencies_include_persona_repository() {
     assert!(
         deps.persona_repo.is_some(),
         "handler-built chat services must retain AppState persona resolution"
+    );
+    assert!(
+        deps.external_events_repo.is_some(),
+        "background finalizers must retain durable completion-event delivery"
+    );
+}
+
+#[test]
+fn app_state_runtime_factory_dependencies_include_completion_authority_repositories() {
+    let state = AppState::new_test();
+
+    let deps = RuntimeFactoryDeps::from_app_state(&state);
+
+    assert!(
+        deps.task_step_repo.is_some(),
+        "no-AppHandle scheduler paths must retain task-step completion authority"
+    );
+    assert!(
+        deps.validation_run_repo.is_some(),
+        "no-AppHandle scheduler paths must retain first-class validation authority"
     );
 }

@@ -109,4 +109,31 @@ describe("tasksApi", () => {
       taskId: "task-1",
     });
   });
+
+  it("restarts a task with the selected agent variant", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      type: "Success",
+      task: { id: "task-1" },
+      category: "direct",
+      resumed_to_status: "ready",
+      disposition: "restarted_to_ready",
+    });
+
+    await expect(
+      tasksApi.restart("task-1", false, "try again", "team"),
+    ).resolves.toEqual({
+      type: "Success",
+      task: { id: "task-1" },
+      category: "direct",
+      resumedToStatus: "ready",
+      disposition: "restarted_to_ready",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("restart_task", {
+      taskId: "task-1",
+      force: false,
+      note: "try again",
+      agentVariant: "team",
+    });
+  });
 });
