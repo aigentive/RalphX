@@ -184,6 +184,21 @@ ignore:
   # Startup composition roots wire long-lived services; behavior is covered
   # through extracted helpers/services and focused scheduler/finalizer tests.
   - "src-tauri/src/application/startup_background.rs"
+  # Strict ticket workspace enforcement adds command/HTTP adapters plus
+  # startup/git-worktree orchestration. Deterministic behavior stays covered in
+  # branch naming, policy helper, persistence, migration, and publish-body tests.
+  - "src-tauri/src/application/agent_conversation_start_service.rs"
+  - "src-tauri/src/application/ticket_git_cycle_lifecycle.rs"
+  - "src-tauri/src/application/ticket_git_cycle_start.rs"
+  - "src-tauri/src/application/ticket_git_cycle_workspace.rs"
+  - "src-tauri/src/application/ticket_git_publish_hook.rs"
+  - "src-tauri/src/application/ticket_git_publish_policy.rs"
+  - "src-tauri/src/application/ticket_git_strict_start.rs"
+  - "src-tauri/src/application/ticket_git_strict_start_policy.rs"
+  - "src-tauri/src/application/ticket_git_strict_start_provision.rs"
+  - "src-tauri/src/commands/clickup_commands.rs"
+  - "src-tauri/src/commands/unified_chat_commands/mod.rs"
+  - "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs"
   # Merge recovery controller/composition surfaces coordinate long-lived Git
   # worktrees, agent routing, Tauri command glue, and startup reconciliation.
   # Deterministic PR-branch publication behavior is covered by helper and
