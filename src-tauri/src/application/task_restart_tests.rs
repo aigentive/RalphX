@@ -11,11 +11,15 @@ use crate::domain::entities::{
     ValidationRunStatus,
 };
 use crate::infrastructure::memory::{MemoryTaskRepository, MemoryTaskStepRepository};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 fn git(path: &std::path::Path, args: &[&str]) {
+    let path = validate_absolute_non_root_path(path, "task restart test git repository")
+        .expect("test git repository path should be safe");
     let output = std::process::Command::new("git")
         .args(args)
-        .current_dir(path)
+        // codeql[rust/path-injection]
+        .current_dir(&path)
         .output()
         .expect("git command should run");
     assert!(
@@ -24,6 +28,20 @@ fn git(path: &std::path::Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn create_test_dir(path: &std::path::Path) {
+    let path = validate_absolute_non_root_path(path, "task restart test directory")
+        .expect("test directory path should be safe");
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(&path).unwrap();
+}
+
+fn write_test_file(path: &std::path::Path, contents: &str) {
+    let path = validate_absolute_non_root_path(path, "task restart test file")
+        .expect("test file path should be safe");
+    // codeql[rust/path-injection]
+    std::fs::write(&path, contents).unwrap();
 }
 
 #[tokio::test]
@@ -46,11 +64,11 @@ async fn failed_recovery_blocks_dirty_current_attempt_without_clearing_refs() {
     task.internal_status = InternalStatus::Failed;
     task.task_branch = Some("task/recover".to_string());
     let worktree = project.task_worktree_path(task.id.as_str());
-    std::fs::create_dir_all(&worktree).unwrap();
+    create_test_dir(&worktree);
     git(&worktree, &["init", "-b", "task/recover"]);
     git(&worktree, &["config", "user.email", "test@example.com"]);
     git(&worktree, &["config", "user.name", "RalphX Test"]);
-    std::fs::write(worktree.join("tracked.txt"), "initial\n").unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "initial\n");
     git(&worktree, &["add", "tracked.txt"]);
     git(&worktree, &["commit", "-m", "initial"]);
     task.worktree_path = Some(worktree.to_string_lossy().into_owned());
@@ -85,7 +103,7 @@ async fn failed_recovery_blocks_dirty_current_attempt_without_clearing_refs() {
     run.completed_at = Some(chrono::Utc::now());
     state.agent_run_repo.create(run).await.unwrap();
 
-    std::fs::write(worktree.join("tracked.txt"), "uncommitted\n").unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "uncommitted\n");
     let classification = classify_failed_restart(&state, &task).await;
     let FailedRestartClassification::Blocked(warnings) = classification else {
         panic!("dirty current attempt must block, got {classification:?}");
@@ -152,15 +170,15 @@ async fn failed_recovery_accepts_complete_current_attempt_proof() {
     task.internal_status = InternalStatus::Failed;
     task.task_branch = Some("task/recover-proof".to_string());
     let worktree = project.task_worktree_path(task.id.as_str());
-    std::fs::create_dir_all(&worktree).unwrap();
+    create_test_dir(&worktree);
     git(&worktree, &["init", "-b", "task/recover-proof"]);
     git(&worktree, &["config", "user.email", "test@example.com"]);
     git(&worktree, &["config", "user.name", "RalphX Test"]);
-    std::fs::write(worktree.join("tracked.txt"), "base\n").unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "base\n");
     git(&worktree, &["add", "tracked.txt"]);
     git(&worktree, &["commit", "-m", "base"]);
     let base_sha = GitService::get_head_sha(&worktree).await.unwrap();
-    std::fs::write(worktree.join("tracked.txt"), "completed work\n").unwrap();
+    write_test_file(&worktree.join("tracked.txt"), "completed work\n");
     git(&worktree, &["add", "tracked.txt"]);
     git(&worktree, &["commit", "-m", "completed work"]);
     let promoted_sha = GitService::get_head_sha(&worktree).await.unwrap();
@@ -496,7 +514,7 @@ async fn terminal_ready_restart_blocks_when_existing_worktree_is_dirty() {
         .status()
         .expect("run git init");
     assert!(git_init.success(), "git init should succeed");
-    std::fs::write(worktree.path().join("dirty.txt"), "dirty").expect("write dirty file");
+    write_test_file(&worktree.path().join("dirty.txt"), "dirty");
     let worktree_path = worktree.path().to_string_lossy().into_owned();
 
     let mut task = Task::new(project_id, "Dirty restart".to_string());
