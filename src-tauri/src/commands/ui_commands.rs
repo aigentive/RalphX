@@ -25,6 +25,7 @@ pub struct UiFeatureFlagsResponse {
     pub agent_personas: bool,
     pub agent_conversation_team: bool,
     pub agent_conversation_workflows: bool,
+    pub agent_conversation_autopilot: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,6 +34,7 @@ pub struct UpdateUiFeatureFlagsInput {
     pub agent_personas: Option<bool>,
     pub agent_conversation_team: Option<bool>,
     pub agent_conversation_workflows: Option<bool>,
+    pub agent_conversation_autopilot: Option<bool>,
 }
 
 fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
@@ -50,6 +52,7 @@ fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
         agent_personas: agent_personas_enabled(),
         agent_conversation_team: agent_capabilities.team,
         agent_conversation_workflows: agent_capabilities.workflows,
+        agent_conversation_autopilot: agent_capabilities.autopilot,
     }
 }
 
@@ -90,18 +93,23 @@ pub async fn update_ui_feature_flags_for_state(
     state: &AppState,
 ) -> Result<UiFeatureFlagsResponse, String> {
     persist_agent_personas_override(state, input.agent_personas).await?;
-    if input.agent_conversation_team.is_some() || input.agent_conversation_workflows.is_some() {
+    if input.agent_conversation_team.is_some()
+        || input.agent_conversation_workflows.is_some()
+        || input.agent_conversation_autopilot.is_some()
+    {
         let persisted = state
             .ui_feature_flag_overrides_repo
             .update_agent_capabilities(
                 input.agent_conversation_team,
                 input.agent_conversation_workflows,
+                input.agent_conversation_autopilot,
             )
             .await
             .map_err(|error| error.to_string())?;
         state.agent_capability_gate.replace(AgentCapabilities {
             team: persisted.agent_conversation_team,
             workflows: persisted.agent_conversation_workflows,
+            autopilot: persisted.agent_conversation_autopilot,
         });
     }
     Ok(ui_feature_flags_response(state))

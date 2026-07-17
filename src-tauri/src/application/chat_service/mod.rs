@@ -97,7 +97,7 @@ use crate::domain::services::{
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER, AGENT_TASK_MANAGER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -733,7 +733,10 @@ pub fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) ->
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
-        AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::Tasks => AGENT_TASK_MANAGER,
+        AgentConversationWorkspaceMode::Autopilot | AgentConversationWorkspaceMode::Ideation => {
+            AGENT_CHAT_PROJECT
+        }
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
         AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,
@@ -861,6 +864,51 @@ fn plan_mode_runtime_message(
         planning_session_id.as_str(),
         message
     )
+}
+
+fn supervised_workspace_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+    source_message_id: Option<&str>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    match workspace.mode {
+        AgentConversationWorkspaceMode::Autopilot => format!(
+            "<autopilot_mode_context>\n\
+             <agent_conversation_id>{}</agent_conversation_id>\n\
+             <workspace_mode>autopilot</workspace_mode>\n\
+             <contract>The user explicitly opted into Autopilot for this native conversation. Continue autonomously within the workspace and the user's request, while preserving normal safety and publication boundaries.</contract>\n\
+             </autopilot_mode_context>\n\
+             <user_request>{}</user_request>",
+            workspace.conversation_id.as_str(),
+            message
+        ),
+        AgentConversationWorkspaceMode::Tasks => {
+            let (Some(session_id), Some(source_message_id)) = (
+                workspace.task_pipeline_session_id.as_ref(),
+                source_message_id,
+            ) else {
+                return message;
+            };
+            format!(
+                "<task_pipeline_context>\n\
+                 <agent_conversation_id>{}</agent_conversation_id>\n\
+                 <task_pipeline_session_id>{}</task_pipeline_session_id>\n\
+                 <source_message_id>{}</source_message_id>\n\
+                 <workspace_mode>tasks</workspace_mode>\n\
+                 <contract>Manage only this existing task pipeline. Append work only for an explicit user request in this source message, using this exact conversation and message identity. Do not create a new pipeline or start proposals without the user's typed action.</contract>\n\
+                 </task_pipeline_context>\n\
+                 <user_request>{}</user_request>",
+                workspace.conversation_id.as_str(),
+                session_id.as_str(),
+                source_message_id,
+                message
+            )
+        }
+        _ => message,
+    }
 }
 
 fn persona_builder_runtime_message(
@@ -3929,6 +3977,7 @@ impl<R: Runtime> AppChatService<R> {
         selection_snapshot: Option<&ComposerSelectionSnapshot>,
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
+        source_message_id: Option<&str>,
     ) -> Result<String, ChatServiceError> {
         let builder_conversation = if let Some(conversation_id) = conversation_id_override {
             self.conversation_repo
@@ -4068,8 +4117,13 @@ impl<R: Runtime> AppChatService<R> {
         );
         let with_plan_mode =
             plan_mode_runtime_message(with_persona_builder, agent_workspace.as_ref());
-        Ok(edit_mode_plan_handoff_runtime_message(
+        let with_supervised_mode = supervised_workspace_runtime_message(
             with_plan_mode,
+            agent_workspace.as_ref(),
+            source_message_id,
+        );
+        Ok(edit_mode_plan_handoff_runtime_message(
+            with_supervised_mode,
             agent_workspace.as_ref(),
             edit_plan_handoff_artifact.as_ref(),
         ))
@@ -4690,6 +4744,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .await?
             };
             let attachment_context = self.format_attachment_context(&turn_attachments).await?;
+            let persisted_metadata = persisted_user_metadata(&options);
+            let pending_user_message = (!resume_in_place).then(|| {
+                chat_service_context::create_user_message(
+                    context_type,
+                    context_id,
+                    message,
+                    conversation.id,
+                    persisted_metadata.clone(),
+                    options.created_at,
+                )
+            });
 
             // Build the prompt with context wrapping, then format as stream-json input.
             // Session history is NOT injected here — the agent is already running and
@@ -4705,6 +4770,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     options.composer_selection_snapshot.as_ref(),
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
+                    pending_user_message
+                        .as_ref()
+                        .map(|message| message.id.as_str()),
                 )
                 .await?;
             let stdin_prompt = chat_service_context::build_initial_prompt(
@@ -4740,20 +4808,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         }
                     }
 
-                    let persisted_metadata = persisted_user_metadata(&options);
                     let hide_user_message =
                         message_metadata_hidden_from_ui(persisted_metadata.as_deref());
 
                     // Store user message for conversation history
-                    if !resume_in_place {
-                        let user_msg = chat_service_context::create_user_message(
-                            context_type,
-                            context_id,
-                            message,
-                            conversation.id,
-                            persisted_metadata.clone(),
-                            options.created_at,
-                        );
+                    if let Some(user_msg) = pending_user_message {
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
                         if self
@@ -5587,7 +5646,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
 
         // 4. Store user message
-        if !resume_in_place {
+        let source_message_id = if !resume_in_place {
             let user_msg = chat_service_context::create_user_message(
                 context_type,
                 context_id,
@@ -5683,6 +5742,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     },
                 );
             }
+            Some(user_msg_id)
         } else if let Err(error) = self
             .persist_hidden_resume_in_place_marker(
                 context_type,
@@ -5693,7 +5753,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await
         {
             cleanup_and_err!(error);
-        }
+        } else {
+            None
+        };
 
         // 6. Resolve working directory
         let working_directory_started = Instant::now();
@@ -6146,6 +6208,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 options.composer_selection_snapshot.as_ref(),
                 Some(&conversation_id),
                 Some(&working_directory),
+                source_message_id.as_deref(),
             )
             .await?;
         let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
