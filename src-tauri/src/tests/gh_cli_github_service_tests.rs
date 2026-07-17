@@ -1091,6 +1091,45 @@ mod mock_roundtrip {
         assert!(!status.authenticated);
     }
 
+    #[test]
+    fn github_connection_status_helpers_separate_repair_from_transient_states() {
+        let cases = [
+            (
+                GithubConnectionStatus::authenticated("github.com", "octo"),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::unauthenticated(), true, false),
+            (GithubConnectionStatus::credential_rejected(), true, true),
+            (
+                GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Network),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::cli_unavailable(), false, false),
+            (
+                GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::Timeout),
+                false,
+                false,
+            ),
+        ];
+
+        for (status, requires_repair, has_local_credential) in cases {
+            assert_eq!(
+                status.requires_credential_repair(),
+                requires_repair,
+                "{:?} repair classification drifted",
+                status.state
+            );
+            assert_eq!(
+                status.has_local_credential(),
+                has_local_credential,
+                "{:?} local credential classification drifted",
+                status.state
+            );
+        }
+    }
+
     #[tokio::test]
     async fn fetch_pr_detail_issues_single_pr_view_and_parses_payload() {
         let json = r#"{

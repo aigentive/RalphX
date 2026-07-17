@@ -308,7 +308,7 @@ pub(crate) fn classify_gh_api_failure(
     )
 }
 
-fn http_status_code(value: &str) -> Option<u16> {
+pub(crate) fn http_status_code(value: &str) -> Option<u16> {
     let words = value
         .split_whitespace()
         .map(|word| word.trim_matches(|character: char| !character.is_ascii_alphanumeric()))
@@ -321,7 +321,7 @@ fn http_status_code(value: &str) -> Option<u16> {
     })
 }
 
-fn is_valid_github_login(value: &str) -> bool {
+pub(crate) fn is_valid_github_login(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 39
         && !value.starts_with('-')

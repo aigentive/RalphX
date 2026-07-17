@@ -233,6 +233,80 @@ fn provider_outage_blocks_startup_without_requesting_auth_repair() {
 }
 
 #[test]
+fn rejected_credential_requests_replacement_not_login() {
+    let issue = evaluate_project_git_auth_issue(
+        &project(true),
+        true,
+        GithubConnectionState::CredentialRejected,
+        Ok(GitRemoteAuthConfig {
+            fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+            push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
+        }),
+    )
+    .expect("rejected credentials must remain actionable");
+
+    assert_eq!(issue.issue_kind, "auth_blocked");
+    assert_eq!(issue.gh_state, GithubConnectionState::CredentialRejected);
+    assert!(issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("rejected GitHub CLI credential replaced")));
+    assert!(!issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("temporarily unavailable")));
+}
+
+#[test]
+fn missing_gh_cli_gets_dedicated_startup_issue_kind() {
+    let issue = evaluate_project_git_auth_issue(
+        &project(true),
+        true,
+        GithubConnectionState::CliUnavailable,
+        Ok(GitRemoteAuthConfig {
+            fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+            push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
+        }),
+    )
+    .expect("missing gh CLI should block without claiming credential loss");
+
+    assert_eq!(issue.issue_kind, "gh_cli_unavailable");
+    assert_eq!(issue.gh_state, GithubConnectionState::CliUnavailable);
+    assert!(issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("available GitHub CLI")));
+}
+
+#[test]
+fn probe_failure_defers_startup_without_requesting_auth_repair() {
+    let issue = evaluate_project_git_auth_issue(
+        &project(true),
+        true,
+        GithubConnectionState::ProbeFailed,
+        Ok(GitRemoteAuthConfig {
+            fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+            push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
+        }),
+    )
+    .expect("failed verification should fail closed");
+
+    assert_eq!(issue.issue_kind, "github_unavailable");
+    assert_eq!(issue.gh_state, GithubConnectionState::ProbeFailed);
+    assert!(issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("could not be verified")));
+    assert!(!issue
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("needs GitHub CLI authentication")));
+}
+
+#[test]
 fn terminal_only_records_do_not_force_preflight_scope() {
     let active_project = project(true);
     let mut plan_branch = PlanBranch::new(
