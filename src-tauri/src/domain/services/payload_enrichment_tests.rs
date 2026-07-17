@@ -53,6 +53,16 @@ impl ExternalEventsRepository for FailingExternalEventsRepo {
         Err(crate::error::AppError::Database(self.message.clone()))
     }
 
+    async fn insert_event_once_for_attempt(
+        &self,
+        _event_type: &str,
+        _project_id: &str,
+        _agent_run_id: &str,
+        _payload: &str,
+    ) -> AppResult<bool> {
+        Err(crate::error::AppError::Database(self.message.clone()))
+    }
+
     async fn get_events_after_cursor(
         &self,
         _project_ids: &[String],
@@ -88,12 +98,18 @@ fn presentation_kind_serde_round_trip_all_variants() {
         (PresentationKind::MergeReady, "\"merge_ready\""),
         (PresentationKind::MergeCompleted, "\"merge_completed\""),
         (PresentationKind::PlanDelivered, "\"plan_delivered\""),
-        (PresentationKind::TaskStatusChanged, "\"task_status_changed\""),
+        (
+            PresentationKind::TaskStatusChanged,
+            "\"task_status_changed\"",
+        ),
     ];
 
     for (variant, expected_json) in cases {
         let serialized = serde_json::to_string(&variant).expect("serialize");
-        assert_eq!(serialized, expected_json, "serialized mismatch for {variant:?}");
+        assert_eq!(
+            serialized, expected_json,
+            "serialized mismatch for {variant:?}"
+        );
         let deserialized: PresentationKind =
             serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(deserialized, variant, "round-trip mismatch for {variant:?}");
@@ -248,8 +264,7 @@ fn inject_into_skips_human_context_when_all_none() {
 
 #[tokio::test]
 async fn emit_external_webhook_event_persists_and_publishes() {
-    let repo: Arc<dyn ExternalEventsRepository> =
-        Arc::new(MemoryExternalEventsRepository::new());
+    let repo: Arc<dyn ExternalEventsRepository> = Arc::new(MemoryExternalEventsRepository::new());
     let publisher_arc: Arc<dyn WebhookPublisher> = Arc::new(RecordingWebhookPublisher::new());
 
     // Use a known event type so the publisher receives it
@@ -267,10 +282,8 @@ async fn emit_external_webhook_event_persists_and_publishes() {
 
 #[tokio::test]
 async fn emit_external_webhook_event_publishes_known_event_type() {
-    let repo: Arc<dyn ExternalEventsRepository> =
-        Arc::new(MemoryExternalEventsRepository::new());
-    let inner_calls: Arc<RwLock<Vec<(EventType, String)>>> =
-        Arc::new(RwLock::new(Vec::new()));
+    let repo: Arc<dyn ExternalEventsRepository> = Arc::new(MemoryExternalEventsRepository::new());
+    let inner_calls: Arc<RwLock<Vec<(EventType, String)>>> = Arc::new(RwLock::new(Vec::new()));
     let inner_calls_clone = inner_calls.clone();
 
     struct TrackingPublisher {
@@ -291,8 +304,9 @@ async fn emit_external_webhook_event_publishes_known_event_type() {
         }
     }
 
-    let publisher_arc: Arc<dyn WebhookPublisher> =
-        Arc::new(TrackingPublisher { calls: inner_calls_clone });
+    let publisher_arc: Arc<dyn WebhookPublisher> = Arc::new(TrackingPublisher {
+        calls: inner_calls_clone,
+    });
 
     emit_external_webhook_event(
         "ideation:plan_created",
@@ -315,8 +329,7 @@ async fn emit_external_webhook_event_returns_err_on_insert_failure() {
     let repo: Arc<dyn ExternalEventsRepository> = Arc::new(FailingExternalEventsRepo {
         message: "db error".to_string(),
     });
-    let publisher_arc: Arc<dyn WebhookPublisher> =
-        Arc::new(RecordingWebhookPublisher::new());
+    let publisher_arc: Arc<dyn WebhookPublisher> = Arc::new(RecordingWebhookPublisher::new());
 
     let result = emit_external_webhook_event(
         "task:status_changed",
@@ -337,10 +350,8 @@ async fn emit_external_webhook_event_returns_err_on_insert_failure() {
 
 #[tokio::test]
 async fn emit_external_webhook_event_skips_publish_for_unknown_event_type() {
-    let repo: Arc<dyn ExternalEventsRepository> =
-        Arc::new(MemoryExternalEventsRepository::new());
-    let inner_calls: Arc<RwLock<Vec<(EventType, String)>>> =
-        Arc::new(RwLock::new(Vec::new()));
+    let repo: Arc<dyn ExternalEventsRepository> = Arc::new(MemoryExternalEventsRepository::new());
+    let inner_calls: Arc<RwLock<Vec<(EventType, String)>>> = Arc::new(RwLock::new(Vec::new()));
     let inner_calls_clone = inner_calls.clone();
 
     struct TrackingPublisher {
@@ -361,8 +372,9 @@ async fn emit_external_webhook_event_skips_publish_for_unknown_event_type() {
         }
     }
 
-    let publisher_arc: Arc<dyn WebhookPublisher> =
-        Arc::new(TrackingPublisher { calls: inner_calls_clone });
+    let publisher_arc: Arc<dyn WebhookPublisher> = Arc::new(TrackingPublisher {
+        calls: inner_calls_clone,
+    });
 
     // "unknown:event_type" is not a valid EventType — insert should succeed,
     // publish should be skipped without panicking.

@@ -726,6 +726,8 @@ pub enum ExecutionRecoveryEventKind {
     ManualRetry,
     /// User or system stopped further retries
     StopRetrying,
+    /// A false terminal failure was corrected after current-attempt proof succeeded.
+    CompletedWorkRecovered,
 }
 
 /// Source of the execution recovery event
@@ -776,6 +778,8 @@ pub enum ExecutionRecoveryReasonCode {
     ValidationFailed,
     /// Local command or MCP tool failed without proving an agent process crash
     LocalToolFailed,
+    /// Preserved work was proven complete by current run, git, step, and validation evidence.
+    ValidatedCompletedWork,
     /// Unknown/unclassified reason
     Unknown,
 }
