@@ -116,10 +116,12 @@ export interface AgentStartConversationRetryInput {
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
+  useRoleDefault?: boolean;
   mode: AgentConversationWorkspaceMode;
   automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
+  personaId?: string | null;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -214,7 +216,13 @@ interface AgentSessionActions {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+  setRoleDefaultRuntimeForConversation: (
+    conversationId: string,
+    projectId: string,
+    runtime: AgentRuntimeSelection
+  ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
+  clearLastRuntimeForProject: (projectId: string) => void;
   setBranchBaseCacheForProject: (
     projectId: string,
     options: BranchBaseOption[],
@@ -705,6 +713,17 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           };
         }),
 
+      setRoleDefaultRuntimeForConversation: (conversationId, projectId, runtime) =>
+        set((state) => {
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
+          state.runtimeByConversationId[conversationId] = normalizedRuntime;
+          delete state.lastRuntimeByProjectId[projectId];
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
+        }),
+
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
@@ -713,6 +732,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,
           };
+        }),
+
+      clearLastRuntimeForProject: (projectId) =>
+        set((state) => {
+          delete state.lastRuntimeByProjectId[projectId];
         }),
 
       setBranchBaseCacheForProject: (projectId, options, selectedKey) =>
