@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VALIDATOR="${ROOT_DIR}/scripts/validate-macos-release-artifacts.sh"
 BUILD_SCRIPT="${ROOT_DIR}/scripts/build-prod-release.sh"
+WORKFLOW_RUNNER_SCRIPT="${ROOT_DIR}/src-tauri/scripts/build-workflow-runner.sh"
+TAURI_CONFIG="${ROOT_DIR}/src-tauri/tauri.conf.json"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "${TEST_TMP}"' EXIT
 
@@ -352,6 +354,86 @@ test_workflow_heartbeat_omits_process_arguments() {
   pass "release heartbeat omits secret-bearing process arguments"
 }
 
+test_tauri_build_hook_builds_requested_workflow_runner_target() {
+  local case_dir="${TEST_TMP}/workflow-runner-hook"
+  local project_dir="${case_dir}/project"
+  local bin_dir="${case_dir}/bin"
+  local log_dir="${case_dir}/logs"
+  local target_dir="${project_dir}/src-tauri/target"
+  local hook
+
+  mkdir -p \
+    "${project_dir}/frontend" \
+    "${project_dir}/src-tauri/scripts" \
+    "${bin_dir}" \
+    "${log_dir}"
+  cp "${TAURI_CONFIG}" "${project_dir}/src-tauri/tauri.conf.json"
+  cp "${WORKFLOW_RUNNER_SCRIPT}" "${project_dir}/src-tauri/scripts/build-workflow-runner.sh"
+  chmod +x "${project_dir}/src-tauri/scripts/build-workflow-runner.sh"
+
+  cat >"${bin_dir}/rustc" <<'EOF'
+#!/usr/bin/env bash
+cat <<'VERSION'
+rustc 1.91.0 (fake)
+binary: rustc
+host: aarch64-apple-darwin
+release: 1.91.0
+VERSION
+EOF
+
+  cat >"${bin_dir}/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${PWD}" >"${STUB_LOG_DIR}/cargo-cwd.log"
+printf '%s\n' "$*" >"${STUB_LOG_DIR}/cargo-args.log"
+
+profile="debug"
+target=""
+previous=""
+for argument in "$@"; do
+  if [[ "${previous}" == "--target" ]]; then
+    target="${argument}"
+  fi
+  if [[ "${argument}" == "--release" ]]; then
+    profile="release"
+  fi
+  previous="${argument}"
+done
+
+[[ -n "${target}" ]] || { echo "cargo stub requires --target" >&2; exit 1; }
+mkdir -p "${CARGO_TARGET_DIR}/${target}/${profile}"
+: >"${CARGO_TARGET_DIR}/${target}/${profile}/ralphx-workflow-runner"
+chmod +x "${CARGO_TARGET_DIR}/${target}/${profile}/ralphx-workflow-runner"
+EOF
+
+  cat >"${bin_dir}/npm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${PWD}" >"${STUB_LOG_DIR}/npm-cwd.log"
+printf '%s\n' "$*" >"${STUB_LOG_DIR}/npm-args.log"
+EOF
+  chmod +x "${bin_dir}/rustc" "${bin_dir}/cargo" "${bin_dir}/npm"
+
+  hook="$(jq -r '.build.beforeBuildCommand | if type == "object" then .script else . end' "${project_dir}/src-tauri/tauri.conf.json")"
+  (
+    cd "${project_dir}/frontend"
+    env \
+      PATH="${bin_dir}:/usr/bin:/bin" \
+      STUB_LOG_DIR="${log_dir}" \
+      CARGO_TARGET_DIR="${target_dir}" \
+      TAURI_ENV_TARGET_TRIPLE="x86_64-apple-darwin" \
+      sh -c "${hook}"
+  )
+
+  grep -Fqx "${project_dir}/src-tauri" "${log_dir}/cargo-cwd.log" || fail "workflow runner Cargo build did not anchor to src-tauri"
+  grep -Fqx "build -p ralphx-workflow-runner --release --target x86_64-apple-darwin" "${log_dir}/cargo-args.log" || fail "workflow runner Cargo build ignored the requested release target"
+  grep -Fqx "${project_dir}/frontend" "${log_dir}/npm-cwd.log" || fail "Tauri frontend build did not run from the frontend directory"
+  grep -Fq "run build" "${log_dir}/npm-args.log" || fail "Tauri hook did not run the frontend build"
+  [[ -x "${project_dir}/src-tauri/binaries/ralphx-workflow-runner-x86_64-apple-darwin" ]] || fail "requested workflow runner sidecar was not copied into Tauri binaries"
+  [[ ! -e "${project_dir}/src-tauri/binaries/ralphx-workflow-runner-aarch64-apple-darwin" ]] || fail "cross-target hook incorrectly packaged the ARM host binary"
+  pass "Tauri build hook builds and packages the requested workflow runner target"
+}
+
 test_skip_build_validates_without_submission() {
   local case_dir="${TEST_TMP}/skip-build"
   local project_dir="${case_dir}/project"
@@ -412,5 +494,6 @@ test_build_stops_on_dmg_stapling_failure
 test_skip_build_validates_without_submission
 test_build_requires_notarization_credentials_without_leaking_values
 test_workflow_heartbeat_omits_process_arguments
+test_tauri_build_hook_builds_requested_workflow_runner_target
 
 echo "All ${pass_count} macOS release artifact tests passed."
