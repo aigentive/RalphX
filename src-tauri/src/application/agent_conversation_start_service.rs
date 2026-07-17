@@ -21,6 +21,7 @@ use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
 };
+use crate::application::ticket_git_publish_policy::install_ticket_git_commit_hook;
 use crate::application::ticket_git_strict_start::{
     activate_strict_ticket_branch_cycle, ensure_strict_clickup_ticket_branch_from_services,
     resolve_strict_ticket_target_base_ref, rollback_strict_ticket_workspace_activation,
@@ -719,13 +720,28 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         if let (Some(strict), Some(workspace)) =
             (strict_ticket_resolution.as_ref(), workspace.as_ref())
         {
-            if let Err(error) = activate_strict_ticket_branch_cycle(
-                self.deps.state,
-                &strict.binding,
-                workspace.base_commit.as_deref(),
-            )
-            .await
-            {
+            let activation = async {
+                let frozen = strict.binding.strict_policy.as_ref().ok_or_else(|| {
+                    "Strict ticket binding has no frozen Git convention".to_string()
+                })?;
+                let worktree_path =
+                    resolve_valid_agent_conversation_workspace_path(&project, workspace)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                install_ticket_git_commit_hook(&worktree_path, frozen)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                activate_strict_ticket_branch_cycle(
+                    self.deps.state,
+                    &strict.binding,
+                    workspace.base_commit.as_deref(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            }
+            .await;
+            if let Err(error) = activation {
                 let cleanup_error = rollback_strict_ticket_workspace_activation(
                     self.deps.state,
                     &project,

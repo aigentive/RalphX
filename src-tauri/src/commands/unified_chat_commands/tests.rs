@@ -86,7 +86,8 @@ use crate::domain::entities::{
     ChatTimelineItemStatus, CoordinationMode, DelegatedSession, ExecutionPlan, ExecutionPlanId,
     ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
     IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
-    Project, ProjectId, SessionPurpose, Task, TaskId, TeamIntent,
+    Project, ProjectId, SessionPurpose, Task, TaskId, TeamIntent, TicketCanonicalBranch,
+    TicketCanonicalBranchCycle, TicketCanonicalBranchCycleState, TicketGitConventionSnapshot,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
@@ -3184,6 +3185,43 @@ fn commit_file(repo: &Path, relative_path: &str, contents: &str, message: &str) 
     git(repo, &["rev-parse", "HEAD"])
 }
 
+async fn persist_strict_publish_test_binding(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    issue_key: &str,
+) {
+    let base_commit = workspace.base_commit.clone().expect("captured base");
+    let mut binding = TicketCanonicalBranch::new_strict(
+        workspace.project_id.clone(),
+        "clickup",
+        issue_key,
+        workspace.branch_name.clone(),
+        workspace.base_ref.clone(),
+        Some(base_commit.clone()),
+        TicketGitConventionSnapshot {
+            policy_version: 1,
+            task_title: "Strict publish".to_string(),
+            username: Some("Ada".to_string()),
+            commit_subject_rule: format!("{issue_key} - :summary:"),
+            pr_title: format!("{issue_key} - Strict publish"),
+        },
+        chrono::Utc::now(),
+    );
+    binding.cycle = TicketCanonicalBranchCycle {
+        generation: 1,
+        state: TicketCanonicalBranchCycleState::Active,
+        base_commit: Some(base_commit),
+        effective_merge_base: None,
+        started_at: Some(chrono::Utc::now()),
+        terminal_at: None,
+    };
+    state
+        .ticket_canonical_branch_repo
+        .create_if_absent(binding)
+        .await
+        .expect("strict binding should persist");
+}
+
 async fn setup_linked_plan_publish_command_state(
     suffix: &str,
     active_regular_task: bool,
@@ -4370,6 +4408,58 @@ async fn update_workspace_from_base_succeeds_when_agent_is_running() {
 }
 
 #[tokio::test]
+async fn strict_policy_blocks_update_from_base_before_pr_or_branch_mutation() {
+    let (temp, state, conversation_id, github) = setup_publish_command_state(
+        "strict-update-block",
+        true,
+        Some(405),
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let worktree = Path::new(&workspace.worktree_path);
+    let origin = temp.path().join("strict-update-origin.git");
+    git(temp.path(), &["init", "--bare", origin.to_str().unwrap()]);
+    git(
+        worktree,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    std::fs::write(worktree.join("invalid-update.txt"), "invalid\n").unwrap();
+    git(worktree, &["add", "invalid-update.txt"]);
+    git(worktree, &["commit", "-m", "feat: invalid update history"]);
+    let invalid_head = git(worktree, &["rev-parse", "HEAD"]);
+    persist_strict_publish_test_binding(&state, &workspace, "ENG-405").await;
+
+    let error = update_agent_conversation_workspace_from_base_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id,
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect_err("invalid strict history must block base update");
+
+    assert!(error.contains("invalid_commit_subjects"));
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), invalid_head);
+    let github = github.state();
+    assert_eq!(github.update_pr_base_calls, 0);
+    assert_eq!(github.push_branch_calls, 0);
+}
+
+#[tokio::test]
 async fn update_workspace_from_base_allows_interactive_idle_conversation() {
     let (_temp, state, conversation_id, _github) = setup_publish_command_state(
         "update-interactive-idle-conversation",
@@ -5090,6 +5180,78 @@ async fn publish_linked_ideation_plan_branch_rejects_active_regular_tasks() {
 }
 
 #[tokio::test]
+async fn strict_publish_policy_guards_linked_plan_branch_before_commit_or_push() {
+    let (_temp, state, conversation_id, plan_branch_id, github) =
+        setup_linked_plan_publish_command_state(
+            "strict-policy",
+            false,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+    let plan_branch = state
+        .plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.branch_name = plan_branch.branch_name.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let base_commit = workspace.base_commit.clone().unwrap();
+    let mut binding = TicketCanonicalBranch::new_strict(
+        workspace.project_id.clone(),
+        "clickup",
+        "ENG-PLAN",
+        plan_branch.branch_name.clone(),
+        "main",
+        Some(base_commit.clone()),
+        TicketGitConventionSnapshot {
+            policy_version: 1,
+            task_title: "Strict plan".to_string(),
+            username: Some("Ada".to_string()),
+            commit_subject_rule: "ENG-PLAN - :summary:".to_string(),
+            pr_title: "ENG-PLAN - Strict plan".to_string(),
+        },
+        chrono::Utc::now(),
+    );
+    binding.cycle = TicketCanonicalBranchCycle {
+        generation: 1,
+        state: TicketCanonicalBranchCycleState::Active,
+        base_commit: Some(base_commit),
+        effective_merge_base: None,
+        started_at: Some(chrono::Utc::now()),
+        terminal_at: None,
+    };
+    state
+        .ticket_canonical_branch_repo
+        .create_if_absent(binding)
+        .await
+        .unwrap();
+
+    let error = publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id,
+        false,
+    )
+    .await
+    .expect_err("linked plan history must obey strict ticket policy");
+
+    assert!(error.contains("[ralphx:ticket_git_publish]"));
+    assert_eq!(github.state().push_branch_calls, 0);
+}
+
+#[tokio::test]
 async fn publish_workspace_rejects_concurrent_publish_attempt() {
     let (_temp, state, conversation_id, _github) = setup_publish_command_state(
         "concurrent-publish",
@@ -5113,6 +5275,88 @@ async fn publish_workspace_rejects_concurrent_publish_attempt() {
     .expect_err("concurrent publish should be rejected");
 
     assert_eq!(error, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE);
+}
+
+#[tokio::test]
+async fn strict_publish_policy_blocks_before_commit_push_or_pr_side_effects() {
+    let (temp, state, conversation_id, github) = setup_publish_command_state(
+        "strict-policy-block",
+        true,
+        Some(404),
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let worktree = Path::new(&workspace.worktree_path);
+    let origin = temp.path().join("strict-origin.git");
+    git(temp.path(), &["init", "--bare", origin.to_str().unwrap()]);
+    git(
+        worktree,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    std::fs::write(worktree.join("invalid.txt"), "invalid policy commit\n").unwrap();
+    git(worktree, &["add", "invalid.txt"]);
+    git(
+        worktree,
+        &["commit", "-m", "feat: bypass strict ticket rule"],
+    );
+    let invalid_head = git(worktree, &["rev-parse", "HEAD"]);
+    let base_commit = workspace.base_commit.clone().expect("captured base");
+    let mut binding = TicketCanonicalBranch::new_strict(
+        workspace.project_id.clone(),
+        "clickup",
+        "ENG-404",
+        workspace.branch_name.clone(),
+        workspace.base_ref.clone(),
+        Some(base_commit.clone()),
+        TicketGitConventionSnapshot {
+            policy_version: 1,
+            task_title: "Strict publish".to_string(),
+            username: Some("Ada".to_string()),
+            commit_subject_rule: "ENG-404 - :summary:".to_string(),
+            pr_title: "ENG-404 - Strict publish".to_string(),
+        },
+        chrono::Utc::now(),
+    );
+    binding.cycle = TicketCanonicalBranchCycle {
+        generation: 1,
+        state: TicketCanonicalBranchCycleState::Active,
+        base_commit: Some(base_commit),
+        effective_merge_base: None,
+        started_at: Some(chrono::Utc::now()),
+        terminal_at: None,
+    };
+    state
+        .ticket_canonical_branch_repo
+        .create_if_absent(binding)
+        .await
+        .expect("strict binding should persist");
+    seed_current_passing_workspace_review(&state, &conversation_id).await;
+
+    let error = publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id,
+        false,
+    )
+    .await
+    .expect_err("invalid strict commit must block publish");
+
+    assert!(error.contains("[ralphx:ticket_git_publish]"));
+    assert!(error.contains("invalid_commit_subjects"));
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), invalid_head);
+    let github = github.state();
+    assert_eq!(github.push_branch_calls, 0);
+    assert_eq!(github.create_draft_pr_calls, 0);
+    assert_eq!(github.update_pr_details_calls, 0);
+    assert_eq!(github.update_pr_base_calls, 0);
 }
 
 #[tokio::test]
