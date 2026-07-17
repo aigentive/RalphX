@@ -380,6 +380,7 @@ export function PrStateNotice({ state }: { state: PullRequestDetail["state"] }) 
     ghUnauthenticated: "GitHub CLI is not authenticated. Run `gh auth login` and refresh.",
     fetchUnavailable: "GitHub is temporarily unavailable. Recheck before signing in again.",
     repoUnresolvable: "RalphX could not resolve this repository on GitHub.",
+    cliUnavailable: "GitHub CLI is unavailable. Install or configure gh, then refresh.",
     fetchTimeout: "GitHub did not return pull request details before the timeout.",
     rateLimited: "GitHub rate limited the pull request detail request.",
   };

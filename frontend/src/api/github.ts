@@ -142,6 +142,7 @@ export const PullRequestDetailStateSchema = z.enum([
   "ghUnauthenticated",
   "fetchUnavailable",
   "repoUnresolvable",
+  "cliUnavailable",
   "fetchTimeout",
   "rateLimited",
 ]);

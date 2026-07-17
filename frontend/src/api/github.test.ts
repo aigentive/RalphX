@@ -221,7 +221,7 @@ describe("GitHub Zod schemas round-trip the emitted camelCase DTOs", () => {
 
   it("parses the emitted empty payload for a typed non-loaded state", () => {
     const parsed = PullRequestDetailSchema.parse({
-      state: "fetchUnavailable",
+      state: "cliUnavailable",
       origin: null,
       description: null,
       checks: [],
@@ -233,7 +233,7 @@ describe("GitHub Zod schemas round-trip the emitted camelCase DTOs", () => {
       sourcesUnavailable: [],
     });
 
-    expect(parsed.state).toBe("fetchUnavailable");
+    expect(parsed.state).toBe("cliUnavailable");
     expect(parsed.origin).toBeNull();
     expect(parsed.description).toBeNull();
     expect(parsed.reviewSummary).toBeNull();

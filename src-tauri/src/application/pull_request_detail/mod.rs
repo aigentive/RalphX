@@ -134,7 +134,7 @@ pub async fn load_pull_request_detail(
             return PullRequestDetail::empty(PullRequestDetailState::FetchUnavailable);
         }
         GithubConnectionState::CliUnavailable => {
-            return PullRequestDetail::empty(PullRequestDetailState::RepoUnresolvable);
+            return PullRequestDetail::empty(PullRequestDetailState::CliUnavailable);
         }
     }
 

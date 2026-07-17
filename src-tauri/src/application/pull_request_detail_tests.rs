@@ -256,6 +256,28 @@ async fn provider_unavailable_never_collapses_to_gh_unauthenticated() {
 }
 
 #[tokio::test]
+async fn cli_unavailable_uses_cli_unavailable_state_instead_of_repo_unresolvable() {
+    let harness = Harness::new().await;
+    harness.github.will_return_connection_status(
+        crate::domain::services::github_service::GithubConnectionStatus::cli_unavailable(),
+    );
+
+    let detail = load_pull_request_detail(
+        harness.deps(),
+        PullRequestDetailRequest {
+            project_id: harness.project_id.clone(),
+            pr_number: Some(7),
+            branch: None,
+        },
+    )
+    .await;
+
+    assert_eq!(detail.state, PullRequestDetailState::CliUnavailable);
+    assert_ne!(detail.state, PullRequestDetailState::RepoUnresolvable);
+    assert_eq!(harness.github.state().fetch_pr_detail_calls, 0);
+}
+
+#[tokio::test]
 async fn rejected_credentials_still_require_credential_repair() {
     let harness = Harness::new().await;
     harness.github.will_return_connection_status(
