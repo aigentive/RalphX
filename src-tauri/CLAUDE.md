@@ -12,10 +12,9 @@ tokio 1.x | serde 1.x | chrono 0.4 | thiserror 1.x | async-trait 0.1 | tracing 0
 ```
 src-tauri/src/
 ├─ domain/
-│  ├─ entities/        # Task, Project, InternalStatus, etc.
+│  ├─ entities/        # Re-exports ralphx-domain entities (Task, Project, InternalStatus)
 │  ├─ repositories/    # Traits (interfaces)
-│  ├─ state_machine/   # machine.rs, transition_handler.rs
-│  └─ agents/          # AgenticClient trait
+│  └─ state_machine/   # machine/, transition_handler/
 ├─ application/
 │  ├─ app_state.rs     # DI container
 │  └─ *_service.rs     # Business logic
@@ -24,6 +23,9 @@ src-tauri/src/
 └─ infrastructure/
    ├─ sqlite/          # Repo implementations
    └─ memory/          # Test repos
+src-tauri/crates/
+├─ ralphx-domain/      # Pure entities, AgenticClient trait, review/scope_drift logic
+└─ ralphx-events/      # Object-safe event sink
 ```
 
 ## Architecture: Clean/Hexagonal
@@ -172,15 +174,14 @@ Shared helpers: `transition_handler/tests/helpers.rs` — `setup_real_git_repo()
 
 | File | Tests | Real | Mocked |
 |------|-------|------|--------|
-| `tests/suite_transition_git/merge_system_hardening.rs` | 23 | git, MemoryTaskRepo | — |
+| `tests/suite_transition_git/merge_system_hardening.rs` | 22 | git, MemoryTaskRepo | — |
 | `tests/suite_transition_git/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
-| `transition_handler/tests/real_git_integration.rs` | 8 | git, merge dispatch | MockChatService |
+| `transition_handler/tests/real_git_integration.rs` | 11 | git, merge dispatch | MockChatService |
 | `transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
-| `transition_handler/tests/plan_update_from_main.rs` | 7 | git, pure fn | — |
-| `transition_handler/tests/source_update_from_target.rs` | 7 | git, pure fn | — |
-| `transition_handler/tests/rc12_rc13_stale_worktree.rs` | 3 | git worktrees | — |
-| `transition_handler/tests/merge_cleanup.rs` | 7 | transitions | TaskServices::new_mock() |
+| `transition_handler/tests/plan_update_from_main.rs` | 9 | git, pure fn | — |
+| `transition_handler/tests/source_update_from_target.rs` | 8 | git, pure fn | — |
+| `transition_handler/tests/rc12_rc13_stale_worktree.rs` | 5 | git worktrees | — |
+| `transition_handler/tests/merge_cleanup.rs` | 12 | transitions | TaskServices::new_mock() |
 
 ## Allowed Clippy Lints
-derivable_impls, redundant_closure, too_many_arguments, type_complexity,
-unnecessary_literal_unwrap, bool_comparison, useless_vec, let_and_return
+Crate-level `#![allow(clippy::...)]` list lives at the top of `src/lib.rs` (currently 18 lints) — that file is the source of truth; keep new allows there, not per-module.

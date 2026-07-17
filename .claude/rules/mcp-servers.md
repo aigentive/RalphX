@@ -1,10 +1,10 @@
 ---
 paths:
-  - ".mcp.json"
+  - "plugins/app/.mcp.json"
   - "config/**"
   - "plugins/app/ralphx-mcp-server/**"
   - "plugins/app/ralphx-external-mcp/**"
-  - "src-tauri/src/application/external_mcp_supervisor.rs"
+  - "src-tauri/src/infrastructure/external_mcp_supervisor.rs"
   - "src-tauri/src/http_server/**"
   - "docs/external-mcp/**"
 ---
@@ -69,7 +69,7 @@ Tauri-owned Agent → loopback bypass token → ralphx-external-mcp (:3848) → 
 |----------|-------------------------------|----------------------------------|
 | Who calls it? | RalphX internal harness runtimes for private implementation helpers (today mostly Claude) | Third-party bots, external integrations, Tauri-owned agents for public orchestration |
 | How is it started? | Claude path is registered via `claude mcp add-json` by Tauri app; other harnesses may use different runtime adapters | Auto-started by `ExternalMcpSupervisor` when enabled in `config/external-mcp.yaml` |
-| Where are tools defined? | Focused `src/*-tools.ts` modules + canonical agent capabilities; `src/tools.ts` composes the registry | `src/tools/*.ts` (discovery, ideation, pipeline, events, tasks, guide) |
+| Where are tools defined? | Focused `src/*-tools.ts` modules + canonical agent capabilities; `src/tools.ts` composes the registry | `src/tools/*.ts` (discovery, ideation, pipeline, events, tasks, guide, projects) |
 | Domain logic? | ❌ Pure proxy + authz | ❌ Pure proxy + authz + rate limiting |
 | Both proxy to? | Tauri backend `:3847` | Tauri backend `:3847` |
 
