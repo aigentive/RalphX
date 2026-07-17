@@ -54,6 +54,20 @@ fn make_registry_no_github() -> PrPollerRegistry {
     PrPollerRegistry::new(None, Arc::new(MemoryPlanBranchRepository::new()))
 }
 
+async fn seeded_latest_pr_fixer_run_repo(
+    conversation_id: &ChatConversationId,
+) -> Arc<dyn AgentRunRepository> {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.harness = Some(AgentHarnessKind::Codex);
+    run.logical_model = Some("gpt-5.6-sol".to_string());
+    run.logical_effort = Some(LogicalEffort::High);
+    run.service_tier = Some("fast".to_string());
+    run.complete();
+    repo.create(run).await.expect("latest run should persist");
+    repo
+}
+
 fn run_git(repo: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)
@@ -1286,6 +1300,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -1293,7 +1308,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1312,6 +1327,15 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
         options[0].working_directory_override.as_deref(),
         Some(poller_working_dir.path())
     );
+    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(
+        options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(options[0].service_tier_override.as_deref(), Some("fast"));
+    assert!(options[0].force_new_provider_session);
+    assert!(options[0].preserve_conversation_provider_session_ref);
 
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -1383,6 +1407,7 @@ async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_p
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_ideation_plan_pr_autofix_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -1390,7 +1415,7 @@ async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_p
         &plan_branch,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1410,6 +1435,15 @@ async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_p
         options[0].working_directory_override.as_deref(),
         Some(worktree.path())
     );
+    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(
+        options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(options[0].service_tier_override.as_deref(), Some("fast"));
+    assert!(options[0].force_new_provider_session);
+    assert!(options[0].preserve_conversation_provider_session_ref);
 
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -3202,6 +3236,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
     github.will_return_review_feedback(feedback);
     github.state().fetch_pr_health_result = Some(Ok(open_pr_health("review-feedback-head")));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         github as Arc<dyn GithubServiceTrait>,
@@ -3209,6 +3244,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3230,6 +3266,15 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
         options[0].working_directory_override.as_deref(),
         Some(worktree.path())
     );
+    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(
+        options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(options[0].service_tier_override.as_deref(), Some("fast"));
+    assert!(options[0].force_new_provider_session);
+    assert!(options[0].preserve_conversation_provider_session_ref);
 
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -3302,6 +3347,7 @@ async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3364,6 +3410,7 @@ async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3424,6 +3471,7 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

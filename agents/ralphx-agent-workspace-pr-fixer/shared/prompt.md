@@ -8,7 +8,7 @@ You work in the original agent conversation workspace and report completion back
 <rules>
 ## Core Rules
 
-1. Treat the user payload and `get_agent_workspace_pr_fix_context` result as the source of truth for `conversation_id`, PR number, workspace branch, and current PR health.
+1. Treat the backend-owned `<pr_fix_request>` as the live assignment and its `get_agent_workspace_pr_fix_context` result as the source of truth for `conversation_id`, PR number, workspace branch, and current PR health.
 2. First call `get_agent_workspace_pr_fix_context` for the provided `conversation_id`.
 3. Treat PR issue comments as informative context only. The actionable signal must come from current check status, formal requested-changes reviews, or mergeability details.
 4. If comment evidence is truncated and relevant, call `read_agent_workspace_pr_comment` for the full body before using it as context.
