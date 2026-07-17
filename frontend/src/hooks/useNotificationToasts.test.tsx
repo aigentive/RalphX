@@ -200,6 +200,51 @@ describe("useNotificationToasts", () => {
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
+  it("manual dismissal cancels a pending Agent acknowledgement", async () => {
+    let settleAction: ((result: boolean) => void) | undefined;
+    vi.mocked(performNotificationPrimaryAction).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settleAction = resolve;
+      }),
+    );
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+    fireEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      settleAction?.(true);
+    });
+
+    await waitFor(() => expect(view.getByRole("button", { name: "Answer" })).toBeEnabled());
+    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
+  it("manual dismissal cancels a pending non-Agent acknowledgement", async () => {
+    let settleAction: ((result: boolean) => void) | undefined;
+    vi.mocked(performNotificationPrimaryAction).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settleAction = resolve;
+      }),
+    );
+    subscribers.get("notification:created")?.(notification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Respond" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+    fireEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+    act(() => settleAction?.(true));
+
+    await waitFor(() => expect(view.getByRole("button", { name: "Respond" })).toBeEnabled());
+    expect(toastDismiss).toHaveBeenCalledWith(notification.id);
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
   it("keeps an Agent conversation toast unread until the target conversation is observed", async () => {
     subscribers.get("notification:created")?.(agentConversationNotification);
     const view = renderToastContent();
@@ -395,6 +440,29 @@ describe("useNotificationToasts", () => {
     await waitFor(() => {
       expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
       expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+    });
+  });
+
+  it("acknowledges an in-flight non-Agent CTA after the drawer hides its toast", async () => {
+    let settleAction: ((result: boolean) => void) | undefined;
+    vi.mocked(performNotificationPrimaryAction).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        settleAction = resolve;
+      }),
+    );
+    subscribers.get("notification:created")?.(notification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Respond" }));
+    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
+
+    act(() => {
+      useUiStore.setState({ notificationsPanelOpen: true });
+      settleAction?.(true);
+    });
+
+    await waitFor(() => {
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(notification.id);
     });
   });
 

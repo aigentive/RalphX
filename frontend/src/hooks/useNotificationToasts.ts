@@ -21,11 +21,13 @@ import { useNotificationPreferences } from "./useNotificationPreferences";
 
 const activeNotificationToastIds = new Set<string>();
 const activeAgentConversationToasts = new Map<string, Notification>();
+const pendingNonAgentAcknowledgements = new Set<string>();
 const pendingAgentConversationAcknowledgements = new Map<string, Notification>();
 
 export function resetNotificationToastStateForTests() {
   activeNotificationToastIds.clear();
   activeAgentConversationToasts.clear();
+  pendingNonAgentAcknowledgements.clear();
   pendingAgentConversationAcknowledgements.clear();
 }
 
@@ -79,16 +81,19 @@ function markNotificationRead(
 function dismissNotificationToast(notification: Notification) {
   activeNotificationToastIds.delete(notification.id);
   activeAgentConversationToasts.delete(notification.id);
+  pendingNonAgentAcknowledgements.delete(notification.id);
+  pendingAgentConversationAcknowledgements.delete(notification.id);
   toast.dismiss(notification.id);
 }
 
-function acknowledgeActiveNotificationToast(
+function acknowledgePendingNonAgentNotification(
   notification: Notification,
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
-  if (!activeNotificationToastIds.delete(notification.id)) return;
-  activeAgentConversationToasts.delete(notification.id);
-  toast.dismiss(notification.id);
+  if (!pendingNonAgentAcknowledgements.delete(notification.id)) return;
+  if (activeNotificationToastIds.delete(notification.id)) {
+    toast.dismiss(notification.id);
+  }
   markNotificationRead(notification, queryClient);
 }
 
@@ -163,6 +168,8 @@ export function useNotificationToasts() {
     const performAction = async () => {
       if (isAgentConversation) {
         pendingAgentConversationAcknowledgements.set(notification.id, notification);
+      } else {
+        pendingNonAgentAcknowledgements.add(notification.id);
       }
       try {
         const navigated = await performNotificationPrimaryAction(
@@ -170,15 +177,17 @@ export function useNotificationToasts() {
           queryClient,
         );
         if (!navigated) {
+          pendingNonAgentAcknowledgements.delete(notification.id);
           pendingAgentConversationAcknowledgements.delete(notification.id);
           return;
         }
         if (isAgentConversation) {
           acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
         } else {
-          acknowledgeActiveNotificationToast(notification, queryClient);
+          acknowledgePendingNonAgentNotification(notification, queryClient);
         }
       } catch {
+        pendingNonAgentAcknowledgements.delete(notification.id);
         pendingAgentConversationAcknowledgements.delete(notification.id);
         // Keep the durable notification visible and unread when its action fails.
       }
