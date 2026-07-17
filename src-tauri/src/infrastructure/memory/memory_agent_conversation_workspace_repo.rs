@@ -894,6 +894,15 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         snapshot: &AgentWorkspaceReviewApprovalSnapshot,
         approved_at: DateTime<Utc>,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let workspaces = self.workspaces.read().await;
+        let Some(workspace) = workspaces.get(conversation_id) else {
+            return Ok(None);
+        };
+        if workspace_review_approval_publish_status_is_active(
+            workspace.publication_push_status.as_deref(),
+        ) {
+            return Ok(None);
+        }
         let mut monitors = self.workspace_review_monitors.write().await;
         let Some(monitor) = monitors.get_mut(conversation_id) else {
             return Ok(None);
@@ -1190,6 +1199,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .retain(|_, action| action.conversation_id != *conversation_id);
         Ok(())
     }
+}
+
+fn workspace_review_approval_publish_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
 }
 
 fn pr_review_action_terminal_status(status: AgentWorkspacePrReviewActionStatus) -> bool {

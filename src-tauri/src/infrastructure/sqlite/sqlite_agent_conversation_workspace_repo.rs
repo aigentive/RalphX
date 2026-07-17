@@ -2248,7 +2248,20 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND review_artifact_id = ?4
                        AND review_artifact_version = ?5
                        AND (review_fixer_status IS NULL
-                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
+                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))
+                       AND EXISTS (
+                           SELECT 1
+                             FROM agent_conversation_workspaces workspace
+                            WHERE workspace.conversation_id =
+                                  agent_workspace_review_monitors.conversation_id
+                              AND (
+                                  workspace.publication_push_status IS NULL
+                                  OR workspace.publication_push_status NOT IN (
+                                      'checking', 'committing', 'refreshing',
+                                      'describing', 'pushing'
+                                  )
+                              )
+                       )",
                     rusqlite::params![
                         conversation_id_value,
                         target_scope,

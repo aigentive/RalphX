@@ -145,6 +145,60 @@ async fn approve_workspace_review_anyway_is_exact_and_single_use() {
 }
 
 #[tokio::test]
+async fn approve_workspace_review_anyway_rejects_active_publish_without_audit() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-review-bypass-publishing");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("checking".to_string());
+    repo.create_or_update(workspace)
+        .await
+        .expect("insert publishing workspace");
+    let artifact_id = ArtifactId::from_string("artifact-review-bypass-publishing");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(7);
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert blocking monitor");
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-publishing".to_string(),
+        artifact_id,
+        artifact_version: 7,
+    };
+
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("approval check should not fail")
+        .is_none());
+    let stored = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load monitor")
+        .expect("monitor remains");
+    assert_eq!(
+        stored.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list audit events")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn cleanup_status_round_trips_and_clears() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("conversation-cleanup");
