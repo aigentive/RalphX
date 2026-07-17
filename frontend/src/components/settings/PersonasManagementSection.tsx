@@ -21,13 +21,10 @@ import { PersonaBuilderScopeDialog } from "./PersonaBuilderScopeDialog";
 import { PersonaRow } from "./PersonaManagementRows";
 
 export interface PersonasManagementSectionProps {
-  /** Controls whether the builder entry is available in the management UI. */
-  showBuilderEntry?: boolean;
   standaloneConversations?: boolean;
 }
 
 export function PersonasManagementSection({
-  showBuilderEntry = true,
   standaloneConversations = true,
 }: PersonasManagementSectionProps) {
   const [editor, setEditor] = useState<PersonaEditorState | null>(null);
@@ -147,18 +144,16 @@ export function PersonasManagementSection({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {showBuilderEntry && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setShowScopeChooser(true);
-              }}
-            >
-              Build with Agent
-            </Button>
-          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setShowScopeChooser(true);
+            }}
+          >
+            Build with Agent
+          </Button>
           <Button
             type="button"
             size="sm"

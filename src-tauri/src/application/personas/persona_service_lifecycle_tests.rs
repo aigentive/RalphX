@@ -145,16 +145,19 @@ async fn save_persona_draft_cannot_touch_active_or_archived_rows() {
 
 #[tokio::test]
 async fn approve_transitions_draft_to_active_and_recomputes_hash() {
-    let service = memory_service();
+    let db = SqliteTestDb::new("approve_recomputes_persona_hash");
+    let service = sqlite_service(&db);
     let draft = service
         .create_draft(true, draft_input("approve-persona", "Approved body"))
         .await
         .expect("draft should be created");
-    service
-        .persona_repo
-        .update_content(&draft.id, &draft.content, "tampered-hash", None)
-        .await
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE personas SET content_hash = ?1 WHERE id = ?2",
+            rusqlite::params!["tampered-hash", draft.id.as_str()],
+        )
         .expect("stored hash should be tampered for regression coverage");
+    });
 
     let active = service
         .approve_persona(true, &draft.id)

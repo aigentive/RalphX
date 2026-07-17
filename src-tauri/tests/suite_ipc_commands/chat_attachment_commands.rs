@@ -87,6 +87,59 @@ async fn builder_text_attachment_is_materialized_once_and_prompt_references_path
 }
 
 #[tokio::test]
+async fn builder_attachment_render_fails_when_materialized_file_is_missing() {
+    let (_temp, state, conversation) = builder_state();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed builder");
+    upload_chat_attachment_for_state(
+        UploadChatAttachmentInput {
+            conversation_id: conversation.id.as_str(),
+            file_name: "notes.txt".to_string(),
+            file_data: b"materialized then removed".to_vec(),
+            mime_type: Some("text/plain".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("text attachment uploads");
+    let attachment = state
+        .chat_attachment_repo
+        .find_by_conversation_id(&conversation.id)
+        .await
+        .expect("list attachments")
+        .into_iter()
+        .next()
+        .expect("uploaded attachment");
+    let materialized = ralphx_lib::application::builder_attachment_materializer::materialized_builder_attachment_path(
+        state.app_paths.app_data_dir(),
+        &attachment,
+    )
+    .expect("materialized attachment path");
+    // codeql[rust/path-injection]
+    std::fs::remove_file(&materialized).expect("remove materialized attachment");
+
+    let error = format_attachments_for_agent(
+        &[attachment],
+        conversation.agent_mode,
+        Some(state.app_paths.app_data_dir()),
+    )
+    .await
+    .expect_err("a missing materialized file must abort the builder send");
+
+    assert!(
+        error.contains("builder attachment"),
+        "missing-file failure must retain typed materialization context: {error}"
+    );
+    assert!(
+        !error.contains("<file_path>"),
+        "the failed render must not return a dangling prompt path"
+    );
+}
+
+#[tokio::test]
 async fn builder_binary_attachment_is_rejected_before_storage_with_typed_actionable_error() {
     let (_temp, state, conversation) = builder_state();
     state

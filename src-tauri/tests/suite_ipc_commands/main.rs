@@ -18,8 +18,6 @@ mod api_key_commands;
 mod chat_attachment_commands;
 mod conversation_folder_reference_commands;
 mod harness_provider_commands;
-mod persona_builder_commands;
-mod persona_builder_liveness_commands;
 mod persona_commands;
 mod persona_runtime_attribution;
 mod persona_update_approval_commands;

@@ -134,8 +134,9 @@ pub use chat_service_context::create_assistant_message;
 #[doc(hidden)]
 pub use chat_service_context::ResolvedChatHarnessLaunch;
 pub use chat_service_context::{
-    build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
-    build_resume_command_for_harness, build_resume_initial_prompt, format_attachments_for_agent,
+    build_command, build_command_for_harness, build_command_with_app_data_dir,
+    build_initial_prompt, build_resume_command, build_resume_command_for_harness,
+    build_resume_initial_prompt, format_attachments_for_agent,
     format_session_history, get_entity_status_for_resume, is_text_file,
     provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
     resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
@@ -3771,7 +3772,8 @@ impl<R: Runtime> AppChatService<R> {
         session_messages: &[crate::domain::entities::ChatMessage],
         total_available: usize,
     ) -> Result<crate::infrastructure::agents::claude::SpawnableCommand, ChatServiceError> {
-        let mut spawnable = chat_service_context::build_command(
+        let app_data_dir = self.resolve_app_data_dir();
+        let mut spawnable = chat_service_context::build_command_with_app_data_dir(
             &self.cli_path,
             &self.plugin_dir,
             conversation,
@@ -3781,6 +3783,7 @@ impl<R: Runtime> AppChatService<R> {
             entity_status,
             project_id,
             &[],
+            app_data_dir.as_deref(),
             self.team_mode.load(Ordering::Relaxed),
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
@@ -3966,6 +3969,7 @@ impl<R: Runtime> AppChatService<R> {
             entity_status,
             project_id,
             &spawn_context.folder_roots,
+            persona_ingest_app_data_dir.as_deref(),
             runtime_team_mode,
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),

@@ -29,14 +29,6 @@ pub trait PersonaRepository: Send + Sync {
 
     async fn list_by_status(&self, status: PersonaStatus) -> AppResult<Vec<Persona>>;
 
-    async fn update_content(
-        &self,
-        id: &PersonaId,
-        content: &str,
-        content_hash: &str,
-        expected_content_hash: Option<&str>,
-    ) -> AppResult<()>;
-
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()>;
 
     /// Delete a persona. The caller enforces the draft-only policy.

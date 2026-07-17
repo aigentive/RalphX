@@ -1,11 +1,13 @@
 use async_trait::async_trait;
+use ralphx_lib::application::builder_attachment_materializer::materialize_builder_attachment;
 use ralphx_lib::application::chat_service::{
-    build_command, build_command_for_harness, build_initial_prompt,
-    build_launch_plan_for_harness_with_persona_for_test, build_resume_command,
-    build_resume_command_for_harness, build_resume_initial_prompt, create_assistant_message,
-    finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
-    format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
-    is_text_file, provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
+    build_command, build_command_for_harness, build_command_with_app_data_dir,
+    build_initial_prompt, build_launch_plan_for_harness_with_persona_for_test,
+    build_resume_command, build_resume_command_for_harness, build_resume_initial_prompt,
+    create_assistant_message, finalize_assistant_message_for_test,
+    finalize_structured_assistant_message_for_test, format_attachments_for_agent,
+    format_session_history, get_entity_status_for_resume, is_text_file,
+    provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
     resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
     ResolvedChatHarnessLaunch,
 };
@@ -278,6 +280,72 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
             && env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
         "filesystem enforcement must not use process env"
     );
+}
+
+#[tokio::test]
+async fn persona_builder_attachment_uses_real_app_data_when_project_path_contains_workspace_name() {
+    let root = tempfile::tempdir_in(std::env::current_dir().expect("current workspace"))
+        .expect("builder attachment fixture");
+    let app_data_dir = root.path().join("actual-app-data");
+    let attachment_storage = root.path().join("attachment-storage");
+    let project_directory = root.path().join("standalone_workspaces").join("project");
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    fs::create_dir_all(&attachment_storage).expect("create attachment storage");
+    fs::create_dir_all(&project_directory).expect("create project path collision");
+
+    let project_id = ProjectId::from_string("workspace-name-collision".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let source = attachment_storage.join("source.txt");
+    write_file(&source, "builder context marker");
+    let attachment = ChatAttachment::new(
+        conversation.id,
+        "source.txt",
+        source.to_string_lossy(),
+        22,
+        Some("text/plain".to_string()),
+    );
+    materialize_builder_attachment(&app_data_dir, &attachment_storage, &attachment)
+        .expect("materialize attachment under the real app data root");
+    let attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
+    attachment_repo
+        .create(attachment)
+        .await
+        .expect("seed pending attachment");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_with_app_data_dir(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            &conversation,
+            "use attached builder context",
+            None,
+            &project_directory,
+            None,
+            Some(project_id.as_str()),
+            std::slice::from_ref(&project_directory),
+            Some(&app_data_dir),
+            false,
+            attachment_repo,
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("builder command must use the real app data root, not infer it from project names");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<file_path>"));
+    assert!(prompt.contains(app_data_dir.to_string_lossy().as_ref()));
+    assert!(!prompt.contains("builder context marker"));
 }
 
 #[tokio::test]

@@ -1,16 +1,11 @@
 #![cfg(test)]
 
-use std::sync::Arc;
-
 use super::persona_service_test_support::*;
-use super::{PersonaService, SavePersonaDraftInput};
+use super::SavePersonaDraftInput;
 use crate::domain::entities::{
     ChatConversation, ChatConversationId, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
 };
 use crate::error::AppError;
-use crate::infrastructure::sqlite::{
-    DbConnection, SqliteChatConversationRepository, SqlitePersonaRepository,
-};
 use crate::testing::SqliteTestDb;
 
 #[tokio::test]
@@ -132,22 +127,13 @@ async fn plain_approval_hashes_the_transactional_content_and_appends_that_tip() 
         .await
         .unwrap();
     let stale_read = service.get_draft(true, &draft.id).await.unwrap();
-    let concurrent_shared = Arc::new(tokio::sync::Mutex::new(db.new_connection()));
-    let concurrent = PersonaService::new(
-        DbConnection::from_shared(Arc::clone(&concurrent_shared)),
-        Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
-            &concurrent_shared,
-        ))),
-        Arc::new(SqliteChatConversationRepository::from_shared(
-            concurrent_shared,
-        )),
-    );
     let content_v2 = persona_content("approval-race", "Version two from another connection");
     let hash_v2 = expected_hash(&content_v2);
-    concurrent
-        .persona_repo
-        .update_content(&draft.id, &content_v2, &hash_v2, None)
-        .await
+    db.new_connection()
+        .execute(
+            "UPDATE personas SET content = ?1, content_hash = ?2, version = version + 1 WHERE id = ?3",
+            rusqlite::params![content_v2, hash_v2, draft.id.as_str()],
+        )
         .expect("concurrent repository write should land after the stale read");
 
     let approved = service
@@ -177,10 +163,11 @@ async fn plain_approval_rejects_invalid_transactional_content_without_mutation()
         .await
         .unwrap();
     let stale_read = service.get_draft(true, &draft.id).await.unwrap();
-    service
-        .persona_repo
-        .update_content(&draft.id, "invalid markdown", "stale-hash", None)
-        .await
+    db.new_connection()
+        .execute(
+            "UPDATE personas SET content = ?1, content_hash = ?2, version = version + 1 WHERE id = ?3",
+            rusqlite::params!["invalid markdown", "stale-hash", draft.id.as_str()],
+        )
         .expect("concurrent invalid repository write should land");
     let before_approval = service.get_draft(true, &draft.id).await.unwrap();
 

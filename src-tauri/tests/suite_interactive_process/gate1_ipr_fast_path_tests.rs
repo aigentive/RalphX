@@ -350,7 +350,16 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         .await;
     state
         .persona_repo
-        .update_content(&persona.id, "new persona body", "new-hash", None)
+        .set_status(&persona.id, PersonaStatus::Archived)
+        .await
+        .expect("release the active slug for fixture replacement");
+    let mut updated_persona = persona.clone();
+    updated_persona.content = "new persona body".to_string();
+    updated_persona.content_hash = "new-hash".to_string();
+    updated_persona.version += 1;
+    state
+        .persona_repo
+        .create(updated_persona)
         .await
         .expect("simulate update_persona content hash bump");
 

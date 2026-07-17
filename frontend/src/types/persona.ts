@@ -64,36 +64,6 @@ export function transformPersona(raw: PersonaResponse): Persona {
   });
 }
 
-export const PersonaIngestEntrySchema = z.object({
-  path: z.string().min(1),
-  reason: z.string().min(1).optional(),
-});
-
-export const PersonaIngestManifestSchema = z.object({
-  copied: z.array(PersonaIngestEntrySchema),
-  skipped: z.array(PersonaIngestEntrySchema),
-  rejected: z.array(PersonaIngestEntrySchema),
-});
-
-export type PersonaIngestManifest = z.infer<typeof PersonaIngestManifestSchema>;
-
-export const IngestPersonaContextInputSchema = z.object({
-  conversationId: z.string().min(1),
-  pickedPaths: z.array(z.string().min(1)).min(1),
-});
-
-export type IngestPersonaContextInput = z.infer<
-  typeof IngestPersonaContextInputSchema
->;
-
-export const PersonaBuilderIngestStatusSchema = z.object({
-  live: z.boolean(),
-});
-
-export type PersonaBuilderIngestStatus = z.infer<
-  typeof PersonaBuilderIngestStatusSchema
->;
-
 /** Raw `persona:draft_updated` Tauri event payload; never contains persona content. */
 export const PersonaDraftUpdatedEventSchema = z.object({
   draft_id: z.string().min(1),

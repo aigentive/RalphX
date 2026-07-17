@@ -164,22 +164,6 @@ async fn list_and_get_by_slug_use_newest_persona_and_missing_ids_are_none() {
 }
 
 #[tokio::test]
-async fn update_content_bumps_version_and_hash() {
-    let (_db, repo) = setup_repo();
-    let original = persona("reviewer", PersonaStatus::Draft);
-    repo.create(original.clone()).await.unwrap();
-
-    repo.update_content(&original.id, "new content", "new hash", None)
-        .await
-        .unwrap();
-    let updated = repo.get_by_id(&original.id).await.unwrap().unwrap();
-
-    assert_eq!(updated.content, "new content");
-    assert_eq!(updated.content_hash, "new hash");
-    assert_eq!(updated.version, 2);
-}
-
-#[tokio::test]
 async fn set_status_transitions_row() {
     let (_db, repo) = setup_repo();
     let original = persona("reviewer", PersonaStatus::Draft);

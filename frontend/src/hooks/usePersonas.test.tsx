@@ -7,7 +7,6 @@ import { chatKeys } from "./useChat";
 import {
   fetchPersonas,
   fetchPersona,
-  ingestPersonaContext,
   personaKeys,
   useApprovePersona,
   useArchivePersona,
@@ -54,11 +53,6 @@ describe("personaKeys", () => {
       "detail",
       "persona-1",
     ]);
-    expect(personaKeys.ingestManifest("conversation-1")).toEqual([
-      "personas",
-      "ingest-manifest",
-      "conversation-1",
-    ]);
   });
 });
 
@@ -104,26 +98,6 @@ describe("persona fetchers", () => {
     });
   });
 
-  it("uses the batched picked-paths ingest contract", async () => {
-    vi.mocked(invoke).mockResolvedValue({
-      copied: [{ path: "notes.md" }],
-      skipped: [],
-      rejected: [],
-    });
-
-    await expect(
-      ingestPersonaContext({
-        conversationId: "conversation-1",
-        pickedPaths: ["/picked/one.md", "/picked/context"],
-      }),
-    ).resolves.toHaveProperty("copied.0.path", "notes.md");
-    expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
-      input: {
-        conversationId: "conversation-1",
-        pickedPaths: ["/picked/one.md", "/picked/context"],
-      },
-    });
-  });
 });
 
 describe("persona mutations", () => {

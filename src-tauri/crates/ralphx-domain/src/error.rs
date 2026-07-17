@@ -104,9 +104,6 @@ pub enum AppError {
     #[error("CONVERSATION_FOLDER_REFERENCE_UNSUPPORTED_CONTEXT: folder references require a Project conversation")]
     ConversationFolderReferenceUnsupportedContext,
 
-    #[error("CONVERSATION_FOLDER_REFERENCE_UNSUPPORTED_MODE: folder references are unavailable in persona_builder mode")]
-    ConversationFolderReferenceUnsupportedMode,
-
     #[error("CONVERSATION_FOLDER_REFERENCE_APP_DATA_UNAVAILABLE: RalphX application data could not be canonicalized: {detail}")]
     ConversationFolderReferenceAppDataUnavailable { detail: String },
 

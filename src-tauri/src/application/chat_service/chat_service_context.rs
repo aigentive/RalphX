@@ -302,6 +302,7 @@ struct BuildHarnessCommandRequest<'a> {
     entity_status: Option<&'a str>,
     project_id: Option<&'a str>,
     filesystem_read_roots: &'a [PathBuf],
+    app_data_dir: Option<&'a Path>,
     team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -368,6 +369,7 @@ struct BuildHarnessLaunchRequest<'a> {
     entity_status: Option<&'a str>,
     project_id: Option<&'a str>,
     filesystem_read_roots: &'a [PathBuf],
+    app_data_dir: Option<&'a Path>,
     runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -515,7 +517,7 @@ impl ResolvedChatHarnessCli {
         );
         match self {
             Self::Claude { cli_path } => Ok(ProviderSpawnableCommand {
-                spawnable: build_command(
+                spawnable: build_command_with_app_data_dir(
                     &cli_path,
                     request.plugin_dir,
                     request.conversation,
@@ -525,6 +527,7 @@ impl ResolvedChatHarnessCli {
                     request.entity_status,
                     request.project_id,
                     request.filesystem_read_roots,
+                    request.app_data_dir,
                     request.team_mode,
                     request.chat_attachment_repo,
                     request.artifact_repo,
@@ -570,6 +573,7 @@ impl ResolvedChatHarnessCli {
                         request.entity_status,
                         request.project_id,
                         request.filesystem_read_roots,
+                        request.app_data_dir,
                         false,
                         request.chat_attachment_repo,
                         request.artifact_repo,
@@ -770,6 +774,7 @@ impl ResolvedChatHarnessCli {
                     request.entity_status,
                     request.project_id,
                     request.filesystem_read_roots,
+                    request.app_data_dir,
                     request.runtime_team_mode,
                     request.chat_attachment_repo,
                     request.artifact_repo,
@@ -845,6 +850,7 @@ impl ResolvedChatHarnessCli {
                             request.entity_status,
                             request.project_id,
                             request.filesystem_read_roots,
+                            request.app_data_dir,
                             request.runtime_team_mode,
                             request.chat_attachment_repo,
                             request.artifact_repo,
@@ -2404,15 +2410,6 @@ pub async fn format_attachments_for_agent(
     Ok(output)
 }
 
-fn builder_app_data_dir_from_read_roots(read_roots: &[PathBuf]) -> Option<PathBuf> {
-    read_roots.iter().find_map(|root| {
-        let workspaces_root = root.parent()?;
-        (workspaces_root.file_name()?.to_str()? == "standalone_workspaces")
-            .then(|| workspaces_root.parent().map(Path::to_path_buf))
-            .flatten()
-    })
-}
-
 /// Apply the standard set of RalphX env vars to a spawnable command.
 ///
 /// Deduplicates the identical env-var setup block that previously appeared in
@@ -2676,6 +2673,7 @@ pub(super) fn project_mcp_parent_conversation_id(
 /// `total_available` is the true DB count of session messages (from `count_by_session`); pass `0` when `session_messages` is empty.
 /// `effort_override` is an optional model effort level (e.g. `"low"`, `"medium"`, `"high"`) forwarded to
 /// `build_base_cli_command`. Pass `None` to use the project/global default.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_command(
     cli_path: &Path,
     plugin_dir: &Path,
@@ -2686,6 +2684,62 @@ pub async fn build_command(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<SpawnableCommand, String> {
+    build_command_with_app_data_dir(
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        persona_block,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        None,
+        team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        agent_lane_settings_repo,
+        ideation_effort_settings_repo,
+        ideation_model_settings_repo,
+        session_messages,
+        total_available,
+        effort_override,
+        model_override,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+/// Builds a one-shot command with the process-owned app-data root used for builder attachments.
+///
+/// # Errors
+/// Returns an error when attachment resolution, prompt construction, runtime settings, or command
+/// construction fails.
+pub async fn build_command_with_app_data_dir(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    persona_block: Option<&str>,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -2730,13 +2784,8 @@ pub async fn build_command(
                 .filter(|a| a.message_id.is_none())
                 .collect::<Vec<_>>();
 
-            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
-            format_attachments_for_agent(
-                &attachments,
-                conversation.agent_mode,
-                app_data_dir.as_deref(),
-            )
-            .await?
+            format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
+                .await?
         }
     };
     let resolved_spawn_settings =
@@ -3014,6 +3063,7 @@ pub async fn build_codex_command(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     _team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3059,13 +3109,9 @@ pub async fn build_codex_command(
                 "chat_service.build_codex_command phase completed"
             );
             let attachment_context_started = Instant::now();
-            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
-            let attachment_context = format_attachments_for_agent(
-                &attachments,
-                conversation.agent_mode,
-                app_data_dir.as_deref(),
-            )
-            .await?;
+            let attachment_context =
+                format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
+                    .await?;
             tracing::info!(
                 context_type = %conversation.context_type,
                 context_id = %conversation.context_id,
@@ -3299,6 +3345,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3331,6 +3378,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
         entity_status,
         project_id,
         filesystem_read_roots,
+        app_data_dir,
         runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
@@ -3400,6 +3448,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         entity_status,
         project_id,
         filesystem_read_roots,
+        None,
         runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
@@ -3471,6 +3520,7 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
         entity_status,
         project_id,
         filesystem_read_roots,
+        None,
         runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
@@ -3508,6 +3558,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3548,6 +3599,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             entity_status,
             project_id,
             filesystem_read_roots,
+            app_data_dir,
             runtime_team_mode,
             chat_attachment_repo,
             artifact_repo,
@@ -3605,6 +3657,7 @@ pub async fn build_command_for_harness(
             entity_status,
             project_id,
             filesystem_read_roots,
+            app_data_dir: None,
             team_mode,
             chat_attachment_repo,
             artifact_repo,
@@ -3635,6 +3688,7 @@ pub async fn build_command_for_harness_with_folder_refs(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3661,6 +3715,7 @@ pub async fn build_command_for_harness_with_folder_refs(
             entity_status,
             project_id,
             filesystem_read_roots,
+            app_data_dir,
             team_mode,
             chat_attachment_repo,
             artifact_repo,
@@ -3700,6 +3755,7 @@ pub async fn build_interactive_command(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    app_data_dir: Option<&Path>,
     team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3751,13 +3807,9 @@ pub async fn build_interactive_command(
             );
 
             let attachment_context_started = Instant::now();
-            let app_data_dir = builder_app_data_dir_from_read_roots(filesystem_read_roots);
-            let attachment_context = format_attachments_for_agent(
-                &attachments,
-                conversation.agent_mode,
-                app_data_dir.as_deref(),
-            )
-            .await?;
+            let attachment_context =
+                format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
+                    .await?;
             log_claude_launch_plan_phase(
                 conversation,
                 "format_pending_attachments",

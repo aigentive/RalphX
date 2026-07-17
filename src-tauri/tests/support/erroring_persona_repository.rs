@@ -44,16 +44,6 @@ impl PersonaRepository for ErroringPersonaRepository {
         repository_error()
     }
 
-    async fn update_content(
-        &self,
-        _id: &PersonaId,
-        _content: &str,
-        _content_hash: &str,
-        _expected_content_hash: Option<&str>,
-    ) -> AppResult<()> {
-        repository_error()
-    }
-
     async fn set_status(&self, _id: &PersonaId, _status: PersonaStatus) -> AppResult<()> {
         repository_error()
     }

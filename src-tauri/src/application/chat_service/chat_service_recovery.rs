@@ -321,6 +321,9 @@ pub async fn attempt_session_recovery<R: Runtime>(
     };
 
     let persona_for_attribution = resolved_persona.clone();
+    let app_data_dir = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| state.app_paths.app_data_dir().to_path_buf());
     let spawn_context =
         if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
             chat_service_context::resolve_conversation_spawn_context(
@@ -356,6 +359,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
         &spawn_context.folder_roots,
+        app_data_dir.as_deref(),
         team_mode,
         chat_attachment_repo,
         artifact_repo,

@@ -77,7 +77,7 @@ pub struct AgentWorkspaceSourcePullRequestInput {
 pub struct StartAgentConversationInput {
     /// `None` (including an omitted `projectId` key) starts a standalone
     /// (projectless) conversation — requires the `standalone_conversations`
-    /// flag, `mode == "chat"`, and a solo team intent.
+    /// flag, `mode == "chat"` or `mode == "persona_builder"`, and a solo team intent.
     #[serde(default)]
     pub project_id: Option<String>,
     pub content: String,

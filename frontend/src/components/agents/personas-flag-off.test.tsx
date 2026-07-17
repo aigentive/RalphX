@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PersonaChip } from "@/components/Chat/PersonaChip";
 import { IntegratedChatPanel } from "@/components/Chat/IntegratedChatPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { PersonasSection } from "@/components/settings/PersonasSection";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -277,8 +276,6 @@ vi.mock("@/hooks/usePersonas", () => ({
   useApprovePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useIngestPersonaContext: () => ({ data: undefined, mutateAsync: vi.fn(), isPending: false }),
-  usePersonaBuilderIngestStatus: () => ({ data: { live: true }, isPending: false }),
   useSwitchConversationPersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
@@ -303,8 +300,6 @@ const PERSONA_COMMANDS = new Set([
   "archive_persona",
   "delete_persona_draft",
   "switch_agent_conversation_persona",
-  "create_persona_builder_conversation",
-  "ingest_persona_context",
 ]);
 
 function createQueryClient() {
@@ -433,12 +428,6 @@ describe("agent personas A18 icon-only controls", () => {
     expect(await screen.findByRole("tooltip", { name: "Archive Reviewer Voice" })).toBeInTheDocument();
     archiveRows.unmount();
 
-    const builder = renderWithProviders(<PersonaBuilderView projectId="project-1" onBack={vi.fn()} />);
-    const back = screen.getByRole("button", { name: "Back to personas" });
-    expect(back).toHaveAttribute("aria-label", "Back to personas");
-    await user.hover(back);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Back to personas");
-    builder.unmount();
   });
 });
 

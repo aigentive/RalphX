@@ -30,7 +30,24 @@ pub fn materialized_builder_attachment_path(
         build_builder_workspace_attachment_path(&workspace, &attachment.id, &attachment.file_name)
             .map_err(AppError::Validation)?;
     require_under_root(&path, &workspace, "builder workspace attachment")?;
-    Ok(path)
+    // codeql[rust/path-injection]
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| filesystem_error("inspect a materialized builder attachment", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Validation(
+            "Materialized builder attachment must be a non-symlink file".to_string(),
+        ));
+    }
+    // codeql[rust/path-injection]
+    let canonical_path = path.canonicalize().map_err(|error| {
+        filesystem_error("canonicalize a materialized builder attachment", error)
+    })?;
+    require_under_root(
+        &canonical_path,
+        &workspace,
+        "materialized builder attachment",
+    )?;
+    Ok(canonical_path)
 }
 
 /// Copies one text attachment from app-owned storage into its conversation workspace.

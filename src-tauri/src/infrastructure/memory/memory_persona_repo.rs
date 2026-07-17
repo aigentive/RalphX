@@ -133,35 +133,6 @@ impl PersonaRepository for MemoryPersonaRepository {
         Ok(personas)
     }
 
-    async fn update_content(
-        &self,
-        id: &PersonaId,
-        content: &str,
-        content_hash: &str,
-        expected_content_hash: Option<&str>,
-    ) -> AppResult<()> {
-        let mut personas = self.personas.write().await;
-        let persona = personas
-            .get_mut(id)
-            .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?;
-        if let Some(expected) = expected_content_hash {
-            if persona.status != PersonaStatus::Draft {
-                return Err(AppError::Validation(format!("Persona {id} must be draft")));
-            }
-            if persona.content_hash != expected {
-                return Err(AppError::PersonaDraftConflict {
-                    expected: expected.to_string(),
-                    actual: persona.content_hash.clone(),
-                });
-            }
-        }
-        persona.content = content.to_string();
-        persona.content_hash = content_hash.to_string();
-        persona.version += 1;
-        persona.updated_at = Utc::now();
-        Ok(())
-    }
-
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()> {
         let mut personas = self.personas.write().await;
         if status == PersonaStatus::Active {

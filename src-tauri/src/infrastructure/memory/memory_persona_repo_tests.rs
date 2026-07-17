@@ -156,25 +156,6 @@ async fn memory_persona_repo_trait_parity_list_by_status() {
 }
 
 #[tokio::test]
-async fn memory_persona_repo_trait_parity_update_content() {
-    let repo = MemoryPersonaRepository::new();
-    let original = persona("reviewer", PersonaStatus::Draft);
-    repo.create(original.clone()).await.unwrap();
-    repo.update_content(&original.id, "new content", "new hash", None)
-        .await
-        .unwrap();
-    let updated = repo.get_by_id(&original.id).await.unwrap().unwrap();
-    assert_eq!(
-        (
-            updated.content.as_str(),
-            updated.content_hash.as_str(),
-            updated.version
-        ),
-        ("new content", "new hash", 2)
-    );
-}
-
-#[tokio::test]
 async fn memory_persona_repo_trait_parity_set_status() {
     let repo = MemoryPersonaRepository::new();
     let original = persona("reviewer", PersonaStatus::Draft);

@@ -258,20 +258,6 @@ describe("PersonasManagementSection", () => {
     expect(screen.queryByText("Old Voice")).not.toBeInTheDocument();
   });
 
-  it("hides the builder entry when the feature flag is off", async () => {
-    mockPersonaCommands([activePersona]);
-    render(
-      <QueryClientProvider client={createQueryClient()}>
-        <TooltipProvider delayDuration={0}>
-          <PersonasManagementSection showBuilderEntry={false} />
-        </TooltipProvider>
-      </QueryClientProvider>,
-    );
-
-    await screen.findByText("Reviewer Voice");
-    expect(screen.queryByRole("button", { name: "Build with Agent" })).not.toBeInTheDocument();
-  });
-
   it("shows the builder entry by default when the feature is enabled", async () => {
     mockPersonaCommands([activePersona]);
     renderSection();
