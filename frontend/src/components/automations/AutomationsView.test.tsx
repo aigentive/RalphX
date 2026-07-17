@@ -311,8 +311,8 @@ describe("AutomationsView", () => {
     expect(screen.getByText("Goal completed")).toBeInTheDocument();
     expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
     expect(screen.getByText("Waiting for first run")).toBeInTheDocument();
-    expect(screen.getByText("Judging")).toBeInTheDocument();
-    expect(screen.getByText("Paused: judge failed")).toBeInTheDocument();
+    expect(screen.getByText("Terminal judge running")).toBeInTheDocument();
+    expect(screen.getByText("Terminal judge failed")).toBeInTheDocument();
     expect(screen.getByText("Run 2 in progress")).toBeInTheDocument();
     expect(
       within(screen.getByTestId("automation-row-awaiting-plan")).getByText(
@@ -326,7 +326,7 @@ describe("AutomationsView", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Waiting for PR merge")).toBeInTheDocument();
     expect(screen.getByText("Waiting for PR #593 to merge")).toBeInTheDocument();
-    expect(screen.getByText("Waiting for judge")).toBeInTheDocument();
+    expect(screen.getByText("Terminal judge pending")).toBeInTheDocument();
     expect(screen.getByText("Scheduling next run")).toBeInTheDocument();
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getAllByText("0 / 25").length).toBeGreaterThan(0);

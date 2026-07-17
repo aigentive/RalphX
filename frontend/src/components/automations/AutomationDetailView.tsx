@@ -12,6 +12,7 @@ import {
   Pencil,
   Play,
   PlayCircle,
+  RotateCcw,
   SkipForward,
   Square,
   Trash2,
@@ -27,10 +28,13 @@ import {
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  AUTOMATION_CANCEL_CONFIRMATION_DESCRIPTION,
+  CANCELLED_RUN_RESTART_DESCRIPTION,
   describeAutomationDeleteConsequences,
   describeAutomationRunPrState,
   describeRunFailure,
   getAutomationRunView,
+  getAutomationJudgeRecovery,
   isAutomationDeletable,
   isIdleAfterCancelledRun,
   isOpenAutomationRun,
@@ -931,9 +935,45 @@ export function AutomationDetailView({
     mutationFn: () => automationsApi.stop(automationId),
     onSuccess: () => {
       invalidate();
-      toast.success("Automation stopped");
+      toast.success("Automation cancelled");
     },
-    onError: () => toast.error("Failed to stop automation"),
+    onError: () => toast.error("Failed to cancel automation"),
+  });
+  const restartMutation = useMutation({
+    mutationFn: () => automationsApi.restart(automationId),
+    onSuccess: (outcome) => {
+      invalidate();
+      if (outcome.scheduled) {
+        toast.success("Automation restarted with a new run");
+      } else {
+        toast.info(outcome.reason ?? "Automation was not restarted");
+      }
+    },
+    onError: () => toast.error("Failed to restart automation"),
+  });
+  const retryJudgeMutation = useMutation({
+    mutationFn: () => automationsApi.retryJudge(automationId),
+    onSuccess: (outcome) => {
+      invalidate();
+      if (outcome.scheduled) {
+        toast.success("Terminal judge retry scheduled");
+      } else {
+        toast.info(outcome.reason ?? "Terminal judge was not retried");
+      }
+    },
+    onError: () => toast.error("Failed to retry terminal judge"),
+  });
+  const retryPlanJudgeMutation = useMutation({
+    mutationFn: () => automationsApi.retryPlanJudge(automationId),
+    onSuccess: (outcome) => {
+      invalidate();
+      if (outcome.scheduled) {
+        toast.success("Plan judge retry scheduled");
+      } else {
+        toast.info(outcome.reason ?? "Plan judge was not retried");
+      }
+    },
+    onError: () => toast.error("Failed to retry plan judge"),
   });
   const runNowMutation = useMutation({
     mutationFn: () => automationsApi.triggerRunNow(automationId),
@@ -1008,6 +1048,7 @@ export function AutomationDetailView({
   const newestRuns = sortedNewestRuns(runs);
   const latest = latestRun(runs);
   const idleAfterCancelledRun = isIdleAfterCancelledRun(automation, latest);
+  const judgeRecovery = getAutomationJudgeRecovery(automation, latest);
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
   // A run is only "in the way" of scheduling when the automation is actively
   // driving it. While paused, "Run now" is an explicit resume-and-override the
@@ -1027,6 +1068,9 @@ export function AutomationDetailView({
     || resumeMutation.isPending
     || finalizeMutation.isPending
     || stopMutation.isPending
+    || restartMutation.isPending
+    || retryJudgeMutation.isPending
+    || retryPlanJudgeMutation.isPending
     || runNowMutation.isPending
     || skipJudgeMutation.isPending
     || deleteMutation.isPending;
@@ -1047,10 +1091,10 @@ export function AutomationDetailView({
 
   const handleStop = async () => {
     const confirmed = await confirm({
-      title: "Stop automation?",
-      description: "Stopping is terminal for this automation.",
-      confirmText: "Stop",
-      pendingText: "Stopping...",
+      title: "Cancel automation?",
+      description: AUTOMATION_CANCEL_CONFIRMATION_DESCRIPTION,
+      confirmText: "Cancel automation",
+      pendingText: "Cancelling...",
       variant: "destructive",
     });
     if (confirmed) {
@@ -1123,6 +1167,18 @@ export function AutomationDetailView({
               Approve
             </Button>
           )}
+          {automation.status === "stopped" ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              disabled={actionPending}
+              onClick={() => restartMutation.mutate()}
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              Restart automation
+            </Button>
+          ) : null}
           {automation.status === "paused" ? (
             <TooltipIconButton
               label="Resume automation"
@@ -1152,7 +1208,7 @@ export function AutomationDetailView({
             <PlayCircle className="h-4 w-4" />
           </TooltipIconButton>
           <TooltipIconButton
-            label="Stop automation"
+            label="Cancel automation"
             variant="outline"
             disabled={actionPending || isAutomationTerminal(automation.status)}
             onClick={() => void handleStop()}
@@ -1217,6 +1273,39 @@ export function AutomationDetailView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
+        {judgeRecovery ? (
+          <div
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-2 text-sm"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-secondary)",
+            }}
+            data-testid={`automation-${judgeRecovery.kind}-judge-recovery`}
+          >
+            <span className="min-w-0">
+              <strong style={{ color: "var(--text-primary)" }}>
+                {judgeRecovery.statusLabel}.
+              </strong>{" "}
+              {judgeRecovery.description}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={actionPending}
+              onClick={() =>
+                judgeRecovery.kind === "plan"
+                  ? retryPlanJudgeMutation.mutate()
+                  : retryJudgeMutation.mutate()
+              }
+            >
+              {judgeRecovery.actionLabel}
+            </Button>
+          </div>
+        ) : null}
         {idleAfterCancelledRun ? (
           <div
             className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-2 text-sm"
@@ -1230,7 +1319,7 @@ export function AutomationDetailView({
             data-testid="automation-idle-after-cancelled"
           >
             <span className="min-w-0">
-              This automation is idle — its last run was cancelled and no new run will start on its own.
+              {CANCELLED_RUN_RESTART_DESCRIPTION}
             </span>
             <Button
               type="button"

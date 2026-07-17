@@ -27,12 +27,56 @@ function capturePost() {
 }
 
 describe("automation setup MCP tools", () => {
+  const callerBoundActionTools = [
+    "run_automation_now",
+    "pause_automation",
+    "resume_automation",
+    "cancel_automation_run",
+    "cancel_automation",
+    "restart_automation",
+    "retry_automation_judge",
+    "retry_automation_plan_judge",
+    "skip_automation_judge",
+    "get_automation_publish_status",
+    "check_automation_publish_readiness",
+    "update_automation_from_base",
+    "publish_automation_workspace",
+  ] as const;
+
   it("recognizes only automation setup tool names", () => {
     expect(isAutomationSetupToolName("get_automation")).toBe(true);
     expect(isAutomationSetupToolName("update_automation")).toBe(true);
     expect(isAutomationSetupToolName("verify_automation_decomposition")).toBe(true);
     expect(isAutomationSetupToolName("finalize_automation")).toBe(true);
+    for (const name of callerBoundActionTools) {
+      expect(isAutomationSetupToolName(name)).toBe(true);
+    }
     expect(isAutomationSetupToolName("list_projects")).toBe(false);
+  });
+
+  it("exposes caller-bound actions without agent-selectable identities", () => {
+    for (const name of callerBoundActionTools) {
+      const tool = AUTOMATION_SETUP_TOOLS.find((candidate) => candidate.name === name);
+
+      expect(tool, `${name} should be registered`).toBeDefined();
+      expect(tool?.inputSchema).toEqual({
+        type: "object",
+        properties: {},
+        required: [],
+      });
+    }
+  });
+
+  it("limits judge retry descriptions to persisted failed states", () => {
+    for (const name of [
+      "retry_automation_judge",
+      "retry_automation_plan_judge",
+    ]) {
+      const tool = AUTOMATION_SETUP_TOOLS.find((candidate) => candidate.name === name);
+
+      expect(tool?.description).toContain("persisted failed");
+      expect(tool?.description).not.toContain("expired");
+    }
   });
 
   it("forwards get_automation with the caller conversation header", async () => {
@@ -179,6 +223,36 @@ describe("automation setup MCP tools", () => {
       },
     });
   });
+
+  it.each(callerBoundActionTools)(
+    "forwards %s with caller-bound identity and strips supplied ids",
+    async (name) => {
+      const { callTauri, calls } = capturePost();
+
+      await callAutomationSetupTool(
+        name,
+        callTauri,
+        {
+          automation_id: "must-not-forward",
+          conversation_id: "must-not-forward",
+          run_id: "must-not-forward",
+        },
+        { conversationId: "conversation-1" }
+      );
+
+      expect(calls).toEqual([
+        {
+          path: name,
+          body: {},
+          options: {
+            headers: {
+              "X-RalphX-Caller-Session-Id": "conversation-1",
+            },
+          },
+        },
+      ]);
+    }
+  );
 
   it("fails closed when the runtime context lacks a conversation id", async () => {
     const { callTauri } = capturePost();
