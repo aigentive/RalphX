@@ -1,7 +1,7 @@
 ---
 paths:
   - "src-tauri/src/**/*.rs"
-  - "src/**/*.{ts,tsx}"
+  - "frontend/src/**/*.{ts,tsx}"
 ---
 
 # Large Module Extraction Patterns
@@ -27,20 +27,18 @@ When extracting large single file into 10+ target files:
 3. Identify test boundaries and shared helpers
 4. Plan target files + function assignments
 
-### Step 2: Parallel Creation
-1. Launch agents **in parallel** (not sequential) for each target file
-2. Each agent reads source file once, extracts only its section
-3. Each agent uses `use super::*;` imports (Rust) or top-level imports (TS)
-4. Return completed file + error list
-
-**Why parallel?** Sequential re-reads of large files are slow. Parallel agents finish all reads simultaneously.
+### Step 2: Mechanical Extraction (NON-NEGOTIABLE)
+1. Plan exact line ranges per target file from the Step 1 analysis
+2. Move bodies with scripted extraction commands only — `sed -n 'A,Bp'` / `awk` / `git mv` — never by retyping or agent-recreating existing bodies (see code-quality-standards.md "Mechanical extraction only")
+3. `apply_patch`/Edit is reserved for the post-move fix-up layer: imports, visibility, re-exports, module wiring
+4. Parallelism is allowed for the READ/ANALYSIS phase only; the moves themselves run as one serial scripted pass
 
 ### Step 3: Main Thread Work
 After all agents complete:
 1. Rewrite mod.rs/index.ts to type hub + re-exports
 2. Add module declarations for new sub-modules
 3. Run compilation checks
-4. Run full test suite
+4. Run `scripts/test-rust-fast.sh pr`
 5. Single commit (all files atomic)
 
 ## Visibility Fixes (Rust)
@@ -148,7 +146,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 | 1 | Compare `fn` signatures in parent (`mod.rs`) vs extracted modules — find duplicates |
 | 2 | Look for stray attributes (`#[cfg(test)]`) between `impl` closing braces |
 | 3 | Look for unmatched `}` at unexpected positions |
-| 4 | Run `cargo test --lib` — "unexpected closing delimiter" = orphaned block |
+| 4 | Run `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` (or a targeted filter per rust-test-execution.md) — "unexpected closing delimiter" = orphaned block |
 
 ### Resolution
 
@@ -164,7 +162,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 | Extract module | Create new leaf file with functions | `pub fn` signatures match extracted body |
 | Update parent | Delete functions from parent | Grep confirms no duplicates in parent |
 | Verify structure | Check `impl` block boundaries | No stray attributes between `impl` closing `}` and next item |
-| Compile | Run `cargo test --lib` | 0 compile errors, structure is clean |
+| Compile | Run `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` (or a targeted filter per rust-test-execution.md) | 0 compile errors, structure is clean |
 
 ## Verification Checklist
 
@@ -174,7 +172,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 - Private functions with cross-module callers → `pub(super)`
 - Module declarations added to parent `mod.rs`
 - No orphaned duplicates in parent (see Post-Extraction Cleanup above)
-- `cargo clippy --all-targets --all-features -- -D warnings` / `npm run typecheck` succeeds
-- Full test suite passes
+- Both clippy gates pass (`--lib --bins --no-default-features` + `--all-targets --all-features`, each `--manifest-path src-tauri/Cargo.toml -- -D warnings`) / `npm run typecheck` succeeds
+- `scripts/test-rust-fast.sh pr` passes
 - Compilation succeeds with no new warnings
 - Single atomic commit
