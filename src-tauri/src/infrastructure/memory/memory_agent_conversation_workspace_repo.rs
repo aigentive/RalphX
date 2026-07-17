@@ -192,6 +192,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .cloned())
     }
 
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| {
+                workspace.task_pipeline_session_id.as_ref() == Some(ideation_session_id)
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned())
+    }
+
     async fn save_followup_provenance(
         &self,
         conversation_id: &ChatConversationId,
@@ -1431,6 +1447,7 @@ mod tests {
 
         let mut second = candidate_workspace("linked-second");
         second.linked_ideation_session_id = Some(session_id.clone());
+        second.task_pipeline_session_id = Some(session_id.clone());
         repo.create_or_update(second.clone()).await.unwrap();
 
         let loaded = repo
@@ -1440,11 +1457,23 @@ mod tests {
             .expect("latest linked workspace should load");
         assert_eq!(loaded.conversation_id, second.conversation_id);
 
+        let task_pipeline = repo
+            .get_by_task_pipeline_session_id(&session_id)
+            .await
+            .unwrap()
+            .expect("durably attached Tasks workspace should load");
+        assert_eq!(task_pipeline.conversation_id, second.conversation_id);
+
         let missing = repo
             .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
             .await
             .unwrap();
         assert!(missing.is_none());
+        assert!(repo
+            .get_by_task_pipeline_session_id(&IdeationSessionId::from_string("missing-session"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

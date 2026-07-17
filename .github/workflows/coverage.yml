@@ -227,6 +227,18 @@ jobs:
                   "impl TauriDesktopNotifier {",
                   "impl DesktopNotifier for TauriDesktopNotifier {",
               ),
+              # These command adapters require the production AppHandle runtime. Their
+              # state/service entry points are covered by the root-lib behavioral suite.
+              "src/commands/agent_plan_commands.rs": (
+                  "pub async fn activate_agent_task_pipeline(",
+                  "pub async fn start_agent_task_pipeline(",
+              ),
+              "src/commands/ideation_commands/ideation_commands_apply.rs": (
+                  "pub async fn apply_proposals_to_kanban(",
+                  "pub async fn apply_proposals_to_kanban_for_state(",
+                  "pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(",
+                  "async fn apply_proposals_to_kanban_for_state_inner(",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -303,6 +315,8 @@ jobs:
               return max(cursor + 1, start + 1)
 
           def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              if start > 0 and lines[start - 1].strip() == "#[tauri::command]":
+                  ignored.add(start)
               depth = 0
               seen_open = False
               cursor = start
@@ -532,6 +546,18 @@ jobs:
                   "impl TauriDesktopNotifier {",
                   "impl DesktopNotifier for TauriDesktopNotifier {",
               ),
+              # Keep this aligned with the Rust lib filter above. The IPC suite
+              # also instruments these production-AppHandle adapter blocks.
+              "src/commands/agent_plan_commands.rs": (
+                  "pub async fn activate_agent_task_pipeline(",
+                  "pub async fn start_agent_task_pipeline(",
+              ),
+              "src/commands/ideation_commands/ideation_commands_apply.rs": (
+                  "pub async fn apply_proposals_to_kanban(",
+                  "pub async fn apply_proposals_to_kanban_for_state(",
+                  "pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(",
+                  "async fn apply_proposals_to_kanban_for_state_inner(",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -600,6 +626,8 @@ jobs:
               return max(cursor + 1, start + 1)
 
           def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              if start > 0 and lines[start - 1].strip() == "#[tauri::command]":
+                  ignored.add(start)
               depth = 0
               seen_open = False
               cursor = start

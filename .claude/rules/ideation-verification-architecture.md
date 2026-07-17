@@ -18,6 +18,14 @@ paths:
 
 # Model-Native Plan Verification
 
+## Native supervised task-pipeline authorization
+
+- Native Plan approval authorizes neither proposal application nor scheduling.
+- Create Proposals records the exact conversation/session attachment and requests decomposition only.
+- Start Tasks revalidates the exact current artifact approval and proposal graph before using the canonical apply/scheduler path.
+- Tasks follow-up appends require the durable attachment plus an explicit source user message; retries must not create a second task.
+- External-origin and Automation flows keep their existing typed authorization and are not governed by native Autopilot.
+
 **Required context:** `stateful-workflow-review.md` | `agent-mcp-tools.md` | `multi-harness.md` | `docs/features/plan-verification.md`
 
 ## Non-negotiables

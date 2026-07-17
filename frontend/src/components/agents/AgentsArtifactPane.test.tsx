@@ -101,6 +101,8 @@ const {
   closeWorkspacePrMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  activateAgentTaskPipelineMock,
+  startAgentTaskPipelineMock,
   listAgentConversationIssuesMock,
   getAutomationMock,
   pauseAutomationMock,
@@ -167,6 +169,8 @@ const {
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  activateAgentTaskPipelineMock: vi.fn(),
+  startAgentTaskPipelineMock: vi.fn(),
   listAgentConversationIssuesMock: vi.fn(),
   getAutomationMock: vi.fn(),
   pauseAutomationMock: vi.fn(),
@@ -243,6 +247,10 @@ vi.mock("@/api/chat", async (importOriginal) => {
       sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
       switchAgentConversationMode: (...args: unknown[]) =>
         switchAgentConversationModeMock(...args),
+      activateAgentTaskPipeline: (...args: unknown[]) =>
+        activateAgentTaskPipelineMock(...args),
+      startAgentTaskPipeline: (...args: unknown[]) =>
+        startAgentTaskPipelineMock(...args),
       listAgentConversationIssues: (...args: unknown[]) =>
         listAgentConversationIssuesMock(...args),
     },
@@ -536,10 +544,16 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/useDependencyGraph", () => ({
-  useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
-  useDependencyTiers: () => ({ tierMap: new Map(), maxTier: 0 }),
-}));
+vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/hooks/useDependencyGraph")
+  >();
+  return {
+    ...actual,
+    useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
+    useDependencyTiers: () => ({ tierMap: new Map(), maxTier: 0 }),
+  };
+});
 
 vi.mock("@/hooks/useTasks", () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
@@ -1711,6 +1725,18 @@ describe("AgentsArtifactPane", () => {
         mode: "ideation",
         linkedIdeationSessionId: "session-1",
       }),
+    });
+    activateAgentTaskPipelineMock.mockResolvedValue(
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+    );
+    startAgentTaskPipelineMock.mockResolvedValue({
+      tasksCreated: 1,
+      executionPlanId: "execution-plan-1",
     });
     listAgentConversationIssuesMock.mockResolvedValue([]);
     getAutomationMock.mockResolvedValue(automationDetailFixture());
@@ -5374,7 +5400,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
   });
 
-  it("promotes a Plan workspace to Ideation before requesting proposals", async () => {
+  it("activates a durable Tasks pipeline before requesting proposals", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -5452,30 +5478,31 @@ describe("AgentsArtifactPane", () => {
         name: /Create Proposals/i,
       },
     );
-    switchAgentConversationModeMock.mockClear();
+    activateAgentTaskPipelineMock.mockClear();
     sendAgentMessageMock.mockClear();
 
     await userEvent.click(createProposalsButton);
 
     await waitFor(() =>
-      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+      expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
-        mode: "ideation",
+        sessionId: "session-1",
       }),
     );
     await waitFor(() =>
       expect(sendAgentMessageMock).toHaveBeenCalledWith(
         "ideation",
         "session-1",
-        expect.stringContaining("Proceed to proposals"),
+        expect.stringContaining("Create implementation task proposals"),
       ),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
-      "ideation",
+      "tasks",
       expect.objectContaining({
         linkedIdeationSessionId: "session-1",
-        mode: "ideation",
+        taskPipelineSessionId: "session-1",
+        mode: "tasks",
       }),
     );
     expect(onFocusIdeationSessionForConversation).toHaveBeenCalledWith(
@@ -5486,7 +5513,41 @@ describe("AgentsArtifactPane", () => {
       "ideation-conversation-1",
     );
     expect(sendAgentMessageMock.mock.invocationCallOrder[0]!).toBeGreaterThan(
-      switchAgentConversationModeMock.mock.invocationCallOrder[0]!,
+      activateAgentTaskPipelineMock.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("retries proposal decomposition from an attached Tasks pipeline", async () => {
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    activateAgentTaskPipelineMock.mockClear();
+    sendAgentMessageMock.mockClear();
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+      vi.fn(),
+      false,
+      conversation({ agentMode: "tasks" }),
+    );
+
+    const createProposalsButton = await screen.findByRole("button", {
+      name: /Create Proposals/i,
+    });
+    await userEvent.click(createProposalsButton);
+
+    expect(activateAgentTaskPipelineMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "ideation",
+        "session-1",
+        expect.stringContaining("Create implementation task proposals"),
+      ),
     );
   });
 
@@ -6695,6 +6756,47 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("starts the complete reviewed proposal set from Tasks mode", async () => {
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({}, [
+        taskProposal({
+          id: "proposal-1",
+          status: "pending",
+          createdTaskId: null,
+        }),
+      ]),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    startAgentTaskPipelineMock.mockClear();
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+      vi.fn(),
+      false,
+      conversation({ agentMode: "tasks" }),
+    );
+
+    const startTasks = await screen.findByRole("button", {
+      name: /Start Tasks \(1\)/i,
+    });
+    await userEvent.click(startTasks);
+
+    await waitFor(() =>
+      expect(startAgentTaskPipelineMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        sessionId: "session-1",
+        proposalIds: ["proposal-1"],
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Started 1 task");
   });
 
   it("uses the success lifecycle banner only when accepted work exists", async () => {

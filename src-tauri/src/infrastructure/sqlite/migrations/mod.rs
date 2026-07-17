@@ -476,6 +476,9 @@ mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
+mod v20260716210000_supervised_native_task_pipeline;
+#[cfg(test)]
+mod v20260716210000_supervised_native_task_pipeline_tests;
 mod v20260716214835_clickup_strict_git_naming_settings;
 #[cfg(test)]
 mod v20260716214835_clickup_strict_git_naming_settings_tests;
@@ -1580,6 +1583,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260715194617,
         name: "scripted_agent_workflows",
         migrate: v20260715194617_scripted_agent_workflows::migrate,
+    },
+    Migration {
+        version: 20260716210000,
+        name: "supervised_native_task_pipeline",
+        migrate: v20260716210000_supervised_native_task_pipeline::migrate,
     },
     Migration {
         version: 20260716214835,

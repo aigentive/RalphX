@@ -1185,7 +1185,8 @@ test.describe("Agents View", () => {
     await page.getByTestId("agents-start-mode-chip").click();
     await expect(page.getByTestId("agents-start-mode-edit")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-chat")).toBeVisible();
-    await expect(page.getByTestId("agents-start-mode-ideation")).toBeVisible();
+    await expect(page.getByTestId("agents-start-mode-plan")).toBeVisible();
+    await expect(page.getByTestId("agents-start-mode-ideation")).toHaveCount(0);
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
