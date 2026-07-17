@@ -2,7 +2,15 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 
+import { PersonaVersionHistory } from "@/components/personas/PersonaVersionHistory";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -66,6 +74,8 @@ export function PersonaEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [draftConflict, setDraftConflict] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedHistoryVersion, setSelectedHistoryVersion] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const createDraft = useCreatePersonaDraft();
   const updatePersona = useUpdatePersona();
@@ -167,7 +177,7 @@ export function PersonaEditor({
           </TooltipTrigger>
           <TooltipContent>Back to personas</TooltipContent>
         </Tooltip>
-        <div>
+        <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
             {editor.kind === "create" ? "New persona" : `Edit persona: ${editor.persona.name}`}
           </h3>
@@ -177,6 +187,17 @@ export function PersonaEditor({
             </p>
           )}
         </div>
+        {currentPersona?.artifactId && (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            onClick={() => setHistoryOpen(true)}
+            className="h-auto shrink-0 p-0 text-xs text-[var(--text-secondary)]"
+          >
+            Version history
+          </Button>
+        )}
       </div>
 
       {editor.kind === "create" && (
@@ -333,6 +354,36 @@ export function PersonaEditor({
           Save
         </Button>
       </div>
+
+      {currentPersona?.artifactId && (
+        <Dialog
+          open={historyOpen}
+          onOpenChange={(open) => {
+            setHistoryOpen(open);
+            if (!open) setSelectedHistoryVersion(null);
+          }}
+        >
+          <DialogContent className="max-w-2xl" aria-describedby="persona-history-description">
+            <DialogHeader>
+              <div>
+                <DialogTitle>Version history</DialogTitle>
+                <DialogDescription id="persona-history-description">
+                  Attributed persona revisions. Historical versions are read-only.
+                </DialogDescription>
+              </div>
+            </DialogHeader>
+            <div className="max-h-[70vh] overflow-y-auto px-6 py-5">
+              <PersonaVersionHistory
+                artifactId={currentPersona.artifactId}
+                currentContent={currentPersona.content}
+                selectedVersion={selectedHistoryVersion}
+                onSelectedVersionChange={setSelectedHistoryVersion}
+                selectId="persona-editor-history-version"
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </section>
   );
 }

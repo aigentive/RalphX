@@ -350,7 +350,11 @@ describe("PersonasManagementSection", () => {
     mockPersonaCommands([persona]);
     renderSection();
 
-    await user.click(await screen.findByRole("button", { name: `Refine ${persona.name} with Agent` }));
+    const refine = await screen.findByRole("button", {
+      name: `Refine ${persona.name} with Agent`,
+    });
+    expect(refine).toBeEnabled();
+    await user.click(refine);
 
     expect(screen.queryByRole("dialog", { name: "Build persona with agent" })).not.toBeInTheDocument();
     expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
@@ -359,6 +363,39 @@ describe("PersonasManagementSection", () => {
       mode: "persona_builder",
       sourcePersonaId: persona.id,
       sourcePersonaName: persona.name,
+    });
+  });
+
+  it("blocks global refinement with an explanatory tooltip when standalone conversations are off", async () => {
+    const user = userEvent.setup();
+    const projectPersona: RawPersona = {
+      ...activePersona,
+      id: "project-persona",
+      name: "Project Reviewer",
+      project_id: "project-ralphx",
+    };
+    mockPersonaCommands([activePersona, projectPersona]);
+    renderSection(false);
+
+    const globalRefine = await screen.findByRole("button", {
+      name: "Refine Reviewer Voice with Agent",
+    });
+    expect(globalRefine).toBeDisabled();
+    await user.hover(globalRefine.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Global persona refinement requires standalone conversations",
+    );
+    fireEvent.click(globalRefine);
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+
+    const projectRefine = screen.getByRole("button", {
+      name: "Refine Project Reviewer with Agent",
+    });
+    expect(projectRefine).toBeEnabled();
+    await user.click(projectRefine);
+    expect(useAgentSessionStore.getState().startConversationDraft).toMatchObject({
+      projectId: "project-ralphx",
+      sourcePersonaId: "project-persona",
     });
   });
 

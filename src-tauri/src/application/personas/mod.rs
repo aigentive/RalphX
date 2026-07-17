@@ -488,8 +488,20 @@ fn ensure_enabled(feature_enabled: bool) -> AppResult<()> {
     }
 }
 
-#[path = "persona_service_tests.rs"]
-mod persona_service_tests;
+#[path = "persona_service_test_support.rs"]
+mod persona_service_test_support;
+#[path = "persona_service_artifact_tests.rs"]
+mod persona_service_artifact_tests;
+#[path = "persona_service_lifecycle_tests.rs"]
+mod persona_service_lifecycle_tests;
+#[path = "persona_service_validation_tests.rs"]
+mod persona_service_validation_tests;
 
-#[path = "persona_update_approval_tests.rs"]
-mod persona_update_approval_tests;
+#[path = "persona_update_approval_test_support.rs"]
+mod persona_update_approval_test_support;
+#[path = "persona_update_approval_transaction_tests.rs"]
+mod persona_update_approval_transaction_tests;
+#[path = "persona_update_approval_binding_tests.rs"]
+mod persona_update_approval_binding_tests;
+#[path = "persona_update_approval_recovery_tests.rs"]
+mod persona_update_approval_recovery_tests;

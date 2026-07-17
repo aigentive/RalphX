@@ -5,10 +5,13 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { EventProvider } from "@/providers/EventProvider";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { ChatConversation } from "@/types/chat-conversation";
+import type { FeatureFlags } from "@/types/feature-flags";
 
 import { PersonaArtifactPanel } from "./PersonaArtifactPanel";
 
@@ -83,14 +86,34 @@ function createQueryClient() {
   });
 }
 
+const featureFlags: FeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: false,
+  automationsPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+  ticketingDashboard: false,
+  agentPersonas: true,
+  standaloneConversations: true,
+};
+
 function renderPanel(
   value: ChatConversation,
   queryClient = createQueryClient(),
+  standaloneConversations = true,
 ) {
+  queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
+    ...featureFlags,
+    standaloneConversations,
+  });
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <EventProvider>{children}</EventProvider>
+        <TooltipProvider delayDuration={0}>
+          <EventProvider>{children}</EventProvider>
+        </TooltipProvider>
       </QueryClientProvider>
     );
   }
@@ -261,13 +284,57 @@ describe("PersonaArtifactPanel", () => {
       modalContext: { section: "personas" },
     });
 
-    await user.click(screen.getByRole("button", { name: "Refine with Agent" }));
+    const refine = screen.getByRole("button", { name: "Refine with Agent" });
+    expect(refine).toBeEnabled();
+    await user.click(refine);
     expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
       projectId: null,
       projectLocked: true,
       mode: "persona_builder",
       sourcePersonaId: "persona-1",
       sourcePersonaName: "Support Voice",
+    });
+  });
+
+  it("blocks global refinement when standalone conversations are off without dispatching", async () => {
+    const user = userEvent.setup();
+    const setStartConversationDraft = vi.spyOn(
+      useAgentSessionStore.getState(),
+      "setStartConversationDraft",
+    );
+    mockPersonaQueries(rawApproved);
+    renderPanel(
+      conversation({ builderResultPersonaId: "persona-1" }),
+      createQueryClient(),
+      false,
+    );
+
+    const refine = await screen.findByRole("button", { name: "Refine with Agent" });
+    expect(refine).toBeDisabled();
+    await user.hover(refine.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Global persona refinement requires standalone conversations",
+    );
+    fireEvent.click(refine);
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    expect(setStartConversationDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps project persona refinement enabled when standalone conversations are off", async () => {
+    const user = userEvent.setup();
+    mockPersonaQueries({ ...rawApproved, project_id: "project-1" });
+    renderPanel(
+      conversation({ builderResultPersonaId: "persona-1" }),
+      createQueryClient(),
+      false,
+    );
+
+    const refine = await screen.findByRole("button", { name: "Refine with Agent" });
+    expect(refine).toBeEnabled();
+    await user.click(refine);
+    expect(useAgentSessionStore.getState().startConversationDraft).toMatchObject({
+      projectId: "project-1",
+      sourcePersonaId: "persona-1",
     });
   });
 

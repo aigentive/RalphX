@@ -213,6 +213,12 @@ export function PersonasManagementSection({
               onActivate={(selected) => void approvePersona.mutateAsync(selected.id)}
               onRemove={(selected) => void handleRemove(selected)}
               onRefine={(selected) => openBuilderComposer(selected.projectId, selected)}
+              {...(persona.projectId === null && !standaloneConversations
+                ? {
+                    refineDisabledReason:
+                      "Global persona refinement requires standalone conversations",
+                  }
+                : {})}
             />
           ))}
         </ul>

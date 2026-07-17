@@ -55,6 +55,7 @@ export function PersonaRow({
   onActivate,
   onRemove,
   onRefine,
+  refineDisabledReason,
 }: {
   persona: Persona;
   projectNames: Record<string, string>;
@@ -62,9 +63,23 @@ export function PersonaRow({
   onActivate: (persona: Persona) => void;
   onRemove: (persona: Persona) => void;
   onRefine: (persona: Persona) => void;
+  refineDisabledReason?: string;
 }) {
   const active = persona.status === "active";
   const actionLabel = active ? "Archive" : "Delete";
+  const refineButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label={`Refine ${persona.name} with Agent`}
+      disabled={refineDisabledReason !== undefined}
+      onClick={() => onRefine(persona)}
+      className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+    >
+      Refine with Agent
+    </Button>
+  );
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
       <span
@@ -91,16 +106,18 @@ export function PersonaRow({
       </div>
       <div className="flex items-center gap-1">
         {active && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={`Refine ${persona.name} with Agent`}
-            onClick={() => onRefine(persona)}
-            className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-          >
-            Refine with Agent
-          </Button>
+          refineDisabledReason ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex" tabIndex={0}>
+                  {refineButton}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{refineDisabledReason}</TooltipContent>
+            </Tooltip>
+          ) : (
+            refineButton
+          )
         )}
         {!active && (
           <Button
