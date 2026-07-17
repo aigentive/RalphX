@@ -309,6 +309,14 @@ fn settle_completed_workspace_review_monitor_on_startup(
             clear_review_blocking_state(monitor);
             true
         }
+        AgentWorkspaceReviewOutcome::Blocking
+            if artifact_current && monitor_has_current_bypass_for_current_target(monitor) =>
+        {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+            monitor.last_error = None;
+            true
+        }
         AgentWorkspaceReviewOutcome::Blocking if artifact_current => {
             monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
             monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
@@ -339,6 +347,22 @@ fn settle_completed_workspace_review_monitor_on_startup(
         }
         _ => false,
     }
+}
+
+fn monitor_has_current_bypass_for_current_target(monitor: &AgentWorkspaceReviewMonitor) -> bool {
+    let (Some(target_scope), Some(diff_fingerprint)) = (
+        monitor.current_target_scope,
+        monitor.current_diff_fingerprint.as_deref(),
+    ) else {
+        return false;
+    };
+    let head_sha = match target_scope {
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_head_sha.as_deref()
+        }
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => None,
+    };
+    monitor.has_current_review_bypass_for_target(target_scope, head_sha, diff_fingerprint)
 }
 
 fn workspace_review_monitor_has_current_run_failure(
@@ -764,6 +788,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.clear_review_gate_bypass();
     clear_review_blocking_state(&mut monitor);
     monitor.review_conversation_id = Some(review_conversation_id.clone());
     monitor.last_run_id = Some(send_result.agent_run_id.clone());
@@ -1805,9 +1830,10 @@ pub async fn complete_agent_workspace_review_run(
     .await?;
     let mut monitor = load_or_create_monitor(state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
-    ensure_workspace_review_completion_run_matches_active_monitor(
+    ensure_workspace_review_run_is_active(
         &monitor,
         created_by_run_id.as_deref(),
+        "workspace Review completion",
     )?;
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id);
     let parsed_outcome = normalized_outcome
@@ -1837,6 +1863,7 @@ pub async fn complete_agent_workspace_review_run(
     }
     let previous_blocking_fingerprint = monitor.review_blocking_fingerprint.clone();
     let previous_fixer_status = monitor.review_fixer_status.clone();
+    monitor.clear_review_gate_bypass();
 
     match parsed_outcome {
         AgentWorkspaceReviewOutcome::Passed if artifact_current => {
@@ -1948,27 +1975,39 @@ fn normalize_workspace_review_run_id(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn ensure_workspace_review_completion_run_matches_active_monitor(
+pub(crate) fn ensure_workspace_review_run_is_active(
     monitor: &AgentWorkspaceReviewMonitor,
     created_by_run_id: Option<&str>,
+    operation: &str,
 ) -> AppResult<()> {
     if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
-        return Ok(());
+        return Err(AppError::Validation(format!(
+            "{operation} requires the current active workspace Review run"
+        )));
+    }
+    if monitor.current_target_scope.is_none()
+        || monitor
+            .current_diff_fingerprint
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(AppError::Validation(format!(
+            "{operation} requires the current workspace Review target"
+        )));
     }
     let Some(active_run_id) = monitor.last_run_id.as_deref() else {
-        return Err(AppError::Validation(
-            "workspace Review completion requires an active review run id".to_string(),
-        ));
+        return Err(AppError::Validation(format!(
+            "{operation} requires an active workspace Review run id"
+        )));
     };
     match created_by_run_id {
         Some(created_by_run_id) if created_by_run_id == active_run_id => Ok(()),
-        Some(_) => Err(AppError::Validation(
-            "workspace Review completion run id does not match the active review run".to_string(),
-        )),
-        None => Err(AppError::Validation(
-            "workspace Review completion requires created_by_run_id for the active review run"
-                .to_string(),
-        )),
+        Some(_) => Err(AppError::Validation(format!(
+            "{operation} run id does not match the active workspace Review run"
+        ))),
+        None => Err(AppError::Validation(format!(
+            "{operation} requires created_by_run_id for the active workspace Review run"
+        ))),
     }
 }
 
@@ -2432,6 +2471,7 @@ pub fn apply_review_artifact_to_monitor(
     monitor.review_artifact_id = Some(artifact_id);
     monitor.review_artifact_version = Some(artifact_version);
     monitor.review_artifact_updated_at = Some(artifact_created_at);
+    monitor.clear_review_gate_bypass();
     monitor.previous_version_id = previous_artifact_id;
     clear_review_blocking_state(monitor);
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id.take());
@@ -2639,7 +2679,13 @@ fn apply_review_gate_to_monitor(
     } else if monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked && current_target_matches
     {
         AgentWorkspaceReviewGateStatus::Failed
-    } else if artifact_current && monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed {
+    } else if artifact_current
+        && (monitor.has_current_review_bypass_for_target(
+            target.scope,
+            target.head_sha.as_deref(),
+            &target.diff_fingerprint,
+        ) || monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed)
+    {
         AgentWorkspaceReviewGateStatus::Passed
     } else if artifact_current && monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking {
         AgentWorkspaceReviewGateStatus::Blocking
@@ -2674,6 +2720,16 @@ pub(crate) fn apply_current_target_to_monitor(
 ) {
     let now = Utc::now();
     monitor.updated_at = now;
+    let bypass_remains_current = target.is_some_and(|target| {
+        monitor.has_current_review_bypass_for_target(
+            target.scope,
+            target.head_sha.as_deref(),
+            &target.diff_fingerprint,
+        )
+    });
+    if !bypass_remains_current {
+        monitor.clear_review_gate_bypass();
+    }
     let Some(target) = target else {
         monitor.current_target_scope = None;
         monitor.current_diff_fingerprint = None;
@@ -3030,7 +3086,9 @@ pub(crate) async fn resolve_review_target(
     resolve_selected_source_target(workspace, project).await
 }
 
-fn ensure_workspace_review_supported_mode(workspace: &AgentConversationWorkspace) -> AppResult<()> {
+pub(crate) fn ensure_workspace_review_supported_mode(
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<()> {
     if matches!(
         workspace.mode,
         crate::domain::entities::AgentConversationWorkspaceMode::Edit

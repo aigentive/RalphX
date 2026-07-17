@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::agent_workspace_review_approval::approve_agent_workspace_review_anyway;
 use crate::application::chat_service::MockChatService;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, AgenticClient, LogicalEffort, ManualRoleDefault,
@@ -7,10 +8,10 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest,
-    Artifact, ArtifactId, ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    ProjectId, TaskId,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+    ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
@@ -930,6 +931,236 @@ async fn passing_workspace_review_survives_equivalent_commit_then_invalidates_on
         changed.monitor.review_gate_status,
         AgentWorkspaceReviewGateStatus::Required
     );
+}
+
+#[tokio::test]
+async fn stale_approval_retry_does_not_refresh_or_clear_monitor_before_cas() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let initial = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("initial context should load");
+    let target = initial.target.expect("initial target should exist");
+    let approved_at = Utc::now();
+    let artifact_id = ArtifactId::from_string("artifact-approved-anyway".to_string());
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: target.scope,
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 7,
+    };
+    let mut monitor = initial.monitor;
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("run-approved-anyway".to_string()),
+        artifact_id,
+        snapshot.artifact_version,
+        approved_at,
+        None,
+    );
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_blocking_summary = Some("blockers remain".to_string());
+    monitor.review_gate_bypassed_at = Some(approved_at);
+    monitor.review_gate_bypassed_target_scope = Some(snapshot.target_scope);
+    monitor.review_gate_bypassed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.review_gate_bypassed_artifact_id = Some(snapshot.artifact_id.clone());
+    monitor.review_gate_bypassed_artifact_version = Some(snapshot.artifact_version);
+    let persisted_before = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    std::fs::write(repo.join("later.rs"), "pub fn later() {}\n")
+        .expect("later file should be written");
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("stale approval retry should be rejected");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("changed before")));
+    let persisted_after = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should still exist");
+    assert_eq!(
+        persisted_after.current_diff_fingerprint,
+        persisted_before.current_diff_fingerprint
+    );
+    assert_eq!(
+        persisted_after.review_gate_status,
+        persisted_before.review_gate_status
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_at,
+        persisted_before.review_gate_bypassed_at
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_diff_fingerprint,
+        persisted_before.review_gate_bypassed_diff_fingerprint
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_artifact_id,
+        persisted_before.review_gate_bypassed_artifact_id
+    );
+}
+
+#[tokio::test]
+async fn approval_rejects_active_publish_before_project_lookup_or_monitor_write() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Workspace Review Missing Project".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.publication_push_status = Some("pushing".to_string());
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-active-publish".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-active-publish"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("active publish must block human approval before any refresh");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("Commit & Publish")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_missing_project_before_target_resolution() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Workspace Review Missing Project".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-missing-project".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-missing-project"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval should fail closed when the project row is missing");
+
+    assert!(matches!(error, AppError::NotFound(message) if message.contains("Project not found")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_when_current_workspace_has_no_reviewable_target() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-no-target".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-no-target"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval requires a current reviewable target");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("no longer matches")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_reviewable_target_without_existing_monitor() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-without-monitor".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-without-monitor"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval requires an existing current blocking monitor");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("changed before")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("event read should succeed")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2119,6 +2350,17 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     );
     seed_conversation(&state, &workspace).await;
 
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let mut failed_monitor = context.monitor;
+    failed_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    failed_monitor.last_run_id = Some("run-failed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(failed_monitor)
+        .await
+        .expect("failed active monitor should persist");
     let failed = complete_agent_workspace_review_run(
         &state,
         &workspace,
@@ -2145,6 +2387,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut ready_monitor = context.monitor;
+    ready_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut ready_monitor,
         target.scope,
@@ -2167,7 +2410,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         Some("passed".to_string()),
         Some("No blocking findings".to_string()),
         None,
-        None,
+        Some("run-ready".to_string()),
     )
     .await
     .expect("ready completion should persist");
@@ -2179,6 +2422,28 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     );
     assert_eq!(ready.review_artifact_version, Some(3));
 
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    let mut blocked_monitor = context.monitor;
+    blocked_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    apply_review_artifact_to_monitor(
+        &mut blocked_monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("run-blocked".to_string()),
+        ArtifactId::from_string("artifact-blocked"),
+        4,
+        Utc::now(),
+        None,
+    );
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(blocked_monitor)
+        .await
+        .expect("blocked active monitor should persist");
     let blocked = complete_agent_workspace_review_run(
         &state,
         &workspace,
@@ -2242,6 +2507,7 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut monitor,
         target.scope,
@@ -2328,6 +2594,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut monitor,
         target.scope,
@@ -2747,7 +3014,7 @@ async fn complete_review_run_rejects_stale_active_review_run_id() {
     assert!(result
         .expect_err("stale run id should be rejected")
         .to_string()
-        .contains("does not match the active review run"));
+        .contains("does not match the active workspace Review run"));
 }
 
 #[tokio::test]
@@ -3052,6 +3319,7 @@ async fn complete_review_run_carries_workspace_review_forward_after_same_pr_merg
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3231,6 +3499,7 @@ async fn complete_review_run_preserves_blocking_outcome_after_same_pr_merges() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3401,6 +3670,7 @@ async fn complete_review_run_rejects_merged_pr_when_reviewed_head_differs() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -3479,6 +3749,7 @@ async fn complete_review_run_rejects_unmerged_pr_target_drift() {
         Utc::now(),
         None,
     );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)

@@ -51,6 +51,11 @@ function reviewMonitor(
     reviewArtifactId: "review-artifact-1",
     reviewArtifactVersion: 1,
     reviewArtifactUpdatedAt: "2026-07-10T00:00:00.000Z",
+    reviewGateBypassedAt: null,
+    reviewGateBypassedTargetScope: null,
+    reviewGateBypassedDiffFingerprint: null,
+    reviewGateBypassedArtifactId: null,
+    reviewGateBypassedArtifactVersion: null,
     reviewedHeadSha: "previous-head-sha",
     reviewedDiffFingerprint: "previous-diff-fingerprint",
     selectedSourceBaseRef: null,
@@ -92,6 +97,29 @@ function reviewContext(
     ...overrides,
   };
 }
+
+it("distinguishes a blocking review authorized by a human bypass", () => {
+  renderPanel({
+    reviewContext: reviewContext({
+      isCurrent: true,
+      isOutdated: false,
+      monitor: reviewMonitor({
+        reviewOutcome: "blocking",
+        reviewGateStatus: "passed",
+        reviewBlockingSummary: "One unresolved blocker remains.",
+        reviewGateBypassedAt: "2026-07-10T00:05:00.000Z",
+        reviewGateBypassedTargetScope: "workspace_delta",
+        reviewGateBypassedDiffFingerprint: reviewTarget.diffFingerprint,
+        reviewGateBypassedArtifactId: "review-artifact-1",
+        reviewGateBypassedArtifactVersion: 1,
+      }),
+    }),
+  });
+
+  expect(screen.getByText("Review approved anyway")).toBeInTheDocument();
+  expect(screen.getByText("One unresolved blocker remains.")).toBeInTheDocument();
+  expect(screen.queryByText("Review passed")).not.toBeInTheDocument();
+});
 
 function reviewStartResult(
   overrides: Partial<StartAgentWorkspaceReviewResult> = {},
@@ -145,6 +173,71 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("offers Approve anyway behind confirmation while Fix Issues stays primary", async () => {
+    const user = userEvent.setup();
+    const onApproveAnyway = vi.fn().mockResolvedValue(undefined);
+    renderPanel({
+      onApproveAnyway,
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
+        }),
+      }),
+    });
+
+    expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(screen.getByText("Approve anyway"));
+
+    expect(
+      screen.getByText("Approve this blocking Review anyway?"),
+    ).toBeInTheDocument();
+    expect(onApproveAnyway).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Approve anyway" }));
+    expect(onApproveAnyway).toHaveBeenCalledOnce();
+  });
+
+  it("cancels cleanly and prevents duplicate approval while confirmation is pending", async () => {
+    const user = userEvent.setup();
+    let finishApproval: (() => void) | undefined;
+    const onApproveAnyway = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishApproval = resolve;
+        }),
+    );
+    renderPanel({
+      onApproveAnyway,
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+        }),
+      }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onApproveAnyway).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    const confirmButton = screen.getByRole("button", {
+      name: "Approve anyway",
+    });
+    await user.click(confirmButton);
+
+    expect(onApproveAnyway).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Approving..." })).toBeDisabled();
+    finishApproval?.();
+  });
+
   it("keeps runtime-blocked Review reasons in the disabled action tooltip only", async () => {
     const user = userEvent.setup();
 
@@ -273,6 +366,9 @@ describe("AgentReviewPanel", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Fix Issues" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Review actions" }),
     ).not.toBeInTheDocument();
   });
 });
