@@ -324,7 +324,7 @@ describe("useNotificationToasts", () => {
     });
   });
 
-  it("reveals and acknowledges a plan notification for the already-selected conversation", async () => {
+  it("keeps a plan notification for the already-selected conversation visible until its CTA is clicked", async () => {
     act(() => {
       useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
       useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
@@ -345,6 +345,13 @@ describe("useNotificationToasts", () => {
     });
 
     subscribers.get("notification:created")?.(planReviewNotification);
+    const view = renderToastContent();
+
+    expect(performNotificationPrimaryAction).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+    expect(view.getByRole("button", { name: "Review plan" })).toBeEnabled();
+
+    fireEvent.click(view.getByRole("button", { name: "Review plan" }));
 
     await waitFor(() => {
       expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
@@ -353,7 +360,7 @@ describe("useNotificationToasts", () => {
       );
       expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
     });
-    expect(toastWarning).not.toHaveBeenCalled();
+    expect(toastDismiss).toHaveBeenCalledWith(planReviewNotification.id);
   });
 
   it("dismisses active notification toasts when the drawer opens", () => {

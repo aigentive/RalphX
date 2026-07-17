@@ -156,25 +156,6 @@ export function useNotificationToasts() {
         acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
         return;
       }
-      if (
-        isPlanReviewNotification(notification) &&
-        useAgentSessionStore.getState().selectedConversationId ===
-          notification.target.conversationId
-      ) {
-        pendingAgentConversationAcknowledgements.set(notification.id, notification);
-        void performNotificationPrimaryAction(notification, queryClient)
-          .then((navigated) => {
-            if (navigated) {
-              acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
-            } else {
-              pendingAgentConversationAcknowledgements.delete(notification.id);
-            }
-          })
-          .catch(() => {
-            pendingAgentConversationAcknowledgements.delete(notification.id);
-          });
-        return;
-      }
     }
 
     activeNotificationToastIds.add(notification.id);
