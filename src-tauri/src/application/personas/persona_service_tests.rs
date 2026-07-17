@@ -26,6 +26,35 @@ fn persona_content(slug: &str, body: &str) -> String {
     format!("---\nname: {slug}\nkind: persona\ndescription: Test persona\n---\n{body}")
 }
 
+fn persona_artifacts(db: &SqliteTestDb, persona_id: &PersonaId) -> Vec<(String, String)> {
+    db.with_connection(|conn| {
+        let mut statement = conn
+            .prepare(
+                "SELECT artifacts.id, artifacts.created_by
+                 FROM artifacts
+                 JOIN personas ON personas.id = ?1
+                 WHERE artifacts.type = 'persona'
+                   AND (artifacts.id = personas.artifact_id
+                        OR artifacts.id IN (
+                            WITH RECURSIVE chain(id) AS (
+                                SELECT personas.artifact_id
+                                UNION ALL
+                                SELECT artifacts.previous_version_id
+                                FROM artifacts JOIN chain ON artifacts.id = chain.id
+                                WHERE artifacts.previous_version_id IS NOT NULL
+                            ) SELECT id FROM chain
+                        ))
+                 ORDER BY artifacts.version",
+            )
+            .unwrap();
+        statement
+            .query_map([persona_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    })
+}
+
 /// Expected hash derived through the shared parser, so tests never
 /// hand-replicate `split_frontmatter`'s exact frontmatter/body boundaries.
 fn expected_hash(content: &str) -> String {
@@ -35,8 +64,15 @@ fn expected_hash(content: &str) -> String {
 }
 
 fn memory_service() -> PersonaService {
-    let state = AppState::new_test();
-    PersonaService::new(state.db, state.persona_repo, state.chat_conversation_repo)
+    let conn = rusqlite::Connection::open_in_memory().expect("persona test database");
+    crate::infrastructure::sqlite::migrations::run_migrations(&conn)
+        .expect("persona test migrations");
+    let shared = Arc::new(tokio::sync::Mutex::new(conn));
+    PersonaService::new(
+        DbConnection::from_shared(Arc::clone(&shared)),
+        Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared))),
+        Arc::new(SqliteChatConversationRepository::from_shared(shared)),
+    )
 }
 
 fn sqlite_service(db: &SqliteTestDb) -> PersonaService {
@@ -79,6 +115,168 @@ async fn bound_draft_creation_rolls_back_when_the_conversation_is_missing() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn persona_writer_artifacts_record_user_and_agent_attribution() {
+    let db = SqliteTestDb::new("persona_writer_artifact_attribution");
+    let service = sqlite_service(&db);
+    let draft = service
+        .create_draft(true, draft_input("writer-history", "Created manually"))
+        .await
+        .unwrap();
+    assert_eq!(persona_artifacts(&db, &draft.id)[0].1, "user");
+
+    let manually_updated = service
+        .update_draft(
+            true,
+            &draft.id,
+            &persona_content("writer-history", "Manual draft edit"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(persona_artifacts(&db, &draft.id).last().unwrap().1, "user");
+    assert_eq!(
+        manually_updated.artifact_id,
+        Some(crate::domain::entities::ArtifactId::from_string(
+            persona_artifacts(&db, &draft.id).last().unwrap().0.clone(),
+        ))
+    );
+
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.agent_mode =
+        Some(crate::domain::entities::AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = service
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let bound = service
+        .create_bound_draft(
+            true,
+            &conversation.id,
+            draft_input("agent-history", "Agent create"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(persona_artifacts(&db, &bound.id)[0].1, "agent");
+    service
+        .update_draft_as_agent(
+            true,
+            &bound.id,
+            &persona_content("agent-history", "Agent update"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(persona_artifacts(&db, &bound.id).last().unwrap().1, "agent");
+}
+
+#[tokio::test]
+async fn artifact_insert_failure_rolls_back_persona_content_and_tip() {
+    let db = SqliteTestDb::new("persona_artifact_failure_rollback");
+    let service = sqlite_service(&db);
+    let draft = service
+        .create_draft(true, draft_input("atomic-history", "Before"))
+        .await
+        .unwrap();
+    let artifacts_before = persona_artifacts(&db, &draft.id);
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_persona_artifact_insert
+             BEFORE INSERT ON artifacts WHEN NEW.type = 'persona'
+             BEGIN SELECT RAISE(ABORT, 'forced artifact failure'); END;",
+        )
+        .unwrap();
+    });
+
+    let error = service
+        .update_draft(
+            true,
+            &draft.id,
+            &persona_content("atomic-history", "Must roll back"),
+            None,
+        )
+        .await
+        .expect_err("artifact failure must abort persona mutation");
+
+    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_eq!(persona_artifacts(&db, &draft.id), artifacts_before);
+}
+
+#[tokio::test]
+async fn plain_approval_hashes_the_transactional_content_and_appends_that_tip() {
+    let db = SqliteTestDb::new("plain_approval_transactional_content");
+    let service = sqlite_service(&db);
+    let draft = service
+        .create_draft(true, draft_input("approval-race", "Version one"))
+        .await
+        .unwrap();
+    let stale_read = service.get_draft(true, &draft.id).await.unwrap();
+    let concurrent_shared = Arc::new(tokio::sync::Mutex::new(db.new_connection()));
+    let concurrent = PersonaService::new(
+        DbConnection::from_shared(Arc::clone(&concurrent_shared)),
+        Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
+            &concurrent_shared,
+        ))),
+        Arc::new(SqliteChatConversationRepository::from_shared(
+            concurrent_shared,
+        )),
+    );
+    let content_v2 = persona_content("approval-race", "Version two from another connection");
+    let hash_v2 = expected_hash(&content_v2);
+    concurrent
+        .persona_repo
+        .update_content(&draft.id, &content_v2, &hash_v2, None)
+        .await
+        .expect("concurrent repository write should land after the stale read");
+
+    let approved = service
+        .approve_plain_draft(&stale_read.id)
+        .await
+        .expect("approval should validate and hash the transactional re-read");
+
+    assert_eq!(approved.content, content_v2);
+    assert_eq!(approved.content_hash, hash_v2);
+    let tip_content: String = db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT content_text FROM artifacts WHERE id = ?1",
+            [approved.artifact_id.as_ref().unwrap().as_str()],
+            |row| row.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(tip_content, approved.content);
+}
+
+#[tokio::test]
+async fn plain_approval_rejects_invalid_transactional_content_without_mutation() {
+    let db = SqliteTestDb::new("plain_approval_transactional_validation");
+    let service = sqlite_service(&db);
+    let draft = service
+        .create_draft(true, draft_input("approval-invalid-race", "Valid version"))
+        .await
+        .unwrap();
+    let stale_read = service.get_draft(true, &draft.id).await.unwrap();
+    service
+        .persona_repo
+        .update_content(&draft.id, "invalid markdown", "stale-hash", None)
+        .await
+        .expect("concurrent invalid repository write should land");
+    let before_approval = service.get_draft(true, &draft.id).await.unwrap();
+
+    let error = service
+        .approve_plain_draft(&stale_read.id)
+        .await
+        .expect_err("transactional validation must reject the changed content");
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert_eq!(
+        service.get_draft(true, &draft.id).await.unwrap(),
+        before_approval
+    );
+    assert_eq!(persona_artifacts(&db, &draft.id).len(), 1);
 }
 
 #[tokio::test]

@@ -476,6 +476,8 @@ mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
 mod v20260716170840_persona_project_scope;
 mod v20260716204027_conversation_folder_references;
+mod v20260717152713_persona_builder_result_binding;
+mod v20260717152714_persona_artifact_history;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
@@ -503,6 +505,10 @@ mod v20260718182035_add_tasks_enabled_setting_tests;
 mod v20260716170840_persona_project_scope_tests;
 #[cfg(test)]
 mod v20260716204027_conversation_folder_references_tests;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1626,6 +1632,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716210000,
         name: "supervised_native_task_pipeline",
         migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260717152713,
+        name: "persona_builder_result_binding",
+        migrate: v20260717152713_persona_builder_result_binding::migrate,
+    },
+    Migration {
+        version: 20260717152714,
+        name: "persona_artifact_history",
+        migrate: v20260717152714_persona_artifact_history::migrate,
     },
     Migration {
         version: 20260717235338,

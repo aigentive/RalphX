@@ -281,6 +281,8 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
         project_id: None,
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
@@ -312,6 +314,8 @@ async fn seed_scoped_persona_for_switch(
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
         project_id: Some(project_id.clone()),
         slug: format!("{id}-slug"),
         name: format!("{id} name"),

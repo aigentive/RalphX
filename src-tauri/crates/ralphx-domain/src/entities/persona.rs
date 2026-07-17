@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-use crate::entities::ProjectId;
+use crate::entities::{ArtifactId, ProjectId};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -99,6 +99,7 @@ impl FromStr for PersonaStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Persona {
     pub id: PersonaId,
+    pub artifact_id: Option<ArtifactId>,
     pub project_id: Option<ProjectId>,
     pub slug: String,
     pub name: String,

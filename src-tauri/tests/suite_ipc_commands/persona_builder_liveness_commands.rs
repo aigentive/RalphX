@@ -16,6 +16,8 @@ fn draft(id: &PersonaId, status: PersonaStatus) -> Persona {
     let now = Utc::now();
     Persona {
         id: id.clone(),
+        artifact_id: None,
+
         project_id: None,
         slug: "bound-liveness".to_string(),
         name: "bound-liveness".to_string(),

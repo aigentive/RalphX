@@ -208,6 +208,8 @@ async fn persona_builder_send_does_not_reintroduce_the_retired_ingest_gate() {
         .persona_repo
         .create(Persona {
             id: draft_id.clone(),
+            artifact_id: None,
+
             project_id: None,
             slug: "send-bound-draft".to_string(),
             name: "send-bound-draft".to_string(),
@@ -620,6 +622,8 @@ async fn send_persona_attribution_fixture(
 fn persona_attribution_fixture() -> Persona {
     Persona {
         id: PersonaId::from("persona-design-voice"),
+        artifact_id: None,
+
         project_id: None,
         slug: "design-voice".to_string(),
         name: "Design Voice".to_string(),

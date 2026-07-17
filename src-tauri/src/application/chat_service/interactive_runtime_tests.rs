@@ -554,6 +554,8 @@ fn persona_builder_runtime_message_injects_bound_draft_without_leaking_content()
     let now = Utc::now();
     let draft = Persona {
         id: PersonaId::from("draft-1"),
+        artifact_id: None,
+
         project_id: None,
         slug: "existing-reviewer".to_string(),
         name: "Existing Reviewer".to_string(),

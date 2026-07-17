@@ -82,6 +82,9 @@ pub enum AppError {
     )]
     PersonaDraftConflict { expected: String, actual: String },
 
+    #[error("PERSONA_ALREADY_APPROVED: persona already approved — start a refine build")]
+    PersonaAlreadyApproved,
+
     #[error(
         "CONVERSATION_FOLDER_REFERENCE_LIMIT: conversation `{conversation_id}` already has the maximum of {limit} live folder references; remove one before adding another"
     )]

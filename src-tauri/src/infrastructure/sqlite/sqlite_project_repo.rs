@@ -204,10 +204,26 @@ impl ProjectRepository for SqliteProjectRepository {
             .run_transaction(move |conn| {
                 conn.execute(
                     "UPDATE chat_conversations
-                     SET persona_id = NULL, builder_draft_id = NULL
+                     SET persona_id = NULL, builder_draft_id = NULL,
+                         builder_result_persona_id = NULL
                      WHERE (context_type = 'project' AND context_id = ?1)
                         OR persona_id IN (SELECT id FROM personas WHERE project_id = ?1)
-                        OR builder_draft_id IN (SELECT id FROM personas WHERE project_id = ?1)",
+                        OR builder_draft_id IN (SELECT id FROM personas WHERE project_id = ?1)
+                        OR builder_result_persona_id IN (
+                            SELECT id FROM personas WHERE project_id = ?1
+                        )",
+                    [&project_id],
+                )?;
+                conn.execute(
+                    "WITH RECURSIVE draft_chains(id) AS (
+                         SELECT artifact_id FROM personas
+                         WHERE project_id = ?1 AND status = 'draft' AND artifact_id IS NOT NULL
+                         UNION
+                         SELECT artifacts.previous_version_id
+                         FROM artifacts JOIN draft_chains ON artifacts.id = draft_chains.id
+                         WHERE artifacts.previous_version_id IS NOT NULL
+                     )
+                     DELETE FROM artifacts WHERE id IN (SELECT id FROM draft_chains)",
                     [&project_id],
                 )?;
                 conn.execute(

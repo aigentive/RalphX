@@ -27,6 +27,7 @@ import {
 export const ArtifactTypeSchema = z.enum([
   // Documents
   "prd",
+  "persona",
   "research_document",
   "design_doc",
   "specification",

@@ -60,6 +60,9 @@ pub async fn save_persona_draft(
                 .to_string(),
         ));
     }
+    if conversation.builder_draft_id.is_none() && conversation.builder_result_persona_id.is_some() {
+        return Err(map_app_error(AppError::PersonaAlreadyApproved));
+    }
 
     let persona = match conversation.builder_draft_id.as_deref() {
         Some(bound_id) => {
@@ -73,7 +76,7 @@ pub async fn save_persona_draft(
                 ));
             }
             service
-                .update_draft(true, &PersonaId::from(bound_id), &request.content, None)
+                .update_draft_as_agent(true, &PersonaId::from(bound_id), &request.content)
                 .await
         }
         None => {
@@ -183,6 +186,9 @@ fn map_app_error(error: AppError) -> HttpError {
         },
         AppError::Validation(message) | AppError::PersonaUnavailable(message) => {
             HttpError::validation(message)
+        }
+        AppError::PersonaAlreadyApproved => {
+            HttpError::validation(AppError::PersonaAlreadyApproved.to_string())
         }
         AppError::NotFound(_) => HttpError::from(StatusCode::NOT_FOUND),
         _ => HttpError::from(StatusCode::INTERNAL_SERVER_ERROR),

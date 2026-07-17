@@ -1,4 +1,5 @@
 use crate::application::chat_attachment_service::ChatAttachmentService;
+use crate::application::personas::PersonaService;
 use crate::application::standalone_workspace::remove_workspace_if_present;
 use crate::application::AppState;
 use crate::domain::entities::{ChatConversationId, PersonaId, PersonaStatus};
@@ -67,7 +68,13 @@ pub async fn abort_seeded_agent_conversation(
         .delete_by_conversation_id(conversation_id)
         .await?;
     if let Some(draft_id) = bound_draft_id.as_ref() {
-        state.persona_repo.delete(draft_id).await?;
+        PersonaService::new(
+            state.db.clone(),
+            state.persona_repo.clone(),
+            state.chat_conversation_repo.clone(),
+        )
+        .hard_delete_draft(true, draft_id)
+        .await?;
     }
     remove_workspace_if_present(state.app_paths.app_data_dir(), &conversation_id.as_str())?;
     state.chat_conversation_repo.delete(conversation_id).await

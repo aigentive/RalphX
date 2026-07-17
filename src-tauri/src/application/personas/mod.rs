@@ -11,6 +11,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
+use persona_transactions::{CREATED_BY_AGENT, CREATED_BY_USER};
 
 mod persona_transactions;
 mod persona_update_approval;
@@ -31,6 +32,7 @@ pub fn draft_updated_payload(persona: &Persona) -> Value {
         "draft_id": persona.id.as_str(),
         "version": persona.version,
         "content_hash": persona.content_hash,
+        "artifact_id": persona.artifact_id.as_ref().map(|id| id.as_str()),
     })
 }
 
@@ -84,7 +86,7 @@ impl PersonaService {
         input: SavePersonaDraftInput,
     ) -> AppResult<Persona> {
         let persona = self.build_draft(feature_enabled, input).await?;
-        self.persona_repo.create(persona).await
+        self.persist_draft(persona, CREATED_BY_USER).await
     }
 
     pub async fn validate_refine_source(
@@ -233,6 +235,7 @@ impl PersonaService {
         let now = Utc::now();
         Ok(Persona {
             id: PersonaId::new(),
+            artifact_id: None,
             project_id,
             slug: input.slug,
             name: parsed.frontmatter.name,
@@ -268,10 +271,35 @@ impl PersonaService {
             }
         }
         let parsed = validate_persona_content(&persona.slug, content)?;
-        self.persona_repo
-            .update_content(id, content, &parsed.content_hash, expected_content_hash)
-            .await?;
-        self.get_draft(feature_enabled, id).await
+        self.update_content_with_artifact(
+            id,
+            content,
+            &parsed.content_hash,
+            expected_content_hash,
+            PersonaStatus::Draft,
+            CREATED_BY_USER,
+        )
+        .await
+    }
+
+    pub async fn update_draft_as_agent(
+        &self,
+        feature_enabled: bool,
+        id: &PersonaId,
+        content: &str,
+    ) -> AppResult<Persona> {
+        ensure_enabled(feature_enabled)?;
+        let persona = self.require_status(id, PersonaStatus::Draft).await?;
+        let parsed = validate_persona_content(&persona.slug, content)?;
+        self.update_content_with_artifact(
+            id,
+            content,
+            &parsed.content_hash,
+            None,
+            PersonaStatus::Draft,
+            CREATED_BY_AGENT,
+        )
+        .await
     }
 
     pub async fn get_draft(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<Persona> {
@@ -289,16 +317,10 @@ impl PersonaService {
         if persona.source_persona_id.is_some() {
             return self.apply_seeded_draft(id).await;
         }
-        let parsed = validate_persona_content(&persona.slug, &persona.content)?;
+        validate_persona_content(&persona.slug, &persona.content)?;
         self.ensure_active_slug_available(&persona.slug, persona.project_id.as_ref(), Some(id))
             .await?;
-        self.persona_repo
-            .update_content(id, &persona.content, &parsed.content_hash, None)
-            .await?;
-        self.persona_repo
-            .set_status(id, PersonaStatus::Active)
-            .await?;
-        self.get_persona(feature_enabled, id).await
+        self.approve_plain_draft(id).await
     }
 
     pub async fn update_persona(
@@ -310,10 +332,15 @@ impl PersonaService {
         ensure_enabled(feature_enabled)?;
         let persona = self.require_status(id, PersonaStatus::Active).await?;
         let parsed = validate_persona_content(&persona.slug, content)?;
-        self.persona_repo
-            .update_content(id, content, &parsed.content_hash, None)
-            .await?;
-        self.get_persona(feature_enabled, id).await
+        self.update_content_with_artifact(
+            id,
+            content,
+            &parsed.content_hash,
+            None,
+            PersonaStatus::Active,
+            CREATED_BY_USER,
+        )
+        .await
     }
 
     pub async fn hard_delete_draft(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<()> {
@@ -328,7 +355,7 @@ impl PersonaService {
         {
             return self.delete_bound_draft(id).await;
         }
-        self.persona_repo.delete(id).await
+        self.delete_unbound_draft(id).await
     }
 
     pub async fn list_personas(

@@ -5,12 +5,14 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
-use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId};
+use crate::domain::entities::{
+    ArtifactId, Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+};
 use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
-pub(crate) const PERSONA_COLUMNS: &str = "id, project_id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
+pub(crate) const PERSONA_COLUMNS: &str = "id, artifact_id, project_id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
 const ACTIVE_SLUG_SCOPED_INDEX: &str = "personas_active_slug_scoped";
 
 pub struct SqlitePersonaRepository {
@@ -63,6 +65,9 @@ pub(crate) fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona>
 
     Ok(Persona {
         id: PersonaId::from(row.get::<_, String>("id")?),
+        artifact_id: row
+            .get::<_, Option<String>>("artifact_id")?
+            .map(ArtifactId::from_string),
         project_id: row
             .get::<_, Option<String>>("project_id")?
             .map(ProjectId::from_string),
@@ -102,12 +107,13 @@ pub(crate) fn persona_create_sync(
 ) -> AppResult<Persona> {
     conn.execute(
         "INSERT INTO personas (
-            id, project_id, slug, name, description, content, status, version, content_hash,
+            id, artifact_id, project_id, slug, name, description, content, status, version, content_hash,
             source_session_id, source_persona_id, source_content_hash, source_json,
             created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         rusqlite::params![
             persona.id.as_str(),
+            persona.artifact_id.as_ref().map(ArtifactId::as_str),
             persona.project_id.as_ref().map(ProjectId::as_str),
             persona.slug,
             persona.name,

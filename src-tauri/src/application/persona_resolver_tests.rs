@@ -33,6 +33,8 @@ fn persona(id: &str, slug: &str, status: PersonaStatus, content: &str) -> Person
     let now = Utc::now();
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
         project_id: None,
         slug: slug.to_string(),
         name: slug.to_string(),

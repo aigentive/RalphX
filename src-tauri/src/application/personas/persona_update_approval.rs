@@ -3,11 +3,16 @@ use ralphx_domain::personas::validation::{compose_persona_content, validate_pers
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
+use super::persona_transactions::{
+    append_persona_artifact_sync, delete_persona_artifact_chain_sync, persona_by_id_sync,
+    CREATED_BY_AGENT, CREATED_BY_SYSTEM,
+};
 use super::{ensure_enabled, PersonaService};
 use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::clear_builder_draft_bindings_sync;
-use crate::infrastructure::sqlite::sqlite_persona_repo::{persona_from_row, PERSONA_COLUMNS};
+use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::{
+    clear_builder_draft_bindings_sync, finish_builder_binding_sync,
+};
 
 const SOURCE_CHANGED_SINCE_SEED: &str = "SourceChangedSinceSeed:";
 const SOURCE_NO_LONGER_ACTIVE: &str = "SourceNoLongerActive:";
@@ -19,18 +24,8 @@ pub fn draft_applied_payload(draft_id: &PersonaId, source: &Persona) -> Value {
     })
 }
 
-fn persona_by_id(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<Persona>> {
-    conn.query_row(
-        &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE id = ?1"),
-        [id],
-        persona_from_row,
-    )
-    .optional()
-    .map_err(AppError::from)
-}
-
 fn require_draft(conn: &rusqlite::Connection, id: &str) -> AppResult<Persona> {
-    let persona = persona_by_id(conn, id)?
+    let persona = persona_by_id_sync(conn, id)?
         .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?;
     if persona.status != PersonaStatus::Draft {
         return Err(AppError::Validation(format!("Persona {id} must be draft")));
@@ -42,7 +37,7 @@ fn require_active_source(conn: &rusqlite::Connection, draft: &Persona) -> AppRes
     let source_id = draft.source_persona_id.as_ref().ok_or_else(|| {
         AppError::Validation(format!("Persona {} is not a seeded update draft", draft.id))
     })?;
-    let source = persona_by_id(conn, source_id.as_str())?;
+    let source = persona_by_id_sync(conn, source_id.as_str())?;
     match source {
         Some(source) if source.status == PersonaStatus::Active => Ok(source),
         _ => Err(AppError::Conflict(format!(
@@ -106,6 +101,7 @@ impl PersonaService {
             .run_transaction(move |conn| {
                 require_draft(conn, &draft_id)?;
                 clear_builder_draft_bindings_sync(conn, &draft_id)?;
+                delete_persona_artifact_chain_sync(conn, &draft_id)?;
                 let deleted = conn.execute("DELETE FROM personas WHERE id = ?1", [&draft_id])?;
                 if deleted != 1 {
                     return Err(AppError::Conflict(format!(
@@ -147,15 +143,35 @@ impl PersonaService {
                         source.id
                     )));
                 }
-                clear_builder_draft_bindings_sync(conn, &draft_id)?;
+                let draft_tip_artifact_id = draft.artifact_id.as_ref().ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "Seeded persona draft {draft_id} has no artifact tip"
+                    ))
+                })?;
+                let mut updated_source =
+                    persona_by_id_sync(conn, source.id.as_str())?.ok_or_else(|| {
+                        AppError::NotFound(format!("Persona not found: {}", source.id))
+                    })?;
+                let mut graft_metadata = serde_json::Map::new();
+                graft_metadata.insert("source_draft_id".to_string(), json!(draft_id));
+                graft_metadata.insert(
+                    "draft_tip_artifact_id".to_string(),
+                    json!(draft_tip_artifact_id.as_str()),
+                );
+                append_persona_artifact_sync(
+                    conn,
+                    &mut updated_source,
+                    CREATED_BY_AGENT,
+                    Some(graft_metadata),
+                )?;
+                finish_builder_binding_sync(conn, &draft_id, source.id.as_str())?;
                 let deleted = conn.execute("DELETE FROM personas WHERE id = ?1", [&draft_id])?;
                 if deleted != 1 {
                     return Err(AppError::Conflict(format!(
                         "Seeded persona draft {draft_id} disappeared during approval"
                     )));
                 }
-                persona_by_id(conn, source.id.as_str())?
-                    .ok_or_else(|| AppError::NotFound(format!("Persona not found: {}", source.id)))
+                Ok(updated_source)
             })
             .await
     }
@@ -180,7 +196,7 @@ impl PersonaService {
                         "Persona draft {draft_id} changed during reseed"
                     )));
                 }
-                persona_by_id(conn, &draft_id)?
+                persona_by_id_sync(conn, &draft_id)?
                     .ok_or_else(|| AppError::NotFound(format!("Persona not found: {draft_id}")))
             })
             .await
@@ -201,7 +217,7 @@ impl PersonaService {
                 let source_id = draft.source_persona_id.as_ref().ok_or_else(|| {
                     AppError::Validation(format!("Persona {draft_id} is not a seeded update draft"))
                 })?;
-                if persona_by_id(conn, source_id.as_str())?
+                if persona_by_id_sync(conn, source_id.as_str())?
                     .is_some_and(|source| source.status == PersonaStatus::Active)
                 {
                     return Err(AppError::Conflict(format!(
@@ -248,9 +264,11 @@ impl PersonaService {
                         "Persona draft {draft_id} changed during approval"
                     )));
                 }
-                clear_builder_draft_bindings_sync(conn, &draft_id)?;
-                persona_by_id(conn, &draft_id)?
-                    .ok_or_else(|| AppError::NotFound(format!("Persona not found: {draft_id}")))
+                let mut approved = persona_by_id_sync(conn, &draft_id)?
+                    .ok_or_else(|| AppError::NotFound(format!("Persona not found: {draft_id}")))?;
+                append_persona_artifact_sync(conn, &mut approved, CREATED_BY_SYSTEM, None)?;
+                finish_builder_binding_sync(conn, &draft_id, &draft_id)?;
+                Ok(approved)
             })
             .await
     }

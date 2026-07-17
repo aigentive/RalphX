@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use ralphx_events::RecordingEventSink;
+use ralphx_lib::application::personas::{PersonaService, SavePersonaDraftInput};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
@@ -81,6 +82,14 @@ fn request(slug: &str, content: String) -> SavePersonaDraftRequest {
     }
 }
 
+fn persona_service(state: &HttpServerState) -> PersonaService {
+    PersonaService::new(
+        state.app_state.db.clone(),
+        Arc::clone(&state.app_state.persona_repo),
+        Arc::clone(&state.app_state.chat_conversation_repo),
+    )
+}
+
 async fn persona_builder_headers(state: &HttpServerState) -> (ChatConversation, HeaderMap) {
     let mut conversation = ChatConversation::new_project(ProjectId::from_string(
         "persona-save-builder-project".to_string(),
@@ -150,6 +159,153 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
     .0;
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.version, 2);
+}
+
+#[tokio::test]
+async fn save_draft_rejects_after_plain_seeded_and_as_new_approval() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let service = persona_service(&state);
+
+    let (plain_conversation, plain_headers) = persona_builder_headers(&state).await;
+    let plain = save_persona_draft(
+        State(state.clone()),
+        plain_headers.clone(),
+        Json(request(
+            "approved-plain",
+            persona_content("approved-plain", "Plain"),
+        )),
+    )
+    .await
+    .unwrap()
+    .0;
+    service.approve_persona(true, &plain.id).await.unwrap();
+
+    let source_draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "approved-seeded".to_string(),
+                content: persona_content("approved-seeded", "Source"),
+                source_session_id: None,
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+    let source = service
+        .approve_persona(true, &source_draft.id)
+        .await
+        .unwrap();
+    let mut seeded_conversation = ChatConversation::new_standalone();
+    seeded_conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let seeded_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(seeded_conversation)
+        .await
+        .unwrap();
+    let seeded = service
+        .create_bound_draft(
+            true,
+            &seeded_conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: source.slug.clone(),
+                content: persona_content(&source.slug, "Seeded final"),
+                source_session_id: Some(seeded_conversation.id.as_str().to_string()),
+                source_persona_id: Some(source.id.clone()),
+                source_content_hash: Some(source.content_hash.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    service.approve_persona(true, &seeded.id).await.unwrap();
+
+    let source_draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "approved-as-new".to_string(),
+                content: persona_content("approved-as-new", "Source"),
+                source_session_id: None,
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+    let source = service
+        .approve_persona(true, &source_draft.id)
+        .await
+        .unwrap();
+    let mut as_new_conversation = ChatConversation::new_standalone();
+    as_new_conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let as_new_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(as_new_conversation)
+        .await
+        .unwrap();
+    let as_new = service
+        .create_bound_draft(
+            true,
+            &as_new_conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: source.slug.clone(),
+                content: persona_content(&source.slug, "As-new final"),
+                source_session_id: Some(as_new_conversation.id.as_str().to_string()),
+                source_persona_id: Some(source.id.clone()),
+                source_content_hash: Some(source.content_hash.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    service.archive_persona(true, &source.id).await.unwrap();
+    service
+        .approve_persona_as_new(true, &as_new.id, Some("approved-as-new-result"))
+        .await
+        .unwrap();
+
+    for (conversation, headers, slug) in [
+        (plain_conversation, plain_headers, "approved-plain"),
+        (
+            seeded_conversation.clone(),
+            conversation_headers(&seeded_conversation),
+            "approved-seeded",
+        ),
+        (
+            as_new_conversation.clone(),
+            conversation_headers(&as_new_conversation),
+            "approved-as-new-result",
+        ),
+    ] {
+        let error = save_persona_draft(
+            State(state.clone()),
+            headers,
+            Json(request(slug, persona_content(slug, "Rejected overwrite"))),
+        )
+        .await
+        .expect_err("approved builder conversation must reject another save");
+        assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("persona already approved")));
+        let stored = state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.builder_draft_id.is_none());
+        assert!(stored.builder_result_persona_id.is_some());
+    }
 }
 
 #[tokio::test]
@@ -577,7 +733,7 @@ async fn save_draft_handler_emits_body_free_event_payload() {
         .payload
         .as_object()
         .expect("payload should be object");
-    assert_eq!(payload.len(), 3);
+    assert_eq!(payload.len(), 4);
     assert_eq!(
         payload.get("draft_id").and_then(serde_json::Value::as_str),
         Some(draft.id.as_str())
@@ -591,6 +747,12 @@ async fn save_draft_handler_emits_body_free_event_payload() {
             .get("content_hash")
             .and_then(serde_json::Value::as_str),
         Some(draft.content_hash.as_str())
+    );
+    assert_eq!(
+        payload
+            .get("artifact_id")
+            .and_then(serde_json::Value::as_str),
+        draft.artifact_id.as_ref().map(|id| id.as_str())
     );
     assert!(!payload.contains_key("content"));
     assert!(!payload.contains_key("body"));

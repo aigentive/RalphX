@@ -71,6 +71,8 @@ async fn bound_project_persona() -> (ChatConversation, Arc<MemoryPersonaReposito
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from("recovery-bound-persona"),
+        artifact_id: None,
+
         project_id: None,
         slug: "recovery-bound-persona".to_string(),
         name: "Recovery Bound Persona".to_string(),

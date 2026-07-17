@@ -125,6 +125,68 @@ async fn assert_bindings(
     }
 }
 
+async fn assert_finished_bindings(
+    service: &PersonaService,
+    conversations: &[ChatConversation],
+    result_persona_id: &str,
+) {
+    for conversation in conversations {
+        let loaded = service
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(loaded.builder_draft_id.is_none());
+        assert_eq!(
+            loaded.builder_result_persona_id.as_deref(),
+            Some(result_persona_id)
+        );
+    }
+}
+
+fn artifact_row(
+    db: &SqliteTestDb,
+    artifact_id: &crate::domain::entities::ArtifactId,
+) -> (Option<String>, String, serde_json::Value) {
+    db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT previous_version_id, created_by, metadata_json
+             FROM artifacts WHERE id = ?1",
+            [artifact_id.as_str()],
+            |row| {
+                let metadata: String = row.get(2)?;
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    serde_json::from_str(&metadata).unwrap(),
+                ))
+            },
+        )
+        .unwrap()
+    })
+}
+
+fn chain_ids(db: &SqliteTestDb, tip: &crate::domain::entities::ArtifactId) -> Vec<String> {
+    db.with_connection(|conn| {
+        let mut statement = conn
+            .prepare(
+                "WITH RECURSIVE chain(id, previous_version_id) AS (
+                     SELECT id, previous_version_id FROM artifacts WHERE id = ?1
+                     UNION ALL
+                     SELECT artifacts.id, artifacts.previous_version_id
+                     FROM artifacts JOIN chain ON artifacts.id = chain.previous_version_id
+                 ) SELECT id FROM chain",
+            )
+            .unwrap();
+        statement
+            .query_map([tip.as_str()], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    })
+}
+
 #[tokio::test]
 async fn approve_as_new_allows_global_slug_but_rejects_same_project_scope() {
     let db = SqliteTestDb::new("approve_as_new_project_scope");
@@ -204,6 +266,35 @@ async fn seeded_approval_rolls_back_source_write_when_draft_delete_fails() {
         source,
         "source must be byte-for-byte unchanged after rollback"
     );
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
+}
+
+#[tokio::test]
+async fn seeded_approval_rolls_back_every_writer_when_artifact_append_fails() {
+    let db = SqliteTestDb::new("seeded_approval_append_rollback");
+    let (service, source, draft, conversations) =
+        seeded_fixture(&db, "append-rollback-source").await;
+    let source_tip = source.artifact_id.clone();
+    db.shared_conn()
+        .lock()
+        .await
+        .execute_batch(
+            "CREATE TRIGGER fail_seeded_source_artifact_insert
+             BEFORE INSERT ON artifacts WHEN NEW.type = 'persona'
+             BEGIN SELECT RAISE(ABORT, 'forced source artifact failure'); END;",
+        )
+        .expect("append rollback trigger should install");
+
+    let error = service
+        .approve_persona(true, &draft.id)
+        .await
+        .expect_err("artifact append failure must roll back the seeded apply");
+
+    assert!(matches!(error, AppError::Database(_)));
+    let source_after = service.get_persona(true, &source.id).await.unwrap();
+    assert_eq!(source_after.content, source.content);
+    assert_eq!(source_after.artifact_id, source_tip);
     assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
     assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
 }
@@ -429,6 +520,154 @@ async fn deleting_a_seeded_draft_clears_every_builder_binding_atomically() {
         .is_none());
     assert_eq!(service.get_persona(true, &source.id).await.unwrap(), source);
     assert_bindings(&service, &conversations, None).await;
+}
+
+#[tokio::test]
+async fn draft_hard_delete_removes_its_entire_artifact_chain() {
+    let db = SqliteTestDb::new("seeded_draft_delete_artifacts");
+    let (service, _source, draft, _conversations) = seeded_fixture(&db, "delete-chain").await;
+    let updated = service
+        .update_draft_as_agent(
+            true,
+            &draft.id,
+            &persona_content("delete-chain", "Second draft version"),
+        )
+        .await
+        .unwrap();
+    let ids = chain_ids(&db, updated.artifact_id.as_ref().unwrap());
+    assert_eq!(ids.len(), 2);
+
+    service.hard_delete_draft(true, &draft.id).await.unwrap();
+
+    db.with_connection(|conn| {
+        for id in ids {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM artifacts WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "deleted draft chain must leave no artifact row");
+        }
+    });
+}
+
+#[tokio::test]
+async fn approvals_finalize_bindings_and_preserve_archived_result_pointer() {
+    let db = SqliteTestDb::new("uniform_persona_approval_bindings");
+    let service = sqlite_service(&db);
+    let plain_conversation = create_builder_conversation(&service).await;
+    let plain = service
+        .create_bound_draft(
+            true,
+            &plain_conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "plain-result".to_string(),
+                content: persona_content("plain-result", "Plain approval"),
+                source_session_id: Some(plain_conversation.id.as_str().to_string()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+    let before_count = chain_ids(&db, plain.artifact_id.as_ref().unwrap()).len();
+    let approved_plain = service.approve_persona(true, &plain.id).await.unwrap();
+    assert_eq!(
+        chain_ids(&db, approved_plain.artifact_id.as_ref().unwrap()).len(),
+        before_count + 1,
+        "plain approval must append exactly once"
+    );
+    assert_eq!(
+        artifact_row(&db, approved_plain.artifact_id.as_ref().unwrap()).1,
+        "user"
+    );
+    assert_finished_bindings(
+        &service,
+        std::slice::from_ref(&plain_conversation),
+        plain.id.as_str(),
+    )
+    .await;
+
+    service.archive_persona(true, &plain.id).await.unwrap();
+    assert_finished_bindings(&service, &[plain_conversation], plain.id.as_str()).await;
+
+    let (seeded_service, source, seeded, seeded_conversations) =
+        seeded_fixture(&db, "seeded-result").await;
+    let applied = seeded_service
+        .approve_persona(true, &seeded.id)
+        .await
+        .unwrap();
+    assert_finished_bindings(&seeded_service, &seeded_conversations, source.id.as_str()).await;
+    assert_eq!(applied.id, source.id);
+
+    let (as_new_service, source, as_new, as_new_conversations) =
+        seeded_fixture(&db, "as-new-result").await;
+    as_new_service
+        .archive_persona(true, &source.id)
+        .await
+        .unwrap();
+    let approved_new = as_new_service
+        .approve_persona_as_new(true, &as_new.id, Some("as-new-renamed"))
+        .await
+        .unwrap();
+    assert_finished_bindings(
+        &as_new_service,
+        &as_new_conversations,
+        approved_new.id.as_str(),
+    )
+    .await;
+    assert_eq!(
+        artifact_row(&db, approved_new.artifact_id.as_ref().unwrap()).1,
+        "system"
+    );
+}
+
+#[tokio::test]
+async fn seeded_apply_grafts_source_history_and_leaves_draft_history_orphaned() {
+    let db = SqliteTestDb::new("seeded_graft_shape");
+    let (service, source, draft, conversations) = seeded_fixture(&db, "graft-source").await;
+    let source_tip = source.artifact_id.clone().unwrap();
+    let draft = service
+        .update_draft_as_agent(
+            true,
+            &draft.id,
+            &persona_content("graft-source", "Final graft content"),
+        )
+        .await
+        .unwrap();
+    let draft_tip = draft.artifact_id.clone().unwrap();
+    let draft_chain = chain_ids(&db, &draft_tip);
+
+    let applied = service.approve_persona(true, &draft.id).await.unwrap();
+
+    let applied_tip = applied.artifact_id.as_ref().unwrap();
+    let (parent, created_by, metadata) = artifact_row(&db, applied_tip);
+    assert_eq!(parent.as_deref(), Some(source_tip.as_str()));
+    assert_eq!(created_by, "agent");
+    assert_eq!(metadata["source_draft_id"], draft.id.as_str());
+    assert_eq!(metadata["draft_tip_artifact_id"], draft_tip.as_str());
+    let source_history = chain_ids(&db, applied_tip);
+    assert!(source_history.contains(&source_tip.to_string()));
+    assert!(draft_chain.iter().all(|id| !source_history.contains(id)));
+    db.with_connection(|conn| {
+        for id in &draft_chain {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM artifacts WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 1,
+                "graft metadata must point to recoverable orphan rows"
+            );
+        }
+    });
+    assert_finished_bindings(&service, &conversations, source.id.as_str()).await;
 }
 
 #[tokio::test]

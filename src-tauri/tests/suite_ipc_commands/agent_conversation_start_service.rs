@@ -15,6 +15,7 @@ use ralphx_lib::application::automation::provisioning::AutomationRunProvisioner;
 use ralphx_lib::application::automation::transition::NoopAutomationEventEmitter;
 use ralphx_lib::application::builder_attachment_materializer::materialized_builder_attachment_path;
 use ralphx_lib::application::chat_attachment_service::ChatAttachmentService;
+use ralphx_lib::application::personas::{PersonaService, SavePersonaDraftInput};
 use ralphx_lib::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use ralphx_lib::application::standalone_workspace::{
     create_workspace, standalone_workspace_path, standalone_workspaces_root,
@@ -272,6 +273,8 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
         project_id: None,
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
@@ -301,6 +304,8 @@ async fn seed_project_persona(state: &AppState, id: &str, project_id: &ProjectId
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
         project_id: Some(project_id.clone()),
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
@@ -344,19 +349,63 @@ async fn abort_seeded_agent_conversation_removes_all_pre_start_state() {
     let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
         .expect("abort fixture directory should be created");
     let app_data_dir = temp.path().join("app-data");
+    let db = SqliteTestDb::new("abort_seeded_persona_chain");
+    let shared = db.shared_conn();
     let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
     state.app_paths = AppPaths::new(app_data_dir.clone(), None);
     state.attachment_storage_path = state.app_paths.attachment_storage_path();
 
-    let draft = seed_persona(&state, "abort-bound-draft", PersonaStatus::Draft).await;
-    let mut conversation =
+    let conversation =
         ChatConversation::new_project(ProjectId::from_string("abort-seeded-project".to_string()));
-    conversation.builder_draft_id = Some(draft.id.as_str().to_string());
     let conversation = state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("seeded conversation should persist");
+    let persona_service = PersonaService::new(
+        state.db.clone(),
+        state.persona_repo.clone(),
+        state.chat_conversation_repo.clone(),
+    );
+    let draft = persona_service
+        .create_bound_draft(
+            true,
+            &conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "abort-bound-draft".to_string(),
+                content: "---\nname: abort-bound-draft\nkind: persona\ndescription: Abort fixture\n---\nNever started."
+                    .to_string(),
+                source_session_id: Some(conversation.id.as_str().to_string()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect("bound draft and artifact chain should persist");
+    let artifact_ids = db.with_connection(|conn| {
+        let mut statement = conn
+            .prepare(
+                "WITH RECURSIVE chain(id, previous_version_id) AS (
+                     SELECT id, previous_version_id FROM artifacts WHERE id = ?1
+                     UNION ALL
+                     SELECT artifacts.id, artifacts.previous_version_id
+                     FROM artifacts JOIN chain ON artifacts.id = chain.previous_version_id
+                 ) SELECT id FROM chain",
+            )
+            .unwrap();
+        statement
+            .query_map([draft.artifact_id.as_ref().unwrap().as_str()], |row| {
+                row.get(0)
+            })
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
+            .unwrap()
+    });
+    assert!(!artifact_ids.is_empty());
     state
         .conversation_folder_reference_repo
         .create_if_below_live_cap(
@@ -413,6 +462,18 @@ async fn abort_seeded_agent_conversation_removes_all_pre_start_state() {
         .await
         .unwrap()
         .is_none());
+    db.with_connection(|conn| {
+        for artifact_id in artifact_ids {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM artifacts WHERE id = ?1",
+                    [artifact_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "abort must delete every draft artifact row");
+        }
+    });
     assert!(!workspace.exists(), "aborted workspace must be absent");
 }
 
