@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
@@ -91,6 +91,31 @@ describe("useNotificationEvents", () => {
 
     expect(navigateNotification).toHaveBeenCalledOnce();
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
+  it("still refreshes notification history when marking an opened desktop notification read fails", async () => {
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    vi.mocked(navigateNotification).mockResolvedValue(true);
+    vi.mocked(notificationsApi.markRead).mockRejectedValue(new Error("offline"));
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    renderHook(() => useNotificationEvents(), { wrapper });
+
+    subscribers.get("notification:desktop_activated")?.({
+      id: "notification-retry",
+      createdAt: "2026-07-16T15:00:00Z",
+      category: "agent_question",
+      severity: "action_required",
+      title: "Agent has a question",
+      target: { kind: "agent_conversation" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-retry");
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: notificationKeys.all });
+    });
   });
 
   it("ignores malformed desktop activation payloads", () => {
