@@ -220,6 +220,17 @@ fn handoff_is_open_only_for_current_reviewing_or_current_passed_monitor() {
         Some(&target),
     ));
 
+    let bypassed_monitor = current_bypassed_monitor(&target);
+    assert!(workspace_review_monitor_keeps_pr_fix_publish_handoff(
+        Some(&bypassed_monitor),
+        Some(&target),
+    ));
+    assert!(has_open_pr_fix_workspace_review_publish_handoff(
+        &events,
+        Some(&bypassed_monitor),
+        Some(&target),
+    ));
+
     let mut stale_passed_monitor = current_passed_monitor(&target);
     stale_passed_monitor.current_diff_fingerprint = Some("old-diff".to_string());
     assert!(!workspace_review_monitor_keeps_pr_fix_publish_handoff(

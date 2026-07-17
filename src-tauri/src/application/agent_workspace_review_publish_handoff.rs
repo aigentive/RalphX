@@ -70,17 +70,11 @@ fn workspace_review_monitor_current_target_matches(
     }
 }
 
-fn workspace_review_monitor_has_current_passing_review(
+fn workspace_review_monitor_has_current_publish_authorization(
     monitor: &AgentWorkspaceReviewMonitor,
     target: &AgentWorkspaceReviewTarget,
 ) -> bool {
-    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
-        && workspace_review_monitor_current_target_matches(monitor, target)
-        && monitor.has_current_review_publish_authorization_for_target(
-            target.scope,
-            target.head_sha.as_deref(),
-            &target.diff_fingerprint,
-        )
+    workspace_review_authorization_kind(monitor, target).is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +141,7 @@ pub(crate) fn workspace_review_monitor_keeps_pr_fix_publish_handoff(
                 && workspace_review_monitor_current_target_matches(monitor, target)
         }
         AgentWorkspaceReviewGateStatus::Passed => {
-            workspace_review_monitor_has_current_passing_review(monitor, target)
+            workspace_review_monitor_has_current_publish_authorization(monitor, target)
         }
         _ => false,
     }
@@ -172,7 +166,7 @@ pub(crate) fn pr_fix_publish_can_resume_after_workspace_review(
         return false;
     };
 
-    workspace_review_monitor_has_current_passing_review(monitor, current_target)
+    workspace_review_monitor_has_current_publish_authorization(monitor, current_target)
         && workspace.auto_publish_enabled
         && workspace.publication_pr_number.is_some()
         && !workspace.has_terminal_publication_pr_status()
