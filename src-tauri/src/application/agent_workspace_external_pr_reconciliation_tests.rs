@@ -203,6 +203,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
             app_handle: None,
         },
         workspace_repo,
@@ -663,6 +664,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };
     assert_eq!(
@@ -826,6 +828,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };
 
@@ -871,6 +874,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };
 

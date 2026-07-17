@@ -8,6 +8,9 @@ use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::clickup_git_association::{
     reconcile_clickup_pr_to_conversation, ClickUpGitEvidence, ClickUpPrAssociationInput,
@@ -16,7 +19,6 @@ use crate::application::clickup_git_association::{
 use crate::application::clickup_integration_service::ClickUpIntegrationService;
 use crate::application::external_issue_link_service::ExternalIssueLinkService;
 use crate::application::git_service::GitService;
-use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
 use crate::application::ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TICKETING_CACHE_INVALIDATED_EVENT,
 };
@@ -27,7 +29,8 @@ use crate::domain::entities::{
     ChatConversationId, Project, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppResult;
@@ -66,6 +69,7 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub app_handle: Option<AppHandle>,
 }
 
@@ -223,13 +227,11 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
+            Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
             &conversation_id,
             &project,
-            Some(Arc::clone(&deps.github)),
-            matches!(pr.status, PrStatus::Merged { .. }),
-            true,
-            pr_status,
+            TerminalAgentWorkspaceCause::from_pr_status(pr_status),
         )
         .await;
     }
@@ -306,13 +308,11 @@ async fn reconcile_linked_agent_workspace_pr(
     terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
+        Some(Arc::clone(&deps.plan_branch_repo)),
         deps.chat_service.as_ref().map(Arc::clone),
         &workspace.conversation_id,
         project,
-        matches!(status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
-        pr_status == "merged",
-        true,
-        pr_status,
+        TerminalAgentWorkspaceCause::from_pr_status(pr_status),
     )
     .await;
 

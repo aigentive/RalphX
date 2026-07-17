@@ -1,8 +1,15 @@
+use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
+use crate::application::agent_conversation_workspace::{
+    agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+};
+use crate::application::agent_workspace_terminal_cleanup::TerminalLocalCleanupResult;
+use crate::application::git_service::GitService;
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus;
 
@@ -28,11 +35,17 @@ async fn setup_archive_state(
     Arc<MockGithubService>,
 ) {
     let temp = tempfile::tempdir().expect("tempdir should be created");
-    let project = Project::new(
+    let mut project = Project::new(
         format!("Archive unit {suffix}"),
-        temp.path().to_string_lossy().to_string(),
+        temp.path().join("repo").to_string_lossy().to_string(),
     );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory =
+        Some(temp.path().join("worktrees").to_string_lossy().to_string());
     let conversation_id = ChatConversationId::new();
+    let branch_name = agent_conversation_branch_name(&project, &conversation_id);
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("archive workspace path should resolve");
     let mut workspace = AgentConversationWorkspace::new(
         conversation_id.clone(),
         project.id.clone(),
@@ -41,8 +54,8 @@ async fn setup_archive_state(
         "main".to_string(),
         Some("main".to_string()),
         Some("base-sha".to_string()),
-        format!("agent/archive-{suffix}"),
-        temp.path().join("worktree").to_string_lossy().to_string(),
+        branch_name,
+        worktree_path.to_string_lossy().to_string(),
     );
     workspace.publication_pr_number = pr_number;
     workspace.publication_pr_url =
@@ -74,6 +87,44 @@ async fn setup_archive_state(
     (temp, state, conversation_id, workspace, github)
 }
 
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn initialize_archive_repo(repo: &Path) {
+    std::fs::create_dir_all(repo).expect("create archive repository");
+    run_git(repo, &["init"]);
+    run_git(repo, &["config", "user.email", "test@example.com"]);
+    run_git(repo, &["config", "user.name", "Test User"]);
+    run_git(repo, &["checkout", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("write archive base");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "initial"]);
+}
+
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(repo)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 async fn create_linked_plan_branch(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -88,7 +139,7 @@ async fn create_linked_plan_branch(
         ArtifactId::from_string(format!("artifact-{suffix}")),
         session_id.clone(),
         workspace.project_id.clone(),
-        format!("plan/{suffix}"),
+        format!("ralphx/archive/{suffix}"),
         "main".to_string(),
     );
     plan_branch.execution_plan_id = execution_plan.map(|plan| plan.id.clone());
@@ -143,6 +194,70 @@ async fn archive_closes_workspace_pr_only_when_requested() {
         .unwrap();
     assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("closed"));
+}
+
+#[tokio::test]
+async fn archive_without_remote_close_immediately_force_removes_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "force-local-cleanup",
+        AgentConversationWorkspaceMode::Edit,
+        Some(142),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create archive worktree");
+    std::fs::write(worktree_path.join("uncommitted.txt"), "discard me\n")
+        .expect("write archive local change");
+
+    let outcome = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("archive should remain logically successful");
+
+    assert_eq!(github.state().close_pr_calls, 0);
+    assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(&repo_path, &workspace.branch_name));
+}
+
+#[tokio::test]
+async fn explicit_close_immediately_force_removes_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "explicit-close-force-local",
+        AgentConversationWorkspaceMode::Edit,
+        Some(143),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create explicit-close worktree");
+    std::fs::write(worktree_path.join("uncommitted.txt"), "discard me\n")
+        .expect("write explicit-close local change");
+
+    close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect("explicit close should succeed");
+
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(&repo_path, &workspace.branch_name));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained for history");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("closed"));
 }
 
 #[tokio::test]

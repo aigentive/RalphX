@@ -21,7 +21,9 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
@@ -35,10 +37,6 @@ fn parse_datetime(value: &str) -> DateTime<Utc> {
     }
     Utc::now()
 }
-
-#[cfg(test)]
-#[path = "sqlite_agent_conversation_workspace_repo_tests.rs"]
-mod tests;
 
 fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
@@ -837,15 +835,21 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND (
                          local_cleanup_status IS NULL
                          OR (
-                           local_cleanup_status IN ('unsafe', 'target_ref_missing', 'workspace_dirty')
+                           local_cleanup_status IN (
+                             'pending', 'failed', 'failed_unsafe', 'failed_operational',
+                             'unsafe', 'target_ref_missing', 'workspace_dirty',
+                             'branch_missing', 'cleaning'
+                           )
                            AND local_cleanup_checked_at IS NOT NULL
                            AND local_cleanup_checked_at < ?2
                          )
                        )
                      ORDER BY created_at DESC",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![project_id, retry_cutoff], row_to_workspace)?;
+                let rows = stmt.query_map(
+                    rusqlite::params![project_id, retry_cutoff],
+                    row_to_workspace,
+                )?;
                 let mut workspaces = Vec::new();
                 for row in rows {
                     workspaces.push(row?);
@@ -874,6 +878,88 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     rusqlite::params![status, checked_at, conversation_id],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let claimed_at = claimed_at.to_rfc3339();
+        let stale_before = stale_before.to_rfc3339();
+        self.db
+            .run_transaction(move |tx| {
+                let changed = tx.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = 'cleaning', local_cleanup_checked_at = ?2,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1
+                       AND (
+                         local_cleanup_status IS NULL
+                         OR local_cleanup_status IN (
+                           'pending', 'failed', 'failed_unsafe', 'failed_operational',
+                           'unsafe', 'target_ref_missing', 'workspace_dirty', 'branch_missing'
+                         )
+                         OR (
+                           local_cleanup_status = 'cleaning'
+                           AND (
+                             local_cleanup_checked_at IS NULL
+                             OR local_cleanup_checked_at < ?3
+                           )
+                         )
+                       )",
+                    rusqlite::params![conversation_id, claimed_at, stale_before],
+                )?;
+                if changed == 1 {
+                    return Ok(AgentWorkspaceLocalCleanupClaim::Claimed);
+                }
+
+                let status = tx
+                    .query_row(
+                        "SELECT local_cleanup_status
+                         FROM agent_conversation_workspaces
+                         WHERE conversation_id = ?1",
+                        rusqlite::params![conversation_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?;
+                match status {
+                    None => Err(AppError::NotFound(format!(
+                        "Agent conversation workspace not found while claiming local cleanup: {conversation_id}"
+                    ))),
+                    Some(Some(status)) if status == "cleaned" => {
+                        Ok(AgentWorkspaceLocalCleanupClaim::AlreadyCleaned)
+                    }
+                    Some(_) => Ok(AgentWorkspaceLocalCleanupClaim::AlreadyInProgress),
+                }
+            })
+            .await
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let status = status.to_string();
+        let checked_at = checked_at.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2,
+                         updated_at = ?2
+                     WHERE conversation_id = ?3
+                       AND local_cleanup_status = 'cleaning'",
+                    rusqlite::params![status, checked_at, conversation_id],
+                )?;
+                Ok(changed == 1)
             })
             .await
     }

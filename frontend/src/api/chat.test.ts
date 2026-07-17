@@ -1407,18 +1407,26 @@ describe("chat api", () => {
 
   it("archives conversation", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Old agent",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Old agent",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     const result = await archiveConversation("c-archive", { closePullRequest: false });
@@ -1427,23 +1435,32 @@ describe("chat api", () => {
       conversationId: "c-archive",
       closePullRequest: false,
     });
-    expect(result.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.conversation.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.cleanup.localCleanup).toBe("cleaned");
   });
 
   it("passes explicit PR closure intent when archiving", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive-close-pr",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Close PR",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive-close-pr",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Close PR",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     await archiveConversation("c-archive-close-pr", { closePullRequest: true });

@@ -206,6 +206,8 @@ git:
   terminal_pr_local_cleanup_retry_secs: 3600 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS
   # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
   orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
+  # orphan_worktree_cleanup.rs — same-process orphan cleanup cadence (0 disables periodic cleanup)
+  orphan_worktree_cleanup_interval_secs: 900 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion
   agent_kill_settle_secs: 0 # Env: RALPHX_GIT_AGENT_KILL_SETTLE_SECS
   # merge_coordination.rs — timeout for each stop_agent() call in pre-merge cleanup step 0

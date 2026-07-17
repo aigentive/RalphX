@@ -347,15 +347,15 @@ async fn merged_pr_plan_branch_cleanup_reports_delete_failure() {
 }
 
 #[tokio::test]
-async fn closed_agent_workspace_cleanup_removes_clean_worktree_but_keeps_branch() {
+async fn closed_agent_workspace_cleanup_force_removes_worktree_and_local_branch() {
     let repo = init_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = project_for(repo.path(), worktrees.path());
-    let branch = "ralphx/cleanup/agent-closed";
-    let workspace = workspace_for(&project, branch, "closed");
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "closed");
     let worktree_path = Path::new(&workspace.worktree_path);
 
-    GitService::create_worktree(repo.path(), worktree_path, branch, "main")
+    GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
         .await
         .expect("create worktree");
     std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
@@ -367,37 +367,38 @@ async fn closed_agent_workspace_cleanup_removes_clean_worktree_but_keeps_branch(
         .expect("cleanup should succeed");
 
     assert!(report.worktree_removed);
-    assert!(!report.branch_deleted);
+    assert!(report.branch_deleted);
     assert!(!worktree_path.exists());
-    assert!(branch_exists(repo.path(), branch));
+    assert!(!branch_exists(repo.path(), &branch));
 }
 
 #[tokio::test]
-async fn merged_agent_workspace_cleanup_keeps_dirty_worktree_and_branch() {
+async fn merged_agent_workspace_cleanup_force_removes_dirty_and_ignored_artifacts() {
     let repo = init_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = project_for(repo.path(), worktrees.path());
-    let branch = "ralphx/cleanup/agent-dirty";
-    let workspace = workspace_for(&project, branch, "merged");
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "merged");
     let worktree_path = Path::new(&workspace.worktree_path);
 
-    GitService::create_worktree(repo.path(), worktree_path, branch, "main")
+    GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
         .await
         .expect("create worktree");
     std::fs::write(worktree_path.join("dirty.txt"), "dirty\n").expect("write dirty file");
+    let ignored_artifacts = worktree_path.join("target/llvm-cov-target");
+    std::fs::create_dir_all(&ignored_artifacts).expect("create ignored artifact directory");
+    std::fs::write(ignored_artifacts.join("coverage.profraw"), "large artifact")
+        .expect("write ignored artifact");
 
     let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
         .await
         .expect("cleanup should succeed");
 
-    assert!(!report.worktree_removed);
-    assert!(!report.branch_deleted);
-    assert_eq!(
-        report.skipped_reason.as_deref(),
-        Some("workspace_has_uncommitted_changes")
-    );
-    assert!(worktree_path.exists());
-    assert!(branch_exists(repo.path(), branch));
+    assert!(report.worktree_removed);
+    assert!(report.branch_deleted);
+    assert_eq!(report.skipped_reason, None);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(repo.path(), &branch));
 }
 
 #[tokio::test]
@@ -421,8 +422,8 @@ async fn merged_agent_workspace_cleanup_skips_mismatched_or_non_directory_path()
         Some("workspace_path_mismatch")
     );
 
-    let branch = "ralphx/cleanup/not-directory";
-    let workspace = workspace_for(&project, branch, "merged");
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "merged");
     let worktree_path = Path::new(&workspace.worktree_path);
     std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
         .expect("create workspace parent");

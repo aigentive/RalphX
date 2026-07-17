@@ -13,7 +13,9 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 use crate::testing::SqliteTestDb;
 
 use super::SqliteAgentConversationWorkspaceRepository;
@@ -410,6 +412,46 @@ async fn local_cleanup_status_can_be_read_and_cleared() {
             .await
             .unwrap(),
         None
+    );
+}
+
+#[tokio::test]
+async fn local_cleanup_claim_is_atomic_and_finalize_requires_cleaning() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+    let repo = std::sync::Arc::new(repo);
+    let claimed_at = chrono::Utc::now();
+    let stale_before = claimed_at - chrono::Duration::hours(1);
+
+    let (first, second) = tokio::join!(
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+    );
+    let claims = [first.expect("first claim"), second.expect("second claim")];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| **claim == AgentWorkspaceLocalCleanupClaim::Claimed)
+            .count(),
+        1
+    );
+    assert!(claims.contains(&AgentWorkspaceLocalCleanupClaim::AlreadyInProgress));
+
+    assert!(repo
+        .finalize_local_cleanup(&conversation_id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("finalize winner"));
+    assert!(!repo
+        .finalize_local_cleanup(&conversation_id, "failed_unsafe", chrono::Utc::now())
+        .await
+        .expect("late finalize is rejected"));
+    assert_eq!(
+        repo.claim_local_cleanup(&conversation_id, chrono::Utc::now(), stale_before)
+            .await
+            .expect("claim after success"),
+        AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
     );
 }
 

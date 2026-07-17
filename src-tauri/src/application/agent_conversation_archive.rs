@@ -1,14 +1,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    TerminalAgentWorkspaceOutcome, TerminalCleanupClaimState, TerminalLocalCleanupResult,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::task_cleanup_service::{StopMode, TaskCleanupService};
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatContextType, ChatConversationId, ExecutionPlan, ExecutionPlanStatus, PlanBranch,
-    PlanBranchStatus,
+    ChatConversationId, ExecutionPlan, ExecutionPlanStatus, PlanBranch, PlanBranchStatus,
 };
 use crate::domain::services::github_service::PrStatus as RemotePrStatus;
 
@@ -31,7 +34,7 @@ pub async fn archive_agent_conversation_for_state(
     conversation_id: &ChatConversationId,
     state: &AppState,
     close_pull_request: bool,
-) -> Result<(), String> {
+) -> Result<TerminalAgentWorkspaceOutcome, String> {
     let _conversation = state
         .chat_conversation_repo
         .get_by_id(conversation_id)
@@ -44,8 +47,17 @@ pub async fn archive_agent_conversation_for_state(
         .get_by_conversation_id(conversation_id)
         .await
         .map_err(|e| e.to_string())?;
-
-    stop_project_agent(conversation_id, state).await?;
+    let project = match workspace.as_ref() {
+        Some(workspace) => Some(
+            state
+                .project_repo
+                .get_by_id(&workspace.project_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?,
+        ),
+        None => None,
+    };
 
     if let Some(workspace) = workspace.as_ref() {
         cleanup_ideation_execution_workspace(workspace, state).await?;
@@ -68,7 +80,40 @@ pub async fn archive_agent_conversation_for_state(
             .map_err(|e| e.to_string())?;
     }
 
-    Ok(())
+    let Some(workspace) = workspace else {
+        return Ok(TerminalAgentWorkspaceOutcome {
+            runtime_shutdown_succeeded: true,
+            cleanup_claim: TerminalCleanupClaimState::NotClaimed,
+            local_cleanup: TerminalLocalCleanupResult::Cleaned,
+            message: None,
+        });
+    };
+    let project = project.ok_or_else(|| {
+        format!(
+            "Project not found after workspace archive: {}",
+            workspace.project_id
+        )
+    })?;
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    let outcome = terminalize_agent_workspace_after_pr(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Some(Arc::clone(&state.plan_branch_repo)),
+        Some(chat_service),
+        conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ArchivedConversation,
+    )
+    .await;
+    if !outcome.runtime_shutdown_succeeded {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            message = outcome.message.as_deref(),
+            "Archived workspace runtime could not be stopped; local cleanup remains pending"
+        );
+    }
+
+    Ok(outcome)
 }
 
 /// Close the effective PR for an agent workspace, using linked PlanBranch PRs first.
@@ -115,7 +160,26 @@ pub async fn close_agent_workspace_pr_for_state(
         &target,
         state,
     )
-    .await
+    .await?;
+
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    let outcome = terminalize_agent_workspace_after_pr(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Some(Arc::clone(&state.plan_branch_repo)),
+        Some(chat_service),
+        conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+    if outcome.runtime_shutdown_succeeded {
+        Ok(())
+    } else {
+        Err(outcome
+            .message
+            .unwrap_or_else(|| "Workspace runtime could not be stopped".to_string()))
+    }
 }
 
 /// Strictly reconcile the effective remote PR before replacing an implementation attempt.
@@ -184,19 +248,6 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
 
 fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {
     workspace.mode != AgentConversationWorkspaceMode::ReviewPr
-}
-
-async fn stop_project_agent(
-    conversation_id: &ChatConversationId,
-    state: &AppState,
-) -> Result<(), String> {
-    let chat_service = state.build_chat_service();
-    let conversation_id_str = conversation_id.as_str();
-    chat_service
-        .stop_agent(ChatContextType::Project, &conversation_id_str)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 async fn cleanup_ideation_execution_workspace(

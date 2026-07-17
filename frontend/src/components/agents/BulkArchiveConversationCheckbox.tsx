@@ -9,11 +9,7 @@ import {
 } from "@/components/ui/tooltip";
 
 import type { AgentConversation } from "./agentConversations";
-import {
-  BULK_ARCHIVE_BLOCKED_REASON,
-  hasPotentialOpenPullRequest,
-  isBulkArchiveConversationEligible,
-} from "./bulkConversationArchive";
+import { isBulkArchiveConversationEligible } from "./bulkConversationArchive";
 import { useBulkArchiveSelection } from "./bulkConversationArchiveSelectionContext";
 
 export function BulkArchiveConversationCheckbox({
@@ -34,11 +30,7 @@ export function BulkArchiveConversationCheckbox({
 
   const title = conversation.title || "Untitled agent";
   const eligible = isBulkArchiveConversationEligible(target);
-  const blockedReason = hasPotentialOpenPullRequest(workspace)
-    ? BULK_ARCHIVE_BLOCKED_REASON
-    : eligible
-      ? null
-      : "This session is already archived";
+  const blockedReason = eligible ? null : "This session is already archived";
   const descriptionId = `agents-bulk-archive-description-${conversation.id}`;
   const checkbox = (
     <Checkbox

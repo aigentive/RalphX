@@ -1582,16 +1582,58 @@ export async function spawnConversationSessionNamer(
   });
 }
 
+const TerminalCleanupClaimSchema = z.enum([
+  "claimed",
+  "already_in_progress",
+  "already_cleaned",
+  "not_claimed",
+]);
+
+const TerminalLocalCleanupResultSchema = z.enum([
+  "cleaned",
+  "pending",
+  "failed_unsafe",
+  "failed_operational",
+]);
+
+const ArchiveConversationResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  cleanup: z.object({
+    runtime_shutdown_succeeded: z.boolean(),
+    cleanup_claim: TerminalCleanupClaimSchema,
+    local_cleanup: TerminalLocalCleanupResultSchema,
+    message: z.string().nullable(),
+  }),
+});
+
+export interface ArchiveConversationResult {
+  conversation: ChatConversation;
+  cleanup: {
+    runtimeShutdownSucceeded: boolean;
+    cleanupClaim: z.infer<typeof TerminalCleanupClaimSchema>;
+    localCleanup: z.infer<typeof TerminalLocalCleanupResultSchema>;
+    message: string | null;
+  };
+}
+
 export async function archiveConversation(
   conversationId: string,
   options: { closePullRequest: boolean },
-): Promise<ChatConversation> {
+): Promise<ArchiveConversationResult> {
   const raw = await typedInvoke(
     "archive_agent_conversation",
     { conversationId, closePullRequest: options.closePullRequest },
-    ChatConversationResponseSchema,
+    ArchiveConversationResponseSchema,
   );
-  return transformConversation(raw);
+  return {
+    conversation: transformConversation(raw.conversation),
+    cleanup: {
+      runtimeShutdownSucceeded: raw.cleanup.runtime_shutdown_succeeded,
+      cleanupClaim: raw.cleanup.cleanup_claim,
+      localCleanup: raw.cleanup.local_cleanup,
+      message: raw.cleanup.message,
+    },
+  };
 }
 
 export async function restoreConversation(

@@ -18,6 +18,7 @@ import type {
   ConversationTimelinePageResponse,
   AgentConversationWorkspace,
   AgentConversationWorkspacePublicationEvent,
+  ArchiveConversationResult,
   AgentSidebarConversationGroupsResponse,
   AgentSidebarConversationsInput,
   AgentSidebarPublicationState,
@@ -742,7 +743,7 @@ export async function mockUpdateConversationTitle(
 export async function mockArchiveConversation(
   conversationId: string,
   _options: { closePullRequest: boolean }
-): Promise<ChatConversation> {
+): Promise<ArchiveConversationResult> {
   const conversation = mockConversations.get(conversationId);
   if (!conversation) {
     throw new Error(`Conversation ${conversationId} not found`);
@@ -753,7 +754,15 @@ export async function mockArchiveConversation(
     updatedAt: new Date().toISOString(),
   };
   mockConversations.set(conversationId, updated);
-  return cloneConversation(updated);
+  return {
+    conversation: cloneConversation(updated),
+    cleanup: {
+      runtimeShutdownSucceeded: true,
+      cleanupClaim: "claimed",
+      localCleanup: "cleaned",
+      message: null,
+    },
+  };
 }
 
 export async function mockRestoreConversation(

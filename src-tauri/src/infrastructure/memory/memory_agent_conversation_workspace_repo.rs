@@ -19,7 +19,9 @@ use crate::domain::entities::{
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 use crate::error::{AppError, AppResult};
 
 #[cfg(test)]
@@ -141,6 +143,49 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let retry_secs = crate::infrastructure::agents::claude::git_runtime_config()
+            .terminal_pr_local_cleanup_retry_secs;
+        let retry_secs = i64::try_from(retry_secs).unwrap_or(i64::MAX);
+        let retry_cutoff = Utc::now() - chrono::Duration::seconds(retry_secs);
+        let markers = self.local_cleanup_markers.read().await;
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| workspace.project_id == *project_id)
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Archived
+                    || workspace
+                        .publication_pr_status
+                        .as_deref()
+                        .is_some_and(|status| matches!(status, "merged" | "closed"))
+            })
+            .filter(|workspace| match markers.get(&workspace.conversation_id) {
+                None => true,
+                Some((status, checked_at)) => {
+                    matches!(
+                        status.as_str(),
+                        "pending"
+                            | "failed"
+                            | "failed_unsafe"
+                            | "failed_operational"
+                            | "unsafe"
+                            | "target_ref_missing"
+                            | "workspace_dirty"
+                            | "branch_missing"
+                            | "cleaning"
+                    ) && *checked_at < retry_cutoff
+                }
+            })
+            .cloned()
+            .collect())
+    }
+
     async fn mark_local_cleanup_status(
         &self,
         conversation_id: &ChatConversationId,
@@ -152,6 +197,69 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .insert(conversation_id.clone(), (status.to_string(), checked_at));
         Ok(())
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        if !self.workspaces.read().await.contains_key(conversation_id) {
+            return Err(AppError::NotFound(format!(
+                "Agent conversation workspace not found while claiming local cleanup: {conversation_id}"
+            )));
+        }
+        let mut markers = self.local_cleanup_markers.write().await;
+        let claim = match markers.get(conversation_id) {
+            Some((status, _)) if status == "cleaned" => {
+                AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
+            }
+            Some((status, checked_at)) if status == "cleaning" && *checked_at >= stale_before => {
+                AgentWorkspaceLocalCleanupClaim::AlreadyInProgress
+            }
+            Some((status, _))
+                if !matches!(
+                    status.as_str(),
+                    "cleaning"
+                        | "pending"
+                        | "failed"
+                        | "failed_unsafe"
+                        | "failed_operational"
+                        | "unsafe"
+                        | "target_ref_missing"
+                        | "workspace_dirty"
+                        | "branch_missing"
+                ) =>
+            {
+                AgentWorkspaceLocalCleanupClaim::AlreadyInProgress
+            }
+            _ => {
+                markers.insert(
+                    conversation_id.clone(),
+                    ("cleaning".to_string(), claimed_at),
+                );
+                AgentWorkspaceLocalCleanupClaim::Claimed
+            }
+        };
+        Ok(claim)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let mut markers = self.local_cleanup_markers.write().await;
+        if markers
+            .get(conversation_id)
+            .is_none_or(|(current, _)| current != "cleaning")
+        {
+            return Ok(false);
+        }
+        markers.insert(conversation_id.clone(), (status.to_string(), checked_at));
+        Ok(true)
     }
 
     async fn get_local_cleanup_status(
