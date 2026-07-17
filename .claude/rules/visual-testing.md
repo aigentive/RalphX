@@ -35,7 +35,7 @@ Component doesn't render in web mode?
 
 | Type | Pattern | Location | Example |
 |------|---------|----------|---------|
-| Spec | `{feature}.spec.ts` | `frontend/tests/visual/{views\|modals\|states\|components}/{feature}/` | `kanban.spec.ts` |
+| Spec | `{feature}.spec.ts` | `frontend/tests/visual/{views\|modals\|states\|components\|polish\|theme-audit}/... (feature subdirs apply to views/modals/states/components; cross-cutting audits like polish/ and theme-audit/ place specs directly in the category dir)` | `kanban.spec.ts` |
 | Spec subset | `{feature}-{subset}.spec.ts` | same | `kanban-cards.spec.ts` |
 | Page object | `{feature}.page.ts` | `frontend/tests/pages/` | `kanban.page.ts` |
 | Page sub-objects | `{feature}.page.ts` | `frontend/tests/pages/{views\|modals\|components}/` | `task-graph.page.ts` |
