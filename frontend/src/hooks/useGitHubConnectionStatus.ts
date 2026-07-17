@@ -9,9 +9,9 @@ interface QueryOptions {
 }
 
 /**
- * Read-only reflection of the locally-authenticated `gh` CLI (`gh auth status`).
- * RalphX stores no GitHub token (Decision 1). Cheap status read with a short
- * staleTime; consumed by the GitHub connection settings panel (P7). Keyed under
+ * Read-only typed reflection of the local GitHub CLI connection.
+ * RalphX stores no GitHub token. Cheap status read with a short
+ * staleTime; consumed by GitHub connection and auth repair surfaces. Keyed under
  * the shared `prKeys` GitHub namespace, separate from `ticketingKeys`.
  */
 export function useGitHubConnectionStatus(options: QueryOptions = {}) {

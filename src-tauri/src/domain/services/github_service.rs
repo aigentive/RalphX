@@ -292,15 +292,44 @@ impl PrReviewThread {
     }
 }
 
-/// Read-only reflection of the locally-authenticated `gh` CLI (`gh auth status`).
+/// Canonical GitHub connection state observed through the locally-installed `gh` CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubConnectionState {
+    Authenticated,
+    Unauthenticated,
+    CredentialRejected,
+    ProviderUnavailable,
+    CliUnavailable,
+    ProbeFailed,
+}
+
+/// Redacted reason category for a non-healthy GitHub connection observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubConnectionDiagnostic {
+    MissingCredentials,
+    CredentialsRejected,
+    Http5xx,
+    Network,
+    Timeout,
+    CliLaunch,
+    MalformedResponse,
+    UnexpectedResponse,
+    ServiceFailure,
+}
+
+/// Read-only reflection of local credential presence and live GitHub validation.
 ///
-/// RalphX stores no GitHub token (Decision 1); this is a live status surface only.
-/// `gh` not-installed and `gh` unauthenticated are distinct, non-error states.
+/// RalphX stores no GitHub token. `state` is authoritative; the booleans remain
+/// derived compatibility fields while callers migrate to the tagged contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubConnectionStatus {
+    pub state: GithubConnectionState,
+    pub diagnostic: Option<GithubConnectionDiagnostic>,
     /// Whether the `gh` binary is installed (resolvable + spawnable).
     pub gh_installed: bool,
-    /// Whether `gh auth status` reports an authenticated account.
+    /// Whether GitHub accepted the locally-present credential during this probe.
     pub authenticated: bool,
     /// The authenticated host (e.g. `github.com`), if any.
     pub host: Option<String>,
@@ -309,15 +338,91 @@ pub struct GithubConnectionStatus {
 }
 
 impl GithubConnectionStatus {
-    /// Typed "not available" status — used for `gh` not-installed/unauthenticated
-    /// and when the GitHub service is absent from `AppState`. Never an error.
-    pub fn unavailable() -> Self {
+    pub fn authenticated(host: impl Into<String>, account: impl Into<String>) -> Self {
         Self {
+            state: GithubConnectionState::Authenticated,
+            diagnostic: None,
+            gh_installed: true,
+            authenticated: true,
+            host: Some(host.into()),
+            account: Some(account.into()),
+        }
+    }
+
+    pub fn unauthenticated() -> Self {
+        Self {
+            state: GithubConnectionState::Unauthenticated,
+            diagnostic: Some(GithubConnectionDiagnostic::MissingCredentials),
+            gh_installed: true,
+            authenticated: false,
+            host: None,
+            account: None,
+        }
+    }
+
+    pub fn credential_rejected() -> Self {
+        Self {
+            state: GithubConnectionState::CredentialRejected,
+            diagnostic: Some(GithubConnectionDiagnostic::CredentialsRejected),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn provider_unavailable(diagnostic: GithubConnectionDiagnostic) -> Self {
+        Self {
+            state: GithubConnectionState::ProviderUnavailable,
+            diagnostic: Some(diagnostic),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn cli_unavailable() -> Self {
+        Self {
+            state: GithubConnectionState::CliUnavailable,
+            diagnostic: Some(GithubConnectionDiagnostic::CliLaunch),
             gh_installed: false,
             authenticated: false,
             host: None,
             account: None,
         }
+    }
+
+    pub fn probe_failed(diagnostic: GithubConnectionDiagnostic) -> Self {
+        Self {
+            state: GithubConnectionState::ProbeFailed,
+            diagnostic: Some(diagnostic),
+            gh_installed: true,
+            authenticated: false,
+            host: Some("github.com".to_string()),
+            account: None,
+        }
+    }
+
+    pub fn requires_credential_repair(&self) -> bool {
+        matches!(
+            self.state,
+            GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected
+        )
+    }
+
+    pub fn has_local_credential(&self) -> bool {
+        matches!(
+            self.state,
+            GithubConnectionState::Authenticated
+                | GithubConnectionState::CredentialRejected
+                | GithubConnectionState::ProviderUnavailable
+        )
+    }
+
+    /// Compatibility constructor for a missing/unlaunchable GitHub CLI.
+    pub fn unavailable() -> Self {
+        Self::cli_unavailable()
     }
 }
 

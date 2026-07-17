@@ -203,6 +203,8 @@ describe("GitHubBranchesView", () => {
     useIntegrationDashboardStore.getState().reset();
     openExternalTicketUrlMock.mockResolvedValue(undefined);
     vi.mocked(githubApi.getConnectionStatus).mockResolvedValue({
+      state: "authenticated",
+      diagnostic: null,
       ghInstalled: true,
       authenticated: true,
       host: "github.com",
