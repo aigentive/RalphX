@@ -33,6 +33,7 @@ fn team_and_workflow_capabilities_fail_closed_and_enable_independently() {
     gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     assert!(validate_agent_capability(
         CoordinationMode::RxNativeWorkflow,

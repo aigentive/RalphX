@@ -1,5 +1,25 @@
 # Ideation Studio User Guide
 
+## Agent conversation planning
+
+Use **Plan** for supervised native planning. After approving the exact current
+draft, choose **Create Proposals** to enter **Tasks** and review decomposition.
+No execution begins until you choose **Start Tasks**.
+
+Tasks stays attached to the same conversation, branch, and pull request. After
+execution unlocks you can return to it, and you can request a small follow-up on
+the same open PR without creating another plan. Closed or merged work starts
+again in Plan.
+
+**Autopilot** is an optional Agent capability in Settings. It allows native
+conversations to plan and start orchestration with minimal supervision. It is
+hidden and rejected by native APIs by default; external MCP integrations retain
+their existing autonomous flow.
+
+The remaining sections describe the standalone Ideation Studio flow. Its
+approval and scheduling behavior is unchanged by the native Agent conversation
+controls above.
+
 The Ideation Studio is where every feature in RalphX begins. You describe what you want to build, and a team of AI agents researches your codebase, designs an implementation plan, and creates a set of ready-to-execute tasks. Those tasks then flow automatically through execution, review, and the merge pipeline — turning an idea into merged code with minimal manual intervention.
 
 ---

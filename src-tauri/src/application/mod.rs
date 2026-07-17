@@ -21,6 +21,7 @@ pub mod manual_router_config;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
+pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
 pub mod agent_workspace_continuation;

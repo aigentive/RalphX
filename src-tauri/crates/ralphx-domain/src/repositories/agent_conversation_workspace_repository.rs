@@ -31,6 +31,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
     async fn get_by_project_id(
         &self,
         project_id: &ProjectId,

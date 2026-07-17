@@ -167,6 +167,16 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
+        if mode == AgentConversationWorkspaceMode::Tasks {
+            return Err(
+                "Tasks mode is available only for an existing attached task pipeline".to_string(),
+            );
+        }
+        if mode == AgentConversationWorkspaceMode::Autopilot
+            && !self.deps.state.agent_capability_gate.autopilot_enabled()
+        {
+            return Err("Autopilot is disabled in Agent conversation capabilities".to_string());
+        }
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
         let mut base_branch_mode =
             parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;

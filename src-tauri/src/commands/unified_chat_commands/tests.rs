@@ -677,6 +677,7 @@ fn enable_team_capability_for_test(state: &AppState) {
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
 }
@@ -1059,6 +1060,8 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         branch_name: "agent-d619a9fd".to_string(),
         worktree_path: "/tmp/workspace".to_string(),
         linked_ideation_session_id: Some("session-1".to_string()),
+        task_pipeline_session_id: None,
+        task_pipeline_available: false,
         linked_plan_branch_id: Some("plan-branch-1".to_string()),
         source_pull_request: None,
         publication_pr_number: None,
@@ -1126,6 +1129,8 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         branch_name: "agent-shell-branch".to_string(),
         worktree_path: "/tmp/workspace".to_string(),
         linked_ideation_session_id: Some("session-1".to_string()),
+        task_pipeline_session_id: None,
+        task_pipeline_available: false,
         linked_plan_branch_id: Some("plan-branch-1".to_string()),
         source_pull_request: None,
         publication_pr_number: Some(12),

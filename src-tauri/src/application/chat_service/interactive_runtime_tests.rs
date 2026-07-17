@@ -5,7 +5,7 @@ use super::{
     persona_switch_requires_process_invalidation, plan_mode_runtime_message,
     provider_harness_switch_requires_fresh_session, registered_persona_metadata,
     resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
-    spawn_settings_require_task_metadata,
+    spawn_settings_require_task_metadata, supervised_workspace_runtime_message,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::application::persona_prompt::ResolvedPersona;
@@ -377,6 +377,58 @@ fn plan_mode_runtime_message_injects_linked_planning_session_context() {
     assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
     assert!(message.contains("Use this planning session for ask_user_question"));
     assert!(message.contains("<user_request>draft the implementation</user_request>"));
+}
+
+#[test]
+fn supervised_runtime_message_injects_autopilot_opt_in() {
+    let workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("conversation-autopilot-1"),
+        ProjectId::from_string("project-autopilot-1".to_string()),
+        AgentConversationWorkspaceMode::Autopilot,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-autopilot".to_string(),
+        "/tmp/ralphx-autopilot-workspace".to_string(),
+    );
+
+    let message = supervised_workspace_runtime_message(
+        "finish the change".to_string(),
+        Some(&workspace),
+        Some("message-autopilot-1"),
+    );
+
+    assert!(message.contains("<workspace_mode>autopilot</workspace_mode>"));
+    assert!(message.contains("explicitly opted into Autopilot"));
+    assert!(message.contains("<user_request>finish the change</user_request>"));
+}
+
+#[test]
+fn supervised_runtime_message_injects_exact_tasks_source_identity() {
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("conversation-tasks-1"),
+        ProjectId::from_string("project-tasks-1".to_string()),
+        AgentConversationWorkspaceMode::Tasks,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-tasks".to_string(),
+        "/tmp/ralphx-tasks-workspace".to_string(),
+    );
+    workspace.task_pipeline_session_id = Some(IdeationSessionId::from_string("pipeline-1"));
+
+    let message = supervised_workspace_runtime_message(
+        "please add this follow-up".to_string(),
+        Some(&workspace),
+        Some("message-tasks-1"),
+    );
+
+    assert!(message.contains("<workspace_mode>tasks</workspace_mode>"));
+    assert!(message.contains("<task_pipeline_session_id>pipeline-1</task_pipeline_session_id>"));
+    assert!(message.contains("<source_message_id>message-tasks-1</source_message_id>"));
+    assert!(message.contains("explicit user request in this source message"));
 }
 
 #[test]

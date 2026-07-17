@@ -12,6 +12,7 @@ export const featureFlagsSchema = z.object({
   agentPersonas: z.boolean().default(false),
   agentConversationTeam: z.boolean().default(false),
   agentConversationWorkflows: z.boolean().default(false),
+  agentConversationAutopilot: z.boolean().default(false),
 });
 
 /**
@@ -20,9 +21,13 @@ export const featureFlagsSchema = z.object({
  */
 export type FeatureFlags = Omit<
   z.infer<typeof featureFlagsSchema>,
-  "agentPersonas" | "agentConversationTeam" | "agentConversationWorkflows"
+  | "agentPersonas"
+  | "agentConversationTeam"
+  | "agentConversationWorkflows"
+  | "agentConversationAutopilot"
 > & {
   agentPersonas?: boolean;
   agentConversationTeam?: boolean;
   agentConversationWorkflows?: boolean;
+  agentConversationAutopilot?: boolean;
 };

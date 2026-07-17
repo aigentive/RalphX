@@ -113,9 +113,9 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_plan_commands::{
-    copy_agent_conversation_plan, import_agent_conversation_plan,
-    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
-    ImportAgentConversationPlanInput,
+    activate_agent_task_pipeline, copy_agent_conversation_plan, import_agent_conversation_plan,
+    start_agent_task_pipeline, ActivateAgentTaskPipelineInput, AgentConversationPlanSeedResponse,
+    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
