@@ -26,7 +26,7 @@ ralphx/
 │  ├─ src/                # Frontend app code
 │  └─ tests/              # Frontend/Vitest/Playwright tests
 ├─ src-tauri/             # Backend (Rust/Tauri) → src-tauri/CLAUDE.md
-│  ├─ src/http_server/    # Axum :3847 backend for internal/public MCP adapters
+│  ├─ src/http_server/    # Axum backend for MCP adapters (prod :3847 | dev :3857 | RALPHX_BACKEND_PORT)
 │  └─ ralphx.db           # SQLite (dev)
 ├─ agents/                # Canonical agent metadata + harness-specific prompts
 ├─ config/harnesses/      # Harness-global settings and lane defaults
