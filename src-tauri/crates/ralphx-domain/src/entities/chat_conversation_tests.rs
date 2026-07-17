@@ -70,6 +70,40 @@ fn test_new_branch_update_conversation() {
 }
 
 #[test]
+fn test_new_standalone_conversation_is_self_keyed() {
+    let conversation = ChatConversation::new_standalone();
+    assert_eq!(conversation.context_type, ChatContextType::Standalone);
+    assert_eq!(conversation.context_id, conversation.id.as_str());
+    assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
+    assert!(conversation.is_valid_standalone_self_key());
+}
+
+#[test]
+fn test_new_standalone_conversations_have_distinct_ids() {
+    let first = ChatConversation::new_standalone();
+    let second = ChatConversation::new_standalone();
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.context_id, second.context_id);
+}
+
+#[test]
+fn test_is_valid_standalone_self_key_rejects_mismatched_context_id() {
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-my-own-id".to_string();
+    assert!(!conversation.is_valid_standalone_self_key());
+}
+
+#[test]
+fn test_is_valid_standalone_self_key_rejects_non_standalone_context_type() {
+    let conversation = ChatConversation::new_project(ProjectId::from_string("proj-1".to_string()));
+    // Even in the (impossible in production) case where context_id happened to
+    // equal the conversation id, the context_type gate must still reject it.
+    let mut conversation = conversation;
+    conversation.context_id = conversation.id.as_str();
+    assert!(!conversation.is_valid_standalone_self_key());
+}
+
+#[test]
 fn test_new_ideation_conversation() {
     let session_id = IdeationSessionId::new();
     let expected_context_id = session_id.as_str().to_string();

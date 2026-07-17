@@ -106,6 +106,12 @@ pub enum AppError {
 
     #[error("CONVERSATION_FOLDER_REFERENCE_APP_DATA_UNAVAILABLE: RalphX application data could not be canonicalized: {detail}")]
     ConversationFolderReferenceAppDataUnavailable { detail: String },
+
+    #[error("SESSION_NAMER_STANDALONE_WORKSPACE_UNAVAILABLE: standalone conversation `{conversation_id}` could not obtain an app-owned naming workspace: {detail}")]
+    SessionNamerStandaloneWorkspaceUnavailable {
+        conversation_id: String,
+        detail: String,
+    },
 }
 
 impl From<AgentError> for AppError {

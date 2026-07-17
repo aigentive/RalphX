@@ -31,7 +31,8 @@ pub use agent_config::{
     get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
     get_effective_settings_profile, get_preapproved_tools, get_preapproved_tools_for_profile,
     git_runtime_config, ideation_activity_threshold_secs, limits_config, process_mapping,
-    reconciliation_config, resolve_file_logging_early, scheduler_config, stream_timeouts,
+    reconciliation_config, resolve_file_logging_early, scheduler_config,
+    standalone_conversations_enabled, stream_timeouts,
     supervisor_runtime_config, team_constraints_config, ui_feature_flags_config,
     validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
@@ -40,7 +41,8 @@ pub use agent_config::{
 };
 pub use agent_config::live_flags::{
     reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
-    set_agent_personas_override, set_composer_folder_references_override,
+    reset_standalone_conversations_override_for_test, set_agent_personas_override,
+    set_composer_folder_references_override, set_standalone_conversations_override,
 };
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;

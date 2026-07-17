@@ -3193,6 +3193,7 @@ fn test_env_override_true_value_enables_flag() {
             agent_personas: false,
             composer_folder_references: false,
             persona_switch_forces_fresh_provider_session: false,
+            standalone_conversations: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {

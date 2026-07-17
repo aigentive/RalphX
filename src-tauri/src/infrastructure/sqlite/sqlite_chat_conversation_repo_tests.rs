@@ -52,6 +52,37 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
 }
 
 #[tokio::test]
+async fn create_accepts_valid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = ChatConversation::new_standalone();
+
+    let created = repo
+        .create(conversation.clone())
+        .await
+        .expect("valid standalone self-key should persist");
+
+    assert_eq!(created.id, conversation.id);
+    assert!(created.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-the-conversation-id".to_string();
+
+    let error = repo
+        .create(conversation.clone())
+        .await
+        .expect_err("mismatched standalone self-key must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert!(repo.get_by_id(&conversation.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn update_persona_binding_sets_and_clears() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());

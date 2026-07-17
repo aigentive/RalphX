@@ -74,11 +74,18 @@ pub async fn get_or_create_conversation(
             ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
         }
         ChatContextType::Standalone => {
-            // Standalone conversation creation (self-keyed, `new_standalone`) is a
-            // Phase 4a.3 item; test fixtures insert Standalone rows directly.
-            return Err(ChatServiceError::ContextNotFound(
-                "Standalone conversation creation is not supported yet (Phase 4a.3)".to_string(),
-            ));
+            // Standalone conversations are always explicitly created (via
+            // `create_agent_conversation` or `AgentConversationStartService::start()`,
+            // both using `ChatConversation::new_standalone()`), never lazily
+            // auto-vivified from a bare context_id: a standalone conversation's
+            // context_id IS its own conversation id, so if `get_active_for_context`
+            // above didn't find an active row for it, the id is stale/archived/
+            // unknown — fabricating a new conversation here would silently diverge
+            // from the conversation the caller actually meant.
+            return Err(ChatServiceError::ContextNotFound(format!(
+                "Standalone conversation {context_id} is not active; standalone conversations \
+                 cannot be lazily created from a bare context_id"
+            )));
         }
     };
 

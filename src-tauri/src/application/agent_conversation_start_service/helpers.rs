@@ -578,17 +578,26 @@ struct AgentStartupProgressPayload<'a> {
 
 pub(super) fn emit_start_agent_conversation_progress<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    project_id: &str,
+    context_type: &'static str,
+    context_id: &str,
     conversation_id: &ChatConversationId,
     stage: &'static str,
     label: &'static str,
 ) {
+    // This emitter is only called after a conversation id exists. Standalone
+    // conversations are self-keyed, so never leak the pre-creation tracing
+    // sentinel into a correlatable progress event.
+    let context_id = if context_type == "standalone" {
+        conversation_id.as_str()
+    } else {
+        context_id.to_string()
+    };
     let _ = app.emit(
         "agent:startup_progress",
         AgentStartupProgressPayload {
             conversation_id: conversation_id.as_str(),
-            context_type: "project",
-            context_id: project_id,
+            context_type,
+            context_id: &context_id,
             stage,
             label,
         },

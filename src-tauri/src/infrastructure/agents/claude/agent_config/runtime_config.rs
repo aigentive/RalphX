@@ -1209,6 +1209,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
             .persona_switch_forces_fresh_provider_session =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_STANDALONE_CONVERSATIONS") {
+        cfg.ui_feature_flags.standalone_conversations =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
 }
 
 /// Validate ReconciliationConfig fields and clamp to safe defaults on invalid values (GAP M7).

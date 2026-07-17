@@ -13,6 +13,9 @@ use ralphx_lib::application::agent_conversation_workspace::{
 };
 use ralphx_lib::application::automation::provisioning::AutomationRunProvisioner;
 use ralphx_lib::application::automation::transition::NoopAutomationEventEmitter;
+use ralphx_lib::application::standalone_workspace::{
+    standalone_workspace_path, standalone_workspaces_root,
+};
 use ralphx_lib::application::startup_background::AgentConversationAutomationRunStarter;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
@@ -20,8 +23,12 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType,
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionFlow, Persona, PersonaId, PersonaStatus, Project, ProjectId, TaskId,
+    ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
+    IdeationAnalysisBaseRefKind, IdeationSessionFlow, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, TaskId, TeamIntent,
+};
+use ralphx_lib::infrastructure::agents::claude::{
+    reset_standalone_conversations_override_for_test, set_standalone_conversations_override,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -96,7 +103,7 @@ fn service_start_input(
     source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 ) -> StartAgentConversationInput {
     StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: content.to_string(),
         conversation_id: conversation_id.map(ChatConversationId::as_str),
         parent_conversation_id: None,
@@ -117,6 +124,45 @@ fn service_start_input(
         composer_artifact_references: Vec::new(),
         composer_selection_snapshot: None,
         team_intent: None,
+    }
+}
+
+fn standalone_start_input(
+    content: &str,
+    mode: Option<&str>,
+    conversation_id: Option<&ChatConversationId>,
+    team_intent: Option<TeamIntent>,
+    parent_conversation_id: Option<&str>,
+) -> StartAgentConversationInput {
+    StartAgentConversationInput {
+        project_id: None,
+        content: content.to_string(),
+        conversation_id: conversation_id.map(ChatConversationId::as_str),
+        parent_conversation_id: parent_conversation_id.map(str::to_string),
+        title: None,
+        persona_id: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        codex_fast_mode: None,
+        mode: mode.map(str::to_string),
+        base_ref_kind: None,
+        base_branch_mode: None,
+        base_ref: None,
+        base_display_name: None,
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+        team_intent,
+    }
+}
+
+struct StandaloneConversationsFlagOverrideReset;
+
+impl Drop for StandaloneConversationsFlagOverrideReset {
+    fn drop(&mut self) {
+        reset_standalone_conversations_override_for_test();
     }
 }
 
@@ -263,6 +309,346 @@ async fn start_with_app(
     })
     .start(input)
     .await
+}
+
+// ── Standalone (projectless) start arm — Phase 4a.3 ──────────────────────────
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_flag_off_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(false));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input("hi", Some("chat"), None, None, None),
+    )
+    .await
+    .expect_err("standalone start must be rejected while the flag is off");
+    assert!(
+        error.contains("standalone_conversations"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_non_chat_mode_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input("hi", Some("edit"), None, None, None),
+    )
+    .await
+    .expect_err("non-chat modes must be rejected for standalone in this phase");
+    assert!(error.contains("chat"), "unexpected error: {error}");
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_absent_mode_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    // No mode supplied: for Project starts this silently defaults to "edit"
+    // (parse_agent_workspace_mode). Standalone must NOT inherit that default —
+    // an absent mode must be typed-rejected, not resolved to a non-chat mode.
+    let error = start_with_app(&app, standalone_start_input("hi", None, None, None, None))
+        .await
+        .expect_err("an absent mode must not silently resolve to a non-chat mode for standalone");
+    assert!(error.contains("chat"), "unexpected error: {error}");
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_team_intent_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let team_intent = TeamIntent {
+        coordination_mode: CoordinationMode::RxNativeTeam,
+        strategy: None,
+    };
+    let error = start_with_app(
+        &app,
+        standalone_start_input("hi", Some("chat"), None, Some(team_intent), None),
+    )
+    .await
+    .expect_err("Team mode must be rejected for standalone conversations");
+    assert!(error.contains("Team"), "unexpected error: {error}");
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_solo_team_intent_is_allowed() {
+    // Regression guard: the standalone Team rejection must only fire for a
+    // genuinely non-solo intent, not for an explicit solo intent (which some
+    // callers send even when no Team behavior is requested).
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let team_intent = TeamIntent {
+        coordination_mode: CoordinationMode::Solo,
+        strategy: None,
+    };
+    let result = start_with_app(
+        &app,
+        standalone_start_input("hi", Some("chat"), None, Some(team_intent), None),
+    )
+    .await
+    .expect("a solo team intent must not be rejected as Team mode");
+    assert_eq!(
+        result.conversation.context_type,
+        ChatContextType::Standalone
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_parent_conversation_id_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input("hi", Some("chat"), None, None, Some("some-parent-id")),
+    )
+    .await
+    .expect_err("parent_conversation_id must be rejected for standalone starts");
+    assert!(
+        error.contains("parent_conversation_id"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_chat_mode_creates_self_keyed_conversation_and_resolves_workspace_cwd(
+) {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+    let result = start_with_app(
+        &app,
+        standalone_start_input("Quick standalone question", Some("chat"), None, None, None),
+    )
+    .await
+    .expect("standalone chat start should succeed");
+
+    assert_eq!(
+        result.conversation.context_type,
+        ChatContextType::Standalone
+    );
+    assert_eq!(
+        result.conversation.context_id,
+        result.conversation.id.as_str()
+    );
+    assert!(
+        result.workspace.is_none(),
+        "chat mode never creates an AgentConversationWorkspace, standalone included"
+    );
+
+    // Proves the 4a.2 private workspace (ensure_workspace) is actually reached
+    // and created DURING start() via the live send path — not merely resolvable
+    // in isolation.
+    let app_data_dir = app
+        .state::<AppState>()
+        .app_paths
+        .app_data_dir()
+        .to_path_buf();
+    let root = standalone_workspaces_root(&app_data_dir);
+    let expected_path = standalone_workspace_path(&root, &result.conversation.id.as_str());
+    assert!(
+        expected_path.join("manifest.json").exists(),
+        "the private standalone workspace must be created on disk during start(): {:?}",
+        expected_path
+    );
+
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&result.conversation.id)
+        .await
+        .expect("stored conversation should load")
+        .expect("stored conversation should exist");
+    assert!(stored.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_seeded_ownership_accepts_valid_self_keyed_draft() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let state = app.state::<AppState>();
+    let seeded = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .expect("seeded standalone draft should persist");
+
+    let result = start_with_app(
+        &app,
+        standalone_start_input(
+            "Continue from the draft",
+            Some("chat"),
+            Some(&seeded.id),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("a valid self-keyed standalone seed must be accepted");
+
+    assert_eq!(result.conversation.id, seeded.id);
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_seeded_ownership_rejects_team_coordination() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let state = app.state::<AppState>();
+    let mut seed = ChatConversation::new_standalone();
+    seed.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seed)
+        .await
+        .expect("corrupt team standalone seed should persist for the ownership regression");
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input(
+            "Reject corrupt standalone seed",
+            Some("chat"),
+            Some(&seeded.id),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("team-coordination standalone seed must be rejected");
+
+    assert!(
+        error.contains("valid standalone seed"),
+        "unexpected error: {error}"
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("seed lookup should succeed")
+        .expect("rejected seed should remain persisted");
+    assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_context_id_mismatch_cannot_be_seeded() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let state = app.state::<AppState>();
+    let mut corrupted = ChatConversation::new_standalone();
+    corrupted.context_id = "not-my-own-id".to_string();
+    let error = state
+        .chat_conversation_repo
+        .create(corrupted)
+        .await
+        .expect_err("repository must reject a standalone row whose context_id != id");
+    assert!(error.to_string().contains("context_id"));
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_seeded_ownership_rejects_wrong_context_type() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let state = app.state::<AppState>();
+    let project_id = ProjectId::from_string("project-standalone-ownership-mismatch".to_string());
+    let project_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id))
+        .await
+        .expect("project conversation should persist");
+
+    let error = start_with_app(
+        &app,
+        standalone_start_input(
+            "Should not be accepted",
+            Some("chat"),
+            Some(&project_conversation.id),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("a Project-context conversation must be rejected as a standalone seed");
+    assert!(
+        error.contains("not a valid standalone seed"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_seeded_ownership_rejects_when_project_id_is_set() {
+    // D3.6: valid iff context_type == Standalone && context_id == id &&
+    // input.project_id == None. Supplying a project_id alongside a standalone
+    // seed must be rejected (it routes into the Project ownership branch,
+    // which also rejects since the seed's context_type is Standalone, not
+    // Project — still a correct rejection of the invalid combination).
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let state = app.state::<AppState>();
+    let seeded = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .expect("seeded standalone draft should persist");
+    let project_id = ProjectId::from_string("project-standalone-project-id-set".to_string());
+    let mut project = Project::new(
+        "Standalone project_id set".to_string(),
+        "/tmp/project-standalone-project-id-set".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+
+    let mut input = standalone_start_input(
+        "Should not be accepted",
+        Some("chat"),
+        Some(&seeded.id),
+        None,
+        None,
+    );
+    input.project_id = Some(project_id.as_str().to_string());
+
+    start_with_app(&app, input)
+        .await
+        .expect_err("a standalone seed must be rejected when project_id is also supplied");
 }
 
 #[tokio::test]

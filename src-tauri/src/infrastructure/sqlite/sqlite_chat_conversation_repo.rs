@@ -16,7 +16,7 @@ use crate::domain::entities::{
     ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
 /// Parse datetime string handling both RFC3339 and SQLite's CURRENT_TIMESTAMP formats
@@ -205,6 +205,13 @@ impl SqliteChatConversationRepository {
 #[async_trait]
 impl ChatConversationRepository for SqliteChatConversationRepository {
     async fn create(&self, conversation: ChatConversation) -> AppResult<ChatConversation> {
+        if conversation.context_type == ChatContextType::Standalone
+            && !conversation.is_valid_standalone_self_key()
+        {
+            return Err(AppError::Validation(
+                "Standalone conversation context_id must equal its conversation id".to_string(),
+            ));
+        }
         let id = conversation.id.as_str().to_string();
         let context_type = conversation.context_type.to_string();
         let context_id = conversation.context_id.clone();
@@ -550,6 +557,49 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                  ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
                  LIMIT ?2",
             )?;
+            let conversations = stmt
+                .query_map(
+                    rusqlite::params![context_type_str, i64::from(limit)],
+                    row_to_conversation,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(conversations)
+        }).await
+    }
+
+    async fn list_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        include_archived: bool,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let context_type_str = context_type.to_string();
+        self.db.run(move |conn| {
+            let sql = if include_archived {
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations
+                 WHERE context_type = ?1
+                 ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                 LIMIT ?2"
+            } else {
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations
+                 WHERE context_type = ?1
+                   AND archived_at IS NULL
+                 ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                 LIMIT ?2"
+            };
+            let mut stmt = conn.prepare(sql)?;
             let conversations = stmt
                 .query_map(
                     rusqlite::params![context_type_str, i64::from(limit)],

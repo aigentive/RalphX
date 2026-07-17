@@ -350,7 +350,7 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
     let base_selection = followup_base_selection(parent_workspace.as_ref());
     let response = start_agent_conversation_for_state(
         StartAgentConversationInput {
-            project_id: origin.context_id.clone(),
+            project_id: Some(origin.context_id.clone()),
             content,
             persona_id: None,
             conversation_id: None,

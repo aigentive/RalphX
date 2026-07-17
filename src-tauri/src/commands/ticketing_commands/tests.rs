@@ -3761,7 +3761,7 @@ fn ticket_start_input(
 ) -> StartRalphxWorkFromTicketInput {
     StartRalphxWorkFromTicketInput {
         start: StartAgentConversationInput {
-            project_id: project_id.as_str().to_string(),
+            project_id: Some(project_id.as_str().to_string()),
             content: "Start work from the ticket".to_string(),
             persona_id: None,
             conversation_id: None,
@@ -3931,7 +3931,7 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start from attached ticket".to_string(),
         persona_id: None,
         conversation_id: None,
@@ -4018,7 +4018,7 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.to_string(),
+        project_id: Some(project_id.to_string()),
         content: "Continue existing ClickUp work".to_string(),
         persona_id: None,
         conversation_id: None,
@@ -4086,7 +4086,7 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start Team chat".to_string(),
         persona_id: None,
         conversation_id: None,
@@ -4236,7 +4236,7 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start seeded Team chat".to_string(),
         persona_id: None,
         conversation_id: Some(seeded.id.as_str().to_string()),

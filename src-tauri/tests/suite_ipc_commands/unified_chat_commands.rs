@@ -3282,17 +3282,19 @@ mod ipc_contract {
         let json = r#"{"contextType":"review","contextId":"task-review-123"}"#;
         let input: CreateAgentConversationInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "review");
-        assert_eq!(input.context_id, "task-review-123");
+        assert_eq!(input.context_id.as_deref(), Some("task-review-123"));
     }
 
     #[test]
-    fn create_agent_conversation_input_rejects_missing_fields() {
+    fn create_agent_conversation_input_missing_context_id_deserializes_as_none() {
+        // context_id is optional at the wire level as of Phase 4a.3 (standalone
+        // creation self-keys and never supplies one); command-body validation,
+        // not deserialization, now rejects a missing context_id for non-standalone
+        // context types.
         let json = r#"{"contextType":"ideation"}"#;
-        let result: Result<CreateAgentConversationInput, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "missing contextId must cause deserialization failure"
-        );
+        let input: CreateAgentConversationInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.context_type, "ideation");
+        assert!(input.context_id.is_none());
     }
 
     #[test]
@@ -3307,13 +3309,25 @@ mod ipc_contract {
     fn start_agent_conversation_input_accepts_chat_mode_without_base() {
         let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
         let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.project_id, "project-1");
+        assert_eq!(input.project_id.as_deref(), Some("project-1"));
         assert_eq!(input.mode.as_deref(), Some("chat"));
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
         assert!(input.composer_project_references.is_empty());
+    }
+
+    #[test]
+    fn start_agent_conversation_input_omitted_project_id_deserializes_as_none() {
+        // A standalone start never sends projectId at all (not even null) — the
+        // field must be genuinely optional at the wire level, not just
+        // Option-typed, or the frontend's standalone start request would fail
+        // deserialization entirely before ever reaching the flag/mode gates.
+        let json = r#"{"content":"Quick question","mode":"chat"}"#;
+        let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
+        assert!(input.project_id.is_none());
+        assert_eq!(input.mode.as_deref(), Some("chat"));
     }
 
     #[tokio::test]
@@ -3346,7 +3360,7 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Inspect the repo without editing".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -3440,7 +3454,7 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Review this PR".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -3602,7 +3616,7 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Prepare an editable workspace".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -3761,7 +3775,7 @@ mod ipc_contract {
         for mode in ["chat", "edit", "plan", "ideation"] {
             let response = start_agent_conversation(
                 StartAgentConversationInput {
-                    project_id: fix.project_id.as_str().to_string(),
+                    project_id: Some(fix.project_id.as_str().to_string()),
                     content: format!("Use the selected plan in {mode} mode"),
                     persona_id: None,
                     conversation_id: None,
@@ -3912,7 +3926,7 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: fix.project_id.as_str().to_string(),
+                project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Review the selected PR".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -3987,7 +4001,7 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: fix.project_id.as_str().to_string(),
+                project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Use both selected plans".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -4090,7 +4104,7 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Continue on the linked branch".to_string(),
                 persona_id: None,
                 conversation_id: Some(conversation.id.as_str()),
@@ -4192,7 +4206,7 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Start on linked branch".to_string(),
                 persona_id: None,
                 conversation_id: None,
@@ -4288,7 +4302,7 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Start on checked-out linked branch".to_string(),
                 persona_id: None,
                 conversation_id: Some(draft.id.as_str()),
@@ -4383,7 +4397,7 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Plan a small refactor".to_string(),
                 persona_id: None,
                 conversation_id: None,

@@ -4,6 +4,7 @@ const UNSET: i8 = -1;
 
 static AGENT_PERSONAS_OVERRIDE: AtomicI8 = AtomicI8::new(UNSET);
 static COMPOSER_FOLDER_REFERENCES_OVERRIDE: AtomicI8 = AtomicI8::new(UNSET);
+static STANDALONE_CONVERSATIONS_OVERRIDE: AtomicI8 = AtomicI8::new(UNSET);
 
 /// Effective agent_personas flag: DB override (if set) > env > yaml.
 pub fn agent_personas_enabled() -> bool {
@@ -20,6 +21,15 @@ pub fn composer_folder_references_enabled() -> bool {
         0 => false,
         1 => true,
         _ => super::ui_feature_flags_config().composer_folder_references,
+    }
+}
+
+/// Effective standalone_conversations flag: DB override (if set) > env > yaml.
+pub fn standalone_conversations_enabled() -> bool {
+    match STANDALONE_CONVERSATIONS_OVERRIDE.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => super::ui_feature_flags_config().standalone_conversations,
     }
 }
 
@@ -45,6 +55,17 @@ pub fn set_composer_folder_references_override(value: Option<bool>) {
     );
 }
 
+pub fn set_standalone_conversations_override(value: Option<bool>) {
+    STANDALONE_CONVERSATIONS_OVERRIDE.store(
+        match value {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => UNSET,
+        },
+        Ordering::Relaxed,
+    );
+}
+
 #[doc(hidden)]
 pub fn reset_agent_personas_override_for_test() {
     AGENT_PERSONAS_OVERRIDE.store(UNSET, Ordering::Relaxed);
@@ -53,4 +74,9 @@ pub fn reset_agent_personas_override_for_test() {
 #[doc(hidden)]
 pub fn reset_composer_folder_references_override_for_test() {
     COMPOSER_FOLDER_REFERENCES_OVERRIDE.store(UNSET, Ordering::Relaxed);
+}
+
+#[doc(hidden)]
+pub fn reset_standalone_conversations_override_for_test() {
+    STANDALONE_CONVERSATIONS_OVERRIDE.store(UNSET, Ordering::Relaxed);
 }

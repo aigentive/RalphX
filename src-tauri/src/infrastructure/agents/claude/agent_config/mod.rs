@@ -3,7 +3,9 @@ pub mod runtime_config;
 pub mod team_config;
 mod tool_sets;
 mod ui_config;
-pub use live_flags::{agent_personas_enabled, composer_folder_references_enabled};
+pub use live_flags::{
+    agent_personas_enabled, composer_folder_references_enabled, standalone_conversations_enabled,
+};
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{

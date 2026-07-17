@@ -132,7 +132,7 @@ impl AutomationRunStartRequest {
             ),
         };
         Ok(StartAgentConversationInput {
-            project_id: self.project_id,
+            project_id: Some(self.project_id),
             content,
             persona_id: None,
             conversation_id: Some(self.conversation_id.as_str().to_string()),

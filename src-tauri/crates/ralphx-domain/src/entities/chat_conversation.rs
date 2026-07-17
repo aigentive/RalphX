@@ -415,6 +415,51 @@ impl ChatConversation {
         }
     }
 
+    /// Create a new self-keyed projectless conversation.
+    ///
+    /// Standalone conversations key their `context_id` to their own generated
+    /// `id` (enforced invariant: `context_id == id`) since there is no
+    /// external project/session/task row to key against.
+    pub fn new_standalone() -> Self {
+        let now = Utc::now();
+        let id = ChatConversationId::new();
+        Self {
+            id,
+            context_type: ChatContextType::Standalone,
+            context_id: id.as_str(),
+            claude_session_id: None,
+            provider_session_id: None,
+            provider_harness: None,
+            upstream_provider: None,
+            provider_profile: None,
+            agent_mode: None,
+            persona_id: None,
+            builder_draft_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
+            title: None,
+            message_count: 0,
+            last_message_at: None,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            parent_conversation_id: None,
+            attribution_backfill_status: None,
+            attribution_backfill_source: None,
+            attribution_backfill_source_path: None,
+            attribution_backfill_last_attempted_at: None,
+            attribution_backfill_completed_at: None,
+            attribution_backfill_error_summary: None,
+        }
+    }
+
+    /// Returns true iff this conversation satisfies the Standalone self-key
+    /// invariant: `context_type == Standalone && context_id == id`.
+    pub fn is_valid_standalone_self_key(&self) -> bool {
+        self.context_type == ChatContextType::Standalone && self.context_id == self.id.as_str()
+    }
+
     /// Create a new conversation for task execution (worker output).
     /// Pass `parent_id` when re-executing a task to link to the prior run's conversation.
     pub fn new_task_execution(task_id: TaskId) -> Self {

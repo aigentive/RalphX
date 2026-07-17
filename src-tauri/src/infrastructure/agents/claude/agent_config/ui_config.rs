@@ -38,6 +38,8 @@ pub struct UiFeatureFlagsConfig {
     pub composer_folder_references: bool,
     /// Force a new provider session after a persona switch. Default: false.
     pub persona_switch_forces_fresh_provider_session: bool,
+    /// Enable or disable projectless (standalone) conversations. Default: false.
+    pub standalone_conversations: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -54,6 +56,7 @@ impl Default for UiFeatureFlagsConfig {
             agent_personas: false,
             composer_folder_references: false,
             persona_switch_forces_fresh_provider_session: false,
+            standalone_conversations: false,
         }
     }
 }
