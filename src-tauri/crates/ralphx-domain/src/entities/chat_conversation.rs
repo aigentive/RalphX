@@ -82,6 +82,8 @@ pub enum ChatContextType {
     Task,
     /// Project-level context
     Project,
+    /// Projectless conversation; its context_id is the conversation id.
+    Standalone,
     /// Task execution context (worker output)
     #[serde(rename = "task_execution")]
     TaskExecution,
@@ -101,6 +103,7 @@ impl fmt::Display for ChatContextType {
             ChatContextType::Delegation => write!(f, "delegation"),
             ChatContextType::Task => write!(f, "task"),
             ChatContextType::Project => write!(f, "project"),
+            ChatContextType::Standalone => write!(f, "standalone"),
             ChatContextType::TaskExecution => write!(f, "task_execution"),
             ChatContextType::Review => write!(f, "review"),
             ChatContextType::Merge => write!(f, "merge"),
@@ -118,6 +121,7 @@ impl std::str::FromStr for ChatContextType {
             "delegation" => Ok(ChatContextType::Delegation),
             "task" => Ok(ChatContextType::Task),
             "project" => Ok(ChatContextType::Project),
+            "standalone" => Ok(ChatContextType::Standalone),
             "task_execution" => Ok(ChatContextType::TaskExecution),
             "review" => Ok(ChatContextType::Review),
             "merge" => Ok(ChatContextType::Merge),

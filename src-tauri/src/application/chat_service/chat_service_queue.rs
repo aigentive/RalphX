@@ -605,7 +605,7 @@ struct QueuedAgentIdentity {
 }
 
 #[derive(Debug, Clone, Default)]
-struct QueuedProjectAgentContext {
+struct QueuedAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
     effective_mode: Option<AgentConversationWorkspaceMode>,
@@ -642,16 +642,19 @@ fn queued_agent_identity_for_conversation(
     queued_agent_identity_for_mode(mode)
 }
 
-async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
+async fn resolve_queued_agent_context<R: Runtime + 'static>(
     app_handle: Option<&AppHandle<R>>,
     context_type: ChatContextType,
     conversation_id: &ChatConversationId,
-) -> QueuedProjectAgentContext {
-    if context_type != ChatContextType::Project {
-        return QueuedProjectAgentContext::default();
+) -> QueuedAgentContext {
+    if !matches!(
+        context_type,
+        ChatContextType::Project | ChatContextType::Standalone
+    ) {
+        return QueuedAgentContext::default();
     }
     let Some(handle) = app_handle else {
-        return QueuedProjectAgentContext::default();
+        return QueuedAgentContext::default();
     };
 
     let app_state = handle.state::<AppState>();
@@ -719,7 +722,7 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     };
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
-    QueuedProjectAgentContext {
+    QueuedAgentContext {
         identity: queued_agent_identity_for_conversation(conversation.as_ref(), mode.clone()),
         workspace,
         effective_mode: mode,
@@ -1138,12 +1141,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     },
                 );
             }
-            let queued_agent_context = resolve_queued_project_agent_context(
-                app_handle.as_ref(),
-                context_type,
-                &conversation_id,
-            )
-            .await;
+            let queued_agent_context =
+                resolve_queued_agent_context(app_handle.as_ref(), context_type, &conversation_id)
+                    .await;
             if let Some(error) = queued_agent_context.builder_context_error.as_ref() {
                 tracing::warn!(
                     error,

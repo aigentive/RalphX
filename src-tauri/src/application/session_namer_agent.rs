@@ -325,6 +325,7 @@ async fn resolve_conversation_project_id(
 ) -> AppResult<Option<String>> {
     match conversation.context_type {
         ChatContextType::Project => Ok(Some(conversation.context_id.clone())),
+        ChatContextType::Standalone => Ok(None),
         ChatContextType::Ideation => {
             let session = load_session(state, &conversation.context_id).await?;
             Ok(Some(session.project_id.as_str().to_string()))

@@ -376,6 +376,16 @@ impl ChatService for MockChatService {
             ChatContextType::BranchUpdate => {
                 ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
             }
+            ChatContextType::Standalone => {
+                // Standalone conversation creation (`new_standalone`) is a Phase 4a.3
+                // item; tests that need a standalone conversation row insert it
+                // directly into the fixture repository instead of going through this
+                // mock's get_or_create_conversation.
+                return Err(ChatServiceError::ContextNotFound(
+                    "Standalone conversation creation is not supported yet (Phase 4a.3)"
+                        .to_string(),
+                ));
+            }
         };
 
         self.conversations.lock().await.push(conv.clone());

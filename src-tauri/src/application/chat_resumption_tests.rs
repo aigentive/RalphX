@@ -377,6 +377,12 @@ fn test_context_type_priority_ordering() {
         context_type_priority(ChatContextType::Delegation)
             < context_type_priority(ChatContextType::Project)
     );
+    // Standalone conversations are projectless chats and share Project's
+    // (lowest) resumption priority.
+    assert_eq!(
+        context_type_priority(ChatContextType::Standalone),
+        context_type_priority(ChatContextType::Project)
+    );
 }
 
 #[test]
@@ -1245,6 +1251,34 @@ async fn test_is_handled_by_task_resumption_for_project() {
     );
 }
 
+#[tokio::test]
+async fn test_is_handled_by_task_resumption_for_standalone() {
+    let (execution_state, app_state) = setup_test_state().await;
+
+    // Create an interrupted conversation for a self-keyed Standalone conversation.
+    let mut conv = ChatConversation::new_project(crate::domain::entities::ProjectId::new());
+    conv.context_type = ChatContextType::Standalone;
+    conv.context_id = conv.id.as_str();
+    conv.claude_session_id = Some("test-session".to_string());
+
+    let run = AgentRun::new(conv.id);
+
+    let interrupted = InterruptedConversation {
+        conversation: conv,
+        last_run: run,
+    };
+
+    let runner = build_runner(&app_state, &execution_state);
+
+    // Standalone must be enumerated for restart recovery the same way Project is
+    // (not silently excluded by the StartupJobRunner-owned gate).
+    let is_handled = runner.is_handled_by_task_resumption(&interrupted).await;
+    assert!(
+        !is_handled,
+        "Standalone should NOT be handled by StartupJobRunner"
+    );
+}
+
 async fn create_terminal_state_test(status: InternalStatus) -> bool {
     let (execution_state, app_state) = setup_test_state().await;
 
@@ -1370,6 +1404,84 @@ async fn create_durable_recovery_candidate_with_status(
     app_state.chat_message_repo.create(message).await.unwrap();
 
     conversation_id
+}
+
+/// Standalone equivalent of `create_durable_recovery_candidate`: self-keyed
+/// (`context_id == conversation.id`), no project affiliation.
+async fn create_durable_recovery_candidate_standalone(
+    app_state: &AppState,
+) -> crate::domain::entities::ChatConversationId {
+    let mut conversation = ChatConversation::new_project(crate::domain::entities::ProjectId::new());
+    conversation.context_type = ChatContextType::Standalone;
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-standalone-session-1".to_string(),
+    });
+    let conversation_id = conversation.id;
+    conversation.context_id = conversation_id.as_str();
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut run = AgentRun::new(conversation_id);
+    run.complete();
+    app_state.agent_run_repo.create(run).await.unwrap();
+
+    let mut message = silent_tool_message();
+    message.conversation_id = Some(conversation_id);
+    app_state.chat_message_repo.create(message).await.unwrap();
+
+    conversation_id
+}
+
+#[tokio::test]
+async fn durable_silent_completion_recovery_scans_both_project_and_standalone() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let runner = build_runner(&app_state, &execution_state);
+
+    create_durable_recovery_candidate(&app_state).await;
+    create_durable_recovery_candidate_standalone(&app_state).await;
+
+    // Prove the restart-recovery *scan* itself finds a candidate in both
+    // directions: the Project-context and Standalone-context durable recovery
+    // scans are two separate `list_recent_resumable_by_context_type` calls
+    // (see `recover_durable_silent_completions`), and both must return their
+    // seeded conversation.
+    let project_candidates = app_state
+        .chat_conversation_repo
+        .list_recent_resumable_by_context_type(
+            ChatContextType::Project,
+            DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+        )
+        .await
+        .expect("project scan succeeds");
+    let standalone_candidates = app_state
+        .chat_conversation_repo
+        .list_recent_resumable_by_context_type(
+            ChatContextType::Standalone,
+            DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+        )
+        .await
+        .expect("standalone scan succeeds");
+    assert_eq!(
+        project_candidates.len(),
+        1,
+        "Project candidate must be enumerated"
+    );
+    assert_eq!(
+        standalone_candidates.len(),
+        1,
+        "Standalone candidate must be enumerated"
+    );
+
+    // End-to-end, only the Project candidate completes recovery: Standalone CWD
+    // resolution is a typed Phase 4a.2 gap (`resolve_working_directory` fails
+    // closed), so `send_message` errors for the Standalone candidate even
+    // though it was correctly discovered and evaluated. This is the expected
+    // interim behavior until 4a.2 lands, not a silent enumeration failure.
+    assert_eq!(runner.recover_durable_silent_completions().await, 1);
 }
 
 #[tokio::test]

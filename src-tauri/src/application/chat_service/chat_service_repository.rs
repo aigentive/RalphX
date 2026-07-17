@@ -73,6 +73,13 @@ pub async fn get_or_create_conversation(
         ChatContextType::BranchUpdate => {
             ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
         }
+        ChatContextType::Standalone => {
+            // Standalone conversation creation (self-keyed, `new_standalone`) is a
+            // Phase 4a.3 item; test fixtures insert Standalone rows directly.
+            return Err(ChatServiceError::ContextNotFound(
+                "Standalone conversation creation is not supported yet (Phase 4a.3)".to_string(),
+            ));
+        }
     };
 
     conv.parent_conversation_id = parent_conversation_id;

@@ -497,6 +497,7 @@ fn claude_launches_paused(
             | ChatContextType::Ideation
             | ChatContextType::Task
             | ChatContextType::Project
+            | ChatContextType::Standalone
     ) && execution_state.is_some_and(|exec| exec.is_paused())
 }
 
@@ -2979,7 +2980,11 @@ impl<R: Runtime> AppChatService<R> {
                         return Ok(true);
                     }
                 }
-                _ => {}
+                ChatContextType::Standalone
+                | ChatContextType::Ideation
+                | ChatContextType::Delegation
+                | ChatContextType::Task
+                | ChatContextType::BranchUpdate => {}
             }
         }
 
@@ -3142,7 +3147,10 @@ impl<R: Runtime> AppChatService<R> {
         };
 
         match context_type {
-            ChatContextType::Project => {
+            // Project and Standalone conversations both link an
+            // AgentConversationWorkspace by conversation id (Standalone rows are
+            // self-keyed, so `context_id == conversation_id`).
+            ChatContextType::Project | ChatContextType::Standalone => {
                 let Some(conversation_id) = conversation_id else {
                     return Ok(None);
                 };
@@ -3156,7 +3164,12 @@ impl<R: Runtime> AppChatService<R> {
                     .await
                     .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
             }
-            _ => Ok(None),
+            ChatContextType::Delegation
+            | ChatContextType::Task
+            | ChatContextType::TaskExecution
+            | ChatContextType::Review
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => Ok(None),
         }
     }
 
@@ -4006,9 +4019,7 @@ impl<R: Runtime> AppChatService<R> {
             )
             .await
         };
-        let folder_refs_block = self
-            .render_folder_refs_prompt_block(conversation)
-            .await?;
+        let folder_refs_block = self.render_folder_refs_prompt_block(conversation).await?;
         let native_persona_injection_skipped_reason =
             crate::infrastructure::agents::claude::persona_injection_skipped_reason(
                 crate::infrastructure::agents::claude::native_agent_flag_enabled(),
@@ -4428,7 +4439,7 @@ impl<R: Runtime> AppChatService<R> {
                 }
             }
             // Other contexts don't have status-based agent resolution yet
-            ChatContextType::Project => None,
+            ChatContextType::Project | ChatContextType::Standalone => None,
         }
     }
 

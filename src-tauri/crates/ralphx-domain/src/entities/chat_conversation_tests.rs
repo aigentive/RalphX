@@ -21,6 +21,7 @@ fn test_context_type_serialization() {
     assert_eq!(ChatContextType::Ideation.to_string(), "ideation");
     assert_eq!(ChatContextType::Task.to_string(), "task");
     assert_eq!(ChatContextType::Project.to_string(), "project");
+    assert_eq!(ChatContextType::Standalone.to_string(), "standalone");
     assert_eq!(ChatContextType::TaskExecution.to_string(), "task_execution");
     assert_eq!(ChatContextType::Review.to_string(), "review");
     assert_eq!(ChatContextType::BranchUpdate.to_string(), "branch_update");
@@ -39,6 +40,10 @@ fn test_context_type_parsing() {
     assert_eq!(
         "project".parse::<ChatContextType>().unwrap(),
         ChatContextType::Project
+    );
+    assert_eq!(
+        "standalone".parse::<ChatContextType>().unwrap(),
+        ChatContextType::Standalone
     );
     assert_eq!(
         "task_execution".parse::<ChatContextType>().unwrap(),

@@ -510,3 +510,15 @@ fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
     );
     assert_eq!(identity.agent_profile, Some("plan"));
 }
+
+#[test]
+fn queued_agent_identity_for_persona_builder_uses_extractor_agent() {
+    let identity =
+        queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+
+    assert_eq!(
+        identity.agent_name,
+        Some(agent_names::AGENT_PERSONA_EXTRACTOR.to_string())
+    );
+    assert_eq!(identity.agent_profile, None);
+}

@@ -329,7 +329,10 @@ fn runtime_lane_for_context(context_type: ChatContextType) -> Option<AgentLane> 
         ChatContextType::Review => Some(AgentLane::ExecutionReviewer),
         ChatContextType::Merge => Some(AgentLane::ExecutionMerger),
         ChatContextType::BranchUpdate => Some(AgentLane::ExecutionBranchUpdater),
-        ChatContextType::Delegation | ChatContextType::Task | ChatContextType::Project => None,
+        ChatContextType::Delegation
+        | ChatContextType::Task
+        | ChatContextType::Project
+        | ChatContextType::Standalone => None,
     }
 }
 
@@ -365,7 +368,7 @@ async fn project_id_for_context(
             .ok()
             .flatten()
             .map(|task| task.project_id.as_str().to_string()),
-        ChatContextType::Task | ChatContextType::Project => None,
+        ChatContextType::Task | ChatContextType::Project | ChatContextType::Standalone => None,
     }
 }
 

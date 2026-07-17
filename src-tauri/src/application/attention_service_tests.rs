@@ -133,6 +133,103 @@ async fn notification_context_resolver_permission_target_validates_trusted_works
 }
 
 #[tokio::test]
+async fn notification_context_resolver_accepts_only_active_self_keyed_standalone_target() {
+    let state = AppState::new_test();
+
+    let mut active = ChatConversation::new_project(ProjectId::from_string(
+        "standalone-notification-fixture".to_string(),
+    ));
+    active.context_type = ChatContextType::Standalone;
+    active.context_id = active.id.as_str();
+    state
+        .chat_conversation_repo
+        .create(active.clone())
+        .await
+        .unwrap();
+
+    let mut non_self_keyed = ChatConversation::new_project(ProjectId::from_string(
+        "standalone-notification-fixture".to_string(),
+    ));
+    non_self_keyed.context_type = ChatContextType::Standalone;
+    non_self_keyed.context_id = "different-conversation".to_string();
+    state
+        .chat_conversation_repo
+        .create(non_self_keyed.clone())
+        .await
+        .unwrap();
+
+    let mut archived = ChatConversation::new_project(ProjectId::from_string(
+        "standalone-notification-fixture".to_string(),
+    ));
+    archived.context_type = ChatContextType::Standalone;
+    archived.context_id = archived.id.as_str();
+    state
+        .chat_conversation_repo
+        .create(archived.clone())
+        .await
+        .unwrap();
+    state
+        .chat_conversation_repo
+        .archive(&archived.id)
+        .await
+        .unwrap();
+
+    let resolver = NotificationContextResolver::from_app_state(&state);
+    let active_id = active.id.to_string();
+    let accepted = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            None,
+            Some("standalone"),
+            Some(&active_id),
+            Some(&active_id),
+        )
+        .await
+        .unwrap();
+    let wrong_context = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            None,
+            Some("delegation"),
+            Some(&active_id),
+            Some(&active_id),
+        )
+        .await
+        .unwrap();
+    let non_self_keyed_id = non_self_keyed.id.to_string();
+    let malformed = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            None,
+            Some("standalone"),
+            Some(&non_self_keyed_id),
+            Some(&non_self_keyed_id),
+        )
+        .await
+        .unwrap();
+    let archived_id = archived.id.to_string();
+    let inactive = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            None,
+            Some("standalone"),
+            Some(&archived_id),
+            Some(&archived_id),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        accepted.target.kind,
+        NotificationTargetKind::AgentConversation
+    );
+    assert_eq!(
+        accepted.target.conversation_id.as_deref(),
+        Some(active_id.as_str())
+    );
+    assert_eq!(accepted.project_id, None);
+    assert_eq!(wrong_context.target, NotificationTarget::none());
+    assert_eq!(malformed.target, NotificationTarget::none());
+    assert_eq!(inactive.target, NotificationTarget::none());
+}
+
+#[tokio::test]
 async fn notification_context_resolver_returns_none_for_missing_and_unknown_contexts() {
     let state = AppState::new_test();
     let resolver = NotificationContextResolver::from_app_state(&state);

@@ -65,7 +65,10 @@ use crate::utils::secret_redactor::redact;
 fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
     matches!(
         context_type,
-        ChatContextType::Ideation | ChatContextType::Task | ChatContextType::Project
+        ChatContextType::Ideation
+            | ChatContextType::Task
+            | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 

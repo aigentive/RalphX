@@ -665,6 +665,10 @@ async fn resolve_delegate_parent(
         ChatContextType::Project => {
             resolve_project_delegate_parent(state, req, caller_context_id).await
         }
+        ChatContextType::Standalone => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start is not supported for standalone conversations",
+        )),
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review

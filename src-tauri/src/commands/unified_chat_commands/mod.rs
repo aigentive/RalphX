@@ -10416,6 +10416,13 @@ pub async fn create_agent_conversation(
         ChatContextType::BranchUpdate => {
             ChatConversation::new_branch_update(TaskId::from_string(input.context_id.clone()))
         }
+        ChatContextType::Standalone => {
+            // Standalone conversation creation (self-keyed, `new_standalone`) is a
+            // Phase 4a.3 item; not reachable through this IPC command yet.
+            return Err(
+                "Standalone conversation creation is not supported yet (Phase 4a.3)".to_string(),
+            );
+        }
     };
     conversation.set_coordination_mode(coordination_mode);
 

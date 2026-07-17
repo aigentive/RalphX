@@ -151,6 +151,7 @@ pub(super) fn is_pause_managed_chat_context(context_type: ChatContextType) -> bo
             | ChatContextType::Ideation
             | ChatContextType::Task
             | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 
@@ -239,6 +240,9 @@ pub(super) async fn queue_key_matches_project(
         ChatContextType::Project => Ok(resolve_project_queue_context(key, app_state)
             .await?
             .is_some_and(|(context_id, _)| context_id == project_id.as_str())),
+        // Standalone conversations are projectless (self-keyed by conversation id),
+        // so they never match a project filter.
+        ChatContextType::Standalone => Ok(false),
     }
 }
 
