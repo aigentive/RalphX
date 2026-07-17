@@ -11,7 +11,8 @@ use crate::application::{
 };
 use crate::commands::agent_composer_commands::plan_references::session_can_reference_plan;
 use crate::commands::ideation_commands::{
-    apply_proposals_to_kanban_for_state, ApplyProposalsInput, ApplyProposalsResultResponse,
+    apply_supervised_proposals_to_kanban_for_state, ApplyProposalsInput,
+    ApplyProposalsResultResponse,
 };
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, ensure_plan_workspace_planning_session_link_for_send,
@@ -174,14 +175,14 @@ pub async fn start_agent_task_pipeline(
         &input.proposal_ids,
     )
     .await?;
-    apply_proposals_to_kanban_for_state(
+    apply_supervised_proposals_to_kanban_for_state(
         ApplyProposalsInput {
             session_id: input.session_id,
             proposal_ids: input.proposal_ids,
             target_column: "auto".to_string(),
             base_branch_override: input.base_branch_override,
-            supervised_task_pipeline_conversation_id: Some(input.conversation_id),
         },
+        input.conversation_id,
         &state,
         &app,
     )

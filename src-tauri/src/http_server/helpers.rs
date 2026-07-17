@@ -993,7 +993,6 @@ pub async fn finalize_proposals_impl(
         proposal_ids,
         target_column: "auto".to_string(),
         base_branch_override: None,
-        supervised_task_pipeline_conversation_id: None,
     };
 
     let result = apply_proposals_core(state, input).await?;
@@ -1121,7 +1120,6 @@ pub async fn apply_pending_proposals_core_for_session(
         proposal_ids,
         target_column: "auto".to_string(),
         base_branch_override: None,
-        supervised_task_pipeline_conversation_id: None,
     };
 
     apply_pending_proposals_core(state, input).await

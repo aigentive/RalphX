@@ -569,7 +569,7 @@ pub async fn apply_proposals_core(
     app_state: &AppState,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, false).await
+    apply_proposals_core_inner(app_state, input, false, None).await
 }
 
 /// Apply every selected proposal under a still-pending human confirmation.
@@ -581,16 +581,23 @@ pub async fn apply_pending_proposals_core(
     app_state: &AppState,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
-    apply_proposals_core_inner(app_state, input, true).await
+    apply_proposals_core_inner(app_state, input, true, None).await
+}
+
+pub(crate) async fn apply_supervised_proposals_core(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+    conversation_id: String,
+) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, false, Some(conversation_id)).await
 }
 
 async fn apply_proposals_core_inner(
     app_state: &AppState,
     input: ApplyProposalsInput,
     require_pending_confirmation: bool,
+    supervised_task_pipeline_conversation_id: Option<String>,
 ) -> AppResult<ApplyProposalsResult> {
-    let supervised_task_pipeline_conversation_id =
-        input.supervised_task_pipeline_conversation_id.clone();
     let session_id = IdeationSessionId::from_string(input.session_id);
 
     // Status will be determined automatically based on dependencies:
@@ -1144,11 +1151,33 @@ pub async fn apply_proposals_to_kanban_for_state(
     state: &State<'_, AppState>,
     app: &tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state_inner(input, state, app, None).await
+}
+
+pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(
+    input: ApplyProposalsInput,
+    conversation_id: String,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state_inner(input, state, app, Some(conversation_id)).await
+}
+
+async fn apply_proposals_to_kanban_for_state_inner(
+    input: ApplyProposalsInput,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+    supervised_task_pipeline_conversation_id: Option<String>,
+) -> Result<ApplyProposalsResultResponse, String> {
     use crate::commands::emit_queue_changed;
 
-    let result = apply_proposals_core(state.inner(), input)
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = match supervised_task_pipeline_conversation_id {
+        Some(conversation_id) => {
+            apply_supervised_proposals_core(state.inner(), input, conversation_id).await
+        }
+        None => apply_proposals_core(state.inner(), input).await,
+    }
+    .map_err(|e| e.to_string())?;
 
     // IPR cleanup: stop the ideation session's interactive Claude CLI process
     // now that the session has been accepted (terminal state).

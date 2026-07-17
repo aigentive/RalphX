@@ -4,6 +4,7 @@ use super::agent_plan_commands::{
     ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
     ImportAgentConversationPlanInput,
 };
+use super::ideation_commands::{apply_supervised_proposals_core, ApplyProposalsInput};
 use crate::application::{
     agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
 };
@@ -612,6 +613,96 @@ async fn start_tasks_requires_the_complete_current_proposal_set() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn supervised_apply_requires_the_owning_tasks_conversation() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Supervised apply".to_string(),
+            content: "# Supervised apply".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let session_id =
+        crate::domain::entities::IdeationSessionId::from_string(seeded.session_id.clone());
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "Owned proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let input = || ApplyProposalsInput {
+        session_id: seeded.session_id.clone(),
+        proposal_ids: vec![proposal.id.as_str().to_string()],
+        target_column: "auto".to_string(),
+        base_branch_override: None,
+    };
+
+    let error =
+        apply_supervised_proposals_core(&state, input(), "different-conversation".to_string())
+            .await
+            .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("Tasks conversation no longer owns this pipeline"));
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let result =
+        apply_supervised_proposals_core(&state, input(), conversation.id.as_str().to_string())
+            .await
+            .unwrap();
+    assert_eq!(result.tasks_created, 1);
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session_id)
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "one proposal task and its merge task should be created",
+    );
 }
 
 #[tokio::test]
