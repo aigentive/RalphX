@@ -116,7 +116,7 @@ import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import {
-  AGENT_CONVERSATION_MODE_OPTIONS,
+  buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -1717,14 +1717,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const automationConfigId =
     automationConfig?.id ?? activeConversation.automationId ?? null;
   const modeOptions = useMemo(() => {
+    const eligibleOptions = buildAgentConversationModeOptions({
+      currentMode: activeConversationMode ?? "chat",
+      taskPipelineAvailable:
+        activeWorkspace?.taskPipelineAvailable ??
+        Boolean(activeWorkspace?.taskPipelineSessionId),
+      autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
+    });
     if (!resolvedConversationModeLocked) {
-      return AGENT_CONVERSATION_MODE_OPTIONS;
+      return eligibleOptions;
     }
     const lockReason =
       activeWorkspace?.modeSwitchLockReason ??
       "Active ideation or execution state owns this workspace.";
-    return AGENT_CONVERSATION_MODE_OPTIONS.map((option) =>
-      option.id === activeConversationMode || option.id === "ideation"
+    return eligibleOptions.map((option) =>
+      option.id === activeConversationMode
         ? option
         : {
             ...option,
@@ -1736,6 +1743,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversationMode,
     resolvedConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
+    activeWorkspace?.taskPipelineAvailable,
+    activeWorkspace?.taskPipelineSessionId,
+    featureFlags.agentConversationAutopilot,
   ]);
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&

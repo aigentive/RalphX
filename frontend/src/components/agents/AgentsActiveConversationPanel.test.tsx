@@ -27,6 +27,7 @@ const {
   approvePlanArtifactMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  activateAgentTaskPipelineMock,
   getAgentConversationRuntimeIndexMock,
   getAgentConversationRuntimeStatusesMock,
   useVerificationStatusMock,
@@ -56,6 +57,7 @@ const {
   approvePlanArtifactMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  activateAgentTaskPipelineMock: vi.fn(),
   getAgentConversationRuntimeIndexMock: vi.fn(),
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
@@ -348,6 +350,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
       getAgentConversationRuntimeStatuses: getAgentConversationRuntimeStatusesMock,
       sendAgentMessage: sendAgentMessageMock,
       switchAgentConversationMode: switchAgentConversationModeMock,
+      activateAgentTaskPipeline: activateAgentTaskPipelineMock,
     },
   };
 });
@@ -1072,6 +1075,13 @@ describe("AgentsActiveConversationPanel", () => {
     });
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: { ...workspace(), mode: "ideation" },
+    });
+    activateAgentTaskPipelineMock.mockResolvedValue({
+      ...workspace(),
+      mode: "tasks",
+      linkedIdeationSessionId: "planning-session-1",
+      taskPipelineSessionId: "planning-session-1",
+      taskPipelineAvailable: true,
     });
     getAgentConversationRuntimeIndexMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -2974,12 +2984,12 @@ describe("AgentsActiveConversationPanel", () => {
     setPlanArtifactVisible();
     const promotedWorkspace = {
       ...workspace(),
-      mode: "ideation" as const,
+      mode: "tasks" as const,
       linkedIdeationSessionId: "planning-session-1",
+      taskPipelineSessionId: "planning-session-1",
+      taskPipelineAvailable: true,
     };
-    switchAgentConversationModeMock.mockResolvedValue({
-      workspace: promotedWorkspace,
-    });
+    activateAgentTaskPipelineMock.mockResolvedValue(promotedWorkspace);
     const onConversationModeSwitched = vi.fn();
 
     renderPanel({
@@ -3030,19 +3040,19 @@ describe("AgentsActiveConversationPanel", () => {
     await user.click(recommendedAction);
 
     await waitFor(() =>
-      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+      expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
-        mode: "ideation",
+        sessionId: "planning-session-1",
       }),
     );
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "ideation",
       "planning-session-1",
-      expect.stringContaining("Proceed to proposals"),
+      expect.stringContaining("Create implementation task proposals"),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
-      "ideation",
+      "tasks",
       promotedWorkspace,
     );
   });
@@ -3097,7 +3107,7 @@ describe("AgentsActiveConversationPanel", () => {
     ).toBe("ideation-conversation-1");
   });
 
-  it("does not focus the ideation chat when composer promotion lacks a workspace confirmation", async () => {
+  it("does not focus the ideation chat when activation does not confirm Tasks mode", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
     setPlanArtifactVisible();
@@ -3109,8 +3119,10 @@ describe("AgentsActiveConversationPanel", () => {
       queuedAsPending: false,
       queuedMessageId: null,
     });
-    switchAgentConversationModeMock.mockResolvedValue({
-      workspace: null,
+    activateAgentTaskPipelineMock.mockResolvedValue({
+      ...workspace(),
+      mode: "plan",
+      linkedIdeationSessionId: "planning-session-1",
     });
     const onFocusIdeationSessionForConversation = vi.fn();
 

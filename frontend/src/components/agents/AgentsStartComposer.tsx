@@ -84,7 +84,7 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
-import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+import { buildAgentStartModeOptions } from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
@@ -280,6 +280,13 @@ export function AgentsStartComposer({
   const openModal = useUiStore((s) => s.openModal);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const { data: featureFlags } = useFeatureFlags();
+  const startModeOptions = useMemo(
+    () =>
+      buildAgentStartModeOptions({
+        autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
+      }),
+    [featureFlags.agentConversationAutopilot],
+  );
   const {
     settings: providerSettings,
     providers: configuredProviders,
@@ -1331,7 +1338,7 @@ export function AgentsStartComposer({
                   setAutomationAuthoringMode(null);
                 }
               },
-              options: AGENT_START_MODE_OPTIONS,
+              options: startModeOptions,
               testId: "agents-start-mode",
             }}
             {...(capabilityOptions.length > 1
