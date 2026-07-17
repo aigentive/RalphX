@@ -2667,7 +2667,7 @@
             .unwrap();
         assert!(events.iter().any(|event| {
             event.step == "workspace_review_approved_anyway"
-                && event.classification.as_deref() == Some("human_override")
+                && event.classification.as_deref() == Some("workspace_review_approved_anyway")
         }));
         assert!(events.iter().any(|event| {
             event.step == "initial_auto_publish_workspace_review_passed"

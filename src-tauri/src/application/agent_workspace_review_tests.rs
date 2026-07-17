@@ -2217,6 +2217,17 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     );
     seed_conversation(&state, &workspace).await;
 
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let mut failed_monitor = context.monitor;
+    failed_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    failed_monitor.last_run_id = Some("run-failed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(failed_monitor)
+        .await
+        .expect("failed active monitor should persist");
     let failed = complete_agent_workspace_review_run(
         &state,
         &workspace,
@@ -2243,6 +2254,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut ready_monitor = context.monitor;
+    ready_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut ready_monitor,
         target.scope,
@@ -2265,7 +2277,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         Some("passed".to_string()),
         Some("No blocking findings".to_string()),
         None,
-        None,
+        Some("run-ready".to_string()),
     )
     .await
     .expect("ready completion should persist");
@@ -2277,6 +2289,28 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     );
     assert_eq!(ready.review_artifact_version, Some(3));
 
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    let mut blocked_monitor = context.monitor;
+    blocked_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    apply_review_artifact_to_monitor(
+        &mut blocked_monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("run-blocked".to_string()),
+        ArtifactId::from_string("artifact-blocked"),
+        4,
+        Utc::now(),
+        None,
+    );
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(blocked_monitor)
+        .await
+        .expect("blocked active monitor should persist");
     let blocked = complete_agent_workspace_review_run(
         &state,
         &workspace,
@@ -2340,6 +2374,7 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut monitor,
         target.scope,
@@ -2426,6 +2461,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     apply_review_artifact_to_monitor(
         &mut monitor,
         target.scope,
