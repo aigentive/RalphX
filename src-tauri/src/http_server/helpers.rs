@@ -13,10 +13,10 @@ use crate::commands::ideation_commands::{
     TaskProposalResponse,
 };
 use crate::domain::entities::{
-    AcceptanceStatus, AgentConversationWorkspaceMode, Artifact, ArtifactContent, ArtifactSummary,
-    ArtifactType, AutomationRunStatus, AutomationStatus, Complexity, IdeationSession,
-    IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority, ProposalCategory,
-    ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
+    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
+    AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
+    IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
+    TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
     ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
@@ -856,7 +856,7 @@ pub async fn finalize_proposals_impl(
         .agent_conversation_workspace_repo
         .get_by_task_pipeline_session_id(&session_id_typed)
         .await?;
-    if workspace.is_some_and(|workspace| workspace.mode == AgentConversationWorkspaceMode::Tasks) {
+    if workspace.is_some() {
         return Err(AppError::Validation(
             "This supervised task pipeline is waiting for the user to choose Start Tasks"
                 .to_string(),

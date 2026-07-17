@@ -11,6 +11,53 @@ use crate::domain::entities::{
 };
 use chrono::Utc;
 
+async fn state_with_durable_pipeline_workspace(
+    mode: AgentConversationWorkspaceMode,
+    label: &str,
+) -> (AppState, IdeationSession) {
+    let state = AppState::new_sqlite_for_apply_test();
+    let working_directory = format!("/tmp/ralphx-tasks-finalize-guard-{label}");
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Tasks finalize guard".to_string(),
+            working_directory.clone(),
+        ))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(mode));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id,
+        mode,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        format!("ralphx/test/tasks-finalize-guard-{label}"),
+        working_directory,
+    );
+    workspace.task_pipeline_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    (state, session)
+}
+
 #[tokio::test]
 async fn get_task_context_impl_filters_resolved_blockers_and_keeps_active_ones() {
     let state = AppState::new_test();
@@ -64,44 +111,8 @@ async fn get_task_context_impl_filters_resolved_blockers_and_keeps_active_ones()
 
 #[tokio::test]
 async fn native_finalize_rejects_durably_owned_tasks_pipeline_without_transient_link() {
-    let state = AppState::new_sqlite_for_apply_test();
-    let project = state
-        .project_repo
-        .create(Project::new(
-            "Tasks finalize guard".to_string(),
-            "/tmp/ralphx-tasks-finalize-guard".to_string(),
-        ))
-        .await
-        .unwrap();
-    let session = state
-        .ideation_session_repo
-        .create(IdeationSession::new(project.id.clone()))
-        .await
-        .unwrap();
-    let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Tasks));
-    let conversation = state
-        .chat_conversation_repo
-        .create(conversation)
-        .await
-        .unwrap();
-    let mut workspace = AgentConversationWorkspace::new(
-        conversation.id,
-        project.id,
-        AgentConversationWorkspaceMode::Tasks,
-        IdeationAnalysisBaseRefKind::ProjectDefault,
-        "main".to_string(),
-        Some("Project default (main)".to_string()),
-        None,
-        "ralphx/test/tasks-finalize-guard".to_string(),
-        "/tmp/ralphx-tasks-finalize-guard".to_string(),
-    );
-    workspace.task_pipeline_session_id = Some(session.id.clone());
-    state
-        .agent_conversation_workspace_repo
-        .create_or_update(workspace)
-        .await
-        .unwrap();
+    let (state, session) =
+        state_with_durable_pipeline_workspace(AgentConversationWorkspaceMode::Tasks, "tasks").await;
 
     let error = finalize_proposals_impl(&state, session.id.as_str(), false)
         .await
@@ -123,6 +134,26 @@ async fn native_finalize_rejects_durably_owned_tasks_pipeline_without_transient_
     assert!(external_route_error
         .to_string()
         .contains("waiting for the user to choose Start Tasks"));
+}
+
+#[tokio::test]
+async fn native_finalize_rejects_durable_tasks_pipeline_after_leaving_tasks_mode() {
+    let (state, session) =
+        state_with_durable_pipeline_workspace(AgentConversationWorkspaceMode::Chat, "chat").await;
+
+    let error = finalize_proposals_impl(&state, session.id.as_str(), false)
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("waiting for the user to choose Start Tasks"));
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
