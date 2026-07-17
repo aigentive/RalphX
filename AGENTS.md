@@ -21,6 +21,8 @@ Primary project docs:
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across canonical agent metadata, harness runtime config, prompt contracts, and MCP registration
 - `.claude/rules/merge-recovery-consistency.md` for the coupled merge-failure behavior across merge outcome handling, manual retry, reconciliation, startup recovery, and MergeIncomplete UI
 - `.claude/rules/stateful-workflow-review.md` for false-success review of completion/cache/retry/recovery/state-machine changes
+- `.claude/rules/task-state-machine.md` for the 28 internal task statuses, the transition table, and the validated transition API contract
+- `.claude/rules/big-pr-review-checklist.md` for the recurring failure classes big PRs ship here and the 12 falsifiable pre-merge checks that catch them
 - `.claude/rules/rust-test-execution.md` for selective Rust test commands, the standard Rust test stack, shared SQLite fixtures/builders, and the no-broad-`fmt` rule
 - `.claude/rules/wkwebview-css-vars.md` for Tauri (WKWebView) CSS custom-property inheritance rules — theme tokens for bg/text/border MUST be literals, not chained `var()` references
 - `.claude/rules/release-script-validation.md` for safe validation of release proposal/wrapper scripts without triggering real publish steps
@@ -31,6 +33,7 @@ Primary project docs:
 ## Codex Rules
 
 - Read project instructions first: check `CLAUDE.md`, subtree docs, and relevant `.claude/rules/*` before substantial work.
+- Pattern alignment first (NON-NEGOTIABLE): before implementing any bug fix or feature, identify the owning backend service / frontend component and its established pattern (subtree CLAUDE.md pattern tables, `.claude/rules/*`, `docs/architecture/`); extend that seam instead of introducing new architecture. A new pattern requires explicit justification in the PR description plus a pattern one-liner in the relevant CLAUDE.md.
 - For OpenAI/Codex prompt work, check `.claude/rules/openai-gpt-5-prompting.md`, then load only the local guide matching the configured target model before substantial prompt edits.
 - When touching ideation verification, read `.claude/rules/ideation-verification-architecture.md` first.
 - When touching plugin/root resolution, canonical agent loading, generated plugin bundles, or runtime log placement, read `.claude/rules/runtime-root-vs-target-project.md` first.
@@ -39,6 +42,9 @@ Primary project docs:
 - CodeQL path findings block PRs: tests are scanned too; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 - When touching merge failure recovery, merge retry/resolve actions, merge reconciliation, or startup merge remediation, read `.claude/rules/merge-recovery-consistency.md` first.
 - When touching completion gates, validation caches, retries, recovery, state-machine transitions, or execution prompts, read `.claude/rules/stateful-workflow-review.md` first and run a false-success review before handoff.
+- When changing task workflow status, use validated `TaskTransitionService` paths per `.claude/rules/task-state-machine.md`; never write `internal_status` directly outside canonical engine paths.
+- Model-facing MCP tool schemas must never accept run/orchestration IDs; identity is injected from transport/runtime context and validated backend-side.
+- Before finishing any large feature/refactor PR, run `.claude/rules/big-pr-review-checklist.md` against your own diff — especially the scope-leak, stale-metadata, recovery-parity, and single-writer checks.
 - When touching release automation, read `.claude/rules/release-script-validation.md` first.
 - Preserve user work: never revert unrelated edits; isolate your diffs in a dirty tree.
 - PR branch freshness (NON-NEGOTIABLE): before opening, updating, or handing off a PR, fetch the base branch, rebase onto the latest `origin/<base>`, and push the rebased branch so GitHub does not show it as behind.
