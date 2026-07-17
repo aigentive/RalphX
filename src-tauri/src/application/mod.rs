@@ -43,6 +43,7 @@ pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
@@ -216,6 +217,9 @@ pub use atlassian_integration_service::{
     AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
 };
+pub use jira_agile_types::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+};
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
 pub use clickup_integration_service::{
@@ -280,6 +284,7 @@ pub use plan_ranking::{
 pub use priority_service::PriorityService;
 pub(crate) use provider_onboarding_gate::{
     ensure_provider_spawn_enabled, resolve_enabled_default_provider,
+    resolve_enabled_provider_or_default,
 };
 pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};

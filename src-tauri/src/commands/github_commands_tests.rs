@@ -14,7 +14,8 @@ use crate::domain::entities::{
     ChatConversation, IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrBranchMatch, PrSearchResult, PrStatus,
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus, GithubServiceTrait,
+    PrBranchMatch, PrSearchResult, PrStatus,
 };
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::tests::mock_github_service::MockGithubService;
@@ -30,6 +31,8 @@ fn test_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
 #[test]
 fn github_connection_status_response_preserves_public_fields() {
     let response = GithubConnectionStatusResponse::from(GithubConnectionStatus {
+        state: GithubConnectionState::Authenticated,
+        diagnostic: None,
         gh_installed: true,
         authenticated: true,
         host: Some("github.com".to_string()),
@@ -38,6 +41,8 @@ fn github_connection_status_response_preserves_public_fields() {
 
     assert!(response.gh_installed);
     assert!(response.authenticated);
+    assert_eq!(response.state, GithubConnectionState::Authenticated);
+    assert!(response.diagnostic.is_none());
     assert_eq!(response.host.as_deref(), Some("github.com"));
     assert_eq!(response.account.as_deref(), Some("reefagent"));
 }
@@ -52,6 +57,11 @@ async fn get_github_connection_status_returns_unavailable_without_service() {
 
     assert!(!response.gh_installed);
     assert!(!response.authenticated);
+    assert_eq!(response.state, GithubConnectionState::CliUnavailable);
+    assert_eq!(
+        response.diagnostic,
+        Some(GithubConnectionDiagnostic::CliLaunch)
+    );
     assert!(response.host.is_none());
     assert!(response.account.is_none());
 }
@@ -85,8 +95,13 @@ async fn get_github_connection_status_uses_service_and_falls_back_on_error() {
         .await
         .expect("command should collapse service errors");
 
-    assert!(!unavailable.gh_installed);
+    assert!(unavailable.gh_installed);
     assert!(!unavailable.authenticated);
+    assert_eq!(unavailable.state, GithubConnectionState::ProbeFailed);
+    assert_eq!(
+        unavailable.diagnostic,
+        Some(GithubConnectionDiagnostic::ServiceFailure)
+    );
     assert_eq!(github.state().fetch_github_connection_status_calls, 2);
 }
 

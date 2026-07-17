@@ -20,6 +20,7 @@ const { mocks } = vi.hoisted(() => ({
       data: undefined as unknown,
       isLoading: false,
       refetch: vi.fn().mockResolvedValue({ data: undefined }),
+      isError: false,
     },
     loginGh: { mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false },
     setupGh: { mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false },
@@ -34,11 +35,14 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitAuthDiagnostics: () => mocks.diagnostics,
-  useGhAuthStatus: () => mocks.ghAuth,
   useLoginGhWithBrowser: () => mocks.loginGh,
   useSetupGhGitAuth: () => mocks.setupGh,
   useSwitchGitOriginToSsh: () => mocks.switchSsh,
   useResumeDeferredGitStartup: () => mocks.resumeDeferred,
+}));
+
+vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
+  useGitHubConnectionStatus: () => mocks.ghAuth,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -101,9 +105,17 @@ beforeEach(() => {
   mocks.diagnostics.refetch = vi
     .fn()
     .mockResolvedValue({ data: mocks.diagnostics.data, isError: false });
-  mocks.ghAuth.data = false;
+  mocks.ghAuth.data = {
+    state: "unauthenticated",
+    diagnostic: "missing_credentials",
+    ghInstalled: true,
+    authenticated: false,
+    host: "github.com",
+    account: null,
+  };
   mocks.ghAuth.isLoading = false;
-  mocks.ghAuth.refetch = vi.fn().mockResolvedValue({ data: false });
+  mocks.ghAuth.isError = false;
+  mocks.ghAuth.refetch = vi.fn().mockResolvedValue({ data: mocks.ghAuth.data });
 });
 
 describe("GitAuthRepairPanel — Sign in", () => {
@@ -134,7 +146,14 @@ describe("GitAuthRepairPanel — Sign in", () => {
   });
 
   it("hides the Sign in button when GitHub CLI is already signed in (no HTTPS issue)", () => {
-    mocks.ghAuth.data = true;
+    mocks.ghAuth.data = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
     mocks.diagnostics.data = {
       ...(mocks.diagnostics.data as object),
       fetchKind: "SSH",
@@ -175,14 +194,28 @@ describe("GitAuthRepairPanel — Sign in", () => {
 
   it("Setup HTTPS triggers the setup-gh mutation when gh is signed in on HTTPS remote", async () => {
     const user = userEvent.setup();
-    mocks.ghAuth.data = true;
+    mocks.ghAuth.data = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
     render(<GitAuthRepairPanel projectId="proj-1" />);
     await user.click(screen.getByTestId("git-auth-setup-gh"));
     expect(mocks.setupGh.mutateAsync).toHaveBeenCalled();
   });
 
   it("treats GitHub HTTPS as healthy when gh auth and credential helper are configured", () => {
-    mocks.ghAuth.data = true;
+    mocks.ghAuth.data = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
     mocks.diagnostics.data = {
       fetchUrl: "https://github.com/owner/repo.git",
       pushUrl: "https://github.com/owner/repo.git",
@@ -203,7 +236,14 @@ describe("GitAuthRepairPanel — Sign in", () => {
   });
 
   it("hides on publish surface when auth is healthy even if canSwitchToSsh is available", () => {
-    mocks.ghAuth.data = true;
+    mocks.ghAuth.data = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
     mocks.diagnostics.data = {
       fetchUrl: "https://github.com/owner/repo.git",
       pushUrl: "https://github.com/owner/repo.git",
@@ -222,7 +262,14 @@ describe("GitAuthRepairPanel — Sign in", () => {
   });
 
   it("shows on publish surface when there is a visible issue", () => {
-    mocks.ghAuth.data = false;
+    mocks.ghAuth.data = {
+      state: "unauthenticated",
+      diagnostic: "missing_credentials",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    };
     mocks.diagnostics.data = {
       fetchUrl: "https://github.com/owner/repo.git",
       pushUrl: "https://github.com/owner/repo.git",
@@ -241,7 +288,14 @@ describe("GitAuthRepairPanel — Sign in", () => {
   });
 
   it("shows on settings surface with showWhenHealthy even when auth is healthy", () => {
-    mocks.ghAuth.data = true;
+    mocks.ghAuth.data = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
     mocks.diagnostics.data = {
       fetchUrl: "git@github.com:owner/repo.git",
       pushUrl: "git@github.com:owner/repo.git",
@@ -268,6 +322,33 @@ describe("GitAuthRepairPanel — Sign in", () => {
     expect(mocks.ghAuth.refetch).toHaveBeenCalled();
   });
 
+  it("does not show Sign in for transient provider failures", () => {
+    mocks.ghAuth.data = {
+      state: "provider_unavailable",
+      diagnostic: "http5xx",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    };
+    mocks.diagnostics.data = {
+      fetchUrl: "git@github.com:owner/repo.git",
+      pushUrl: "git@github.com:owner/repo.git",
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    };
+
+    render(<GitAuthRepairPanel projectId="proj-1" requiresGhAuth />);
+
+    expect(screen.getByText(/temporarily unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("git-auth-login-gh")).not.toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-recheck")).toBeInTheDocument();
+  });
+
   it("PR-only access mode shows the title 'GitHub PR Access'", () => {
     mocks.diagnostics.data = {
       fetchUrl: "git@github.com:owner/repo.git",
@@ -279,7 +360,14 @@ describe("GitAuthRepairPanel — Sign in", () => {
       canSwitchToSsh: false,
       suggestedSshUrl: null,
     };
-    mocks.ghAuth.data = false;
+    mocks.ghAuth.data = {
+      state: "credential_rejected",
+      diagnostic: "credentials_rejected",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    };
 
     render(<GitAuthRepairPanel projectId="proj-1" requiresGhAuth />);
     expect(screen.getByText("GitHub PR Access")).toBeInTheDocument();
@@ -314,8 +402,16 @@ describe("GitAuthRepairPanel — Sign in", () => {
     mocks.diagnostics.refetch = vi
       .fn()
       .mockResolvedValue({ data: healthyDiagnostics, isError: false });
-    mocks.ghAuth.data = true;
-    mocks.ghAuth.refetch = vi.fn().mockResolvedValue({ data: true });
+    const healthyStatus = {
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    };
+    mocks.ghAuth.data = healthyStatus;
+    mocks.ghAuth.refetch = vi.fn().mockResolvedValue({ data: healthyStatus });
     mocks.resumeDeferred.mutateAsync.mockReset();
     mocks.resumeDeferred.mutateAsync.mockResolvedValue(true);
 

@@ -1,8 +1,11 @@
-import { useEffect } from "react";
+import { createElement, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { getAgentArtifactStateSnapshot } from "@/components/agents/agentArtifactState";
+import { useAgentArtifactUiStore } from "@/components/agents/agentArtifactUiStore";
 import { ATTENTION_CATEGORY_MAPPING } from "@/components/notifications/categoryMapping";
+import { NotificationActionToast } from "@/components/notifications/NotificationActionToast";
 import { performNotificationPrimaryAction } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
 import { notificationKeys } from "@/hooks/useNotificationHistory";
@@ -16,30 +19,53 @@ import {
 
 import { useNotificationPreferences } from "./useNotificationPreferences";
 
-const DEFAULT_TOAST_DURATION_MS = 8_000;
-const PERMISSION_WINDOW_MS = 5 * 60_000;
 const activeNotificationToastIds = new Set<string>();
 const activeAgentConversationToasts = new Map<string, Notification>();
+const pendingNonAgentAcknowledgements = new Set<string>();
+const pendingAgentConversationAcknowledgements = new Map<string, Notification>();
 
 export function resetNotificationToastStateForTests() {
   activeNotificationToastIds.clear();
   activeAgentConversationToasts.clear();
+  pendingNonAgentAcknowledgements.clear();
+  pendingAgentConversationAcknowledgements.clear();
 }
 
 function isFocusedWindow() {
   return document.visibilityState !== "hidden" && document.hasFocus();
 }
 
-function toastDuration(notification: Notification): number {
-  if (notification.category !== "permission_request") return DEFAULT_TOAST_DURATION_MS;
-  const expiresAt = new Date(notification.createdAt).getTime() + PERMISSION_WINDOW_MS;
-  return Math.max(1_000, Math.min(PERMISSION_WINDOW_MS, expiresAt - Date.now()));
-}
-
 function isAgentConversationNotification(notification: Notification): boolean {
   return (
     notification.target.kind === "agent_conversation" &&
     notification.target.conversationId !== undefined
+  );
+}
+
+function isPlanReviewNotification(notification: Notification): boolean {
+  return (
+    notification.category === "plan_approval" ||
+    notification.category === "team_plan_approval"
+  );
+}
+
+function isAgentConversationNotificationSatisfied(
+  notification: Notification,
+): boolean {
+  if (!isAgentConversationNotification(notification)) return false;
+  const conversationId = notification.target.conversationId;
+  if (
+    useAgentSessionStore.getState().selectedConversationId !== conversationId
+  ) {
+    return false;
+  }
+  if (!isPlanReviewNotification(notification)) return true;
+
+  const artifactState = getAgentArtifactStateSnapshot(conversationId, false);
+  return (
+    artifactState.isOpen &&
+    artifactState.activeTab === "plan" &&
+    !artifactState.hiddenTabs.includes("plan")
   );
 }
 
@@ -52,13 +78,36 @@ function markNotificationRead(
   });
 }
 
-function acknowledgeAgentConversationToast(
+function dismissNotificationToast(notification: Notification) {
+  activeNotificationToastIds.delete(notification.id);
+  activeAgentConversationToasts.delete(notification.id);
+  pendingNonAgentAcknowledgements.delete(notification.id);
+  pendingAgentConversationAcknowledgements.delete(notification.id);
+  toast.dismiss(notification.id);
+}
+
+function acknowledgePendingNonAgentNotification(
   notification: Notification,
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
-  if (!activeAgentConversationToasts.delete(notification.id)) return;
-  activeNotificationToastIds.delete(notification.id);
-  toast.dismiss(notification.id);
+  if (!pendingNonAgentAcknowledgements.delete(notification.id)) return;
+  if (activeNotificationToastIds.delete(notification.id)) {
+    toast.dismiss(notification.id);
+  }
+  markNotificationRead(notification, queryClient);
+}
+
+function acknowledgeIfNotificationTargetSatisfied(
+  notification: Notification,
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
+  if (!isAgentConversationNotificationSatisfied(notification)) return;
+  const wasActive = activeAgentConversationToasts.delete(notification.id);
+  const wasPending = pendingAgentConversationAcknowledgements.delete(notification.id);
+  if (!wasActive && !wasPending) return;
+  if (activeNotificationToastIds.delete(notification.id)) {
+    toast.dismiss(notification.id);
+  }
   markNotificationRead(notification, queryClient);
 }
 
@@ -70,22 +119,26 @@ export function useNotificationToasts() {
   const selectedConversationId = useAgentSessionStore(
     (state) => state.selectedConversationId,
   );
+  const agentArtifactStates = useAgentArtifactUiStore(
+    (state) => state.artifactByConversationId,
+  );
 
   useEffect(() => {
     if (!notificationsPanelOpen) return;
-    for (const id of activeNotificationToastIds) toast.dismiss(id);
+    const visibleToastIds = [...activeNotificationToastIds];
     activeNotificationToastIds.clear();
     activeAgentConversationToasts.clear();
+    for (const id of visibleToastIds) toast.dismiss(id);
   }, [notificationsPanelOpen]);
 
   useEffect(() => {
-    if (!selectedConversationId) return;
     for (const notification of activeAgentConversationToasts.values()) {
-      if (notification.target.conversationId === selectedConversationId) {
-        acknowledgeAgentConversationToast(notification, queryClient);
-      }
+      acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
     }
-  }, [queryClient, selectedConversationId]);
+    for (const notification of pendingAgentConversationAcknowledgements.values()) {
+      acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
+    }
+  }, [agentArtifactStates, queryClient, selectedConversationId]);
 
   useEffect(() => bus.subscribe<unknown>("notification:created", (payload) => {
     const parsed = NotificationSchema.safeParse(payload);
@@ -102,48 +155,55 @@ export function useNotificationToasts() {
 
     const presentation = ATTENTION_CATEGORY_MAPPING[notification.category];
     const isAgentConversation = isAgentConversationNotification(notification);
-    if (
-      isAgentConversation &&
-      useAgentSessionStore.getState().selectedConversationId ===
-        notification.target.conversationId
-    ) {
-      markNotificationRead(notification, queryClient);
-      return;
+    if (isAgentConversation) {
+      activeAgentConversationToasts.set(notification.id, notification);
+      if (isAgentConversationNotificationSatisfied(notification)) {
+        acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
+        return;
+      }
     }
 
     activeNotificationToastIds.add(notification.id);
-    if (isAgentConversation) {
-      activeAgentConversationToasts.set(notification.id, notification);
-    }
-    toast.warning(notification.title, {
+    const dismiss = () => dismissNotificationToast(notification);
+    const performAction = async () => {
+      if (isAgentConversation) {
+        pendingAgentConversationAcknowledgements.set(notification.id, notification);
+      } else {
+        pendingNonAgentAcknowledgements.add(notification.id);
+      }
+      try {
+        const navigated = await performNotificationPrimaryAction(
+          notification,
+          queryClient,
+        );
+        if (!navigated) {
+          pendingNonAgentAcknowledgements.delete(notification.id);
+          pendingAgentConversationAcknowledgements.delete(notification.id);
+          return;
+        }
+        if (isAgentConversation) {
+          acknowledgeIfNotificationTargetSatisfied(notification, queryClient);
+        } else {
+          acknowledgePendingNonAgentNotification(notification, queryClient);
+        }
+      } catch {
+        pendingNonAgentAcknowledgements.delete(notification.id);
+        pendingAgentConversationAcknowledgements.delete(notification.id);
+        // Keep the durable notification visible and unread when its action fails.
+      }
+    };
+    toast.warning(createElement(NotificationActionToast, {
+      actionLabel: presentation.action ?? "Open",
+      ...(notification.body !== undefined && { body: notification.body }),
+      onAction: performAction,
+      onDismiss: dismiss,
+      title: notification.title,
+    }), {
       id: notification.id,
-      ...(notification.body !== undefined && { description: notification.body }),
-      duration: isAgentConversation ? Infinity : toastDuration(notification),
-      ...(isAgentConversation && {
-        closeButton: true,
-        closeButtonAriaLabel: "Dismiss notification",
-      }),
+      duration: Infinity,
       onDismiss: () => {
         activeNotificationToastIds.delete(notification.id);
         activeAgentConversationToasts.delete(notification.id);
-      },
-      onAutoClose: () => {
-        activeNotificationToastIds.delete(notification.id);
-        activeAgentConversationToasts.delete(notification.id);
-      },
-      action: {
-        label: presentation.action ?? "Open",
-        onClick: () => {
-          void performNotificationPrimaryAction(notification, queryClient).then((navigated) => {
-            if (isAgentConversation) {
-              if (navigated) {
-                acknowledgeAgentConversationToast(notification, queryClient);
-              }
-              return;
-            }
-            markNotificationRead(notification, queryClient);
-          });
-        },
       },
     });
   }), [bus, focusedToastsEnabled, mutedProjectIds, queryClient, ready]);

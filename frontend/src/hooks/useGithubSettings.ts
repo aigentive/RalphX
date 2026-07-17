@@ -4,7 +4,7 @@
  * Hooks:
  * - useGitRemoteUrl: fetch remote URL for a project
  * - useGitAuthDiagnostics: inspect git fetch/push auth modes
- * - useGhAuthStatus: check if `gh` CLI is authenticated
+ * - useGhAuthStatus: compatibility boolean derived from typed GitHub connection status
  * - useLoginGhWithBrowser: authenticate `gh` through the app's browser flow
  * - useSwitchGitOriginToSsh: explicitly switch GitHub origin remotes to SSH
  * - useSetupGhGitAuth: configure GitHub CLI HTTPS credentials for git
@@ -14,7 +14,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+import { githubApi } from "@/api/github";
 import { useProjectStore } from "@/stores/projectStore";
+
+import { prKeys } from "./usePullRequestDetail";
 
 export interface GitAuthDiagnostics {
   fetchUrl: string | null;
@@ -70,13 +74,13 @@ export function useGitAuthDiagnostics(projectId: string | null) {
 // ============================================================================
 
 /**
- * Check whether the `gh` CLI is authenticated.
- * Returns true when authenticated, false otherwise.
+ * Compatibility wrapper for older boolean consumers.
+ * New UI decisions should use useGitHubConnectionStatus for typed states.
  */
 export function useGhAuthStatus() {
   return useQuery<boolean>({
     queryKey: ["gh-auth-status"],
-    queryFn: () => invoke<boolean>("check_gh_auth", {}),
+    queryFn: async () => (await githubApi.getConnectionStatus()).authenticated,
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
@@ -123,6 +127,7 @@ export function useSetupGhGitAuth() {
     mutationFn: () => invoke<boolean>("setup_gh_git_auth", {}),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["gh-auth-status"] });
+      void queryClient.invalidateQueries({ queryKey: prKeys.connectionStatus() });
       void queryClient.invalidateQueries({ queryKey: ["git-auth-diagnostics"] });
     },
   });
@@ -142,6 +147,7 @@ export function useLoginGhWithBrowser() {
     mutationFn: () => invoke<boolean>("login_gh_with_browser", {}),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["gh-auth-status"] });
+      void queryClient.invalidateQueries({ queryKey: prKeys.connectionStatus() });
       void queryClient.invalidateQueries({ queryKey: ["git-auth-diagnostics"] });
     },
   });

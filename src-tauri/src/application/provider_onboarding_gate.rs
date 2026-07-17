@@ -24,6 +24,25 @@ pub(crate) async fn resolve_enabled_default_provider(
     }
 }
 
+pub(crate) async fn resolve_enabled_provider_or_default(
+    repo: &Arc<dyn AgentProviderSettingsRepository>,
+    requested_harness: Option<AgentHarnessKind>,
+    surface_name: &str,
+) -> Result<AgentProviderSettings, String> {
+    let default = resolve_enabled_default_provider(repo, surface_name).await?;
+    let Some(requested_harness) = requested_harness else {
+        return Ok(default);
+    };
+    let requested = repo
+        .get(requested_harness)
+        .await
+        .map_err(|error| format!("Failed to read provider settings: {error}"))?;
+    Ok(match requested {
+        Some(settings) if settings.enabled => settings,
+        _ => default,
+    })
+}
+
 pub(crate) async fn ensure_provider_spawn_enabled(
     repo: &Arc<dyn AgentProviderSettingsRepository>,
     harness: AgentHarnessKind,

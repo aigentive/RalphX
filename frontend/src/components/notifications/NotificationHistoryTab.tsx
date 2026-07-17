@@ -10,7 +10,6 @@ import {
 import type { Notification } from "@/types/notifications";
 
 import { NotificationHistoryRow } from "./NotificationHistoryRow";
-import { useViewportReadBatch } from "./useViewportReadBatch";
 
 function useDeferredHistoryContent(active: boolean): boolean {
   const [mounted, setMounted] = useState(false);
@@ -93,10 +92,9 @@ interface NotificationHistoryTabProps {
 export function NotificationHistoryTab({ active, now, onOpen }: NotificationHistoryTabProps) {
   const contentMounted = useDeferredHistoryContent(active);
   const history = useNotificationHistory(undefined, { enabled: contentMounted });
-  const { markRead, markReadBatch, markAllRead } = useNotificationReadActions();
+  const { markRead, markAllRead } = useNotificationReadActions();
   const notifications = flattenNotificationPages(history.data);
   const groups = useMemo(() => groupByDay(notifications), [notifications]);
-  const observe = useViewportReadBatch({ enabled: contentMounted, onMarkRead: markReadBatch });
 
   const openNotification = useCallback((notification: Notification) => {
     onOpen(notification);
@@ -112,7 +110,7 @@ export function NotificationHistoryTab({ active, now, onOpen }: NotificationHist
     {history.isError && <p className="px-3 text-xs" data-testid="notification-history-stale-indicator" style={{ color: "var(--text-muted)" }}>Showing saved notifications</p>}
     {groups.map((group) => <section key={group.label} className="pt-2">
       <p className="px-3 pb-1 text-[11px] font-semibold tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>{group.label}</p>
-      {group.notifications.map((notification) => <NotificationHistoryRow key={notification.id} notification={notification} now={now} onOpen={openNotification} observe={observe} />)}
+      {group.notifications.map((notification) => <NotificationHistoryRow key={notification.id} notification={notification} now={now} onOpen={openNotification} />)}
     </section>)}
     {history.hasNextPage && <button type="button" data-testid="load-older-notifications" onClick={() => void history.fetchNextPage()} disabled={history.isFetchingNextPage} className="mx-auto mt-3 flex items-center gap-1 rounded px-3 py-2 text-sm hover:bg-[var(--bg-hover)] disabled:opacity-60" style={{ color: "var(--text-secondary)" }}>
       {history.isFetchingNextPage ? "Loading…" : "Load older"}<ChevronDown className="h-4 w-4" aria-hidden="true" />
