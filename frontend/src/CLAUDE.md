@@ -115,11 +115,16 @@ Component does ONE of: Display UI | Manage State | Coordinate children
 When introducing a new architectural pattern, add a one-liner here. Pattern name + rule only.
 Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.md
 
+- **Reuse Before Invent (NON-NEGOTIABLE)** — new chat/agents behavior extends the existing owning surface: context derivation → chat-context-registry, send/queue/stop → `useChatActions`, streaming → `useChatEvents`, hydration → `useChatRecovery`, scrolling → `ChatScrollController`, per-conversation state → the conversation-keyed stores. ❌ Parallel stores/hooks/scroll writers for owned concerns.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
 - **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.
 - **Persistent Operation Toasts** — long-running confirmed publish/update operations may close the dialog after intent is captured and keep one stable-id Sonner loading toast with title separate from conversation/detail/elapsed metadata until terminal success/error.
+- **Single Scroll Authority** — ALL chat scroll writes go through `ChatScrollController` (`src/components/Chat/scroll/controller.ts`, `pinned`/`free`/`returning` FSM). ❌ Independent `scrollTop`/`scrollIntoView` in chat surfaces. Only explicit user intent enters `free`; programmatic growth never re-enables follow.
+- **Conversation-Keyed Live State** — drafts, attachments, artifact-tab state, review context, and publish state are keyed by conversation id; switching conversations must not leak another conversation's state. Defaults/start-composer may use broader project/provider scopes.
+- **Timeline Canonical, Live Supplementary** — persisted timeline pages are the transcript authority (legacy logical history only when no page exists); keep live streamed output visible until the matching persisted message arrives, then release the live duplicate. An incomplete live tail never replaces full persisted history.
+- **Stale-Event Rejection** — chat event handlers validate payloads and reject terminations/updates keyed by BOTH conversation and active run identity, not conversation alone.
 
 ### Composition Over Props
 ```tsx

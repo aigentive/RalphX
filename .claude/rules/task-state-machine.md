@@ -14,7 +14,7 @@ paths:
 
 ---
 
-## 24 Internal Statuses
+## 28 Internal Statuses
 
 | # | Status | Category | Terminal? |
 |---|--------|----------|-----------|
@@ -35,15 +35,21 @@ paths:
 | 15 | `approved` | Transient | — |
 | 16 | `pending_merge` | Transient | — |
 | 17 | `merging` | Active (agent) | — |
-| 18 | `merge_incomplete` | Waiting (human) | — |
-| 19 | `merge_conflict` | Waiting (human) | — |
-| 20 | `merged` | Done | YES |
-| 21 | `failed` | Done | YES |
-| 22 | `cancelled` | Done | YES |
-| 23 | `paused` | Suspended | — |
-| 24 | `stopped` | Done | YES |
+| 18 | `waiting_on_pr` | Waiting (GitHub) | — |
+| 19 | `updating_plan_branch` | Active (system) | — |
+| 20 | `updating_task_branch` | Active (system) | — |
+| 21 | `branch_update_blocked` | Waiting (human) | — |
+| 22 | `merge_incomplete` | Waiting (human) | — |
+| 23 | `merge_conflict` | Waiting (human) | — |
+| 24 | `merged` | Done | YES |
+| 25 | `failed` | Done | YES |
+| 26 | `cancelled` | Done | YES |
+| 27 | `paused` | Suspended | — |
+| 28 | `stopped` | Done | YES |
 
 **Transient:** Auto-transitions immediately to next state (no UI dwell time).
+**Branch-update states:** `updating_plan_branch` / `updating_task_branch` / `branch_update_blocked` belong to the durable branch-update workflow (`branch_update_workflow.rs` / `branch_update_executor.rs`); the state machine handles only pause/stop/cancel for them — completion/blocked exits are executor-owned CAS writes with lease/fencing authority.
+**`waiting_on_pr`:** entered by the PR-mode merge engine (`side_effects/merge_attempt/pr_mode.rs`, canonical engine write); GitHub is the merge authority while polling.
 
 ---
 
@@ -54,20 +60,23 @@ paths:
 | `backlog` | `ready`, `cancelled` |
 | `ready` | `executing`, `blocked`, `cancelled` |
 | `blocked` | `ready`, `cancelled` |
-| `executing` | `qa_refining`, `pending_review`, `failed`, `blocked`, `merging`, `stopped`, `paused` |
+| `executing` | `qa_refining`, `pending_review`, `failed`, `blocked`, `updating_plan_branch`, `updating_task_branch`, `merging`, `stopped`, `paused` |
 | `qa_refining` | `qa_testing`, `stopped`, `paused` |
 | `qa_testing` | `qa_passed`, `qa_failed`, `stopped`, `paused` |
 | `qa_passed` | `pending_review` |
 | `qa_failed` | `revision_needed` |
 | `pending_review` | `reviewing` |
-| `reviewing` | `review_passed`, `revision_needed`, `escalated`, `merging`, `stopped`, `paused` |
+| `reviewing` | `review_passed`, `revision_needed`, `escalated`, `updating_plan_branch`, `updating_task_branch`, `merging`, `stopped`, `paused` |
 | `review_passed` | `approved`, `revision_needed` |
 | `escalated` | `approved`, `revision_needed` |
 | `revision_needed` | `re_executing`, `cancelled` |
-| `re_executing` | `pending_review`, `failed`, `blocked`, `merging`, `stopped`, `paused` |
+| `re_executing` | `pending_review`, `failed`, `blocked`, `updating_plan_branch`, `updating_task_branch`, `merging`, `stopped`, `paused` |
 | `approved` | `pending_merge`, `ready` |
-| `pending_merge` | `merged`, `merging` |
-| `merging` | `merged`, `merge_conflict`, `merge_incomplete`, `stopped`, `paused` |
+| `pending_merge` | `merged`, `merging`, `updating_plan_branch`, `updating_task_branch`, `stopped`, `paused`, `cancelled` |
+| `waiting_on_pr` | `merged`, `merge_incomplete`, `pending_merge` (retry), `updating_plan_branch`, `stopped`, `paused`, `cancelled` |
+| `merging` | `merged`, `merge_conflict`, `merge_incomplete`, `pending_merge` (retry), `updating_plan_branch`, `stopped`, `paused` |
+| `updating_plan_branch` / `updating_task_branch` | machine: `stopped`, `paused`, `cancelled` only; completion/blocked exits via branch-update executor CAS |
+| `branch_update_blocked` | machine: `stopped`, `paused`, `cancelled` only; recovery via branch-update workflow |
 | `merge_incomplete` | `pending_merge`, `merged` |
 | `merge_conflict` | `merged` |
 | `merged` | `ready` |
