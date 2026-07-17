@@ -160,6 +160,21 @@ describe("navigateToAgentConversation", () => {
     );
     expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
   });
+
+  it("switches projects before showing a cross-project conversation", () => {
+    navigateToAgentConversation(PROJECT_B, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_B, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_B}`,
+      CONVERSATION_A,
+    );
+    expect(mockUiSetState).toHaveBeenCalledWith({
+      viewByProject: { [PROJECT_B]: "agents" },
+    });
+    expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
+    expect(setCurrentViewMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("navigateToAgentPlan", () => {
