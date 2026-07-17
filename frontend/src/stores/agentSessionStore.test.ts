@@ -712,6 +712,33 @@ describe("agentSessionStore", () => {
       });
     });
 
+    it("clears a project runtime override without changing remembered provider choices", () => {
+      const state = useAgentSessionStore.getState();
+      state.setRuntimeForConversation("c-reset", "p-reset", {
+        provider: "codex",
+        modelId: "gpt-5.6",
+        effort: "xhigh",
+      });
+
+      state.setRoleDefaultRuntimeForConversation("c-reset", "p-reset", {
+        provider: "claude",
+        modelId: "sonnet",
+        effort: "high",
+      });
+
+      const cleared = useAgentSessionStore.getState();
+      expect(cleared.runtimeByConversationId["c-reset"]).toEqual({
+        provider: "claude",
+        modelId: "sonnet",
+        effort: "high",
+      });
+      expect(cleared.lastRuntimeByProjectId["p-reset"]).toBeUndefined();
+      expect(cleared.lastModelEffortByProvider.claude).toEqual({
+        modelId: "sonnet",
+        effort: "high",
+      });
+    });
+
     it("remembers branch base cache and selected branch per project", () => {
       const {
         setBranchBaseCacheForProject,

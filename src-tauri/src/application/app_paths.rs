@@ -10,13 +10,28 @@ use crate::infrastructure::sqlite::{get_app_data_db_path, get_default_db_path};
 pub struct AppPaths {
     pub app_data_dir: PathBuf,
     pub resource_dir: Option<PathBuf>,
+    ralphx_config_dir: PathBuf,
 }
 
 impl AppPaths {
     pub fn new(app_data_dir: impl Into<PathBuf>, resource_dir: Option<PathBuf>) -> Self {
+        let app_data_dir = app_data_dir.into();
+        Self {
+            ralphx_config_dir: app_data_dir.clone(),
+            app_data_dir,
+            resource_dir,
+        }
+    }
+
+    pub fn new_with_config_dir(
+        app_data_dir: impl Into<PathBuf>,
+        resource_dir: Option<PathBuf>,
+        ralphx_config_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             app_data_dir: app_data_dir.into(),
             resource_dir,
+            ralphx_config_dir: ralphx_config_dir.into(),
         }
     }
 
@@ -25,8 +40,19 @@ impl AppPaths {
             AppError::Infrastructure(format!("Failed to resolve app data dir: {error}"))
         })?;
         let resource_dir = app_handle.path().resource_dir().ok();
+        let ralphx_config_dir = app_handle
+            .path()
+            .home_dir()
+            .map_err(|error| {
+                AppError::Infrastructure(format!("Failed to resolve user config root: {error}"))
+            })?
+            .join(".ralphx");
 
-        Ok(Self::new(app_data_dir, resource_dir))
+        Ok(Self::new_with_config_dir(
+            app_data_dir,
+            resource_dir,
+            ralphx_config_dir,
+        ))
     }
 
     pub fn for_tests() -> Self {
@@ -55,6 +81,10 @@ impl AppPaths {
 
     pub fn workflow_runtime_dir(&self) -> PathBuf {
         self.app_data_dir.join("workflow-runtime")
+    }
+
+    pub fn global_router_path(&self) -> PathBuf {
+        self.ralphx_config_dir.join("router.yaml")
     }
 
     pub fn workflow_runner_path(&self) -> AppResult<PathBuf> {

@@ -1,8 +1,9 @@
 use super::*;
 use crate::application::chat_service::MockChatService;
 use crate::domain::agents::{
-    AgentHarnessKind, AgentProviderSettings, AgenticClient, LogicalEffort, ProviderSessionRef,
-    WorkspaceReviewRuntimeSettings, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+    AgentHarnessKind, AgentProviderSettings, AgenticClient, LogicalEffort, ManualRoleDefault,
+    ManualServiceTier, ProviderSessionRef, RoutingRole, CODEX_DEFAULT_APPROVAL_POLICY,
+    CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
@@ -1402,7 +1403,7 @@ async fn start_review_blocks_monitor_without_sending_when_no_enabled_default_exi
 }
 
 #[tokio::test]
-async fn start_review_uses_workspace_project_runtime_scope_for_non_project_owner() {
+async fn start_review_uses_the_workspace_reviewer_role_default() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
 
@@ -1417,24 +1418,19 @@ async fn start_review_uses_workspace_project_runtime_scope_for_non_project_owner
     chat_service.set_available(false).await;
     let project = seed_project(&state, &repo).await;
     state
-        .workspace_review_runtime_settings_repo
-        .upsert_global(
-            AgentHarnessKind::Codex,
-            &WorkspaceReviewRuntimeSettings {
-                model: Some("gpt-global-review".to_string()),
-                effort: Some(LogicalEffort::Low),
-            },
-        )
-        .await
-        .unwrap();
-    state
-        .workspace_review_runtime_settings_repo
+        .manual_role_default_repo
         .upsert_for_project(
             project.id.as_str(),
-            AgentHarnessKind::Codex,
-            &WorkspaceReviewRuntimeSettings {
+            RoutingRole::WorkspaceReviewer,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
                 model: Some("gpt-project-review".to_string()),
                 effort: Some(LogicalEffort::High),
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+                sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             },
         )
         .await
@@ -2444,13 +2440,19 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
     let chat_service = MockChatService::new();
     let project = seed_project(&state, &repo).await;
     state
-        .workspace_review_runtime_settings_repo
+        .manual_role_default_repo
         .upsert_for_project(
             project.id.as_str(),
-            AgentHarnessKind::Codex,
-            &WorkspaceReviewRuntimeSettings {
-                model: Some("gpt-workspace-review".to_string()),
+            RoutingRole::WorkspaceRepair,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-workspace-repair".to_string()),
                 effort: Some(LogicalEffort::Medium),
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+                sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             },
         )
         .await
@@ -2532,7 +2534,7 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
     assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
     assert_eq!(
         options.model_override.as_deref(),
-        Some("gpt-workspace-review")
+        Some("gpt-workspace-repair")
     );
     assert_eq!(options.logical_effort_override, Some(LogicalEffort::Medium));
     assert_eq!(
@@ -2543,7 +2545,7 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
         options.sandbox_mode_override.as_deref(),
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
-    assert_eq!(options.service_tier_override.as_deref(), Some("fast"));
+    assert_eq!(options.service_tier_override.as_deref(), Some("standard"));
     assert!(!options.preserve_conversation_provider_session_ref);
     assert!(options.force_new_provider_session);
 }

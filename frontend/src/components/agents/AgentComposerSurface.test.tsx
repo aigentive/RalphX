@@ -141,6 +141,25 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("resets the complete runtime tuple from the quick dropdown", async () => {
+    const onReset = vi.fn();
+    renderComposer({
+      runtimeDefault: {
+        source: "project_ui",
+        onReset,
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const reset = screen.getByTestId("agent-composer-runtime-reset");
+    expect(reset).toHaveAccessibleName(
+      "Reset runtime to current role default",
+    );
+    fireEvent.click(reset);
+
+    await waitFor(() => expect(onReset).toHaveBeenCalledTimes(1));
+  });
+
   it("renders an optional compact toolbar control without changing runtime selector layout", () => {
     renderComposer({
       personaControl: <span data-testid="persona-control-slot">Persona</span>,

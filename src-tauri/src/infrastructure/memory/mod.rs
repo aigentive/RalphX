@@ -9,6 +9,7 @@ pub mod memory_agent_conversation_jira_issue_repo;
 pub mod memory_agent_conversation_linear_issue_repo;
 pub mod memory_agent_conversation_workspace_repo;
 pub mod memory_agent_lane_settings_repo;
+pub mod memory_manual_role_default_repo;
 pub mod memory_agent_model_registry_repo;
 pub mod memory_agent_profile_repo;
 pub mod memory_agent_provider_settings_repo;
@@ -90,6 +91,7 @@ pub use memory_agent_conversation_jira_issue_repo::MemoryAgentConversationJiraIs
 pub use memory_agent_conversation_linear_issue_repo::MemoryAgentConversationLinearIssueRepository;
 pub use memory_agent_conversation_workspace_repo::MemoryAgentConversationWorkspaceRepository;
 pub use memory_agent_lane_settings_repo::MemoryAgentLaneSettingsRepository;
+pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;
 pub use memory_agent_model_registry_repo::MemoryAgentModelRegistryRepository;
 pub use memory_agent_profile_repo::MemoryAgentProfileRepository;
 pub use memory_agent_provider_settings_repo::MemoryAgentProviderSettingsRepository;

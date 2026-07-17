@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
-use crate::domain::entities::Automation;
+use crate::domain::entities::{Automation, ChatContextType};
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -33,20 +33,6 @@ pub async fn invoke_automation_utility_agent(
 ) -> AppResult<AutomationUtilityAgentOutput> {
     let harness = AgentHarnessKind::from_str(automation.provider_harness.trim())
         .map_err(AppError::Validation)?;
-    let runtime = state
-        .resolve_background_agent_runtime_for_harness(harness, purpose)
-        .await?;
-    let mut runtime = match model_policy {
-        AutomationUtilityModelPolicy::LockedDefault => {
-            AppState::lock_utility_agent_runtime_model(runtime)
-        }
-        AutomationUtilityModelPolicy::Override(model) => {
-            let mut runtime = runtime;
-            runtime.model = model;
-            runtime
-        }
-    };
-    let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let project = state
         .project_repo
         .get_by_id(&automation.project_id)
@@ -61,6 +47,32 @@ pub async fn invoke_automation_utility_agent(
         Path::new(&project.working_directory),
         &format!("{purpose} project checkout"),
     )?;
+    let role = crate::application::agent_lane_resolution::routing_role_for_chat_launch(
+        agent_name,
+        ChatContextType::Project,
+        None,
+        None,
+        false,
+    );
+    let runtime = state
+        .resolve_manual_role_background_agent_runtime(
+            Some(automation.project_id.as_str()),
+            Some(project_working_directory.as_path()),
+            role,
+            agent_name,
+            purpose,
+            Some(harness),
+        )
+        .await?;
+    let mut runtime = match model_policy {
+        AutomationUtilityModelPolicy::LockedDefault => runtime,
+        AutomationUtilityModelPolicy::Override(model) => {
+            let mut runtime = runtime;
+            runtime.model = model;
+            runtime
+        }
+    };
+    let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap =
         resolve_harness_agent_bootstrap(helper_harness, agent_name, project_working_directory);
     let env = runtime.env_with_overrides(bootstrap.env);
