@@ -59,6 +59,9 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
 
+pub const AGENT_WORKSPACE_AUTOMATION_SKILL_NAME: &str = "ralphx-agent-workspace-automation";
+const AGENT_WORKSPACE_AUTOMATION_SUMMARY_MAX_BYTES: usize = 600;
+
 /// Whether to inject `<session_history>` into the bootstrap prompt for this context.
 ///
 /// Ideation has always had it. Project and Task chat join the list because their
@@ -1456,9 +1459,11 @@ async fn build_initial_prompt_with_session_artifacts_for_agent(
     .await
 }
 
-pub(crate) fn format_agent_workspace_source_pull_request_prompt_context(
+#[doc(hidden)]
+pub fn format_agent_workspace_prompt_context(
     workspace: &AgentConversationWorkspace,
-) -> Option<String> {
+    include_automation_skill: bool,
+) -> String {
     let mut block = format!(
         "<agent_workspace_context>\n\
          <current_workspace>\n\
@@ -1489,68 +1494,158 @@ pub(crate) fn format_agent_workspace_source_pull_request_prompt_context(
     }
     block.push_str("         </current_workspace>\n");
 
-    let Some(source) = workspace.source_pull_request.as_ref() else {
-        block.push_str("</agent_workspace_context>");
-        return Some(block);
-    };
+    if include_automation_skill {
+        block.push_str(&format!(
+            "         <automation_state>\n\
+         <auto_publish_enabled>{}</auto_publish_enabled>\n\
+         <pr_autofix_enabled>{}</pr_autofix_enabled>\n\
+         <pr_auto_merge_desired>{}</pr_auto_merge_desired>\n\
+         <pr_auto_merge_method>{}</pr_auto_merge_method>\n\
+         <pr_auto_merge_current>{}</pr_auto_merge_current>\n",
+            workspace.auto_publish_enabled,
+            workspace.pr_autofix_enabled,
+            workspace.pr_auto_merge_desired,
+            xml_escape(&workspace.pr_auto_merge_method),
+            workspace
+                .pr_auto_merge_current
+                .map(|enabled| enabled.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+        ));
+        if let Some(number) = workspace.publication_pr_number {
+            block.push_str(&format!(
+                "         <publication_pr_number>{number}</publication_pr_number>\n"
+            ));
+        }
+        for (tag, value) in [
+            (
+                "publication_pr_status",
+                workspace.publication_pr_status.as_deref(),
+            ),
+            (
+                "publication_push_status",
+                workspace.publication_push_status.as_deref(),
+            ),
+            (
+                "pr_supervision_status",
+                workspace.pr_supervision_status.as_deref(),
+            ),
+        ] {
+            if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+                block.push_str(&format!("         <{tag}>{}</{tag}>\n", xml_escape(value)));
+            }
+        }
+        if let Some(summary) = workspace
+            .pr_supervision_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            block.push_str(&format!(
+                "         <pr_supervision_summary>{}</pr_supervision_summary>\n",
+                xml_escape(truncate_str(
+                    summary,
+                    AGENT_WORKSPACE_AUTOMATION_SUMMARY_MAX_BYTES
+                ))
+            ));
+        }
+        block.push_str("         </automation_state>\n");
 
-    block.push_str(&format!(
-        "         <source_pull_request>\n\
+        block.push_str("         <automation_guidance>\n");
+        if workspace.pr_autofix_enabled {
+            if workspace.publication_pr_number.is_some() {
+                block.push_str("         RalphX owns ongoing PR health monitoring and routes fixable CI, requested-changes, and mergeability failures. Do not poll or watch the PR unless the user explicitly asks for a bounded inspection.\n");
+            } else {
+                block.push_str("         PR autofix is armed for a future publication PR; no current publication PR is being supervised.\n");
+            }
+        } else {
+            block.push_str("         PR autofix is disabled. RalphX will not automatically route CI or review failures for this workspace unless the setting is enabled.\n");
+        }
+        if workspace.pr_supervision_status.as_deref() == Some("fixing")
+            || workspace.publication_push_status.as_deref() == Some("needs_agent")
+        {
+            block.push_str("         RalphX has already routed or identified a backend-owned repair. Do not start a duplicate repair path unless the user explicitly asks for manual intervention.\n");
+        }
+        if workspace.pr_auto_merge_desired {
+            block.push_str("         RalphX owns enabling, disabling, and temporarily disarming GitHub auto-merge when repair is required.\n");
+        } else {
+            block.push_str("         PR auto-merge is not requested for this workspace.\n");
+        }
+        block.push_str("         </automation_guidance>\n");
+    }
+
+    if let Some(source) = workspace.source_pull_request.as_ref() {
+        block.push_str(&format!(
+            "         <source_pull_request>\n\
          <origin_hint>This agent workspace is based on branch {} of PR #{}.</origin_hint>\n\
          <number>{}</number>\n\
          <head_branch>{}</head_branch>\n\
          <workspace_base_ref>{}</workspace_base_ref>\n",
-        xml_escape(&source.head_ref_name),
-        source.number,
-        source.number,
-        xml_escape(&source.head_ref_name),
-        xml_escape(&workspace.base_ref)
-    ));
-    if let Some(title) = source
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!("         <title>{}</title>\n", xml_escape(title)));
-    }
-    if let Some(url) = source
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!("         <url>{}</url>\n", xml_escape(url)));
-    }
-    if let Some(base_ref) = source
-        .base_ref_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!(
-            "         <original_pr_base_branch>{}</original_pr_base_branch>\n",
-            xml_escape(base_ref)
+            xml_escape(&source.head_ref_name),
+            source.number,
+            source.number,
+            xml_escape(&source.head_ref_name),
+            xml_escape(&workspace.base_ref)
         ));
-    }
-    if let Some(head_sha) = source
-        .head_ref_oid
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+        if let Some(title) = source
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            block.push_str(&format!("         <title>{}</title>\n", xml_escape(title)));
+        }
+        if let Some(url) = source
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            block.push_str(&format!("         <url>{}</url>\n", xml_escape(url)));
+        }
+        if let Some(base_ref) = source
+            .base_ref_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            block.push_str(&format!(
+                "         <original_pr_base_branch>{}</original_pr_base_branch>\n",
+                xml_escape(base_ref)
+            ));
+        }
+        if let Some(head_sha) = source
+            .head_ref_oid
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            block.push_str(&format!(
+                "         <source_pr_head_sha>{}</source_pr_head_sha>\n",
+                xml_escape(head_sha)
+            ));
+        }
         block.push_str(&format!(
-            "         <source_pr_head_sha>{}</source_pr_head_sha>\n",
-            xml_escape(head_sha)
-        ));
-    }
-    block.push_str(&format!(
-        "         <publish_target_hint>If this workspace publishes changes, RalphX creates a new pull request targeting branch {}, which is the source PR head branch.</publish_target_hint>\n\
+            "         <publish_target_hint>If this workspace publishes changes, RalphX creates a new pull request targeting branch {}, which is the source PR head branch.</publish_target_hint>\n\
          </source_pull_request>\n\
-         </agent_workspace_context>",
-        xml_escape(&source.head_ref_name)
-    ));
-    Some(block)
+",
+            xml_escape(&source.head_ref_name)
+        ));
+    }
+
+    block.push_str("         </agent_workspace_context>");
+    if include_automation_skill {
+        block.push_str(&format!(
+            "\n<!-- ralphx_internal_skill={AGENT_WORKSPACE_AUTOMATION_SKILL_NAME} -->"
+        ));
+    }
+    block
+}
+
+#[cfg(test)]
+pub(crate) fn format_agent_workspace_source_pull_request_prompt_context(
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    Some(format_agent_workspace_prompt_context(workspace, false))
 }
 
 /// Resolve the project ID from a context

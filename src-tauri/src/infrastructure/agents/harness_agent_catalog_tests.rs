@@ -1,14 +1,18 @@
 use super::{
-    list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile, load_canonical_claude_metadata,
-    load_canonical_claude_metadata_for_profile, load_canonical_codex_metadata,
-    load_canonical_codex_metadata_for_profile, load_harness_agent_prompt,
-    load_harness_agent_prompt_for_profile, render_agent_runtime_profile_context,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
-    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
+    canonical_agent_allows_internal_skill, list_canonical_prompt_backed_agents,
+    load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
+    load_canonical_claude_metadata, load_canonical_claude_metadata_for_profile,
+    load_canonical_codex_metadata, load_canonical_codex_metadata_for_profile,
+    load_harness_agent_prompt, load_harness_agent_prompt_for_profile,
+    render_agent_runtime_profile_context, resolve_harness_agent_prompt_path,
+    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
+    try_load_canonical_claude_metadata, AgentPromptHarness,
 };
 use crate::infrastructure::agents::claude::{
     get_agent_config, get_agent_config_for_profile, get_preapproved_tools_for_profile,
+};
+use crate::infrastructure::agents::internal_skills::{
+    inject_internal_skills_into_system_prompt_for_profile, validate_agent_internal_skills,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -78,6 +82,54 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-research-deep-researcher",
 ];
 const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
+
+#[test]
+fn live_workspace_agents_allow_and_load_automation_skill_only_on_intended_profiles() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let skill = "ralphx-agent-workspace-automation";
+
+    for agent_name in [
+        "ralphx-general-explorer",
+        "ralphx-general-worker",
+        "ralphx-chat-project",
+    ] {
+        assert!(canonical_agent_allows_internal_skill(
+            &root, agent_name, None, skill
+        ));
+        validate_agent_internal_skills(&root, agent_name)
+            .unwrap_or_else(|error| panic!("{agent_name} internal skills invalid: {error}"));
+    }
+
+    assert!(canonical_agent_allows_internal_skill(
+        &root,
+        "ralphx-ideation",
+        Some("plan"),
+        skill
+    ));
+    assert!(!canonical_agent_allows_internal_skill(
+        &root,
+        "ralphx-ideation",
+        None,
+        skill
+    ));
+    assert!(!canonical_agent_allows_internal_skill(
+        &root,
+        "ralphx-agent-workspace-pr-fixer",
+        None,
+        skill
+    ));
+
+    let injection = inject_internal_skills_into_system_prompt_for_profile(
+        &root,
+        "ralphx-ideation",
+        Some("plan"),
+        "Plan prompt",
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-automation -->",
+    )
+    .expect("Plan profile automation skill should load");
+    assert_eq!(injection.injected_skill_names, vec![skill]);
+}
+
 const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
     (
         "ralphx-execution-team-lead",

@@ -876,6 +876,28 @@ fn claude_prompt_orders_persona_after_base_and_appendices_before_skills_and_runt
 }
 
 #[test]
+fn claude_worker_prompt_composes_persona_before_workspace_automation_skill() {
+    let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let persona = "<ralphx_agent_persona>Persona voice</ralphx_agent_persona>";
+    let (system_prompt, injected_skills) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-general-worker",
+        None,
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-automation -->",
+        Some(persona),
+    )
+    .expect("worker prompt");
+
+    let persona_position = system_prompt.find(persona).expect("persona block");
+    let skill_position = system_prompt
+        .rfind("<ralphx_internal_skills>")
+        .expect("automation skill");
+    assert!(persona_position < skill_position);
+    assert_eq!(injected_skills, vec!["ralphx-agent-workspace-automation"]);
+    assert!(system_prompt.contains("Do not create a second monitoring or repair loop"));
+}
+
+#[test]
 fn persona_block_is_excluded_from_internal_skills_match_text() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     let agent_root = root.join("agents/test-agent");

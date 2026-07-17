@@ -117,6 +117,8 @@ const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user
 // Re-exports from extracted modules
 #[doc(hidden)]
 pub use chat_service_context::create_assistant_message;
+#[doc(hidden)]
+pub use chat_service_context::format_agent_workspace_prompt_context;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::build_launch_plan_for_harness_with_persona_for_test;
@@ -3132,6 +3134,7 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    #[cfg(test)]
     async fn agent_workspace_prompt_context_for_send(
         &self,
         context_type: ChatContextType,
@@ -3153,6 +3156,47 @@ impl<R: Runtime> AppChatService<R> {
                 &workspace,
             ),
         )
+    }
+
+    async fn agent_workspace_prompt_context_for_agent_send(
+        &self,
+        context_type: ChatContextType,
+        conversation: &ChatConversation,
+        plugin_dir: &Path,
+        agent_name: Option<&str>,
+        agent_profile: Option<&str>,
+    ) -> Result<Option<String>, ChatServiceError> {
+        let Some(workspace) = self
+            .load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let include_automation_skill = agent_name
+            .map(|agent_name| {
+                let project_root = crate::infrastructure::agents::harness_agent_catalog::resolve_project_root_from_plugin_dir(
+                    plugin_dir,
+                );
+                crate::infrastructure::agents::harness_agent_catalog::canonical_agent_allows_internal_skill(
+                    &project_root,
+                    agent_name,
+                    agent_profile,
+                    chat_service_context::AGENT_WORKSPACE_AUTOMATION_SKILL_NAME,
+                )
+            })
+            .unwrap_or(false);
+
+        Ok(Some(
+            chat_service_context::format_agent_workspace_prompt_context(
+                &workspace,
+                include_automation_skill,
+            ),
+        ))
     }
 
     async fn resolve_agent_workspace_working_directory(
@@ -3707,7 +3751,13 @@ impl<R: Runtime> AppChatService<R> {
         );
 
         let agent_workspace_prompt_context = self
-            .agent_workspace_prompt_context_for_send(context_type, conversation)
+            .agent_workspace_prompt_context_for_agent_send(
+                context_type,
+                conversation,
+                &plugin_dir,
+                agent_name_override,
+                agent_profile,
+            )
             .await?;
         let persona_ingest_app_data_dir: Option<std::path::PathBuf> =
             self.app_handle.as_ref().and_then(|handle| {

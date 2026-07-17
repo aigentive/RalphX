@@ -175,6 +175,38 @@ async fn persona_reaches_selected_agent_prompt_for_each_conversation_mode() {
 }
 
 #[tokio::test]
+async fn codex_automation_skill_composes_after_persona_for_workspace_modes() {
+    let directive = "<!-- ralphx_internal_skill=ralphx-agent-workspace-automation -->";
+    for mode in [
+        AgentConversationWorkspaceMode::Chat,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceMode::Plan,
+    ] {
+        let (conversation, repo, _body) = bound_persona_conversation(mode).await;
+        let persona = resolve_persona_for_mode(&conversation, repo, mode, true)
+            .await
+            .expect("bound persona must resolve");
+        let composed = compose_codex_prompt_for_profile(
+            directive,
+            Some(&repo_plugin_dir()),
+            Some(agent_name_for_conversation_mode(mode)),
+            agent_profile_for_conversation_mode(mode),
+            Some(persona.block.as_str()),
+        );
+
+        let persona_position = composed
+            .find("<ralphx_agent_persona>")
+            .expect("persona envelope");
+        let skill_position = composed
+            .rfind("<ralphx_internal_skills>")
+            .expect("automation skill envelope");
+        assert!(persona_position < skill_position);
+        assert!(composed.contains("RalphX Agent Workspace Automation"));
+        assert!(composed.contains("Do not create a second monitoring or repair loop"));
+    }
+}
+
+#[tokio::test]
 async fn persona_absent_from_selected_agent_prompt_when_unbound() {
     for mode in [
         AgentConversationWorkspaceMode::Chat,
