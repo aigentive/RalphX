@@ -10,7 +10,7 @@ use super::notification_service::{
 use super::AppState;
 use crate::domain::entities::{
     NewNotification, Notification, NotificationCategory, NotificationSettings,
-    NotificationSeverity, NotificationTarget, Project, ProjectId,
+    NotificationSeverity, NotificationTarget, NotificationTargetKind, Project, ProjectId,
 };
 use crate::domain::repositories::{
     NotificationPage, NotificationRepository, NotificationSettingsRepository, ProjectRepository,
@@ -86,6 +86,20 @@ struct FailingDesktopNotifier;
 impl DesktopNotifier for FailingDesktopNotifier {
     fn send(&self, _title: &str, _body: Option<&str>) -> AppResult<()> {
         Err(AppError::Infrastructure("injected desktop failure".into()))
+    }
+}
+
+#[derive(Default)]
+struct RecordingActionableDesktopNotifier(Mutex<Vec<Notification>>);
+
+impl DesktopNotifier for RecordingActionableDesktopNotifier {
+    fn send(&self, _title: &str, _body: Option<&str>) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn send_notification(&self, notification: &Notification) -> AppResult<()> {
+        self.0.lock().unwrap().push(notification.clone());
+        Ok(())
     }
 }
 
@@ -506,6 +520,50 @@ async fn desktop_coalescer_sends_individual_notifications_for_two_items_and_rese
     }
     settle_desktop_dispatch().await;
     assert_eq!(notifier.0.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn desktop_dispatch_preserves_agent_conversation_activation_target() {
+    let notifier = Arc::new(RecordingActionableDesktopNotifier::default());
+    let (service, _, _) = desktop_service(
+        NotificationSettings::default(),
+        Arc::new(WindowFocusState::default()),
+        notifier.clone(),
+        StdDuration::from_millis(1),
+    )
+    .await;
+    let mut notification = notification_for(
+        NotificationCategory::AgentQuestion,
+        NotificationSeverity::ActionRequired,
+        None,
+    );
+    notification.target = NotificationTarget {
+        kind: NotificationTargetKind::AgentConversation,
+        project_id: Some("project-2".to_string()),
+        task_id: None,
+        conversation_id: Some("conversation-2".to_string()),
+        setup_conversation_id: None,
+        automation_id: None,
+        run_id: None,
+    };
+
+    service.record_ephemeral(notification).await;
+    settle_desktop_dispatch().await;
+
+    let dispatched = notifier.0.lock().unwrap();
+    assert_eq!(dispatched.len(), 1);
+    assert_eq!(
+        dispatched[0].target.kind,
+        NotificationTargetKind::AgentConversation
+    );
+    assert_eq!(
+        dispatched[0].target.project_id.as_deref(),
+        Some("project-2")
+    );
+    assert_eq!(
+        dispatched[0].target.conversation_id.as_deref(),
+        Some("conversation-2")
+    );
 }
 
 #[tokio::test]

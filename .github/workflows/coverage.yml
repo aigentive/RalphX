@@ -222,6 +222,11 @@ jobs:
                   "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
                   "self.emit_task_event(serde_json::json!({",
               ),
+              "src/application/notification_service.rs": (
+                  "pub struct TauriDesktopNotifier {",
+                  "impl TauriDesktopNotifier {",
+                  "impl DesktopNotifier for TauriDesktopNotifier {",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -521,6 +526,11 @@ jobs:
                   "if let Some(throttled) = throttled_emitter {",
                   "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
                   "self.emit_task_event(serde_json::json!({",
+              ),
+              "src/application/notification_service.rs": (
+                  "pub struct TauriDesktopNotifier {",
+                  "impl TauriDesktopNotifier {",
+                  "impl DesktopNotifier for TauriDesktopNotifier {",
               ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
