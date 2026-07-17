@@ -3252,6 +3252,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("get_agent_workspace_pr_fix_context"));
     assert!(messages[0].contains("complete_agent_workspace_pr_fix"));
+    assert!(messages[0].contains(&format!("Conversation ID: {conversation_id}")));
     assert!(messages[0].contains("Please handle the edge case."));
     assert!(messages[0].contains("src/lib.rs:42"));
     let options = chat.get_sent_options().await;

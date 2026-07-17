@@ -3161,6 +3161,10 @@ fn build_agent_workspace_pr_review_message(
         out.push_str(
             "Start by calling `get_agent_workspace_pr_fix_context`; after committing the fix, call `complete_agent_workspace_pr_fix`.\n\n",
         );
+        out.push_str(&format!(
+            "Conversation ID: {}\n",
+            workspace.conversation_id.as_str()
+        ));
     }
     out.push_str(&format!("Review author: @{}\n", feedback.author));
     if let Some(submitted_at) = feedback.submitted_at.as_deref() {
