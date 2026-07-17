@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps, ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
+import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -575,6 +576,7 @@ vi.mock("./AgentComposerSurface", () => ({
     onForkSession,
     dataTestId,
     personaControl,
+    runtimeDefault,
   }: {
     provider: {
       value: string;
@@ -614,6 +616,11 @@ vi.mock("./AgentComposerSurface", () => ({
     onForkSession?: () => Promise<unknown> | void;
     dataTestId?: string;
     personaControl?: ReactNode;
+    runtimeDefault?: {
+      isResetting?: boolean;
+      disabled?: boolean;
+      onReset: () => Promise<unknown> | void;
+    };
   }) => (
     <div data-testid={dataTestId}>
       <div data-testid="workspace-provider-value">{provider.value}</div>
@@ -680,6 +687,16 @@ vi.mock("./AgentComposerSurface", () => ({
         </div>
       )}
       {personaControl}
+      {runtimeDefault ? (
+        <button
+          type="button"
+          data-testid="agent-composer-runtime-reset"
+          disabled={runtimeDefault.disabled || runtimeDefault.isResetting}
+          onClick={() => void runtimeDefault.onReset()}
+        >
+          Reset runtime
+        </button>
+      ) : null}
       <button
         type="button"
         data-testid="change-workspace-provider"
@@ -1038,6 +1055,7 @@ function setPlanArtifactVisible(conversationId = "conversation-1") {
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(invoke).mockResolvedValue(undefined);
     eventSubscribers.clear();
     useChatStore.setState({ activeConversationIds: {} });
     useAgentSessionStore.setState({ artifactByConversationId: {} });
@@ -1242,6 +1260,63 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ], null);
+  });
+
+  it("keeps local runtime state unchanged when active role reset refetch fails", async () => {
+    const roleDefault = {
+      role: "workspace_edit",
+      source: "project_ui",
+      value: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "xhigh",
+        service_tier: "fast",
+        coordination_mode: "solo",
+        persona_id: null,
+        approval_policy: "never",
+        sandbox_mode: "danger-full-access",
+      },
+    };
+    let conversationDefaultCalls = 0;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_agent_conversation_role_default") {
+        conversationDefaultCalls += 1;
+        return conversationDefaultCalls === 1
+          ? Promise.resolve(roleDefault)
+          : Promise.reject(new Error("role default refetch failed"));
+      }
+      if (command === "reset_agent_conversation_role_default") {
+        return Promise.resolve(roleDefault);
+      }
+      return Promise.resolve(undefined);
+    });
+    useAgentSessionStore.getState().setRuntimeForConversation(
+      "conversation-1",
+      "project-1",
+      {
+        provider: "claude",
+        modelId: "opus",
+        effort: "xhigh",
+      },
+    );
+
+    renderPanel();
+
+    await waitFor(() => expect(conversationDefaultCalls).toBe(1));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-reset"));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("role default refetch failed"),
+    );
+    expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "xhigh",
+    });
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-send-codex-fast-mode",
+      "null",
+    );
   });
 
   it("locks automation-owned run conversations while the run is non-terminal", () => {
