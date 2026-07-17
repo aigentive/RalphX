@@ -3432,7 +3432,7 @@ async fn automation_scheduler_does_not_enable_auto_merge_for_agent_completed_run
 }
 
 #[tokio::test]
-async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalization() {
+async fn automation_scheduler_parks_plan_run_for_current_completed_turn_with_artifact() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
         automation_repo.shared_state(),
@@ -3446,22 +3446,24 @@ async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalizat
     automation.completion_signal = "agent_completed".to_string();
     automation_repo.create(automation).await.unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
-    run_repo
-        .create_run(automation_run(
-            "run-1",
-            &automation_id,
-            AutomationRunStatus::Running,
-            Some(conversation_id.clone()),
-        ))
-        .await
-        .unwrap();
+    let phase_started_at = Utc::now() - chrono::Duration::seconds(1);
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Running,
+        Some(conversation_id.clone()),
+    );
+    run.agent_phase_started_at = Some(phase_started_at);
+    run_repo.create_run(run).await.unwrap();
     let (workspace, session) =
         plan_workspace_with_session(&conversation_id, Some("plan-artifact-1"));
     session_repo.create(session).await.unwrap();
     workspace_repo.create_or_update(workspace).await.unwrap();
     let mut agent_run = agent_run_with_status(conversation_id, AgentRunStatus::Completed);
-    agent_run.completed_at = Some(Utc::now());
+    agent_run.started_at = phase_started_at + chrono::Duration::milliseconds(1);
+    agent_run.completed_at = Some(agent_run.started_at);
     agent_run_repo.create(agent_run).await.unwrap();
+    let resumer = Arc::new(RecordingResumer::default());
     let scheduler = scheduler_with_judge_agent_runs_and_plan_deps(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -3469,7 +3471,7 @@ async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalizat
         agent_run_repo,
         session_repo,
         Arc::new(MemoryPlanArtifactApprovalRepository::new()),
-        Arc::new(RecordingResumer::default()),
+        resumer.clone(),
         Arc::new(RecordingSignalChecker::default()),
         judge_invoker.clone(),
         AutomationSchedulerConfig::default(),
@@ -3491,6 +3493,8 @@ async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalizat
         Some("plan-artifact-1")
     );
     assert_eq!(latest.plan_revision_round, 1);
+    assert_eq!(latest.agent_phase_started_at, Some(phase_started_at));
+    assert!(resumer.prompts().is_empty());
 }
 
 #[tokio::test]
@@ -3549,6 +3553,69 @@ async fn automation_scheduler_does_not_park_current_plan_artifact_before_turn_co
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert_eq!(latest.plan_last_parked_artifact_id, None);
     assert_eq!(latest.plan_revision_round, 0);
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_park_current_artifact_for_stale_completed_turn() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
+    let resumer = Arc::new(RecordingResumer::default());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let phase_started_at = Utc::now();
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Running,
+        Some(conversation_id.clone()),
+    );
+    run.agent_phase_started_at = Some(phase_started_at);
+    run_repo.create_run(run).await.unwrap();
+    let (workspace, session) =
+        plan_workspace_with_session(&conversation_id, Some("plan-artifact-current"));
+    session_repo.create(session).await.unwrap();
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let mut stale_turn = agent_run_with_status(conversation_id, AgentRunStatus::Completed);
+    stale_turn.started_at = phase_started_at - chrono::Duration::minutes(2);
+    stale_turn.completed_at = Some(phase_started_at - chrono::Duration::minutes(1));
+    agent_run_repo.create(stale_turn).await.unwrap();
+    let scheduler = scheduler_with_judge_agent_runs_and_plan_deps(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        session_repo,
+        Arc::new(MemoryPlanArtifactApprovalRepository::new()),
+        resumer.clone(),
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 0);
+    assert_eq!(summary.failed_runs, 0);
+    assert_eq!(summary.judges_started, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(latest.plan_last_parked_artifact_id, None);
+    assert_eq!(latest.plan_revision_round, 0);
+    assert!(latest.finished_at.is_none());
+    assert!(resumer.prompts().is_empty());
 }
 
 #[tokio::test]
@@ -3956,7 +4023,8 @@ async fn automation_scheduler_sends_one_plan_reminder_after_terminal_turn_withou
     session_repo.create(session).await.unwrap();
     workspace_repo.create_or_update(workspace).await.unwrap();
     let mut agent_run = agent_run_with_status(conversation_id.clone(), AgentRunStatus::Completed);
-    agent_run.completed_at = Some(Utc::now());
+    agent_run.started_at = phase_started_at + chrono::Duration::milliseconds(1);
+    agent_run.completed_at = Some(agent_run.started_at);
     agent_run_repo.create(agent_run).await.unwrap();
     let scheduler = scheduler_with_judge_agent_runs_and_plan_deps(
         Arc::clone(&automation_repo),
@@ -4179,7 +4247,7 @@ async fn automation_scheduler_retries_queued_missing_plan_reminder_without_failu
 }
 
 #[tokio::test]
-async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact() {
+async fn automation_scheduler_fails_current_second_terminal_plan_turn_without_artifact() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
         automation_repo.shared_state(),
@@ -4193,6 +4261,7 @@ async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact()
         .await
         .unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
+    let phase_started_at = Utc::now() - chrono::Duration::seconds(1);
     let mut run = automation_run(
         "run-1",
         &automation_id,
@@ -4200,17 +4269,16 @@ async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact()
         Some(conversation_id.clone()),
     );
     run.plan_reminder_count = 1;
+    run.agent_phase_started_at = Some(phase_started_at);
     run_repo.create_run(run).await.unwrap();
     let (workspace, session) = plan_workspace_with_session(&conversation_id, None);
     session_repo.create(session).await.unwrap();
     workspace_repo.create_or_update(workspace).await.unwrap();
-    agent_run_repo
-        .create(agent_run_with_status(
-            conversation_id,
-            AgentRunStatus::Completed,
-        ))
-        .await
-        .unwrap();
+    let mut agent_run = agent_run_with_status(conversation_id, AgentRunStatus::Completed);
+    agent_run.started_at = phase_started_at + chrono::Duration::milliseconds(1);
+    agent_run.completed_at = Some(agent_run.started_at);
+    agent_run_repo.create(agent_run).await.unwrap();
+    let resumer = Arc::new(RecordingResumer::default());
     let scheduler = scheduler_with_judge_agent_runs_and_plan_deps(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -4218,7 +4286,7 @@ async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact()
         agent_run_repo,
         session_repo,
         Arc::new(MemoryPlanArtifactApprovalRepository::new()),
-        Arc::new(RecordingResumer::default()),
+        resumer.clone(),
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
         AutomationSchedulerConfig::default(),
@@ -4234,6 +4302,9 @@ async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact()
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("plan_not_submitted"));
+    assert_eq!(latest.plan_last_parked_artifact_id, None);
+    assert!(latest.finished_at.is_some());
+    assert!(resumer.prompts().is_empty());
 }
 
 #[tokio::test]
