@@ -49,7 +49,11 @@ export function isPipelineOwnedAgentWorkspace(
 function isAgentWorkspacePublishSurfaceMode(
   workspace: AgentConversationWorkspace,
 ): boolean {
-  if (workspace.mode === "edit" || workspace.mode === "plan") {
+  if (
+    workspace.mode === "edit" ||
+    workspace.mode === "plan" ||
+    workspace.mode === "automation"
+  ) {
     return true;
   }
 

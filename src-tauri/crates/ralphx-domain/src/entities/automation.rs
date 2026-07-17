@@ -414,6 +414,7 @@ pub fn automation_is_transition_allowed(from: AutomationStatus, to: AutomationSt
             | (AutomationStatus::Active, AutomationStatus::Stopped)
             | (AutomationStatus::Paused, AutomationStatus::Active)
             | (AutomationStatus::Paused, AutomationStatus::Stopped)
+            | (AutomationStatus::Stopped, AutomationStatus::Active)
     )
 }
 

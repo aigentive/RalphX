@@ -636,8 +636,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     scopedWorkspace?.linkedIdeationSessionId ||
     scopedWorkspace?.linkedPlanBranchId,
   );
-  const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
-  const showPullRequestTab = workspaceHasPullRequest(workspace);
+  const showPublishTab = shouldShowAgentWorkspacePublishSurface(scopedWorkspace);
+  const showPullRequestTab = workspaceHasPullRequest(scopedWorkspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
   const conversationQuery = useConversationHistoryWindow(
     conversation?.id ?? null,
@@ -760,6 +760,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const canStartPlan = Boolean(
     conversationId &&
     conversationProjectId &&
+    !automationId &&
     (scopedWorkspace
       ? scopedWorkspace.mode === "edit" || scopedWorkspace.mode === "plan"
       : conversation?.contextType === "project"),
@@ -1055,7 +1056,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     conversation?.contextType === "project" ? conversation.id : null;
   const isAutomationRunConversation = Boolean(focusedAutomationRunId);
   const automationDetailQuery = useAutomationDetail(automationId, {
-    enabled: Boolean(isAutomationRunConversation && automationId),
+    enabled: Boolean(automationId),
   });
   const focusedAutomationRun = useMemo(() => {
     if (!focusedAutomationRunId) {
@@ -1068,8 +1069,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     );
   }, [automationDetailQuery.data?.runs, focusedAutomationRunId]);
   const runPlanArtifactId = focusedAutomationRun?.planArtifactId ?? null;
+  const setupSpecArtifactId = isAutomationRunConversation
+    ? null
+    : (automationDetailQuery.data?.automation.specArtifactId ?? null);
   const planArtifactId =
     runPlanArtifactId ??
+    setupSpecArtifactId ??
     (shouldLoadIdeationData
       ? (sessionData?.session.planArtifactId ??
         sessionData?.session.inheritedPlanArtifactId ??
@@ -1088,6 +1093,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           hasPullRequest: Boolean(
             focusedAutomationRun?.prNumber || focusedAutomationRun?.prUrl,
           ),
+          hasPublishWorkspace: showPublishTab,
           canStartPlan: false,
         },
       }),
@@ -1097,6 +1103,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       focusedAutomationRun?.prUrl,
       focusedAutomationRun?.status,
       planArtifactId,
+      showPublishTab,
       scopedWorkspace?.mode,
     ],
   );
@@ -1234,17 +1241,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     )?.id ??
     shownEnabledTabs[0]?.id ??
     "automation";
-  const shouldPreferAutomationOverPlan =
-    activeTab === "plan" &&
-    automationId &&
-    conversation?.agentMode === "automation" &&
-    !isAutomationRunConversation &&
-    shownTabs.some((tab) => tab.id === "automation");
-  const effectiveActiveTab = shouldPreferAutomationOverPlan
-    ? "automation"
-    : shownTabs.some((tab) => tab.id === activeTab && tab.enabled)
-      ? activeTab
-      : fallbackActiveTab;
+  const effectiveActiveTab = shownTabs.some(
+    (tab) => tab.id === activeTab && tab.enabled,
+  )
+    ? activeTab
+    : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
     ? getAgentConversationStoreKey(conversation)
     : null;
@@ -1332,18 +1333,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       shouldUseSessionPlanQuery
         ? artifactApi.getSessionPlan(attachedSessionId!)
         : artifactApi.get(planArtifactId!),
-    enabled:
-      shouldLoadIdeationData &&
-      (shouldUseSessionPlanQuery ? !!attachedSessionId : !!planArtifactId),
+    enabled: shouldUseSessionPlanQuery ? !!attachedSessionId : !!planArtifactId,
     staleTime: 5_000,
   });
   const planArtifact = planArtifactQuery.data ?? null;
   const isPlanHydrating =
-    shouldLoadIdeationData &&
     effectiveActiveTab === "plan" &&
     !planArtifact &&
-    !!attachedSessionId &&
-    (planArtifactQuery.isFetching || sessionQuery.isFetching);
+    (planArtifactQuery.isFetching ||
+      (shouldUseSessionPlanQuery && sessionQuery.isFetching));
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
@@ -2160,7 +2158,7 @@ function ArtifactContent({
         />
       );
     }
-    if (!attachedSessionId) {
+    if (!attachedSessionId && !planArtifact) {
       return (
         <EmptyArtifactState
           title="No ideation run attached"
