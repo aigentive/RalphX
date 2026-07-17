@@ -45,19 +45,28 @@ fn target_ids(targets: &[WorkspaceOpenTargetResponse]) -> Vec<&str> {
     targets.iter().map(|target| target.id.as_str()).collect()
 }
 
-fn write_fake_cursor(bin_dir: &Path, body: &str) -> PathBuf {
-    let cursor = bin_dir.join("cursor");
-    std::fs::write(&cursor, format!("#!/bin/sh\n{body}\n")).expect("write fake cursor");
+fn write_fake_command(bin_dir: &Path, command_name: &str, body: &str) -> PathBuf {
+    let command = bin_dir.join(command_name);
+    std::fs::write(&command, format!("#!/bin/sh\n{body}\n")).expect("write fake command");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&cursor)
-            .expect("fake cursor metadata")
+        let mut permissions = std::fs::metadata(&command)
+            .expect("fake command metadata")
             .permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
+        std::fs::set_permissions(&command, permissions).expect("mark fake command executable");
     }
-    cursor
+    command
+}
+
+fn write_fake_cursor(bin_dir: &Path, body: &str) -> PathBuf {
+    write_fake_command(bin_dir, "cursor", body)
+}
+
+fn static_fixed_candidates(path: &Path) -> &'static [&'static str] {
+    let candidate = Box::leak(path.to_string_lossy().into_owned().into_boxed_str());
+    Box::leak(vec![candidate as &'static str].into_boxed_slice())
 }
 
 fn git(repo: &Path, args: &[&str]) {
@@ -593,6 +602,41 @@ fn full_probe_uses_one_batched_shell_fallback_for_unresolved_commands() {
 }
 
 #[test]
+fn direct_resolution_uses_fixed_binaries_and_cli_paths_without_shell() {
+    let _lock = ENV_MUTEX.blocking_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let terminal_app = write_fake_command(&bin_dir, "terminal-app", "exit 0");
+    let cursor = write_fake_cursor(&bin_dir, "exit 0");
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+    let fixed_command = WorkspaceOpenCommandDefinition {
+        name: "terminal-app",
+        fixed_candidates: static_fixed_candidates(&terminal_app),
+        base_args: &[],
+    };
+    assert_eq!(
+        resolve_workspace_open_command_without_shell(&fixed_command),
+        Some(terminal_app.clone())
+    );
+    assert_eq!(
+        resolve_workspace_open_command(&fixed_command),
+        Some(terminal_app)
+    );
+
+    let cli_command = WorkspaceOpenCommandDefinition {
+        name: "cursor",
+        fixed_candidates: &[],
+        base_args: &[],
+    };
+    assert_eq!(
+        resolve_workspace_open_command_without_shell(&cli_command),
+        Some(cursor)
+    );
+}
+
+#[test]
 fn cached_target_list_is_returned_without_reprobing() {
     let cached = vec![WorkspaceOpenTargetResponse {
         id: "cursor".to_string(),
@@ -657,6 +701,14 @@ fn launch_workspace_open_target_accepts_background_process() {
 }
 
 #[test]
+fn launch_workspace_open_target_returns_builder_errors_before_spawning() {
+    let error = launch_workspace_open_target("cursor", Path::new("relative"))
+        .expect_err("invalid workspace path should be rejected before spawn");
+
+    assert!(error.to_string().contains("absolute"));
+}
+
+#[test]
 fn launch_workspace_open_item_target_accepts_immediate_success() {
     let _lock = ENV_MUTEX.blocking_lock();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -716,6 +768,17 @@ fn launch_workspace_open_item_target_accepts_background_process() {
     let _path = EnvGuard::set_os("PATH", &bin_dir);
 
     launch_workspace_open_item_target("cursor", &file_path).expect("launch should spawn");
+}
+
+#[test]
+fn launch_workspace_open_item_target_returns_builder_errors_before_spawning() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let missing_path = temp.path().join("missing.rs");
+
+    let error = launch_workspace_open_item_target("cursor", &missing_path)
+        .expect_err("missing item path should be rejected before spawn");
+
+    assert!(error.to_string().contains("existing file or directory"));
 }
 
 #[tokio::test]
