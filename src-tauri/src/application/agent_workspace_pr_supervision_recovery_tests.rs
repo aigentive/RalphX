@@ -1248,6 +1248,62 @@ async fn active_run_does_not_hide_terminal_pr_during_supervision_recovery() {
 }
 
 #[tokio::test]
+async fn terminal_supervision_recovery_reports_missing_chat_runtime() {
+    let (_temp_dir, project, workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-terminal-runtime-missing").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+    let mut sync_state = open_sync_state(&workspace.branch_name, "remote-head");
+    sync_state.status = PrStatus::Merged {
+        merged_at: None,
+        merge_commit_sha: None,
+    };
+    github.will_return_sync_state(sync_state);
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active run");
+
+    let error = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            github,
+            Arc::clone(&agent_run_repo),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect_err("missing chat runtime must block terminal recovery success");
+
+    assert!(error.to_string().contains("no chat runtime was available"));
+    assert!(agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup")
+        .expect("run retained")
+        .is_active());
+    let persisted = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("merged"));
+    assert!(workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
 async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_recovery() {
     let (_temp_dir, project, workspace, plan_branch, _head_sha) =
         setup_linked_plan_recovery_workspace("pr-supervision-active-plan-terminal", 704).await;

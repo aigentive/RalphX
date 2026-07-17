@@ -34,7 +34,7 @@ use crate::domain::repositories::{
     ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, PrSyncState};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
 const STARTUP_PR_SUPERVISION_RECOVERY_LIMIT: usize = 25;
@@ -258,7 +258,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     ))
                     .await?;
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-                terminalize_agent_workspace_after_pr(
+                let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
                     Some(Arc::clone(&deps.plan_branch_repo)),
@@ -268,6 +268,9 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     TerminalAgentWorkspaceCause::from_pr_status(pr_status),
                 )
                 .await;
+                terminalized
+                    .require_runtime_shutdown()
+                    .map_err(AppError::Infrastructure)?;
                 return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
                     pr_number: target.pr_number,
                     pr_status: pr_status.to_string(),
@@ -317,7 +320,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-        terminalize_agent_workspace_after_pr(
+        let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
@@ -327,6 +330,9 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),
         )
         .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
             pr_number: target.pr_number,
             pr_status: pr_status.to_string(),

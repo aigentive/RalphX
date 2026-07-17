@@ -21,6 +21,7 @@ use crate::domain::entities::{
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::RunningAgentKey;
+use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
 async fn setup_archive_state(
@@ -258,6 +259,91 @@ async fn explicit_close_immediately_force_removes_local_workspace() {
         .expect("workspace lookup")
         .expect("workspace retained for history");
     assert_eq!(persisted.publication_pr_status.as_deref(), Some("closed"));
+}
+
+#[tokio::test]
+async fn explicit_close_remote_failure_preserves_open_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "explicit-close-remote-failure",
+        AgentConversationWorkspaceMode::Edit,
+        Some(144),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create explicit-close worktree");
+    github.state().close_pr_result = Some(Err(AppError::Infrastructure(
+        "remote close unavailable".to_string(),
+    )));
+
+    let error = close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect_err("remote close failure must block local terminalization");
+
+    assert!(error.contains("remote close unavailable"));
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(worktree_path.exists());
+    assert!(branch_exists(&repo_path, &workspace.branch_name));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn archive_requested_remote_close_failure_preserves_active_state() {
+    let (_temp, state, conversation_id, _workspace, github) = setup_archive_state(
+        "archive-close-remote-failure",
+        AgentConversationWorkspaceMode::Edit,
+        Some(145),
+    )
+    .await;
+    github.state().close_pr_result = Some(Err(AppError::Infrastructure(
+        "remote close unavailable".to_string(),
+    )));
+
+    let error = archive_agent_conversation_for_state(&conversation_id, &state, true)
+        .await
+        .expect_err("requested remote close failure must block archive authority");
+
+    assert!(error.contains("remote close unavailable"));
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained")
+        .archived_at
+        .is_none());
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
 }
 
 #[tokio::test]

@@ -925,14 +925,16 @@ async fn agent_workspace_poll_loop(
                     "Pull request merged",
                 )
                 .await;
-                terminalize_agent_workspace_after_pr(
-                    Arc::clone(&workspace_repo),
-                    Arc::clone(&agent_run_repo),
-                    Some(Arc::clone(&plan_branch_repo)),
-                    Some(Arc::clone(&chat_service)),
+                terminalize_polled_agent_workspace(
+                    &workspace_repo,
+                    &agent_run_repo,
+                    &plan_branch_repo,
+                    &chat_service,
+                    &stopping,
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::MergedPr,
+                    interval,
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -948,14 +950,16 @@ async fn agent_workspace_poll_loop(
                     "Pull request closed without merging",
                 )
                 .await;
-                terminalize_agent_workspace_after_pr(
-                    Arc::clone(&workspace_repo),
-                    Arc::clone(&agent_run_repo),
-                    Some(Arc::clone(&plan_branch_repo)),
-                    Some(Arc::clone(&chat_service)),
+                terminalize_polled_agent_workspace(
+                    &workspace_repo,
+                    &agent_run_repo,
+                    &plan_branch_repo,
+                    &chat_service,
+                    &stopping,
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::ClosedPr,
+                    interval,
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -1156,6 +1160,46 @@ async fn agent_workspace_poll_loop(
                     "Agent workspace PR poller: failed to check PR status"
                 );
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn terminalize_polled_agent_workspace(
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    plan_branch_repo: &Arc<dyn PlanBranchRepository>,
+    chat_service: &Arc<dyn ChatService>,
+    stopping: &Arc<DashMap<ChatConversationId, ()>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    cause: TerminalAgentWorkspaceCause,
+    retry_interval: Duration,
+) {
+    loop {
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(workspace_repo),
+            Arc::clone(agent_run_repo),
+            Some(Arc::clone(plan_branch_repo)),
+            Some(Arc::clone(chat_service)),
+            conversation_id,
+            project,
+            cause,
+        )
+        .await;
+        let Err(error) = terminalized.require_runtime_shutdown() else {
+            return;
+        };
+
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            error,
+            retry_secs = retry_interval.as_secs(),
+            "Agent workspace PR poller: terminal runtime shutdown failed; retrying"
+        );
+        tokio::time::sleep(retry_interval).await;
+        if stopping.contains_key(conversation_id) {
+            return;
         }
     }
 }

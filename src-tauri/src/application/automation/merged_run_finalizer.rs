@@ -74,12 +74,9 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                 TerminalAgentWorkspaceCause::MergedPr,
             )
             .await;
-            if !terminalized.runtime_shutdown_succeeded {
-                return Err(AppError::Infrastructure(format!(
-                    "Automation merged conversation {} runtime did not terminalize",
-                    conversation_id.as_str()
-                )));
-            }
+            terminalized
+                .require_runtime_shutdown()
+                .map_err(AppError::Infrastructure)?;
         }
 
         archive_agent_conversation_for_state(conversation_id, &self.state, false)

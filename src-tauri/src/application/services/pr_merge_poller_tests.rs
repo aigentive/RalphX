@@ -3756,6 +3756,57 @@ async fn terminal_agent_workspace_pr_terminalization_stops_active_project_run() 
 }
 
 #[tokio::test]
+async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_returning() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-terminal-runtime-retry-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("active run should persist");
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    let chat = Arc::new(MockChatService::new());
+    chat.fail_next_stop_agent_calls(1).await;
+    let stopping = Arc::new(dashmap::DashMap::new());
+    let agent_run_repo_dyn: Arc<dyn AgentRunRepository> = agent_run_repo.clone();
+    let plan_branch_repo_dyn: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
+        plan_branch_repo;
+    let chat_dyn: Arc<dyn crate::application::chat_service::ChatService> = chat.clone();
+
+    super::terminalize_polled_agent_workspace(
+        &workspace_repo,
+        &agent_run_repo_dyn,
+        &plan_branch_repo_dyn,
+        &chat_dyn,
+        &stopping,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::MergedPr,
+        Duration::from_millis(1),
+    )
+    .await;
+
+    assert_eq!(chat.get_stop_agent_calls().await.len(), 2);
+    let updated_run = agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup should succeed")
+        .expect("run should still exist");
+    assert_eq!(updated_run.status, AgentRunStatus::Failed);
+}
+
+#[tokio::test]
 async fn terminal_agent_workspace_pr_cleanup_deletes_verified_merged_artifacts_without_fetch() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");

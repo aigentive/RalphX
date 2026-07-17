@@ -105,13 +105,7 @@ pub async fn archive_agent_conversation_for_state(
         TerminalAgentWorkspaceCause::ArchivedConversation,
     )
     .await;
-    if !outcome.runtime_shutdown_succeeded {
-        tracing::warn!(
-            conversation_id = conversation_id.as_str(),
-            message = outcome.message.as_deref(),
-            "Archived workspace runtime could not be stopped; local cleanup remains pending"
-        );
-    }
+    outcome.require_runtime_shutdown()?;
 
     Ok(outcome)
 }
@@ -152,7 +146,7 @@ pub async fn close_agent_workspace_pr_for_state(
         target.number,
         "close_agent_workspace_pr",
     )
-    .await;
+    .await?;
     mark_effective_pr_closed(
         conversation_id,
         &workspace,
@@ -173,13 +167,7 @@ pub async fn close_agent_workspace_pr_for_state(
         TerminalAgentWorkspaceCause::ClosedPr,
     )
     .await;
-    if outcome.runtime_shutdown_succeeded {
-        Ok(())
-    } else {
-        Err(outcome
-            .message
-            .unwrap_or_else(|| "Workspace runtime could not be stopped".to_string()))
-    }
+    outcome.require_runtime_shutdown()
 }
 
 /// Strictly reconcile the effective remote PR before replacing an implementation attempt.
@@ -377,32 +365,29 @@ async fn close_effective_pr_if_open(
         return Ok(());
     }
 
-    match state.project_repo.get_by_id(&workspace.project_id).await {
-        Ok(Some(project)) => {
-            close_remote_pr(
-                state,
-                Path::new(&project.working_directory),
-                target.number,
-                "archive_agent_conversation",
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| {
+            format!(
+                "Failed to load project {} while closing PR: {error}",
+                workspace.project_id
             )
-            .await;
-        }
-        Ok(None) => {
-            tracing::warn!(
-                project_id = workspace.project_id.as_str(),
-                pr_number = target.number,
-                "archive_agent_conversation: project not found while closing PR; continuing with local status update"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                project_id = workspace.project_id.as_str(),
-                pr_number = target.number,
-                error = %error,
-                "archive_agent_conversation: failed to load project while closing PR; continuing with local status update"
-            );
-        }
-    }
+        })?
+        .ok_or_else(|| {
+            format!(
+                "Project {} was not found while closing PR",
+                workspace.project_id
+            )
+        })?;
+    close_remote_pr(
+        state,
+        Path::new(&project.working_directory),
+        target.number,
+        "archive_agent_conversation",
+    )
+    .await?;
 
     mark_effective_pr_closed(
         conversation_id,
@@ -419,17 +404,14 @@ async fn close_remote_pr(
     working_dir: &Path,
     pr_number: i64,
     operation: &'static str,
-) {
-    if let Some(github_svc) = &state.github_service {
-        if let Err(error) = github_svc.close_pr(working_dir, pr_number).await {
-            tracing::warn!(
-                pr_number,
-                operation,
-                error = %error,
-                "failed to close PR on remote (continuing with local status update)"
-            );
-        }
-    }
+) -> Result<(), String> {
+    let github_svc = state.github_service.as_ref().ok_or_else(|| {
+        format!("{operation}: GitHub integration is unavailable while closing PR #{pr_number}")
+    })?;
+    github_svc
+        .close_pr(working_dir, pr_number)
+        .await
+        .map_err(|error| format!("{operation}: failed to close remote PR #{pr_number}: {error}"))
 }
 
 async fn load_linked_plan_branch_for_pr(

@@ -33,7 +33,7 @@ use crate::domain::repositories::{
     ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
 const STARTUP_EXTERNAL_PR_RECONCILIATION_LIMIT: usize = 25;
@@ -224,7 +224,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             );
         }
     } else {
-        terminalize_agent_workspace_after_pr(
+        let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
@@ -234,6 +234,9 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),
         )
         .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
     }
 
     Ok(AgentWorkspaceExternalPrReconciliationOutcome::Linked {
@@ -305,7 +308,7 @@ async fn reconcile_linked_agent_workspace_pr(
         ))
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
-    terminalize_agent_workspace_after_pr(
+    let terminalized = terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
         Some(Arc::clone(&deps.plan_branch_repo)),
@@ -315,6 +318,9 @@ async fn reconcile_linked_agent_workspace_pr(
         TerminalAgentWorkspaceCause::from_pr_status(pr_status),
     )
     .await;
+    terminalized
+        .require_runtime_shutdown()
+        .map_err(AppError::Infrastructure)?;
 
     Ok(AgentWorkspaceExternalPrReconciliationOutcome::Linked {
         pr_number,

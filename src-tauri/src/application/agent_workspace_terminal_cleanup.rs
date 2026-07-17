@@ -87,6 +87,17 @@ impl TerminalAgentWorkspaceOutcome {
             message: Some(message),
         }
     }
+
+    pub(crate) fn require_runtime_shutdown(&self) -> Result<(), String> {
+        if self.runtime_shutdown_succeeded {
+            Ok(())
+        } else {
+            Err(self
+                .message
+                .clone()
+                .unwrap_or_else(|| "Workspace runtime could not be stopped".to_string()))
+        }
+    }
 }
 
 enum TerminalCleanupTarget {
