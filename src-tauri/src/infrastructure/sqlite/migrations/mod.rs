@@ -476,6 +476,9 @@ mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
+mod v20260716154318_manual_role_defaults;
+#[cfg(test)]
+mod v20260716154318_manual_role_defaults_tests;
 mod v20260716202015_workspace_review_bypass_and_bound_agent;
 #[cfg(test)]
 mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
@@ -1580,6 +1583,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260715194617,
         name: "scripted_agent_workflows",
         migrate: v20260715194617_scripted_agent_workflows::migrate,
+    },
+    Migration {
+        version: 20260716154318,
+        name: "manual_role_defaults",
+        migrate: v20260716154318_manual_role_defaults::migrate,
     },
     Migration {
         version: 20260716202015,

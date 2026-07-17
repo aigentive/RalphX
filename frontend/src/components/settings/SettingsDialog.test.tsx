@@ -93,6 +93,10 @@ vi.mock("./CapabilitiesSection", () => ({
   ),
 }));
 
+vi.mock("./AgentsSettingsSection", () => ({
+  AgentsSettingsSection: () => <div data-testid="agents-section">Agents</div>,
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -209,6 +213,19 @@ describe("SettingsDialog", () => {
     );
   });
 
+  it("consolidates the legacy agent pages into one lazy Agents section", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "agents",
+      groupId: "harness",
+      label: "Agents",
+    });
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "execution-harnesses")).toBe(false);
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "ideation-harnesses")).toBe(false);
+    await expect(sectionModuleLoaders.agents()).resolves.toHaveProperty(
+      "AgentsSettingsSection",
+    );
+  });
+
   describe("Section initialization via modalContext deep-link", () => {
     it("defaults to the Providers section when no modalContext.section is provided", async () => {
       uiState.activeModal = "settings";
@@ -230,14 +247,21 @@ describe("SettingsDialog", () => {
       expect(screen.queryByTestId("max-concurrent-tasks")).not.toBeInTheDocument();
     });
 
-    it("initializes to Execution Agents section when modalContext.section is 'execution-harnesses'", async () => {
+    it("routes the legacy Execution Agents deep link into Agents", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = { section: "execution-harnesses" };
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(
-        await screen.findByText("Execution Pipeline Agents", {}, { timeout: 5_000 })
-      ).toBeInTheDocument();
+      expect(await screen.findByTestId("agents-section")).toBeInTheDocument();
+      expect(screen.getByText("Agents", { selector: ".cur" })).toBeInTheDocument();
+    });
+
+    it("routes the legacy Ideation Agents deep link into Agents", async () => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = { section: "ideation-harnesses" };
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(await screen.findByTestId("agents-section")).toBeInTheDocument();
     });
 
     it("opens the Personas section from a settings deep link when enabled", async () => {
