@@ -246,8 +246,13 @@ fn onboarding_then_first_project_send_starts_without_manual_resume() {
     std::fs::write(
         &cli_path,
         r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"ready"}]},"session_id":"fresh-install-session"}'
 printf '%s\n' '{"type":"result","session_id":"fresh-install-session","is_error":false,"result":"ready","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
 "#,
     )
     .expect("write fake Claude CLI");
