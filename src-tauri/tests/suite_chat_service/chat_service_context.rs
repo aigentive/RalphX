@@ -208,6 +208,7 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
     write_file(&ingest_root.join("content"), "approved ingest text");
 
     let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -307,6 +308,7 @@ async fn persona_builder_without_ingest_session_resolves_zero_roots() {
     let app_data_dir = root.path().join("app-data");
 
     let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -327,6 +329,7 @@ async fn persona_builder_without_ingest_session_resolves_zero_roots() {
     );
     fs::create_dir_all(&empty_ingest_root).expect("create empty ingest destination");
     let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         project_repo as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -349,6 +352,7 @@ async fn persona_builder_read_roots_fail_closed_without_owned_identity() {
     let app_data_dir = root.path().join("app-data");
 
     let without_app_data = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -358,6 +362,7 @@ async fn persona_builder_read_roots_fail_closed_without_owned_identity() {
     )
     .await;
     let without_conversation = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -367,6 +372,7 @@ async fn persona_builder_read_roots_fail_closed_without_owned_identity() {
     )
     .await;
     let with_relative_app_data = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         project_repo as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -398,6 +404,7 @@ async fn non_persona_modes_keep_project_read_root_behavior() {
         persona_read_root_fixture().await;
 
     let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         project_repo as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -477,6 +484,7 @@ async fn queued_flush_uses_persona_builder_read_roots() {
     write_file(&ingest_root.join("content"), "queued ingest text");
 
     let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
         Some(project_id.as_str()),
         project_repo as Arc<dyn ProjectRepository>,
         &working_directory,
@@ -3627,6 +3635,7 @@ async fn resolve_working_directory_merge_context_accepts_rebase_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3679,6 +3688,7 @@ async fn resolve_working_directory_merge_context_accepts_merge_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3732,6 +3742,7 @@ async fn resolve_working_directory_merge_context_rejects_task_prefix() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3771,6 +3782,7 @@ async fn resolve_working_directory_review_rejects_missing_worktree_path() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3816,6 +3828,7 @@ async fn resolve_working_directory_task_execution_rejects_missing_worktree_dir()
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3859,6 +3872,7 @@ async fn resolve_working_directory_review_rejects_merge_worktree_path() {
         Arc::new(MockIdeationRepo::empty()) as Arc<dyn IdeationSessionRepository>,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 
@@ -3900,6 +3914,7 @@ async fn resolve_working_directory_ideation_uses_session_workspace() {
         ideation_repo,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await
     .expect("ideation workspace should resolve");
@@ -3943,6 +3958,7 @@ async fn resolve_working_directory_ideation_rejects_missing_session_workspace() 
         ideation_repo,
         empty_delegated_session_repo(),
         std::path::Path::new("/tmp/default"),
+        None,
     )
     .await;
 

@@ -480,6 +480,7 @@ async fn resolve_task_like_delegate_parent(
         Arc::clone(&state.app_state.ideation_session_repo),
         Arc::clone(&state.app_state.delegated_session_repo),
         &default_working_directory,
+        Some(state.app_state.app_paths.app_data_dir()),
     )
     .await
     .map_err(|error| json_error(StatusCode::CONFLICT, error))?;

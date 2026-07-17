@@ -178,6 +178,9 @@ mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
+pub mod standalone_workspace;
+#[cfg(test)]
+mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;

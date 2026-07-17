@@ -3110,6 +3110,17 @@ impl<R: Runtime> AppChatService<R> {
         );
     }
 
+    /// Returns the app-owned data directory for this service instance, when a Tauri
+    /// app handle is attached. Standalone workspace resolution and PersonaBuilder
+    /// ingest-root resolution both key off this same app-owned root.
+    fn resolve_app_data_dir(&self) -> Option<PathBuf> {
+        self.app_handle.as_ref().and_then(|handle| {
+            handle
+                .try_state::<AppState>()
+                .map(|state| state.app_paths.app_data_dir().to_path_buf())
+        })
+    }
+
     /// Resolve the project's working directory from a context.
     ///
     /// Returns `Err` for Merge contexts that resolve to the primary repo
@@ -3127,6 +3138,7 @@ impl<R: Runtime> AppChatService<R> {
             Arc::clone(&self.ideation_session_repo),
             Arc::clone(&self.delegated_session_repo),
             &self.default_working_directory,
+            self.resolve_app_data_dir().as_deref(),
         )
         .await
     }
@@ -3984,12 +3996,7 @@ impl<R: Runtime> AppChatService<R> {
         let agent_workspace_prompt_context = self
             .agent_workspace_prompt_context_for_send(context_type, conversation)
             .await?;
-        let persona_ingest_app_data_dir: Option<std::path::PathBuf> =
-            self.app_handle.as_ref().and_then(|handle| {
-                handle
-                    .try_state::<AppState>()
-                    .map(|state| state.app_paths.app_data_dir().to_path_buf())
-            });
+        let persona_ingest_app_data_dir: Option<std::path::PathBuf> = self.resolve_app_data_dir();
         let conversation_id_for_roots = conversation.id.as_str();
         let filesystem_read_roots = if let (Some(app_data_dir), Some(folder_reference_repo)) = (
             self.folder_reference_app_data_dir.as_deref(),
@@ -4010,6 +4017,7 @@ impl<R: Runtime> AppChatService<R> {
             .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
         } else {
             chat_service_context::resolve_mcp_filesystem_read_roots(
+                context_type,
                 project_id,
                 Arc::clone(&self.project_repo),
                 working_directory,

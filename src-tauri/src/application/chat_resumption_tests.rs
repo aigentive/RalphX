@@ -1476,11 +1476,13 @@ async fn durable_silent_completion_recovery_scans_both_project_and_standalone() 
         "Standalone candidate must be enumerated"
     );
 
-    // End-to-end, only the Project candidate completes recovery: Standalone CWD
-    // resolution is a typed Phase 4a.2 gap (`resolve_working_directory` fails
-    // closed), so `send_message` errors for the Standalone candidate even
-    // though it was correctly discovered and evaluated. This is the expected
-    // interim behavior until 4a.2 lands, not a silent enumeration failure.
+    // End-to-end, only the Project candidate completes recovery: this test never
+    // attaches a Tauri app handle, so the Standalone candidate's CWD resolution
+    // fails closed (`resolve_working_directory` requires an app-owned data
+    // directory to resolve its private workspace — see Phase 4a.2), and
+    // `send_message` errors for it even though it was correctly discovered and
+    // evaluated. This is expected fail-closed behavior, not a silent
+    // enumeration failure.
     assert_eq!(runner.recover_durable_silent_completions().await, 1);
 }
 
