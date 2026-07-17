@@ -56,6 +56,8 @@ pub mod chat_service;
 pub mod clickup_integration_service;
 pub mod clickup_git_association;
 pub mod dependency_service;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
 pub mod diff_service;
