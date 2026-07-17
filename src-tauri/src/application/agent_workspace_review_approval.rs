@@ -7,7 +7,9 @@ use crate::domain::entities::{
 };
 use crate::error::{AppError, AppResult};
 
-use super::agent_workspace_review::load_agent_workspace_review_context;
+use super::agent_workspace_review::{
+    ensure_workspace_review_supported_mode, resolve_review_target,
+};
 use super::AppState;
 
 pub async fn approve_agent_workspace_review_anyway(
@@ -15,31 +17,54 @@ pub async fn approve_agent_workspace_review_anyway(
     workspace: &AgentConversationWorkspace,
     snapshot: &AgentWorkspaceReviewApprovalSnapshot,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
+    ensure_workspace_review_supported_mode(workspace)?;
+
     if workspace_publish_is_active(workspace.publication_push_status.as_deref()) {
         return Err(AppError::Conflict(
             "Workspace Review cannot be approved while Commit & Publish is running".to_string(),
         ));
     }
 
-    let context = load_agent_workspace_review_context(state, workspace).await?;
-    let target = context.target.as_ref().ok_or_else(|| {
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+    let target = resolve_review_target(workspace, &project).await?;
+    let target = target.as_ref().ok_or_else(|| {
         AppError::Conflict(
             "Workspace Review approval no longer matches the current workspace changes".to_string(),
         )
     })?;
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "Workspace Review changed before it could be approved; refresh and review the current blockers"
+                    .to_string(),
+            )
+        })?;
     let fixer_active = matches!(
-        context.monitor.review_fixer_status.as_deref(),
+        monitor.review_fixer_status.as_deref(),
         Some("routing" | "queued" | "running")
     );
-    let snapshot_matches = context.is_current
-        && !context.is_outdated
-        && context.monitor.status == AgentWorkspaceReviewMonitorStatus::Ready
-        && context.monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking
-        && context.monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Blocking
+    let artifact_current = monitor.is_current_for_target(
+        target.scope,
+        target.head_sha.as_deref(),
+        &target.diff_fingerprint,
+    ) && monitor.review_artifact_id.is_some();
+    let snapshot_matches = artifact_current
+        && monitor.status == AgentWorkspaceReviewMonitorStatus::Ready
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Blocking
         && target.scope == snapshot.target_scope
         && target.diff_fingerprint == snapshot.diff_fingerprint
-        && context.monitor.review_artifact_id.as_ref() == Some(&snapshot.artifact_id)
-        && context.monitor.review_artifact_version == Some(snapshot.artifact_version)
+        && monitor.current_target_scope == Some(snapshot.target_scope)
+        && monitor.current_diff_fingerprint.as_deref() == Some(snapshot.diff_fingerprint.as_str())
+        && monitor.review_artifact_id.as_ref() == Some(&snapshot.artifact_id)
+        && monitor.review_artifact_version == Some(snapshot.artifact_version)
         && !fixer_active;
     if !snapshot_matches {
         return Err(AppError::Conflict(

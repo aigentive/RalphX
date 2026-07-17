@@ -3089,7 +3089,9 @@ pub(crate) async fn resolve_review_target(
     resolve_selected_source_target(workspace, project).await
 }
 
-fn ensure_workspace_review_supported_mode(workspace: &AgentConversationWorkspace) -> AppResult<()> {
+pub(crate) fn ensure_workspace_review_supported_mode(
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<()> {
     if matches!(
         workspace.mode,
         crate::domain::entities::AgentConversationWorkspaceMode::Edit

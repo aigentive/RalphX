@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::agent_workspace_review_approval::approve_agent_workspace_review_anyway;
 use crate::application::chat_service::MockChatService;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, AgenticClient, LogicalEffort, ProviderSessionRef,
@@ -6,10 +7,10 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest,
-    Artifact, ArtifactId, ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    ProjectId, TaskId,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+    ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
@@ -928,6 +929,99 @@ async fn passing_workspace_review_survives_equivalent_commit_then_invalidates_on
     assert_eq!(
         changed.monitor.review_gate_status,
         AgentWorkspaceReviewGateStatus::Required
+    );
+}
+
+#[tokio::test]
+async fn stale_approval_retry_does_not_refresh_or_clear_monitor_before_cas() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let initial = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("initial context should load");
+    let target = initial.target.expect("initial target should exist");
+    let approved_at = Utc::now();
+    let artifact_id = ArtifactId::from_string("artifact-approved-anyway".to_string());
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: target.scope,
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 7,
+    };
+    let mut monitor = initial.monitor;
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("run-approved-anyway".to_string()),
+        artifact_id,
+        snapshot.artifact_version,
+        approved_at,
+        None,
+    );
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_blocking_summary = Some("blockers remain".to_string());
+    monitor.review_gate_bypassed_at = Some(approved_at);
+    monitor.review_gate_bypassed_target_scope = Some(snapshot.target_scope);
+    monitor.review_gate_bypassed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.review_gate_bypassed_artifact_id = Some(snapshot.artifact_id.clone());
+    monitor.review_gate_bypassed_artifact_version = Some(snapshot.artifact_version);
+    let persisted_before = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    std::fs::write(repo.join("later.rs"), "pub fn later() {}\n")
+        .expect("later file should be written");
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("stale approval retry should be rejected");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("changed before")));
+    let persisted_after = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should still exist");
+    assert_eq!(
+        persisted_after.current_diff_fingerprint,
+        persisted_before.current_diff_fingerprint
+    );
+    assert_eq!(
+        persisted_after.review_gate_status,
+        persisted_before.review_gate_status
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_at,
+        persisted_before.review_gate_bypassed_at
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_diff_fingerprint,
+        persisted_before.review_gate_bypassed_diff_fingerprint
+    );
+    assert_eq!(
+        persisted_after.review_gate_bypassed_artifact_id,
+        persisted_before.review_gate_bypassed_artifact_id
     );
 }
 
