@@ -649,17 +649,15 @@ description: Workspace bridge instructions
         let directive = "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->";
 
         for agent_name in ["ralphx-general-worker", "ralphx-general-explorer"] {
-            let error = match inject_internal_skills_into_system_prompt(
+            let error = inject_internal_skills_into_system_prompt(
                 &root,
                 agent_name,
                 "Base prompt",
                 directive,
-            ) {
-                Ok(_) => {
-                    panic!("{agent_name} must reject a disallowed workspace bridge directive")
-                }
-                Err(error) => error,
-            };
+            )
+            .expect_err(
+                "general workspace agents must reject a disallowed workspace bridge directive",
+            );
             assert!(error.contains("ralphx-agent-workspace-swe"));
             assert!(error.contains("not listed in allowed"));
         }
