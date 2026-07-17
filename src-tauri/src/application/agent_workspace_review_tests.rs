@@ -1026,6 +1026,143 @@ async fn stale_approval_retry_does_not_refresh_or_clear_monitor_before_cas() {
 }
 
 #[tokio::test]
+async fn approval_rejects_active_publish_before_project_lookup_or_monitor_write() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Workspace Review Missing Project".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.publication_push_status = Some("pushing".to_string());
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-active-publish".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-active-publish"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("active publish must block human approval before any refresh");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("Commit & Publish")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_missing_project_before_target_resolution() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Workspace Review Missing Project".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-missing-project".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-missing-project"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval should fail closed when the project row is missing");
+
+    assert!(matches!(error, AppError::NotFound(message) if message.contains("Project not found")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_when_current_workspace_has_no_reviewable_target() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-no-target".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-no-target"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval requires a current reviewable target");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("no longer matches")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn approval_rejects_reviewable_target_without_existing_monitor() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-without-monitor".to_string(),
+        artifact_id: ArtifactId::from_string("artifact-without-monitor"),
+        artifact_version: 1,
+    };
+
+    let error = approve_agent_workspace_review_anyway(&state, &workspace, &snapshot)
+        .await
+        .expect_err("approval requires an existing current blocking monitor");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("changed before")));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("event read should succeed")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn start_review_skips_current_and_already_reviewing_targets() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
