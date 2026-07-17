@@ -44,13 +44,14 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    TaskDependencyRepository, TaskRepository,
+    ExternalEventsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, TaskDependencyRepository, TaskRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
 };
-use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::services::{TaskScheduler, WebhookPublisher};
 
 use super::{
     AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService,
@@ -69,6 +70,10 @@ pub struct TaskSchedulerService {
     pub(super) execution_state: Arc<ExecutionState>,
     pub(super) project_repo: Arc<dyn ProjectRepository>,
     pub(super) task_repo: Arc<dyn TaskRepository>,
+    pub(super) task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub(super) validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    pub(super) external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    pub(super) webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
     pub(super) task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     pub(super) artifact_repo: Arc<dyn ArtifactRepository>,
     pub(super) chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -145,6 +150,10 @@ impl TaskSchedulerService {
             execution_state,
             project_repo,
             task_repo,
+            task_step_repo: None,
+            validation_run_repo: None,
+            external_events_repo: None,
+            webhook_publisher: None,
             task_dependency_repo,
             artifact_repo,
             chat_message_repo,
@@ -183,6 +192,26 @@ impl TaskSchedulerService {
 
     pub fn with_execution_plan_repo(mut self, repo: Arc<dyn ExecutionPlanRepository>) -> Self {
         self.execution_plan_repo = Some(repo);
+        self
+    }
+
+    pub fn with_completion_authority_repositories(
+        mut self,
+        task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+        validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    ) -> Self {
+        self.task_step_repo = task_step_repo;
+        self.validation_run_repo = validation_run_repo;
+        self
+    }
+
+    pub fn with_completion_event_delivery(
+        mut self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        self.external_events_repo = external_events_repo;
+        self.webhook_publisher = webhook_publisher;
         self
     }
 
@@ -446,6 +475,14 @@ impl TaskSchedulerService {
             Arc::clone(&self.memory_event_repo),
         )
         .with_agent_clients(self.agent_clients.clone())
+        .with_completion_authority_repositories(
+            self.task_step_repo.as_ref().map(Arc::clone),
+            self.validation_run_repo.as_ref().map(Arc::clone),
+        )
+        .with_completion_event_delivery(
+            self.external_events_repo.as_ref().map(Arc::clone),
+            self.webhook_publisher.as_ref().map(Arc::clone),
+        )
         .with_runtime_support(
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),

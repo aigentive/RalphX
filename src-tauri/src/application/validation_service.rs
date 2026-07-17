@@ -909,6 +909,29 @@ fn classify_validation_evidence(
     }
 }
 
+pub(crate) fn validation_run_proves_current_completion(
+    evidence: &crate::domain::entities::ValidationRunWithResults,
+    current_head_sha: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> bool {
+    let run = &evidence.run;
+    run.purpose != ValidationPurpose::Baseline
+        && run.status == ValidationRunStatus::Passed
+        && run.promoted_commit_sha.as_deref() == Some(current_head_sha)
+        && run
+            .status_episode_entered_at
+            .is_some_and(|captured| captured >= episode_entered_at)
+        && !evidence.commands.is_empty()
+        && evidence
+            .commands
+            .iter()
+            .all(|command| command.status.is_success_like())
+        && evidence
+            .commands
+            .iter()
+            .any(|command| command.category == ValidationCommandCategory::Test)
+}
+
 fn validation_command_status_success_like(status: &str) -> bool {
     matches!(
         ValidationCommandStatus::parse(status),
