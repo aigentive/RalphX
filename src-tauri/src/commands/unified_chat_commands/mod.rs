@@ -2243,6 +2243,29 @@ fn timeline_item_content_block(
     block
 }
 
+async fn reconcile_delegated_timeline_item_result(
+    state: &AppState,
+    item: &mut ChatTimelineItem,
+    snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
+) {
+    let Some(tool_name) = item.tool_name.as_deref() else {
+        return;
+    };
+    if !is_delegate_start_tool_name(tool_name) {
+        return;
+    }
+    let Some(mut result) = item
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+    else {
+        return;
+    };
+
+    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await;
+    item.result_json = Some(result.to_string());
+}
+
 /// Response for agent run status
 #[derive(Debug, Serialize)]
 pub struct AgentRunStatusResponse {
@@ -2281,7 +2304,9 @@ struct DelegatedToolRuntimeSnapshot {
 }
 
 fn is_delegate_start_tool_name(name: &str) -> bool {
-    name == "delegate_start" || name.ends_with("::delegate_start")
+    name == "delegate_start"
+        || name.ends_with("::delegate_start")
+        || name.ends_with("__delegate_start")
 }
 
 fn parse_wrapped_mcp_result_object(result: &JsonValue) -> Option<JsonMap<String, JsonValue>> {
@@ -2463,90 +2488,176 @@ async fn load_delegated_tool_runtime_snapshot(
     })
 }
 
+fn merge_delegated_snapshot_wrapped_fields(
+    result_object: &mut JsonMap<String, JsonValue>,
+    snapshot: &DelegatedToolRuntimeSnapshot,
+    merge_fields: fn(&mut JsonMap<String, JsonValue>, &DelegatedToolRuntimeSnapshot),
+) {
+    let structured_content_key = if result_object.contains_key("structured_content") {
+        Some("structured_content")
+    } else if result_object.contains_key("structuredContent") {
+        Some("structuredContent")
+    } else {
+        None
+    };
+    if let Some(JsonValue::Object(structured_content)) =
+        structured_content_key.and_then(|key| result_object.get_mut(key))
+    {
+        merge_fields(structured_content, snapshot);
+    }
+
+    if let Some(content) = result_object
+        .get_mut("content")
+        .and_then(JsonValue::as_array_mut)
+    {
+        for entry in content {
+            let Some(text) = entry.get_mut("text") else {
+                continue;
+            };
+            let Some(raw) = text.as_str() else {
+                continue;
+            };
+            let Ok(JsonValue::Object(mut nested)) = serde_json::from_str::<JsonValue>(raw) else {
+                continue;
+            };
+            merge_fields(&mut nested, snapshot);
+            *text = JsonValue::String(JsonValue::Object(nested).to_string());
+            break;
+        }
+    }
+}
+
 fn merge_delegated_snapshot_into_result(
     result: &mut JsonValue,
     snapshot: &DelegatedToolRuntimeSnapshot,
 ) {
+    fn merge_fields(
+        result_object: &mut JsonMap<String, JsonValue>,
+        snapshot: &DelegatedToolRuntimeSnapshot,
+    ) {
+        result_object.insert(
+            "job_status".to_string(),
+            JsonValue::String(snapshot.session_status.clone()),
+        );
+        result_object.insert(
+            "status".to_string(),
+            JsonValue::String(snapshot.session_status.clone()),
+        );
+        result_object.insert(
+            "agent_name".to_string(),
+            JsonValue::String(snapshot.agent_name.clone()),
+        );
+        result_object.insert(
+            "delegated_session_id".to_string(),
+            JsonValue::String(snapshot.session_id.clone()),
+        );
+        result_object.insert(
+            "harness".to_string(),
+            JsonValue::String(snapshot.harness.clone()),
+        );
+        if let Some(conversation_id) = snapshot.conversation_id.as_ref() {
+            result_object.insert(
+                "delegated_conversation_id".to_string(),
+                JsonValue::String(conversation_id.clone()),
+            );
+        }
+        if let Some(agent_run_id) = snapshot.agent_run_id.as_ref() {
+            result_object.insert(
+                "delegated_agent_run_id".to_string(),
+                JsonValue::String(agent_run_id.clone()),
+            );
+        }
+        if let Some(provider_session_id) = snapshot.provider_session_id.as_ref() {
+            result_object.insert(
+                "provider_session_id".to_string(),
+                JsonValue::String(provider_session_id.clone()),
+            );
+        }
+        if let Some(error) = snapshot.session_error.as_ref() {
+            result_object.insert("error".to_string(), JsonValue::String(error.clone()));
+        }
+        if let Some(completed_at) = snapshot.completed_at.as_ref() {
+            result_object.insert(
+                "completed_at".to_string(),
+                JsonValue::String(completed_at.clone()),
+            );
+        }
+
+        result_object.insert(
+            "delegated_status".to_string(),
+            serde_json::json!({
+                "session": {
+                    "id": snapshot.session_id,
+                    "title": snapshot.title,
+                    "status": snapshot.session_status,
+                    "parent_context_type": "ideation",
+                    "parent_context_id": JsonValue::Null,
+                    "agent_name": snapshot.agent_name,
+                    "harness": snapshot.harness,
+                    "provider_session_id": snapshot.provider_session_id,
+                    "created_at": snapshot.created_at,
+                    "updated_at": snapshot.updated_at,
+                    "completed_at": snapshot.completed_at,
+                },
+                "agent_state": {
+                    "estimated_status": delegated_agent_state_label(&snapshot.session_status),
+                },
+                "conversation_id": snapshot.conversation_id,
+                "latest_run": snapshot.latest_run,
+                "recent_messages": if snapshot.recent_messages.is_empty() {
+                    JsonValue::Null
+                } else {
+                    JsonValue::Array(snapshot.recent_messages.clone())
+                },
+            }),
+        );
+    }
+
     let JsonValue::Object(result_object) = result else {
         return;
     };
 
-    result_object.insert(
-        "job_status".to_string(),
-        JsonValue::String(snapshot.session_status.clone()),
-    );
-    result_object.insert(
-        "status".to_string(),
-        JsonValue::String(snapshot.session_status.clone()),
-    );
-    result_object.insert(
-        "agent_name".to_string(),
-        JsonValue::String(snapshot.agent_name.clone()),
-    );
-    result_object.insert(
-        "delegated_session_id".to_string(),
-        JsonValue::String(snapshot.session_id.clone()),
-    );
-    result_object.insert(
-        "harness".to_string(),
-        JsonValue::String(snapshot.harness.clone()),
-    );
-    if let Some(conversation_id) = snapshot.conversation_id.as_ref() {
-        result_object.insert(
-            "delegated_conversation_id".to_string(),
-            JsonValue::String(conversation_id.clone()),
-        );
-    }
-    if let Some(agent_run_id) = snapshot.agent_run_id.as_ref() {
-        result_object.insert(
-            "delegated_agent_run_id".to_string(),
-            JsonValue::String(agent_run_id.clone()),
-        );
-    }
-    if let Some(provider_session_id) = snapshot.provider_session_id.as_ref() {
-        result_object.insert(
-            "provider_session_id".to_string(),
-            JsonValue::String(provider_session_id.clone()),
-        );
-    }
-    if let Some(error) = snapshot.session_error.as_ref() {
-        result_object.insert("error".to_string(), JsonValue::String(error.clone()));
-    }
-    if let Some(completed_at) = snapshot.completed_at.as_ref() {
-        result_object.insert(
-            "completed_at".to_string(),
-            JsonValue::String(completed_at.clone()),
-        );
-    }
+    merge_delegated_snapshot_wrapped_fields(result_object, snapshot, merge_fields);
+    merge_fields(result_object, snapshot);
+}
 
-    result_object.insert(
-        "delegated_status".to_string(),
-        serde_json::json!({
-            "session": {
-                "id": snapshot.session_id,
-                "title": snapshot.title,
-                "status": snapshot.session_status,
-                "parent_context_type": "ideation",
-                "parent_context_id": JsonValue::Null,
-                "agent_name": snapshot.agent_name,
-                "harness": snapshot.harness,
-                "provider_session_id": snapshot.provider_session_id,
-                "created_at": snapshot.created_at,
-                "updated_at": snapshot.updated_at,
-                "completed_at": snapshot.completed_at,
-            },
-            "agent_state": {
-                "estimated_status": delegated_agent_state_label(&snapshot.session_status),
-            },
-            "conversation_id": snapshot.conversation_id,
-            "latest_run": snapshot.latest_run,
-            "recent_messages": if snapshot.recent_messages.is_empty() {
-                JsonValue::Null
-            } else {
-                JsonValue::Array(snapshot.recent_messages.clone())
-            },
-        }),
-    );
+async fn reconcile_delegated_result_value(
+    state: &AppState,
+    result: &mut JsonValue,
+    snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
+) {
+    let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
+        return;
+    };
+
+    let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
+    let Some(delegated_session_id) = delegated_session_id else {
+        return;
+    };
+    let delegated_conversation_id = get_string_field(&parsed_result, "delegated_conversation_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
+    let delegated_agent_run_id = get_string_field(&parsed_result, "delegated_agent_run_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedAgentRunId"));
+
+    let snapshot = if let Some(snapshot) = snapshot_cache.get(delegated_session_id) {
+        snapshot.clone()
+    } else {
+        let Some(snapshot) = load_delegated_tool_runtime_snapshot(
+            state,
+            delegated_session_id,
+            delegated_conversation_id,
+            delegated_agent_run_id,
+        )
+        .await
+        else {
+            return;
+        };
+        snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
+        snapshot
+    };
+
+    merge_delegated_snapshot_into_result(result, &snapshot);
 }
 
 async fn reconcile_delegated_result_payloads(
@@ -2578,39 +2689,7 @@ async fn reconcile_delegated_result_payloads(
             let Some(result) = item_object.get_mut("result") else {
                 continue;
             };
-            let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
-                continue;
-            };
-
-            let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
-                .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
-            let Some(delegated_session_id) = delegated_session_id else {
-                continue;
-            };
-            let delegated_conversation_id =
-                get_string_field(&parsed_result, "delegated_conversation_id")
-                    .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
-            let delegated_agent_run_id = get_string_field(&parsed_result, "delegated_agent_run_id")
-                .or_else(|| get_string_field(&parsed_result, "delegatedAgentRunId"));
-
-            let snapshot = if let Some(snapshot) = snapshot_cache.get(delegated_session_id) {
-                snapshot.clone()
-            } else {
-                let Some(snapshot) = load_delegated_tool_runtime_snapshot(
-                    state,
-                    delegated_session_id,
-                    delegated_conversation_id,
-                    delegated_agent_run_id,
-                )
-                .await
-                else {
-                    continue;
-                };
-                snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
-                snapshot
-            };
-
-            merge_delegated_snapshot_into_result(result, &snapshot);
+            reconcile_delegated_result_value(state, result, snapshot_cache).await;
         }
 
         Some(parsed)
@@ -4663,7 +4742,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 Arc::clone(&state.agent_conversation_workspace_repo),
             )
             .await
-                .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?;
             return Ok(());
         }
     }
@@ -8593,10 +8672,15 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mut items = page.items;
+    let mut snapshot_cache = HashMap::new();
+    for item in &mut items {
+        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache).await;
+    }
+
     Ok(Some(AgentConversationTimelinePageResponse {
         conversation: agent_conversation_response_for_state(state, conversation).await?,
-        items: page
-            .items
+        items: items
             .into_iter()
             .map(AgentTimelineItemResponse::from)
             .collect(),
@@ -8687,6 +8771,8 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
         return Ok(None);
     }
 
+    let mut item = item;
+    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new()).await;
     let detail_message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
     let block = timeline_item_content_block(
         &item,
