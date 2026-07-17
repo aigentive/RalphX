@@ -29,7 +29,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   agentPersonas: false,
   agentConversationTeam: false,
   agentConversationWorkflows: false,
-  agentConversationAutopilot: false,
+  composerFolderReferences: false,
 };
 
 export function useFeatureFlags() {
@@ -62,12 +62,10 @@ export function useUpdateFeatureFlags() {
       agentPersonas,
       agentConversationTeam,
       agentConversationWorkflows,
-      agentConversationAutopilot,
     }: {
       agentPersonas?: boolean;
       agentConversationTeam?: boolean;
       agentConversationWorkflows?: boolean;
-      agentConversationAutopilot?: boolean;
     }) => {
       const raw = await invoke("update_ui_feature_flags", {
         input: {
@@ -75,9 +73,6 @@ export function useUpdateFeatureFlags() {
           ...(agentConversationTeam !== undefined && { agentConversationTeam }),
           ...(agentConversationWorkflows !== undefined && {
             agentConversationWorkflows,
-          }),
-          ...(agentConversationAutopilot !== undefined && {
-            agentConversationAutopilot,
           }),
         },
       });

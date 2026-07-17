@@ -37,6 +37,7 @@ import {
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
+import { conversationFolderReferencesApi } from "@/api/conversation-folder-references";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 import { DEFAULT_AGENT_ARTIFACT_UI_STATE } from "./agentArtifactUiStore";
@@ -152,6 +153,7 @@ export function useStartAgentConversation({
       automationAuthoringMode,
       base,
       files,
+      folders = [],
       codexFastMode,
       personaId,
       capabilityIntent,
@@ -169,6 +171,7 @@ export function useStartAgentConversation({
       automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      folders?: { folderPath: string; displayName: string }[];
       codexFastMode?: boolean | null;
       personaId?: string | null;
       capabilityIntent?: CapabilityIntent | null;
@@ -350,7 +353,7 @@ export function useStartAgentConversation({
       setAgentRunning(optimisticStoreKey, true);
       setSending(optimisticStoreKey, true);
 
-      const requiresSeededConversation = mode === "automation" || files.length > 0;
+      const requiresSeededConversation = mode === "automation" || files.length > 0 || folders.length > 0;
       let seededStoreKey: string | null = null;
       let seededConversationId: string | null = null;
       try {
@@ -449,6 +452,20 @@ export function useStartAgentConversation({
         }
 
         let uploadedAttachmentIds: string[] = [];
+        if (folders.length > 0) {
+          if (!seededConversation) {
+            throw new Error("Folder registration requires a draft conversation");
+          }
+          await Promise.all(
+            folders.map((folder) =>
+              conversationFolderReferencesApi.add({
+                conversationId: seededConversation.id,
+                folderPath: folder.folderPath,
+                displayName: folder.displayName,
+              }),
+            ),
+          );
+        }
         if (files.length > 0) {
           if (!seededConversation) {
             throw new Error("Attachment upload requires a draft conversation");

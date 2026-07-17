@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
@@ -31,6 +32,26 @@ import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { LINKED_SETUP_FAILURE_MARKER } from "./agentStartErrors";
 import { useStartAgentConversation } from "./useStartAgentConversation";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
+  return {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    automationsPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+    agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
+    composerFolderReferences: false,
+    ...overrides,
+  };
+}
 
 const {
   archiveConversationMock,
@@ -556,21 +577,25 @@ describe("AgentsView start conversation", () => {
       ticketingDashboard: false,
       agentPersonas: true,
     });
-    queryClient.setQueryData(personaKeys.list(), [
-      {
-        id: "persona-reviewer",
-        slug: "reviewer-voice",
-        name: "Reviewer Voice",
-        description: "Careful reviews",
-        content: "# Reviewer",
-        status: "active",
-        version: 1,
-        contentHash: "persona-hash",
-        sourceSessionId: null,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-    ]);
+    queryClient.setQueryData(
+      personaKeys.list({ type: "globalAndProject", projectId: "project-1" }),
+      [
+        {
+          id: "persona-reviewer",
+          slug: "reviewer-voice",
+          name: "Reviewer Voice",
+          description: "Careful reviews",
+          content: "# Reviewer",
+          status: "active",
+          version: 1,
+          contentHash: "persona-hash",
+          sourceSessionId: null,
+          projectId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    );
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
@@ -3119,6 +3144,94 @@ describe("AgentsView start conversation", () => {
         configurable: true,
       });
     }
+  });
+
+  it("restores unsent starter composer folders from the draft store", async () => {
+    mockAgentViewData();
+    useChatStore.getState().setComposerDraftFolders("agents:start", [
+      { id: "draft-folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+    ]);
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ composerFolderReferences: true }),
+    );
+
+    expect(
+      await screen.findByTestId("draft-folder-reference-chips"),
+    ).toHaveTextContent("design-notes");
+  });
+
+  it("registers a pre-send picked folder against the seeded conversation before sending the first message", async () => {
+    mockAgentViewData();
+    createConversationMock.mockResolvedValue(
+      conversation({ id: "conversation-folder-seeded", contextId: "project-1" })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({ id: "conversation-folder-seeded", contextId: "project-1" }),
+      workspace: conversationWorkspace({ conversationId: "conversation-folder-seeded" }),
+      sendResult: {
+        conversationId: "conversation-folder-seeded",
+        agentRunId: "run-folder-1",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    vi.mocked(openDialog).mockResolvedValue("/Users/test/projects/test-project");
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "add_conversation_folder_reference") {
+        return Promise.resolve({
+          id: "folder-ref-1",
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+          createdAt: "2026-01-01T00:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ composerFolderReferences: true }),
+    );
+
+    fireEvent.click(
+      await screen.findByTestId("agent-composer-actions-menu"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+
+    expect(await screen.findByText("test-project")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+        },
+      })
+    );
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-folder-seeded",
+          content: "review this folder",
+        })
+      )
+    );
   });
 
 });
