@@ -34,20 +34,28 @@ export function useAgentsAttachedIdeation({
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
       (activeConversationMode === "ideation" ||
+        activeConversationMode === "tasks" ||
         activeConversationMode === "plan" ||
-        Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
+        Boolean(
+          activeWorkspace?.taskPipelineSessionId ||
+            activeWorkspace?.linkedIdeationSessionId ||
+            activeWorkspace?.linkedPlanBranchId,
+        )));
   const attachedIdeationSessionId = useMemo(
     () =>
       shouldHydrateAttachedIdeation
         ? resolveAttachedIdeationSessionId(
             activeConversation,
             selectedConversationMessages,
-            activeWorkspace?.linkedIdeationSessionId ?? null,
+            activeWorkspace?.taskPipelineSessionId ??
+              activeWorkspace?.linkedIdeationSessionId ??
+              null,
           )
         : null,
     [
       activeConversation,
       activeWorkspace?.linkedIdeationSessionId,
+      activeWorkspace?.taskPipelineSessionId,
       selectedConversationMessages,
       shouldHydrateAttachedIdeation,
     ],

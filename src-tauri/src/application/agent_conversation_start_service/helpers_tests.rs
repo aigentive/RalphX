@@ -392,6 +392,8 @@ fn requires_workspace_is_true_for_non_chat_modes() {
     use AgentConversationWorkspaceMode::*;
     assert!(agent_mode_requires_workspace(Edit));
     assert!(agent_mode_requires_workspace(Plan));
+    assert!(agent_mode_requires_workspace(Tasks));
+    assert!(agent_mode_requires_workspace(Autopilot));
     assert!(agent_mode_requires_workspace(Ideation));
     assert!(agent_mode_requires_workspace(ReviewPr));
     assert!(!agent_mode_requires_workspace(Chat));

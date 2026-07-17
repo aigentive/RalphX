@@ -16,6 +16,7 @@ fn capability_gate_updates_both_values_from_a_snapshot() {
     gate.replace(AgentCapabilities {
         team: true,
         workflows: false,
+        autopilot: false,
     });
 
     assert!(gate.team_enabled());
@@ -24,8 +25,10 @@ fn capability_gate_updates_both_values_from_a_snapshot() {
     gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: true,
     });
 
     assert!(!gate.team_enabled());
     assert!(gate.workflows_enabled());
+    assert!(gate.autopilot_enabled());
 }
