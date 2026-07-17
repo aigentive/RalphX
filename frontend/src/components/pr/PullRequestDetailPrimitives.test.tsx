@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { DetailSkeleton, PrMarkdown } from "./PullRequestDetailPrimitives";
+import { DetailSkeleton, PrMarkdown, PrStateNotice } from "./PullRequestDetailPrimitives";
 
 describe("PrMarkdown", () => {
   it("renders GitHub details blocks as native disclosure sections", () => {
@@ -260,6 +260,19 @@ describe("PrMarkdown", () => {
     expect(container.textContent).toContain("<details>");
     expect(container.textContent).toContain("No closing tag");
     expect(container.textContent).toContain("After");
+  });
+});
+
+describe("PrStateNotice", () => {
+  it("shows GitHub CLI installation guidance for cli-unavailable PR details", () => {
+    render(<PrStateNotice state="cliUnavailable" />);
+
+    expect(
+      screen.getByText("GitHub CLI is unavailable. Install or configure gh, then refresh."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("RalphX could not resolve this repository on GitHub."),
+    ).not.toBeInTheDocument();
   });
 });
 

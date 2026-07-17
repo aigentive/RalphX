@@ -6,6 +6,8 @@ import {
   GitHubConnectionStatusSchema,
   PullRequestDetailSchema,
   githubApi,
+  isTransientGitHubConnectionState,
+  requiresGitHubCredentialRepair,
 } from "./github";
 
 vi.mock("@/lib/tauri", () => ({
@@ -19,6 +21,8 @@ describe("githubApi", () => {
 
   it("fetches connection status with no args", async () => {
     const status = {
+      state: "authenticated",
+      diagnostic: null,
       ghInstalled: true,
       authenticated: true,
       host: "github.com",
@@ -81,14 +85,51 @@ describe("GitHub Zod schemas round-trip the emitted camelCase DTOs", () => {
     const parsed = GitHubConnectionStatusSchema.parse({
       ghInstalled: true,
       authenticated: false,
+      state: "provider_unavailable",
+      diagnostic: "http5xx",
       host: null,
       account: null,
     });
 
     expect(parsed.ghInstalled).toBe(true);
     expect(parsed.authenticated).toBe(false);
+    expect(parsed.state).toBe("provider_unavailable");
+    expect(parsed.diagnostic).toBe("http5xx");
     expect(parsed.host).toBeNull();
     expect(parsed.account).toBeNull();
+  });
+
+  it("classifies credential repair and transient GitHub states separately", () => {
+    expect(
+      requiresGitHubCredentialRepair({
+        state: "credential_rejected",
+        diagnostic: "credentials_rejected",
+        ghInstalled: true,
+        authenticated: false,
+        host: "github.com",
+        account: null,
+      }),
+    ).toBe(true);
+    expect(
+      requiresGitHubCredentialRepair({
+        state: "provider_unavailable",
+        diagnostic: "http5xx",
+        ghInstalled: true,
+        authenticated: false,
+        host: "github.com",
+        account: null,
+      }),
+    ).toBe(false);
+    expect(
+      isTransientGitHubConnectionState({
+        state: "provider_unavailable",
+        diagnostic: "timeout",
+        ghInstalled: true,
+        authenticated: false,
+        host: "github.com",
+        account: null,
+      }),
+    ).toBe(true);
   });
 
   it("parses a full loaded PR-detail graph and keeps camelCase fields", () => {
@@ -180,7 +221,7 @@ describe("GitHub Zod schemas round-trip the emitted camelCase DTOs", () => {
 
   it("parses the emitted empty payload for a typed non-loaded state", () => {
     const parsed = PullRequestDetailSchema.parse({
-      state: "ghUnauthenticated",
+      state: "cliUnavailable",
       origin: null,
       description: null,
       checks: [],
@@ -192,7 +233,7 @@ describe("GitHub Zod schemas round-trip the emitted camelCase DTOs", () => {
       sourcesUnavailable: [],
     });
 
-    expect(parsed.state).toBe("ghUnauthenticated");
+    expect(parsed.state).toBe("cliUnavailable");
     expect(parsed.origin).toBeNull();
     expect(parsed.description).toBeNull();
     expect(parsed.reviewSummary).toBeNull();

@@ -5,6 +5,8 @@ pub mod agents;
 pub mod atlassian_client;
 pub mod clickup_client;
 pub(crate) mod git_auth;
+#[cfg(test)]
+mod git_auth_tests;
 pub mod granola_client;
 pub(crate) mod jira_agile_client;
 pub mod linear_client;

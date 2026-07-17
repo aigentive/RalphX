@@ -16,12 +16,15 @@ vi.mock("sonner", () => ({
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitRemoteUrl: vi.fn(),
   useGitAuthDiagnostics: vi.fn(),
-  useGhAuthStatus: vi.fn(),
   useLoginGhWithBrowser: vi.fn(),
   useSwitchGitOriginToSsh: vi.fn(),
   useSetupGhGitAuth: vi.fn(),
   useResumeDeferredGitStartup: vi.fn(),
   useUpdateGithubPrEnabled: vi.fn(),
+}));
+
+vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
+  useGitHubConnectionStatus: vi.fn(),
 }));
 
 const mockUpdateProject = vi.fn();
@@ -42,13 +45,13 @@ vi.mock("@/lib/tauri", () => ({
 import {
   useGitRemoteUrl,
   useGitAuthDiagnostics,
-  useGhAuthStatus,
   useLoginGhWithBrowser,
   useSwitchGitOriginToSsh,
   useSetupGhGitAuth,
   useResumeDeferredGitStartup,
   useUpdateGithubPrEnabled,
 } from "@/hooks/useGithubSettings";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore } from "@/stores/projectStore";
 import { api, getGitDefaultBranch } from "@/lib/tauri";
 
@@ -72,6 +75,26 @@ const mockLoginGhWithBrowser = vi.fn();
 const mockResumeDeferredGitStartup = vi.fn();
 const mockRefetchGitAuth = vi.fn();
 const mockRefetchGhAuth = vi.fn();
+
+function ghStatus(state: "authenticated" | "unauthenticated" | "credential_rejected" | "provider_unavailable" | "cli_unavailable" | "probe_failed") {
+  return {
+    state,
+    diagnostic:
+      state === "authenticated"
+        ? null
+        : state === "provider_unavailable"
+          ? "http5xx"
+          : state === "credential_rejected"
+            ? "credentials_rejected"
+            : state === "cli_unavailable"
+              ? "cli_launch"
+              : "missing_credentials",
+    ghInstalled: state !== "cli_unavailable",
+    authenticated: state === "authenticated",
+    host: state === "cli_unavailable" ? null : "github.com",
+    account: state === "authenticated" ? "octocat" : null,
+  };
+}
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -128,12 +151,12 @@ describe("RepositorySettingsSection", () => {
       refetch: mockRefetchGitAuth,
     } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
 
-    vi.mocked(useGhAuthStatus).mockReturnValue({
-      data: true,
+    vi.mocked(useGitHubConnectionStatus).mockReturnValue({
+      data: ghStatus("authenticated"),
       isLoading: false,
       isError: false,
       refetch: mockRefetchGhAuth,
-    } as ReturnType<typeof useGhAuthStatus>);
+    } as ReturnType<typeof useGitHubConnectionStatus>);
 
     vi.mocked(useSwitchGitOriginToSsh).mockReturnValue({
       mutateAsync: mockSwitchToSsh,
@@ -200,12 +223,12 @@ describe("RepositorySettingsSection", () => {
   });
 
   it("shows Not authenticated when gh not authed", () => {
-    vi.mocked(useGhAuthStatus).mockReturnValue({
-      data: false,
+    vi.mocked(useGitHubConnectionStatus).mockReturnValue({
+      data: ghStatus("unauthenticated"),
       isLoading: false,
       isError: false,
       refetch: mockRefetchGhAuth,
-    } as ReturnType<typeof useGhAuthStatus>);
+    } as ReturnType<typeof useGitHubConnectionStatus>);
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -213,12 +236,12 @@ describe("RepositorySettingsSection", () => {
   });
 
   it("shows git auth panel for all-SSH remotes in settings (showWhenHealthy) without a generic repair warning", () => {
-    vi.mocked(useGhAuthStatus).mockReturnValue({
-      data: false,
+    vi.mocked(useGitHubConnectionStatus).mockReturnValue({
+      data: ghStatus("unauthenticated"),
       isLoading: false,
       isError: false,
       refetch: mockRefetchGhAuth,
-    } as ReturnType<typeof useGhAuthStatus>);
+    } as ReturnType<typeof useGitHubConnectionStatus>);
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -235,12 +258,12 @@ describe("RepositorySettingsSection", () => {
       data: "git@github.com:user/repo.git",
       isLoading: false,
     } as ReturnType<typeof useGitRemoteUrl>);
-    vi.mocked(useGhAuthStatus).mockReturnValue({
-      data: false,
+    vi.mocked(useGitHubConnectionStatus).mockReturnValue({
+      data: ghStatus("unauthenticated"),
       isLoading: false,
       isError: false,
       refetch: mockRefetchGhAuth,
-    } as ReturnType<typeof useGhAuthStatus>);
+    } as ReturnType<typeof useGitHubConnectionStatus>);
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -322,12 +345,12 @@ describe("RepositorySettingsSection", () => {
       isError: false,
       refetch: mockRefetchGitAuth,
     } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
-    vi.mocked(useGhAuthStatus).mockReturnValue({
-      data: false,
+    vi.mocked(useGitHubConnectionStatus).mockReturnValue({
+      data: ghStatus("unauthenticated"),
       isLoading: false,
       isError: false,
       refetch: mockRefetchGhAuth,
-    } as ReturnType<typeof useGhAuthStatus>);
+    } as ReturnType<typeof useGitHubConnectionStatus>);
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -352,7 +375,7 @@ describe("RepositorySettingsSection", () => {
       isError: false,
     });
     mockRefetchGhAuth.mockResolvedValue({
-      data: true,
+      data: ghStatus("authenticated"),
       isError: false,
     });
     mockResumeDeferredGitStartup.mockResolvedValue(true);

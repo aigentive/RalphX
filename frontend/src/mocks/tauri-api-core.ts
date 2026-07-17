@@ -1881,6 +1881,8 @@ const commandHandlers: Record<
   },
   check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
   get_github_connection_status: async () => ({
+    state: (window.__mockGhAuthStatus ?? true) ? "authenticated" : "unauthenticated",
+    diagnostic: (window.__mockGhAuthStatus ?? true) ? null : "missing_credentials",
     ghInstalled: true,
     authenticated: window.__mockGhAuthStatus ?? true,
     host: "github.com",
