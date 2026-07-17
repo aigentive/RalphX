@@ -602,6 +602,11 @@ vi.mock("@/hooks/useGithubSettings", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
+  useGitHubConnectionStatus: (...args: unknown[]) =>
+    useGhAuthStatusMock(...args),
+}));
+
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
 }));
@@ -1817,7 +1822,14 @@ describe("AgentsArtifactPane", () => {
       refetch: vi.fn(),
     });
     useGhAuthStatusMock.mockReturnValue({
-      data: true,
+      data: {
+        state: "authenticated",
+        diagnostic: null,
+        ghInstalled: true,
+        authenticated: true,
+        host: "github.com",
+        account: "octocat",
+      },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
@@ -4693,7 +4705,14 @@ describe("AgentsArtifactPane", () => {
 
   it("shows a GitHub PR sign-in action for all-SSH publish workspaces when gh is missing", () => {
     useGhAuthStatusMock.mockReturnValue({
-      data: false,
+      data: {
+        state: "unauthenticated",
+        diagnostic: "missing_credentials",
+        ghInstalled: true,
+        authenticated: false,
+        host: "github.com",
+        account: null,
+      },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),

@@ -151,8 +151,15 @@ describe("useGhAuthStatus", () => {
     vi.clearAllMocks();
   });
 
-  it("calls check_gh_auth and returns true when authenticated", async () => {
-    vi.mocked(invoke).mockResolvedValue(true);
+  it("derives true from canonical connection status when authenticated", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    });
 
     const { result } = renderHook(() => useGhAuthStatus(), {
       wrapper: createWrapper(),
@@ -160,12 +167,19 @@ describe("useGhAuthStatus", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(invoke).toHaveBeenCalledWith("check_gh_auth", {});
+    expect(invoke).toHaveBeenCalledWith("get_github_connection_status", {});
     expect(result.current.data).toBe(true);
   });
 
-  it("returns false when gh CLI is not authenticated", async () => {
-    vi.mocked(invoke).mockResolvedValue(false);
+  it("returns false when canonical connection status is not authenticated", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      state: "provider_unavailable",
+      diagnostic: "http5xx",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    });
 
     const { result } = renderHook(() => useGhAuthStatus(), {
       wrapper: createWrapper(),
