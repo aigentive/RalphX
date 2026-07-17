@@ -43,6 +43,7 @@ pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
@@ -213,6 +214,9 @@ pub use atlassian_integration_service::{
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
+};
+pub use jira_agile_types::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
