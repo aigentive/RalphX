@@ -115,6 +115,7 @@ Component does ONE of: Display UI | Manage State | Coordinate children
 When introducing a new architectural pattern, add a one-liner here. Pattern name + rule only.
 Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.md
 
+- **Reuse Before Invent (NON-NEGOTIABLE)** — new chat/agents behavior extends the existing owning surface: context derivation → chat-context-registry, send/queue/stop → `useChatActions`, streaming → `useChatEvents`, hydration → `useChatRecovery`, scrolling → `ChatScrollController`, per-conversation state → the conversation-keyed stores. ❌ Parallel stores/hooks/scroll writers for owned concerns.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md

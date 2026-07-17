@@ -32,6 +32,7 @@ Primary project docs:
 ## Codex Rules
 
 - Read project instructions first: check `CLAUDE.md`, subtree docs, and relevant `.claude/rules/*` before substantial work.
+- Pattern alignment first (NON-NEGOTIABLE): before implementing any bug fix or feature, identify the owning backend service / frontend component and its established pattern (subtree CLAUDE.md pattern tables, `.claude/rules/*`, `docs/architecture/`); extend that seam instead of introducing new architecture. A new pattern requires explicit justification in the PR description plus a pattern one-liner in the relevant CLAUDE.md.
 - For OpenAI/Codex prompt work, check `.claude/rules/openai-gpt-5-prompting.md`, then load only the local guide matching the configured target model before substantial prompt edits.
 - When touching ideation verification, read `.claude/rules/ideation-verification-architecture.md` first.
 - When touching plugin/root resolution, canonical agent loading, generated plugin bundles, or runtime log placement, read `.claude/rules/runtime-root-vs-target-project.md` first.

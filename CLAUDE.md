@@ -60,6 +60,7 @@ Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/ag
 
 | # | Rule |
 |---|------|
+| 0 | **Pattern alignment first (NON-NEGOTIABLE):** Before ANY bug fix or feature, locate the owning service/component and its established pattern (subtree CLAUDE.md pattern tables, `.claude/rules/*`, `docs/architecture/`) and extend that seam. ❌ Parallel services/managers/stores when an existing seam owns the domain. A genuinely new pattern requires explicit justification in the PR body + a one-liner added to the relevant CLAUDE.md (rule 11) |
 | 1 | TDD mandatory — tests FIRST |
 | 1.5 | **Orchestration chain tests** — see `src-tauri/CLAUDE.md` Integration Tests section |
 | 2 | Anti-AI-slop — see Design System section |
