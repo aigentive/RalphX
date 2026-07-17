@@ -432,6 +432,7 @@ impl ResolvedChatHarnessCli {
                 let resolved_spawn_settings = resolve_noninteractive_spawn_settings(
                     request.conversation.context_type,
                     request.entity_status,
+                    request.conversation.bound_agent_name.as_deref(),
                     request.project_id,
                     Some(AgentHarnessKind::Codex),
                     request.model_override,
@@ -446,7 +447,7 @@ impl ResolvedChatHarnessCli {
                         &capabilities,
                         request.conversation,
                         request.user_message,
-                        None,
+                        request.conversation.bound_agent_name.as_deref(),
                         None,
                         request
                             .persona
@@ -529,6 +530,7 @@ impl ResolvedChatHarnessCli {
                 let resolved_spawn_settings = resolve_noninteractive_spawn_settings(
                     request.context_type,
                     entity_status.as_deref(),
+                    request.agent_name_override,
                     request.project_id,
                     Some(AgentHarnessKind::Codex),
                     request.model_override,
@@ -2449,8 +2451,9 @@ pub async fn build_command(
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Compute agent_name using the resolution system (context type + optional status + team mode)
-    let agent_name =
-        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode);
+    let agent_name = conversation.bound_agent_name.as_deref().unwrap_or_else(|| {
+        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
+    });
     tracing::debug!(
         agent_name,
         context_type = ?conversation.context_type,
@@ -2960,13 +2963,15 @@ pub async fn build_codex_command(
 async fn resolve_noninteractive_spawn_settings(
     context_type: ChatContextType,
     entity_status: Option<&str>,
+    agent_name_override: Option<&str>,
     project_id: Option<&str>,
     harness_override: Option<AgentHarnessKind>,
     model_override: Option<&str>,
     agent_lane_settings_repo: Option<&Arc<dyn AgentLaneSettingsRepository>>,
 ) -> ResolvedAgentSpawnSettings {
+    let agent_name = noninteractive_agent_name(context_type, entity_status, agent_name_override);
     crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
-        resolve_agent_with_team_mode(&context_type, entity_status, false),
+        &agent_name,
         project_id,
         context_type,
         entity_status,
@@ -2975,6 +2980,16 @@ async fn resolve_noninteractive_spawn_settings(
         agent_lane_settings_repo,
     )
     .await
+}
+
+pub(super) fn noninteractive_agent_name(
+    context_type: ChatContextType,
+    entity_status: Option<&str>,
+    agent_name_override: Option<&str>,
+) -> String {
+    agent_name_override
+        .unwrap_or_else(|| resolve_agent_with_team_mode(&context_type, entity_status, false))
+        .to_string()
 }
 
 async fn build_noninteractive_command_from_resolved_cli(

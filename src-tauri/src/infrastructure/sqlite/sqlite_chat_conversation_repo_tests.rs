@@ -29,6 +29,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,
@@ -80,6 +81,34 @@ async fn update_persona_binding_sets_and_clears() {
             .unwrap()
             .persona_id,
         None
+    );
+}
+
+#[tokio::test]
+async fn bound_agent_name_round_trips_and_updates() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let parent = make_conversation(ChatContextType::Project, "project-bound-agent-parent");
+    let parent_id = parent.id.as_str().to_string();
+    repo.create(parent).await.unwrap();
+    let mut conversation = make_conversation(ChatContextType::Project, "project-bound-agent");
+    conversation.parent_conversation_id = Some(parent_id);
+    conversation.bound_agent_name = Some("ralphx-workspace-reviewer".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    let loaded = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+
+    repo.update_bound_agent_name(&conversation.id, Some("ralphx-workspace-repair"))
+        .await
+        .unwrap();
+    let updated = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-repair")
     );
 }
 
@@ -290,6 +319,7 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::RxNativeTeam,
@@ -853,6 +883,7 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,

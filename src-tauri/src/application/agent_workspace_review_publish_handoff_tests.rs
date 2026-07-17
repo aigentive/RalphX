@@ -12,8 +12,9 @@ use crate::application::agent_workspace_review_publish_handoff::{
     has_pending_pr_fix_workspace_review_publish_handoff,
     pr_fix_publish_can_resume_after_workspace_review,
     pr_supervision_block_is_workspace_review_gate,
-    resume_pr_fix_publish_after_passed_workspace_review,
+    resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
     workspace_review_monitor_keeps_pr_fix_publish_handoff, PrFixReviewPublishResumeOutcome,
+    WorkspaceReviewAuthorizationKind,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -97,6 +98,19 @@ fn current_passed_monitor(target: &AgentWorkspaceReviewTarget) -> AgentWorkspace
     monitor.current_target_scope = Some(target.scope);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
     monitor.workspace_head_sha = target.head_sha.clone();
+    monitor
+}
+
+fn current_bypassed_monitor(target: &AgentWorkspaceReviewTarget) -> AgentWorkspaceReviewMonitor {
+    let mut monitor = current_passed_monitor(target);
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_blocking_summary = Some("The reviewer blocker remains.".to_string());
+    monitor.review_artifact_version = Some(2);
+    monitor.review_gate_bypassed_at = Some(chrono::Utc::now());
+    monitor.review_gate_bypassed_target_scope = Some(target.scope);
+    monitor.review_gate_bypassed_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.review_gate_bypassed_artifact_id = monitor.review_artifact_id.clone();
+    monitor.review_gate_bypassed_artifact_version = monitor.review_artifact_version;
     monitor
 }
 
@@ -203,6 +217,17 @@ fn handoff_is_open_only_for_current_reviewing_or_current_passed_monitor() {
     let passed_monitor = current_passed_monitor(&target);
     assert!(workspace_review_monitor_keeps_pr_fix_publish_handoff(
         Some(&passed_monitor),
+        Some(&target),
+    ));
+
+    let bypassed_monitor = current_bypassed_monitor(&target);
+    assert!(workspace_review_monitor_keeps_pr_fix_publish_handoff(
+        Some(&bypassed_monitor),
+        Some(&target),
+    ));
+    assert!(has_open_pr_fix_workspace_review_publish_handoff(
+        &events,
+        Some(&bypassed_monitor),
         Some(&target),
     ));
 
@@ -330,6 +355,70 @@ fn resume_predicate_requires_current_passed_review_and_publishable_pr_fix_state(
         Some(&target),
         &events,
     ));
+}
+
+#[test]
+fn resume_predicate_and_classification_accept_exact_human_bypass() {
+    let target = review_target();
+    let monitor = current_bypassed_monitor(&target);
+    let workspace = pr_fix_workspace();
+    let events = [publication_event(
+        "pr_autofix_workspace_review",
+        "reviewing",
+        Some("workspace_review_started"),
+    )];
+
+    assert!(pr_fix_publish_can_resume_after_workspace_review(
+        &workspace,
+        &monitor,
+        Some(&target),
+        &events,
+    ));
+    assert_eq!(
+        workspace_review_authorization_kind(&monitor, &target),
+        Some(WorkspaceReviewAuthorizationKind::HumanBypass)
+    );
+}
+
+#[tokio::test]
+async fn human_bypass_resumes_pr_fix_with_distinct_audit_classification() {
+    let repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let workspace = pr_fix_workspace();
+    let target = review_target();
+    let monitor = current_bypassed_monitor(&target);
+    repo.create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    repo.append_publication_event(publication_event(
+        "pr_autofix_workspace_review",
+        "reviewing",
+        Some("workspace_review_started"),
+    ))
+    .await
+    .expect("seed pending review event");
+
+    let outcome = resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &workspace.conversation_id,
+        &workspace,
+        &monitor,
+        Some(&target),
+        |_conversation_id| async { Ok(Some(true)) },
+    )
+    .await
+    .expect("resume publish");
+
+    assert_eq!(outcome, PrFixReviewPublishResumeOutcome::Published);
+    let events = repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list events");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix_workspace_review_passed"
+            && event.status == "publishing"
+            && event.classification.as_deref() == Some("workspace_review_approved_anyway")
+            && event.summary.contains("approved anyway")
+    }));
 }
 
 #[tokio::test]
