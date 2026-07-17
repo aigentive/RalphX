@@ -6,13 +6,17 @@ use super::agent_plan_commands::{
 };
 use super::ideation_commands::{apply_supervised_proposals_core, ApplyProposalsInput};
 use crate::application::{
-    agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
+    agent_conversation_workspace::resolve_agent_conversation_workspace_path,
+    agent_task_pipeline_service::{
+        validate_start_authority_sync, validate_supervised_task_pipeline,
+    },
+    AppState,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType, ArtifactType,
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionStatus, Priority, Project, ProposalCategory, TaskProposal,
+    IdeationSessionId, IdeationSessionStatus, Priority, Project, ProposalCategory, TaskProposal,
 };
 use crate::domain::repositories::PlanApprovalActor;
 use std::path::Path;
@@ -613,6 +617,303 @@ async fn start_tasks_requires_the_complete_current_proposal_set() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn task_pipeline_validation_rejects_empty_stale_and_non_user_authority() {
+    let empty_state = AppState::new_sqlite_for_apply_test();
+    let empty_error =
+        validate_complete_task_pipeline_proposal_selection(&empty_state, "missing-session", &[])
+            .await
+            .unwrap_err();
+    assert_eq!(empty_error, "Task pipeline has no proposals to start");
+
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Authority validation".to_string(),
+            content: "# Authority validation".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let wrong_mode = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        &seeded.session_id,
+        AgentConversationWorkspaceMode::Tasks,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(wrong_mode, "Agent workspace must be in tasks mode");
+
+    let wrong_attachment = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        "different-session",
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        wrong_attachment,
+        "Task pipeline session does not belong to this conversation"
+    );
+
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::Judge,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+
+    let non_user_approval = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        &seeded.session_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        non_user_approval,
+        "Current plan requires explicit user approval"
+    );
+}
+
+#[tokio::test]
+async fn start_authority_rejects_stale_state_and_accepts_restored_exact_state() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Transactional start authority".to_string(),
+            content: "# Transactional start authority".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let session_id = IdeationSessionId::from_string(seeded.session_id.clone());
+    let first = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "First authority proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let second = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "Second authority proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let conversation_id = conversation.id.as_str().to_string();
+    let session_id_string = seeded.session_id.clone();
+    let first_id = first.id.as_str().to_string();
+    let proposal_ids = vec![first_id.clone(), second.id.as_str().to_string()];
+
+    let stale_selection = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &[first_id],
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(stale_selection
+        .to_string()
+        .contains("Task proposals changed after review"));
+
+    let unacknowledged = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(unacknowledged
+        .to_string()
+        .contains("dependencies must be reviewed"));
+
+    state
+        .ideation_session_repo
+        .update_status(&session_id, IdeationSessionStatus::Accepted)
+        .await
+        .unwrap();
+    let inactive = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(inactive
+        .to_string()
+        .contains("no longer an active planning session"));
+
+    state
+        .ideation_session_repo
+        .update_status(&session_id, IdeationSessionStatus::Active)
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .set_dependencies_acknowledged(&seeded.session_id)
+        .await
+        .unwrap();
+    state
+        .db
+        .run({
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE plan_artifact_approvals SET approved_by = 'judge' WHERE session_id = ?1",
+                    [session_id_string],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let non_user = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(non_user
+        .to_string()
+        .contains("requires explicit user approval"));
+
+    state
+        .db
+        .run({
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE plan_artifact_approvals SET approved_by = 'user' WHERE session_id = ?1",
+                    [session_id_string],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    state
+        .db
+        .run({
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap();
+
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(state
+        .execution_plan_repo
+        .get_by_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

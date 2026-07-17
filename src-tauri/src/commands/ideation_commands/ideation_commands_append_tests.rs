@@ -2,9 +2,9 @@ use super::ideation_commands_append::*;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
-    ChatMessage, ExecutionPlan, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch, PlanBranchId,
-    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    ChatConversationId, ChatMessage, ExecutionPlan, ExecutionPlanId, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, MessageRole,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::error::AppError;
 
@@ -94,6 +94,19 @@ async fn attach_tasks_conversation(
     fixture: &AcceptedPlanFixture,
     publication_pr_status: Option<&str>,
 ) -> (String, String) {
+    attach_tasks_conversation_for_session(
+        fixture,
+        fixture.session_id.clone(),
+        publication_pr_status,
+    )
+    .await
+}
+
+async fn attach_tasks_conversation_for_session(
+    fixture: &AcceptedPlanFixture,
+    task_pipeline_session_id: IdeationSessionId,
+    publication_pr_status: Option<&str>,
+) -> (String, String) {
     let mut conversation = ChatConversation::new_project(fixture.project_id.clone());
     conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Tasks));
     let conversation = fixture
@@ -113,7 +126,7 @@ async fn attach_tasks_conversation(
         "ralphx/test/tasks-follow-up".to_string(),
         "/tmp/ralphx-tasks-follow-up".to_string(),
     );
-    workspace.task_pipeline_session_id = Some(fixture.session_id.clone());
+    workspace.task_pipeline_session_id = Some(task_pipeline_session_id);
     workspace.publication_pr_status = publication_pr_status.map(str::to_string);
     fixture
         .state
@@ -136,6 +149,25 @@ async fn attach_tasks_conversation(
         conversation.id.as_str().to_string(),
         message.id.as_str().to_string(),
     )
+}
+
+fn tasks_follow_up_input(
+    fixture: &AcceptedPlanFixture,
+    source_conversation_id: Option<String>,
+    source_message_id: Option<String>,
+) -> AppendIdeationPlanTaskInput {
+    AppendIdeationPlanTaskInput {
+        project_id: Some(fixture.project_id.as_str().to_string()),
+        session_id: fixture.session_id.as_str().to_string(),
+        title: "Address requested Tasks follow-up".to_string(),
+        description: None,
+        steps: vec![],
+        acceptance_criteria: vec!["Follow-up is covered".to_string()],
+        depends_on_task_ids: vec![],
+        priority: None,
+        source_conversation_id,
+        source_message_id,
+    }
 }
 
 async fn append_follow_up(
@@ -574,6 +606,157 @@ async fn tasks_owned_pipeline_rejects_append_without_source_identity() {
             .len(),
         task_count_before,
         "missing Tasks consent must not create a follow-up task",
+    );
+}
+
+#[tokio::test]
+async fn tasks_owned_pipeline_rejects_incomplete_or_foreign_source_identity() {
+    let fixture = accepted_plan_fixture(InternalStatus::Blocked).await;
+    let (conversation_id, message_id) = attach_tasks_conversation(&fixture, Some("open")).await;
+    let task_count_before = fixture
+        .state
+        .task_repo
+        .get_by_ideation_session(&fixture.session_id)
+        .await
+        .unwrap()
+        .len();
+
+    let missing_message_id = append_ideation_plan_task_core(
+        &fixture.state,
+        tasks_follow_up_input(&fixture, Some(conversation_id.clone()), None),
+    )
+    .await
+    .unwrap_err();
+    assert!(missing_message_id
+        .to_string()
+        .contains("require an explicit source user message"));
+
+    let foreign_conversation = append_ideation_plan_task_core(
+        &fixture.state,
+        tasks_follow_up_input(
+            &fixture,
+            Some("different-conversation".to_string()),
+            Some(message_id.clone()),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(foreign_conversation
+        .to_string()
+        .contains("owning conversation"));
+
+    let missing_message = append_ideation_plan_task_core(
+        &fixture.state,
+        tasks_follow_up_input(
+            &fixture,
+            Some(conversation_id),
+            Some("missing-message".to_string()),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(missing_message
+        .to_string()
+        .contains("source message was not found"));
+
+    assert_eq!(
+        fixture
+            .state
+            .task_repo
+            .get_by_ideation_session(&fixture.session_id)
+            .await
+            .unwrap()
+            .len(),
+        task_count_before,
+        "rejected Tasks identities must not create follow-up tasks",
+    );
+}
+
+#[tokio::test]
+async fn tasks_owned_pipeline_rejects_non_user_source_message() {
+    let fixture = accepted_plan_fixture(InternalStatus::Blocked).await;
+    let (conversation_id, _) = attach_tasks_conversation(&fixture, Some("open")).await;
+    let mut assistant_message = ChatMessage::user_in_project(
+        fixture.project_id.clone(),
+        "This assistant message cannot authorize follow-up work",
+    );
+    assistant_message.role = MessageRole::Orchestrator;
+    assistant_message.conversation_id =
+        Some(ChatConversationId::from_string(conversation_id.clone()));
+    let assistant_message = fixture
+        .state
+        .chat_message_repo
+        .create(assistant_message)
+        .await
+        .unwrap();
+    let task_count_before = fixture
+        .state
+        .task_repo
+        .get_by_ideation_session(&fixture.session_id)
+        .await
+        .unwrap()
+        .len();
+
+    let error = append_ideation_plan_task_core(
+        &fixture.state,
+        tasks_follow_up_input(
+            &fixture,
+            Some(conversation_id),
+            Some(assistant_message.id.as_str().to_string()),
+        ),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("reference a user message from the owning conversation"));
+    assert_eq!(
+        fixture
+            .state
+            .task_repo
+            .get_by_ideation_session(&fixture.session_id)
+            .await
+            .unwrap()
+            .len(),
+        task_count_before,
+    );
+}
+
+#[tokio::test]
+async fn tasks_conversation_cannot_authorize_a_different_pipeline() {
+    let fixture = accepted_plan_fixture(InternalStatus::Blocked).await;
+    let (conversation_id, message_id) = attach_tasks_conversation_for_session(
+        &fixture,
+        IdeationSessionId::from_string("different-pipeline"),
+        Some("open"),
+    )
+    .await;
+    let task_count_before = fixture
+        .state
+        .task_repo
+        .get_by_ideation_session(&fixture.session_id)
+        .await
+        .unwrap()
+        .len();
+
+    let error = append_ideation_plan_task_core(
+        &fixture.state,
+        tasks_follow_up_input(&fixture, Some(conversation_id), Some(message_id)),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("not attached to this pipeline"));
+    assert_eq!(
+        fixture
+            .state
+            .task_repo
+            .get_by_ideation_session(&fixture.session_id)
+            .await
+            .unwrap()
+            .len(),
+        task_count_before,
     );
 }
 
