@@ -300,7 +300,7 @@ pub async fn draft_agent_workspace_pr_description(
             crate::domain::agents::RoutingRole::UtilityPrDescriber,
             agent_names::AGENT_PR_DESCRIBER,
             "agent workspace PR describer",
-            None,
+            conversation.provider_harness,
         )
         .await?;
     let agent_client = Arc::clone(&runtime.client);
