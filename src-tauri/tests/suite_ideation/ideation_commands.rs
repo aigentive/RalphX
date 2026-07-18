@@ -2079,7 +2079,18 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         IdeationSession, PlanBranchStatus, Priority, Project, ProposalCategory, TaskProposal,
     };
 
-    let state = setup_apply_test_state();
+    let mut state = setup_apply_test_state();
+    let github = std::sync::Arc::new(crate::support::mock_github_service::MockGithubService::new());
+    github.will_return_status(
+        ralphx_lib::domain::services::github_service::PrStatus::Merged {
+            merge_commit_sha: Some("merged-before-second-restart".to_string()),
+            merged_at: Some("2026-07-18T10:00:00Z".to_string()),
+        },
+    );
+    state.github_service = Some(
+        github
+            as std::sync::Arc<dyn ralphx_lib::domain::services::github_service::GithubServiceTrait>,
+    );
     let repo_dir = setup_git_repo_for_apply_test();
     let origin_dir = tempfile::TempDir::new().unwrap();
     git_ok(

@@ -2577,7 +2577,7 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
 }
 
 #[tokio::test]
-async fn codex_verifier_command_disables_shell_tool() {
+async fn codex_legacy_verification_session_uses_active_ideation_features() {
     let home = tempfile::tempdir().expect("tempdir");
     let cli_temp = tempfile::tempdir().expect("tempdir");
     let cli_path = make_fake_codex_cli(&cli_temp);
@@ -2598,6 +2598,16 @@ async fn codex_verifier_command_disables_shell_tool() {
             .path()
             .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
         "runtime_features:\n  shell_tool: false\n",
+    );
+    write_file(
+        &cli_temp.path().join("agents/ralphx-ideation/agent.yaml"),
+        "name: ralphx-ideation\nrole: ideation_orchestrator\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-ideation/codex/agent.yaml"),
+        "runtime_features:\n  shell_tool: true\n",
     );
     let working_dir = cli_temp.path().to_path_buf();
     let parent_id = IdeationSessionId::new();
@@ -2645,12 +2655,25 @@ async fn codex_verifier_command_disables_shell_tool() {
         .await
     })
     .await
-    .expect("codex verifier command should build");
+    .expect("codex ideation command should build");
 
     let args = result.spawnable.get_args_for_test();
     assert!(
-        args.iter().any(|arg| arg == "features.shell_tool=false"),
-        "verifier Codex command must disable shell_tool: {args:?}"
+        args.iter().any(|arg| arg == "features.shell_tool=true"),
+        "verification must use the active ideation agent's Codex features: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "features.shell_tool=false"),
+        "legacy verifier features must not override the active ideation agent: {args:?}"
+    );
+    let rendered_args = args.join("\n");
+    assert!(
+        rendered_args.contains("--agent-type") && rendered_args.contains("ralphx-ideation"),
+        "verification must launch the active ideation agent: {args:?}"
+    );
+    assert!(
+        !rendered_args.contains("ralphx-plan-verifier"),
+        "verification must not resurrect the removed fixed verifier: {args:?}"
     );
 
     let envs = result.spawnable.get_envs_for_test();

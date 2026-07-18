@@ -3,17 +3,18 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use ralphx_lib::application::chat_service::{AppChatService, ChatService, ChatServiceError, SendMessageOptions};
+use ralphx_lib::application::chat_service::{
+    AppChatService, ChatService, ChatServiceError, SendMessageOptions,
+};
 use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
-use ralphx_lib::domain::execution::ExecutionSettings;
 use ralphx_lib::domain::entities::ideation::{SessionPurpose, VerificationStatus};
 use ralphx_lib::domain::entities::{
     ChatContextType, ChatMessage, IdeationSessionBuilder, IdeationSessionId, InternalStatus,
-    Project, ProjectId, Task, VerificationGap, VerificationRoundSnapshot,
-    VerificationRunSnapshot,
+    Project, ProjectId, Task, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
 };
+use ralphx_lib::domain::execution::ExecutionSettings;
 use ralphx_lib::domain::services::RunningAgentKey;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{
@@ -74,7 +75,12 @@ async fn create_active_session(state: &HttpServerState) -> IdeationSessionId {
         .project_id(ProjectId::new())
         .build();
     let id = session.id.clone();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
     id
 }
 
@@ -84,7 +90,12 @@ async fn create_active_session_in_project(
 ) -> IdeationSessionId {
     let session = IdeationSessionBuilder::new().project_id(project_id).build();
     let id = session.id.clone();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
     id
 }
 
@@ -97,7 +108,12 @@ async fn create_active_session_with_purpose(
         .session_purpose(purpose)
         .build();
     let id = session.id.clone();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
     id
 }
 
@@ -165,7 +181,14 @@ async fn test_get_child_session_status_likely_generating() {
     state
         .app_state
         .running_agent_registry
-        .register(key.clone(), 99999, "test-conv".to_string(), "test-run".to_string(), None, None)
+        .register(
+            key.clone(),
+            99999,
+            "test-conv".to_string(),
+            "test-run".to_string(),
+            None,
+            None,
+        )
         .await;
     state
         .app_state
@@ -173,12 +196,9 @@ async fn test_get_child_session_status_likely_generating() {
         .update_heartbeat(&key, chrono::Utc::now())
         .await;
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(no_messages_params()),
-    )
-    .await;
+    let result =
+        get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
+            .await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
@@ -199,7 +219,14 @@ async fn test_get_child_session_status_likely_waiting() {
     state
         .app_state
         .running_agent_registry
-        .register(key.clone(), 99998, "test-conv-2".to_string(), "test-run-2".to_string(), None, None)
+        .register(
+            key.clone(),
+            99998,
+            "test-conv-2".to_string(),
+            "test-run-2".to_string(),
+            None,
+            None,
+        )
         .await;
     let stale = chrono::Utc::now() - chrono::Duration::seconds(1000);
     state
@@ -208,12 +235,9 @@ async fn test_get_child_session_status_likely_waiting() {
         .update_heartbeat(&key, stale)
         .await;
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(no_messages_params()),
-    )
-    .await;
+    let result =
+        get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
+            .await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
@@ -230,12 +254,9 @@ async fn test_get_child_session_status_idle() {
     let session_id = create_active_session(&state).await;
     let sid_str = session_id.as_str().to_string();
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(no_messages_params()),
-    )
-    .await;
+    let result =
+        get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
+            .await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
@@ -260,12 +281,7 @@ async fn test_get_child_session_status_include_messages_truncated() {
         message_limit: Some(5),
     };
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(params),
-    )
-    .await;
+    let result = get_child_session_status_handler(State(state), Path(sid_str), Query(params)).await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
@@ -292,7 +308,11 @@ async fn test_get_child_session_status_not_found_returns_404() {
 
     assert!(result.is_err(), "expected Err for missing session");
     let (status, _body) = result.unwrap_err();
-    assert_eq!(status, StatusCode::NOT_FOUND, "must return 404 for missing session");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "must return 404 for missing session"
+    );
 }
 
 #[tokio::test]
@@ -311,15 +331,14 @@ async fn test_get_child_session_status_message_limit_clamped_to_50() {
         message_limit: Some(10000),
     };
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(params),
-    )
-    .await;
+    let result = get_child_session_status_handler(State(state), Path(sid_str), Query(params)).await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
-    let messages = result.unwrap().0.recent_messages.expect("messages must be returned");
+    let messages = result
+        .unwrap()
+        .0
+        .recent_messages
+        .expect("messages must be returned");
     assert!(
         messages.len() <= 50,
         "message_limit=10000 must be clamped to 50, got {}",
@@ -337,7 +356,14 @@ async fn test_get_child_session_status_heartbeat_at_exact_threshold_is_likely_wa
     state
         .app_state
         .running_agent_registry
-        .register(key.clone(), 99997, "test-conv-3".to_string(), "test-run-3".to_string(), None, None)
+        .register(
+            key.clone(),
+            99997,
+            "test-conv-3".to_string(),
+            "test-run-3".to_string(),
+            None,
+            None,
+        )
         .await;
 
     let default_threshold_secs: i64 = 10;
@@ -348,12 +374,9 @@ async fn test_get_child_session_status_heartbeat_at_exact_threshold_is_likely_wa
         .update_heartbeat(&key, at_boundary)
         .await;
 
-    let result = get_child_session_status_handler(
-        State(state),
-        Path(sid_str),
-        Query(no_messages_params()),
-    )
-    .await;
+    let result =
+        get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
+            .await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
@@ -374,7 +397,12 @@ async fn test_get_child_session_status_native_verification_snapshot_populated() 
         .build();
     let session_id_obj = session.id.clone();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     state
         .app_state
@@ -420,10 +448,16 @@ async fn test_get_child_session_status_native_verification_snapshot_populated() 
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
     let resp = result.unwrap().0;
-    let verification = resp.verification.expect("verification must be populated for non-Unverified status");
+    let verification = resp
+        .verification
+        .expect("verification must be populated for non-Unverified status");
     assert_eq!(verification.status, "reviewing");
     assert_eq!(verification.generation, 2);
-    assert_eq!(verification.current_round, Some(2), "current_round=2 from native snapshot");
+    assert_eq!(
+        verification.current_round,
+        Some(2),
+        "current_round=2 from native snapshot"
+    );
     assert_eq!(
         verification.gap_score,
         Some(3),
@@ -442,7 +476,12 @@ async fn test_get_child_session_status_prefers_native_verification_snapshot() {
         .build();
     let session_id_obj = session.id.clone();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     state
         .app_state
@@ -512,7 +551,12 @@ async fn test_get_child_session_status_without_native_snapshot_returns_empty_ver
         .verification_status(VerificationStatus::Reviewing)
         .build();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = get_child_session_status_handler(
         State(state),
@@ -521,9 +565,15 @@ async fn test_get_child_session_status_without_native_snapshot_returns_empty_ver
     )
     .await;
 
-    assert!(result.is_ok(), "missing native snapshot must not cause 500: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "missing native snapshot must not cause 500: {:?}",
+        result.err()
+    );
     let resp = result.unwrap().0;
-    let verification = resp.verification.expect("VerificationInfo present for non-Unverified status");
+    let verification = resp
+        .verification
+        .expect("VerificationInfo present for non-Unverified status");
     assert_eq!(verification.status, "reviewing");
     assert!(
         verification.gap_score.is_none(),
@@ -561,7 +611,10 @@ async fn test_send_ideation_session_message_interactive_session_key_sent() {
 
     let mut written = String::new();
     let mut reader = BufReader::new(stdout);
-    reader.read_line(&mut written).await.expect("read cat stdout");
+    reader
+        .read_line(&mut written)
+        .await
+        .expect("read cat stdout");
     let _ = child.kill().await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
@@ -569,7 +622,9 @@ async fn test_send_ideation_session_message_interactive_session_key_sent() {
     let payload: serde_json::Value = serde_json::from_str(written.trim_end()).expect("valid JSON");
     assert_eq!(payload["type"], "user");
     assert_eq!(payload["message"]["role"], "user");
-    let content = payload["message"]["content"].as_str().expect("content string");
+    let content = payload["message"]["content"]
+        .as_str()
+        .expect("content string");
     assert!(
         content.contains(&format!("<context_id>{sid_str}</context_id>")),
         "content must include ideation context wrapper: {content}"
@@ -606,7 +661,10 @@ async fn test_send_ideation_session_message_interactive_ideation_key_sent() {
 
     let mut written = String::new();
     let mut reader = BufReader::new(stdout);
-    reader.read_line(&mut written).await.expect("read cat stdout");
+    reader
+        .read_line(&mut written)
+        .await
+        .expect("read cat stdout");
     let _ = child.kill().await;
 
     assert!(result.is_ok(), "expected Ok: {:?}", result.err());
@@ -614,7 +672,9 @@ async fn test_send_ideation_session_message_interactive_ideation_key_sent() {
     let payload: serde_json::Value = serde_json::from_str(written.trim_end()).expect("valid JSON");
     assert_eq!(payload["type"], "user");
     assert_eq!(payload["message"]["role"], "user");
-    let content = payload["message"]["content"].as_str().expect("content string");
+    let content = payload["message"]["content"]
+        .as_str()
+        .expect("content string");
     assert!(
         content.contains(&format!("<context_id>{sid_str}</context_id>")),
         "content must include ideation context wrapper: {content}"
@@ -635,7 +695,14 @@ async fn test_send_ideation_session_message_running_session_key_queued() {
     state
         .app_state
         .running_agent_registry
-        .register(agent_key, 88888, "test-conv-q".to_string(), "test-run-q".to_string(), None, None)
+        .register(
+            agent_key,
+            88888,
+            "test-conv-q".to_string(),
+            "test-run-q".to_string(),
+            None,
+            None,
+        )
         .await;
 
     let result = send_ideation_session_message_handler(
@@ -665,7 +732,14 @@ async fn test_send_ideation_session_message_running_ideation_key_queued() {
     state
         .app_state
         .running_agent_registry
-        .register(agent_key, 77777, "test-conv-iq".to_string(), "test-run-iq".to_string(), None, None)
+        .register(
+            agent_key,
+            77777,
+            "test-conv-iq".to_string(),
+            "test-run-iq".to_string(),
+            None,
+            None,
+        )
         .await;
 
     let result = send_ideation_session_message_handler(
@@ -780,7 +854,12 @@ async fn test_verification_child_session_counts_against_ideation_cap() {
 async fn test_project_ideation_cap_blocks_same_project_spawn() {
     let state = setup_test_state().await;
     let project = Project::new("Project Cap".to_string(), "/tmp/project-cap".to_string());
-    state.app_state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     state
         .app_state
@@ -838,7 +917,12 @@ async fn test_project_ideation_cap_blocks_same_project_spawn() {
 async fn test_borrowing_stays_blocked_when_ready_execution_waits() {
     let state = setup_test_state().await;
     let project = Project::new("Borrow Block".to_string(), "/tmp/borrow-block".to_string());
-    state.app_state.project_repo.create(project.clone()).await.unwrap();
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let occupied_session_id = create_active_session_in_project(&state, project.id.clone()).await;
     let target_session_id = create_active_session_in_project(&state, project.id.clone()).await;
@@ -888,7 +972,22 @@ async fn test_chat_service_spawn_blocked_in_test_mode() {
     let state = setup_test_state().await;
     let fake_cli = make_fake_claude_cli();
     configure_fake_claude_cli(&state, &fake_cli.path).await;
-    let session_id = create_active_session(&state).await;
+    let project = Project::new(
+        "Spawn Blocked".to_string(),
+        fake_cli
+            .path
+            .parent()
+            .expect("fake CLI must have a parent directory")
+            .to_string_lossy()
+            .to_string(),
+    );
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project must be persisted for lane resolution");
+    let session_id = create_active_session_in_project(&state, project.id).await;
 
     let chat_service = build_ideation_chat_service(&state).with_cli_path(fake_cli.path.clone());
     let result = chat_service
@@ -954,7 +1053,11 @@ async fn test_chat_service_persists_idle_ideation_message_when_execution_paused(
 
     let key = RunningAgentKey::new("ideation", session_id.as_str());
     assert!(
-        !state.app_state.running_agent_registry.is_running(&key).await,
+        !state
+            .app_state
+            .running_agent_registry
+            .is_running(&key)
+            .await,
         "paused ideation send must not register a running agent"
     );
 }
@@ -971,7 +1074,12 @@ async fn test_send_ideation_session_message_agent_idle_spawn_blocked_in_test_mod
         .build();
     session.status = ralphx_lib::domain::entities::ideation::IdeationSessionStatus::Active;
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = send_ideation_session_message_handler(
         State(state),
@@ -996,12 +1104,19 @@ async fn test_send_ideation_session_message_archived_session_returns_422() {
         .status(ralphx_lib::domain::entities::ideation::IdeationSessionStatus::Archived)
         .build();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = send_ideation_session_message_handler(
         State(state),
         Path(session_id),
-        Json(SendSessionMessageRequest { message: "Hello".to_string() }),
+        Json(SendSessionMessageRequest {
+            message: "Hello".to_string(),
+        }),
     )
     .await;
 
@@ -1023,12 +1138,19 @@ async fn test_send_ideation_session_message_accepted_session_returns_422() {
         .status(ralphx_lib::domain::entities::ideation::IdeationSessionStatus::Accepted)
         .build();
     let session_id = session.id.as_str().to_string();
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = send_ideation_session_message_handler(
         State(state),
         Path(session_id),
-        Json(SendSessionMessageRequest { message: "Hello".to_string() }),
+        Json(SendSessionMessageRequest {
+            message: "Hello".to_string(),
+        }),
     )
     .await;
 
@@ -1050,13 +1172,19 @@ async fn test_send_ideation_session_message_empty_message_returns_422() {
     let result = send_ideation_session_message_handler(
         State(state),
         Path(sid_str),
-        Json(SendSessionMessageRequest { message: String::new() }),
+        Json(SendSessionMessageRequest {
+            message: String::new(),
+        }),
     )
     .await;
 
     assert!(result.is_err(), "empty message must be rejected");
     let (status, _body) = result.unwrap_err();
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "empty message → 422");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "empty message → 422"
+    );
 }
 
 #[tokio::test]
@@ -1070,13 +1198,19 @@ async fn test_send_ideation_session_message_too_long_returns_422() {
     let result = send_ideation_session_message_handler(
         State(state),
         Path(sid_str),
-        Json(SendSessionMessageRequest { message: huge_message }),
+        Json(SendSessionMessageRequest {
+            message: huge_message,
+        }),
     )
     .await;
 
     assert!(result.is_err(), "message >10000 chars must be rejected");
     let (status, _body) = result.unwrap_err();
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "too-long message → 422");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "too-long message → 422"
+    );
 }
 
 #[tokio::test]
