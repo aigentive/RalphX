@@ -1914,7 +1914,7 @@ export interface AgentConversationWorkspace {
   updatedAt: string;
 }
 
-export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+export type WorkspaceOpenTargetKind = "editor" | "terminal" | "fileManager";
 
 export interface WorkspaceOpenTarget {
   id: string;
@@ -2673,7 +2673,7 @@ const SetAgentWorkspacePrReviewAutoApproveResponseSchema = z.object({
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
   label: z.string(),
-  kind: z.enum(["editor", "fileManager"]),
+  kind: z.enum(["editor", "terminal", "fileManager"]),
 });
 
 export const StartAgentConversationResponseSchema = z.object({
