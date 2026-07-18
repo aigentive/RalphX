@@ -126,18 +126,10 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
     state: &AppState,
 ) -> crate::error::AppResult<()> {
     let mut pr_numbers = Vec::with_capacity(2);
-    if let Some(number) = linked_plan_branch.pr_number.filter(|_| {
-        !matches!(
-            linked_plan_branch.pr_status,
-            Some(PrStatus::Merged | PrStatus::Closed)
-        )
-    }) {
+    if let Some(number) = linked_plan_branch.pr_number {
         pr_numbers.push(number);
     }
-    if let Some(number) = workspace
-        .publication_pr_number
-        .filter(|_| !workspace.has_terminal_publication_pr_status())
-    {
+    if let Some(number) = workspace.publication_pr_number {
         if !pr_numbers.contains(&number) {
             pr_numbers.push(number);
         }

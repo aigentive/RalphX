@@ -1058,9 +1058,9 @@ async fn test_execution_complete_without_test_result_leaves_no_cache() {
     );
 }
 
-/// execution_complete emits task:execution_completed to external_events_repo.
+/// execution_complete acknowledgement does not emit the completion event before finalizer authority.
 #[tokio::test]
-async fn test_execution_complete_emits_external_event() {
+async fn test_execution_complete_defers_external_event_to_finalizer() {
     let state = setup_test_state().await;
 
     let project = create_test_project(&state, "Webhook Project", "/tmp/webhook-project").await;
@@ -1083,7 +1083,6 @@ async fn test_execution_complete_emits_external_event() {
     .unwrap();
     assert!(response.0.success);
 
-    // Verify task:execution_completed was persisted to external_events
     let events = state
         .app_state
         .external_events_repo
@@ -1091,34 +1090,10 @@ async fn test_execution_complete_emits_external_event() {
         .await
         .expect("get_events_after_cursor should succeed");
 
-    let exec_completed = events
-        .iter()
-        .find(|e| e.event_type == "task:execution_completed");
     assert!(
-        exec_completed.is_some(),
-        "task:execution_completed event must be persisted to external_events_repo"
-    );
-
-    let event = exec_completed.unwrap();
-    let payload: serde_json::Value =
-        serde_json::from_str(&event.payload).expect("payload must be valid JSON");
-    assert_eq!(
-        payload["task_id"].as_str(),
-        Some(task_id.as_str()),
-        "event payload must include task_id"
-    );
-    assert_eq!(
-        payload["project_id"].as_str(),
-        Some(project_id.as_str()),
-        "event payload must include project_id"
-    );
-    assert_eq!(
-        payload["outcome"].as_str(),
-        Some("completed"),
-        "event payload must include outcome=completed"
-    );
-    assert!(
-        payload["timestamp"].is_string(),
-        "event payload must include timestamp"
+        events
+            .iter()
+            .all(|event| event.event_type != "task:execution_completed"),
+        "task:execution_completed must be emitted only after the finalizer transition wins"
     );
 }
