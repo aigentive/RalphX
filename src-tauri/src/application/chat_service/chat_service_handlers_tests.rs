@@ -627,8 +627,13 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
 
 #[tokio::test]
 async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
     let provider_gate = RecoveryRetryProviderGate::new(
-        &None,
+        &app_handle,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,

@@ -245,7 +245,7 @@ fn session_recovery_provider_block_error_preserves_provider_errors() {
 }
 
 #[tokio::test]
-async fn attempt_session_recovery_blocks_review_without_provider_settings_before_spawn() {
+async fn attempt_session_recovery_uses_managed_review_provider_settings_until_stream_failure() {
     let state = AppState::new_test();
     let task_id = TaskId::new();
     let conversation = ChatConversation::new_review(task_id.clone());
@@ -257,6 +257,15 @@ async fn attempt_session_recovery_blocks_review_without_provider_settings_before
         .create(historical_message)
         .await
         .expect("seed conversation history");
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
     let error = attempt_session_recovery::<MockRuntime>(
@@ -271,27 +280,32 @@ async fn attempt_session_recovery_blocks_review_without_provider_settings_before
         temp_dir.path(),
         None,
         false,
-        Arc::clone(&state.chat_message_repo),
-        Arc::clone(&state.chat_conversation_repo),
-        Arc::clone(&state.chat_attachment_repo),
-        Arc::clone(&state.artifact_repo),
+        chat_message_repo,
+        chat_conversation_repo,
+        chat_attachment_repo,
+        artifact_repo,
         None,
         None,
-        Arc::clone(&state.agent_run_repo),
+        agent_run_repo,
         "recovery-run-id",
         None,
         false,
         false,
         "old-session",
-        None,
+        Some(app.handle()),
     )
     .await
-    .expect_err("review recovery must fail closed before spawning without provider settings");
+    .expect_err("review recovery should reach the inert stream with managed provider settings");
     let message = error.to_string();
 
     assert!(
-        message.contains("Provider settings were unavailable for review runtime"),
-        "{message}"
+        !message.contains("Provider settings were unavailable"),
+        "managed review recovery must use AppState provider settings: {message}"
+    );
+    assert!(
+        message.contains("Recovery failed")
+            || message.contains("Recovery stream processing failed"),
+        "review recovery should fail only after policy and provider gates: {message}"
     );
 }
 
@@ -309,6 +323,15 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         .create(historical_message)
         .await
         .expect("seed conversation history");
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
     let error = attempt_session_recovery::<MockRuntime>(
@@ -323,19 +346,19 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         temp_dir.path(),
         None,
         false,
-        Arc::clone(&state.chat_message_repo),
-        Arc::clone(&state.chat_conversation_repo),
-        Arc::clone(&state.chat_attachment_repo),
-        Arc::clone(&state.artifact_repo),
+        chat_message_repo,
+        chat_conversation_repo,
+        chat_attachment_repo,
+        artifact_repo,
         None,
         None,
-        Arc::clone(&state.agent_run_repo),
+        agent_run_repo,
         "recovery-run-id",
         None,
         false,
         false,
         "old-session",
-        None,
+        Some(app.handle()),
     )
     .await
     .expect_err("project recovery should reach the inert stream without provider settings");
