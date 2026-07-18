@@ -96,6 +96,25 @@ function renderRow() {
 }
 
 describe("AgentRoleDefaultRow", () => {
+  it("labels bridged legacy workspace-review defaults", () => {
+    render(
+      <AgentRoleDefaultRow
+        entry={{ ...entry, source: "legacy_workspace_review" }}
+        disabled={false}
+        providers={["codex"]}
+        modelsForProvider={() => []}
+        personas={[]}
+        onUpdate={vi.fn()}
+        onFollow={vi.fn()}
+        onManagePersonas={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Manual default · Legacy Workspace Review"),
+    ).toBeInTheDocument();
+  });
+
   it("shows diagnostics and persists every editable runtime field", async () => {
     const user = userEvent.setup();
     const { onUpdate } = renderRow();

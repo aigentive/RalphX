@@ -25,6 +25,7 @@ pub enum ManualDefaultSource {
     GlobalUi,
     GlobalYaml,
     LegacyLane,
+    LegacyWorkspaceReview,
     ProviderDefault,
 }
 
@@ -36,6 +37,7 @@ impl ManualDefaultSource {
             Self::GlobalUi => "global_ui",
             Self::GlobalYaml => "global_yaml",
             Self::LegacyLane => "legacy_lane",
+            Self::LegacyWorkspaceReview => "legacy_workspace_review",
             Self::ProviderDefault => "provider_default",
         }
     }

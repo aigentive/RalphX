@@ -31,20 +31,24 @@ import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
+  focusedWorkspaceReviewConversation?: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
   focusedWorkspaceReviewConversationId?: string | null;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
+  workspaceReviewerRuntime: AgentRuntimeSelection | null;
 }
 
 export function useAgentsWorkspaceModel({
   activeConversation,
+  focusedWorkspaceReviewConversation = null,
   focusedWorkspaceReviewConversationId = null,
   optimisticWorkspacesByConversationId,
   modelRegistry,
   runtimeByConversationId,
   selectedConversationId,
+  workspaceReviewerRuntime,
 }: UseAgentsWorkspaceModelArgs) {
   const conversationWorkspaceQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspace(selectedConversationId),
@@ -71,7 +75,9 @@ export function useAgentsWorkspaceModel({
   const activeRuntime = focusedWorkspaceReviewConversationId
     ? runtimeForWorkspaceReviewFocus(
         workspaceRuntime,
-        runtimeByConversationId[focusedWorkspaceReviewConversationId] ?? null,
+        runtimeByConversationId[focusedWorkspaceReviewConversationId] ??
+          runtimeFromConversation(focusedWorkspaceReviewConversation),
+        workspaceReviewerRuntime,
       )
     : workspaceRuntime;
   const normalizedActiveRuntime = normalizeRuntimeForPersistence(

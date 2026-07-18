@@ -92,7 +92,6 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
       refetchQueries: vi.fn(),
     } as unknown as QueryClient,
     runtimeConversationId: "conversation-1",
-    runtimeDefaultPolicy: "provider_default",
     runtimeByConversationId: {},
     selectedConversationId: "conversation-1",
     setRuntimeForConversation: vi.fn(),
@@ -221,7 +220,7 @@ describe("useAgentsActiveComposerControls", () => {
     );
   });
 
-  it("normalizes review provider changes to a utility-tier model", () => {
+  it("normalizes review provider changes through the provider default catalog", () => {
     const setRuntimeForConversation = vi.fn();
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(
@@ -232,7 +231,6 @@ describe("useAgentsActiveComposerControls", () => {
             effort: "medium",
           },
           runtimeConversationId: "review-conversation-1",
-          runtimeDefaultPolicy: "workspace_review_utility",
           setRuntimeForConversation,
         }),
       ),
@@ -252,8 +250,8 @@ describe("useAgentsActiveComposerControls", () => {
       "project-1",
       {
         provider: "codex",
-        modelId: "gpt-5.4-mini",
-        effort: "medium",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
       },
     );
   });
