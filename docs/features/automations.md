@@ -17,7 +17,7 @@ Automation run presentation is state-only on the wire and selector-owned in the 
 
 - Run detail responses include `plan_phase`, `plan_artifact_id`, `plan_approved_by`, `plan_approved_artifact_version`, and `plan_approved_at`. Approval-match and plan-phase fields are scoped to the open run; `plan_artifact_id` remains available for any run linked to a Planning session so terminal run plans stay auditable.
 - Run conversations open through the setup conversation with an `automation_run` focus overlay. Opening a run never selects a separate sidebar row, and terminalization does not downgrade the visible run audit view.
-- Run conversation tabs are policy-driven: Automation is always present, Plan is visible but disabled until the run has a plan artifact, PR appears only when the run has PR metadata, and Publish plus integration tabs are hidden for run surfaces.
+- Run conversation tabs are policy-driven: Automation is always present, Plan is visible but disabled until the run has a plan artifact, PR appears only when the run has PR metadata, and Commit & Publish appears only when the focused run has a publishable agent workspace. Integration tabs remain hidden for run surfaces.
 - Parked `awaiting_plan_approval` runs keep the composer editable for plan revisions. Other runs are read-only while the latest run still holds goal authority; fully settled audit conversations may accept chat turns without re-entering the automation lifecycle.
 - Run update events carry the owning automation id and refresh only that automation detail. Automation-level events refresh lists, the detail record, and the Automation sidebar grouping.
 
