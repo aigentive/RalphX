@@ -384,7 +384,19 @@ jobs:
           cargo nextest run \
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
-            --tests \
+            --test suite_agent_workspace \
+            --test suite_chat_service \
+            --test suite_commands \
+            --test suite_http_handlers \
+            --test suite_ideation \
+            --test suite_interactive_process \
+            --test suite_ipc_commands \
+            --test suite_metrics \
+            --test suite_pr_github \
+            --test suite_sqlite_flows \
+            --test suite_sqlite_repos \
+            --test suite_transition_git \
+            --test plan_selector_performance \
             --features test-utils
 
   rust-macos-build:
