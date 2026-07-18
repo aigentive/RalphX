@@ -601,9 +601,7 @@ async function handleGrep(args, filesystemEnforced) {
         content: [{ type: "text", text: response }],
     };
 }
-export async function handleFilesystemToolCall(name, rawArgs, runtimeContext = {
-    filesystemEnforced: false,
-}) {
+export async function handleFilesystemToolCall(name, rawArgs, runtimeContext) {
     if (!isFilesystemToolName(name)) {
         throw new Error(`Unknown filesystem tool "${name}".`);
     }

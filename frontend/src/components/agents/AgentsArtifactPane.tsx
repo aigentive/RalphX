@@ -2148,7 +2148,10 @@ function ArtifactContent({
   ) {
     return (
       <Suspense fallback={<PersonaArtifactSkeletonFallback />}>
-        <LazyPersonaArtifactPanel conversation={conversation} />
+        <LazyPersonaArtifactPanel
+          key={conversation.id}
+          conversation={conversation}
+        />
       </Suspense>
     );
   }

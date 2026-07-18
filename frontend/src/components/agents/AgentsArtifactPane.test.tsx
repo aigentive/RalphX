@@ -1895,6 +1895,117 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it.each([
+    ["alpha", "beta"],
+    ["beta", "alpha"],
+  ])(
+    "does not render %s approval state after switching to %s mid-approve",
+    async (fromId, toId) => {
+      const queryClient = createTestQueryClient();
+      let resolveApproval:
+        | ((value: Record<string, string | number | null>) => void)
+        | undefined;
+      const approval = new Promise<Record<string, string | number | null>>(
+        (resolve) => {
+          resolveApproval = resolve;
+        },
+      );
+      const rawPersona = (id: string, status: "draft" | "active") => ({
+        id: status === "draft" ? `draft-${id}` : `persona-${id}`,
+        artifact_id: null,
+        project_id: "project-1",
+        slug: `${id}-voice`,
+        name: `${id.toUpperCase()} Voice`,
+        description: `${id} description`,
+        content: `${id.toUpperCase()} persona content`,
+        status,
+        version: 1,
+        content_hash: `${id}-hash`,
+        source_session_id: `conversation-${id}`,
+        source_persona_id: null,
+        source_content_hash: null,
+        created_at: "2026-07-17T08:00:00Z",
+        updated_at: "2026-07-17T08:00:00Z",
+      });
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        if (command === "get_persona") {
+          const id = (args as { input: { id: string } }).input.id.replace(
+            "draft-",
+            "",
+          );
+          return rawPersona(id, "draft");
+        }
+        if (command === "approve_persona") {
+          return approval;
+        }
+        return defaultReviewSettings;
+      });
+      const pane = (id: string) => (
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={0}>
+            <div className="h-[480px]">
+              <AgentsArtifactPane
+                conversation={{
+                  ...conversation(),
+                  id: `conversation-${id}`,
+                  agentMode: "persona_builder",
+                  builderDraftId: `draft-${id}`,
+                  builderResultPersonaId: null,
+                }}
+                workspace={null}
+                activeTab="persona"
+                taskMode="graph"
+                onTabChange={() => {}}
+                onTaskModeChange={() => {}}
+                onPublishWorkspace={vi.fn()}
+                isPublishingWorkspace={false}
+                onClose={() => {}}
+              />
+            </div>
+          </TooltipProvider>
+        </QueryClientProvider>
+      );
+      const { rerender } = render(pane(fromId));
+      const approveButton = await screen.findByRole("button", {
+        name: "Approve persona",
+      });
+      const oldScrollContainer = approveButton.closest(".overflow-y-auto");
+      expect(oldScrollContainer).not.toBeNull();
+      oldScrollContainer!.scrollTop = 48;
+      approveButton.focus();
+      fireEvent.click(approveButton);
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("approve_persona", {
+          input: { id: `draft-${fromId}` },
+        }),
+      );
+
+      rerender(pane(toId));
+      expect(await screen.findByText(`${toId.toUpperCase()} persona content`))
+        .toBeInTheDocument();
+      const incomingApprove = screen.getByRole("button", {
+        name: "Approve persona",
+      });
+      const newScrollContainer = incomingApprove.closest(".overflow-y-auto");
+      expect(newScrollContainer).not.toBe(oldScrollContainer);
+      expect(newScrollContainer).toHaveProperty("scrollTop", 0);
+      expect(approveButton).not.toBeInTheDocument();
+
+      await act(async () => {
+        resolveApproval?.(rawPersona(fromId, "active"));
+        await approval;
+      });
+
+      expect(screen.getByText(`${toId.toUpperCase()} persona content`))
+        .toBeInTheDocument();
+      expect(
+        screen.queryByText(`${fromId.toUpperCase()} persona content`),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Approve persona" }))
+        .toBeInTheDocument();
+    },
+  );
+
   it("filters hidden tabs and exposes the right-click hide action", async () => {
     const onHideTab = vi.fn();
     renderPane(

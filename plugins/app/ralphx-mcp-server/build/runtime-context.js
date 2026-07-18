@@ -56,7 +56,12 @@ export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
         }
     }
     const cliFilesystemReadRoots = parseCliOptionsFromArgs(args, "filesystem-read-root").filter((value) => value.length > 0);
-    if (cliFilesystemReadRoots.length > 0) {
+    if (context.filesystemEnforced) {
+        const serialized = JSON.stringify(cliFilesystemReadRoots);
+        env.RALPHX_FILESYSTEM_READ_ROOTS = serialized;
+        context.filesystemReadRoots = serialized;
+    }
+    else if (cliFilesystemReadRoots.length > 0) {
         const serialized = JSON.stringify(cliFilesystemReadRoots);
         env.RALPHX_FILESYSTEM_READ_ROOTS = serialized;
         context.filesystemReadRoots = serialized;

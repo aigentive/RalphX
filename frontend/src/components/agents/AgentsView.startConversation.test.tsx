@@ -1991,7 +1991,12 @@ describe("AgentsView start conversation", () => {
       capabilityIntent: { coordinationMode: "rx_native_team" },
     });
 
-    expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+    expect(createConversationMock).toHaveBeenCalledWith(
+      "standalone",
+      null,
+      undefined,
+      "persona_builder",
+    );
     expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
       input: {
         conversationId: "builder-global-1",

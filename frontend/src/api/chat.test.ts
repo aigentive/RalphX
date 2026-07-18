@@ -1402,6 +1402,29 @@ describe("chat api", () => {
     });
   });
 
+  it("creates a persona builder with its mode persisted before setup", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-builder-1",
+      context_type: "standalone",
+      context_id: "standalone-builder-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      agent_mode: "persona_builder",
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone", null, undefined, "persona_builder");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone", mode: "persona_builder" },
+    });
+  });
+
   it("updates conversation title", async () => {
     mockInvoke.mockResolvedValue({
       id: "c-title",

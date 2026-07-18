@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { formatFilesystemToolError, handleFilesystemToolCall, } from "../filesystem-tools.js";
+import { formatFilesystemToolError, handleFilesystemToolCall as handleFilesystemToolCallWithContext, } from "../filesystem-tools.js";
+const handleFilesystemToolCall = (name, rawArgs, runtimeContext = { filesystemEnforced: false }) => handleFilesystemToolCallWithContext(name, rawArgs, runtimeContext);
 describe("filesystem tools", () => {
     const tempDirs = [];
     const originalCwd = process.cwd();

@@ -9,7 +9,7 @@ type ToolResult = {
     }>;
     isError?: boolean;
 };
-export declare function handleFilesystemToolCall(name: string, rawArgs: unknown, runtimeContext?: Pick<RuntimeContext, "filesystemEnforced">): Promise<ToolResult>;
+export declare function handleFilesystemToolCall(name: string, rawArgs: unknown, runtimeContext: Pick<RuntimeContext, "filesystemEnforced">): Promise<ToolResult>;
 export declare function formatFilesystemToolError(error: unknown): ToolResult;
 export {};
 //# sourceMappingURL=filesystem-tools.d.ts.map

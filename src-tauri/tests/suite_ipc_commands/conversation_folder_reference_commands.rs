@@ -6,13 +6,29 @@ use ralphx_lib::commands::conversation_folder_reference_commands::{
     remove_conversation_folder_reference_for_state, AddConversationFolderReferenceInput,
     RemoveConversationFolderReferenceInput,
 };
+use ralphx_lib::commands::unified_chat_commands::{
+    create_agent_conversation, CreateAgentConversationInput,
+};
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, ChatConversationId, IdeationSessionId,
-    ProjectId,
+    ChatConversation, ChatConversationId, IdeationSessionId, ProjectId,
 };
 use ralphx_lib::error::AppError;
+use ralphx_lib::infrastructure::agents::claude::{
+    reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
+    set_agent_personas_override, set_standalone_conversations_override,
+};
 use ralphx_lib::infrastructure::memory::MemoryConversationFolderReferenceRepository;
 use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
+use tauri::Manager;
+
+struct PersonaFlagOverrideReset;
+
+impl Drop for PersonaFlagOverrideReset {
+    fn drop(&mut self) {
+        reset_agent_personas_override_for_test();
+        reset_standalone_conversations_override_for_test();
+    }
+}
 
 #[tokio::test]
 async fn folder_reference_commands_run_through_managed_tauri_state() {
@@ -81,6 +97,9 @@ async fn folder_reference_commands_run_through_managed_tauri_state() {
 
 #[tokio::test]
 async fn folder_reference_commands_gate_feature_and_context_while_allowing_builders() {
+    let _persona_reset = PersonaFlagOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
     let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
         .expect("temp directory");
     let app_data = validate_absolute_non_root_path(
@@ -95,8 +114,13 @@ async fn folder_reference_commands_gate_feature_and_context_while_allowing_build
     .expect("safe folder");
     std::fs::create_dir(&app_data).expect("create app data");
     std::fs::create_dir(&folder).expect("create folder");
-    let mut state = AppState::new_test();
-    state.app_paths = AppPaths::new(app_data, None);
+    let mut initial_state = AppState::new_test();
+    initial_state.app_paths = AppPaths::new(app_data, None);
+    let app = tauri::test::mock_builder()
+        .manage(initial_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("folder-reference gate app");
+    let state = app.state::<AppState>();
 
     let project = ChatConversation::new_project(ProjectId::new());
     let project_id = project.id;
@@ -104,18 +128,36 @@ async fn folder_reference_commands_gate_feature_and_context_while_allowing_build
     let ideation = ChatConversation::new_ideation(IdeationSessionId::new());
     let ideation_id = ideation.id;
     state.chat_conversation_repo.create(ideation).await.unwrap();
-    let mut builder = ChatConversation::new_project(ProjectId::new());
-    builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
-    let builder_id = builder.id;
-    state.chat_conversation_repo.create(builder).await.unwrap();
-    let mut standalone_builder = ChatConversation::new_standalone();
-    standalone_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
-    let standalone_builder_id = standalone_builder.id;
-    state
-        .chat_conversation_repo
-        .create(standalone_builder)
+    let builder_id = ChatConversationId::from_string(
+        create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: "project".to_string(),
+                context_id: Some(ProjectId::new().as_str().to_string()),
+                title: None,
+                mode: Some("persona_builder".to_string()),
+                team_intent: None,
+            },
+            app.state(),
+        )
         .await
-        .unwrap();
+        .expect("production Project builder seed")
+        .id,
+    );
+    let standalone_builder_id = ChatConversationId::from_string(
+        create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: "standalone".to_string(),
+                context_id: None,
+                title: None,
+                mode: Some("persona_builder".to_string()),
+                team_intent: None,
+            },
+            app.state(),
+        )
+        .await
+        .expect("production Standalone builder seed")
+        .id,
+    );
 
     let input = |conversation_id: ChatConversationId| AddConversationFolderReferenceInput {
         conversation_id: conversation_id.as_str(),

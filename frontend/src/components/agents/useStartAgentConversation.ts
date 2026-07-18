@@ -397,10 +397,17 @@ export function useStartAgentConversation({
 
         const resultConversationSeed =
           requiresSeededConversation && effectiveMode !== "automation"
-            ? await chatApi.createConversation(
-                conversationContextType,
-                targetProjectId,
-              )
+            ? effectiveMode === "persona_builder"
+              ? await chatApi.createConversation(
+                  conversationContextType,
+                  targetProjectId,
+                  undefined,
+                  effectiveMode,
+                )
+              : await chatApi.createConversation(
+                  conversationContextType,
+                  targetProjectId,
+                )
             : null;
         const seededConversation: ChatConversation | null = resultConversationSeed
           ? {

@@ -22,7 +22,7 @@ use crate::infrastructure::agents::claude::{
     SpawnableCommand, SpawnableStdinTransport,
 };
 use crate::infrastructure::agents::claude::{
-    claude_runtime_config, external_mcp_config, filter_interactive_tools,
+    agent_names, claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
@@ -41,7 +41,7 @@ use crate::infrastructure::external_mcp_supervisor::{
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
 const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
-const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
+const CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES: &[&str] = &[
     "features.apply_patch_freeform=false",
     "features.apply_patch_streaming_events=false",
     "include_apply_patch_tool=false",
@@ -261,7 +261,7 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
-        append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+        append_codex_apply_patch_disable_overrides(&mut overrides, short_name, agent_profile);
         return Ok(overrides);
     }
 
@@ -278,21 +278,24 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
-    append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+    append_codex_apply_patch_disable_overrides(&mut overrides, short_name, agent_profile);
 
     Ok(overrides)
 }
 
-fn append_codex_plan_read_only_feature_overrides(
+fn append_codex_apply_patch_disable_overrides(
     overrides: &mut Vec<String>,
+    agent_name: &str,
     agent_profile: Option<&str>,
 ) {
-    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE) {
+    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE)
+        && agent_name != mcp_agent_type(agent_names::AGENT_PERSONA_EXTRACTOR)
+    {
         return;
     }
     // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature gates, while -c accepts the top-level include_apply_patch_tool override.
     overrides.extend(
-        CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES
+        CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES
             .iter()
             .map(|entry| (*entry).to_string()),
     );

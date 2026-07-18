@@ -1378,6 +1378,14 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
     )
     .expect("overrides");
     let args = codex_mcp_args_override(&overrides);
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("Plan spawn args");
 
     assert!(
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
@@ -1385,26 +1393,57 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_freeform=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_freeform=false"
+        }),
         "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_streaming_events=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_streaming_events=false"
+        }),
         "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "include_apply_patch_tool=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "include_apply_patch_tool=false"
+        }),
         "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
+}
+
+#[test]
+fn build_codex_mcp_overrides_disables_apply_patch_for_persona_extractor() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(&plugin_dir, "ralphx-persona-extractor", false, None)
+        .expect("persona extractor overrides");
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("PersonaExtractor spawn args");
+
+    for expected in [
+        "features.apply_patch_freeform=false",
+        "features.apply_patch_streaming_events=false",
+        "include_apply_patch_tool=false",
+    ] {
+        assert!(
+            spawn_args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == expected),
+            "Codex PersonaExtractor must disable {expected}; override keys: {:?}",
+            override_keys(&overrides)
+        );
+    }
 }
 
 #[test]

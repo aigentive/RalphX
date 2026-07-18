@@ -22,6 +22,7 @@ use ralphx_lib::infrastructure::agents::claude::{
     set_agent_personas_override, set_standalone_conversations_override,
 };
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
+use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
 use tauri::{Listener, Manager};
 
 struct PersonaEnvReset {
@@ -514,6 +515,92 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queued_builder_drain_spawn_args_enable_filesystem_enforcement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _spawn_permission = PersonaEnvReset::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("queued builder enforcement fixture");
+    let capture_path = validate_absolute_non_root_path(
+        &temp.path().join("queued-builder-spawn.txt"),
+        "queued builder capture",
+    )
+    .expect("safe queued builder capture");
+    let _capture = PersonaEnvReset::set(
+        "RALPHX_QUEUE_ARGS_CAPTURE",
+        capture_path.to_str().expect("utf8 capture path"),
+    );
+    let cli_path =
+        validate_absolute_non_root_path(&temp.path().join("fake-claude"), "queued builder CLI")
+            .expect("safe queued builder CLI");
+    fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$RALPHX_QUEUE_ARGS_CAPTURE"
+for arg in "$@"; do
+  [ -f "$arg" ] && cat "$arg" >> "$RALPHX_QUEUE_ARGS_CAPTURE"
+done
+cat >/dev/null
+printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error":false,"result":"ok","cost_usd":0.0}'
+"#,
+    )
+    .expect("write queued builder capture CLI");
+    let mut permissions = fs::metadata(&cli_path)
+        .expect("queued builder capture CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cli_path, permissions)
+        .expect("mark queued builder capture CLI executable");
+
+    let initial_state = AppState::new_test();
+    let project = initial_state
+        .project_repo
+        .create(Project::new(
+            "Queued Builder Enforcement".to_string(),
+            temp.path().to_string_lossy().into_owned(),
+        ))
+        .await
+        .expect("persist queued builder project");
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = initial_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist queued builder conversation");
+    let context_id = conversation.id.as_str();
+    initial_state.message_queue.queue(
+        ChatContextType::Project,
+        context_id.clone(),
+        "drain queued builder with enforcement".to_string(),
+    );
+    let app = tauri::test::mock_builder()
+        .manage(initial_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build queued builder enforcement app");
+
+    let (processed, _) = process_queued_messages_for_test(
+        app.handle().clone(),
+        ChatContextType::Project,
+        AgentHarnessKind::Claude,
+        &context_id,
+        conversation.id,
+        "queued-builder-old-session",
+        &cli_path,
+    )
+    .await;
+
+    assert_eq!(processed, 1);
+    let captured = fs::read_to_string(capture_path)
+        .expect("read queued builder spawn arguments and MCP config");
+    assert!(
+        captured.contains("--filesystem-enforced") && captured.contains("\"1\""),
+        "queued PersonaBuilder drain must pass filesystem enforcement to MCP: {captured}"
+    );
 }
 
 #[cfg(unix)]

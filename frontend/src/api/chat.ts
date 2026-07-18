@@ -1539,6 +1539,7 @@ export async function createConversation(
   contextType: ContextType,
   contextId?: string | null,
   title?: string,
+  mode?: AgentConversationMode,
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "create_agent_conversation",
@@ -1548,6 +1549,7 @@ export async function createConversation(
         ...(contextId ? { contextId } : {}),
         ...(title !== undefined &&
           title.trim().length > 0 && { title: title.trim() }),
+        ...(mode !== undefined && { mode }),
       },
     },
     ChatConversationResponseSchema,

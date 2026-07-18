@@ -4,8 +4,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   formatFilesystemToolError,
-  handleFilesystemToolCall,
+  handleFilesystemToolCall as handleFilesystemToolCallWithContext,
 } from "../filesystem-tools.js";
+
+const handleFilesystemToolCall = (
+  name: string,
+  rawArgs: unknown,
+  runtimeContext = { filesystemEnforced: false }
+) => handleFilesystemToolCallWithContext(name, rawArgs, runtimeContext);
 
 describe("filesystem tools", () => {
   const tempDirs: string[] = [];

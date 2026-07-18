@@ -15,9 +15,9 @@ use ralphx_lib::application::chat_service::{
 };
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
-    AgentRun, AgentRunId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    IdeationSessionId, MessageRole, Persona, PersonaDirective, PersonaId, PersonaStatus, ProjectId,
-    TaskId,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunId, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, IdeationSessionId, MessageRole, Persona, PersonaDirective,
+    PersonaId, PersonaStatus, ProjectId, TaskId,
 };
 use ralphx_lib::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, ChatMessageRepository, PersonaRepository,
@@ -26,6 +26,7 @@ use ralphx_lib::infrastructure::memory::{
     MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
     MemoryChatMessageRepository, MemoryPersonaRepository,
 };
+use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
 
 use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 
@@ -319,6 +320,138 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
     assert!(!serde_json::to_string(&attributed)
         .expect("serialize recovery attribution")
         .contains("Use the recovery persona voice."));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_spawn_args_enforce_filesystem_for_builder_and_standalone_chat() {
+    for (label, mut conversation) in [
+        (
+            "project-builder",
+            ChatConversation::new_project(ProjectId::from_string(
+                "recovery-builder-project".to_string(),
+            )),
+        ),
+        ("standalone-chat", ChatConversation::new_standalone()),
+    ] {
+        conversation.agent_mode = Some(if label == "project-builder" {
+            AgentConversationWorkspaceMode::PersonaBuilder
+        } else {
+            AgentConversationWorkspaceMode::Chat
+        });
+        let conversation_id = conversation.id;
+        let context_type = conversation.context_type;
+        let context_id = conversation.context_id.clone();
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("recovery enforcement fixture");
+        let app_data_dir = validate_absolute_non_root_path(
+            &temp.path().join("app-data"),
+            "recovery enforcement app data",
+        )
+        .expect("safe recovery enforcement app data");
+        let working_directory = ralphx_lib::application::standalone_workspace::create_workspace(
+            &app_data_dir,
+            &conversation_id.as_str(),
+        )
+        .expect("create recovery private workspace");
+        let mut state = ralphx_lib::application::AppState::new_test();
+        state.app_paths = ralphx_lib::application::AppPaths::new(app_data_dir, None);
+        state
+            .chat_conversation_repo
+            .create(conversation.clone())
+            .await
+            .expect("persist recovery conversation");
+        let mut history = ChatMessage::user_in_project(
+            ProjectId::from_string("recovery-history-project".to_string()),
+            "prior recovery turn",
+        );
+        history.conversation_id = Some(conversation_id);
+        state
+            .chat_message_repo
+            .create(history)
+            .await
+            .expect("persist recovery history");
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id.as_str();
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("persist recovery run");
+        let message_repo = Arc::clone(&state.chat_message_repo);
+        let conversation_repo = Arc::clone(&state.chat_conversation_repo);
+        let attachment_repo = Arc::clone(&state.chat_attachment_repo);
+        let artifact_repo = Arc::clone(&state.artifact_repo);
+        let agent_run_repo = Arc::clone(&state.agent_run_repo);
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("recovery enforcement app");
+        let capture_path = validate_absolute_non_root_path(
+            &temp.path().join(format!("{label}-spawn.txt")),
+            "recovery enforcement capture",
+        )
+        .expect("safe recovery enforcement capture");
+        let cli_path = validate_absolute_non_root_path(
+            &temp.path().join(format!("{label}-claude")),
+            "recovery enforcement CLI",
+        )
+        .expect("safe recovery enforcement CLI");
+        std::fs::write(
+            &cli_path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && cat \"$arg\" >> '{}'\ndone\ncat >/dev/null\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"recovered-{label}\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+                capture_path.display(),
+                capture_path.display(),
+            ),
+        )
+        .expect("write recovery capture CLI");
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("recovery capture CLI metadata")
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&cli_path, permissions)
+            .expect("mark recovery capture CLI executable");
+
+        with_claude_spawn_allowed_in_tests(|| async {
+            attempt_session_recovery::<tauri::test::MockRuntime>(
+                &conversation_id,
+                &conversation,
+                AgentHarnessKind::Claude,
+                context_type,
+                &context_id,
+                "recover with filesystem enforcement",
+                &cli_path,
+                &repo_plugin_dir(),
+                &working_directory,
+                (context_type == ChatContextType::Project).then_some(context_id.clone()),
+                false,
+                message_repo,
+                conversation_repo,
+                attachment_repo,
+                artifact_repo,
+                None,
+                None,
+                agent_run_repo,
+                &run_id,
+                None,
+                false,
+                false,
+                "stale-session",
+                Some(app.handle()),
+            )
+            .await
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{label} recovery should spawn: {error}"));
+
+        let captured = std::fs::read_to_string(&capture_path)
+            .expect("read recovery spawn arguments and MCP config");
+        assert!(
+            captured.contains("--filesystem-enforced") && captured.contains("\"1\""),
+            "{label} recovery must pass filesystem enforcement to MCP: {captured}"
+        );
+    }
 }
 
 #[cfg(unix)]

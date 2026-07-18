@@ -814,9 +814,7 @@ async function handleGrep(
 export async function handleFilesystemToolCall(
   name: string,
   rawArgs: unknown,
-  runtimeContext: Pick<RuntimeContext, "filesystemEnforced"> = {
-    filesystemEnforced: false,
-  }
+  runtimeContext: Pick<RuntimeContext, "filesystemEnforced">
 ): Promise<ToolResult> {
   if (!isFilesystemToolName(name)) {
     throw new Error(`Unknown filesystem tool "${name}".`);
