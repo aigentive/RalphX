@@ -38,6 +38,8 @@ jobs:
               - '.github/workflows/**'
               - '.github/codeql/**'
               - '.github/dependabot.yml'
+              - 'scripts/test-rust-fast.sh'
+              - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
             plugins:
@@ -117,6 +119,10 @@ jobs:
           fi
 
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "${yaml_files[@]}"
+
+      - name: Validate Rust full integration target scope
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-targets.sh
 
       - name: Validate release scripts
         shell: bash
@@ -379,11 +385,7 @@ jobs:
 
       - name: Run full Rust integration suite
         run: |
-          cargo nextest run \
-            --manifest-path src-tauri/Cargo.toml \
-            --profile ci \
-            --tests \
-            --features test-utils
+          bash scripts/test-rust-fast.sh full-integration
 
   rust-macos-build:
     name: Rust macOS Build

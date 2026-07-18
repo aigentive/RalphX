@@ -9,6 +9,21 @@ else
 fi
 MANIFEST_PATH="${REPO_ROOT}/src-tauri/Cargo.toml"
 FAST_TARGET_ROOT="${REPO_ROOT}/src-tauri/target/rust-fast"
+FULL_INTEGRATION_TESTS=(
+  suite_agent_workspace
+  suite_chat_service
+  suite_commands
+  suite_http_handlers
+  suite_ideation
+  suite_interactive_process
+  suite_ipc_commands
+  suite_metrics
+  suite_pr_github
+  suite_sqlite_flows
+  suite_sqlite_repos
+  suite_transition_git
+  plan_selector_performance
+)
 
 CURRENT_TOPLEVEL="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
 
@@ -90,9 +105,16 @@ doc_cmd() {
 }
 
 full_integration_cmd() {
+  local test_args=()
+  local test_name
+  for test_name in "${FULL_INTEGRATION_TESTS[@]}"; do
+    test_args+=(--test "${test_name}")
+  done
+
   cargo nextest run \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
+    "${test_args[@]}" \
     --features test-utils
 }
 
