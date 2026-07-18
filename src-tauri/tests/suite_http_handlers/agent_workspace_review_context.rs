@@ -71,7 +71,7 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
         .await
         .expect("seed project");
     let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.id = conversation_id.clone();
+    conversation.id = conversation_id;
     state
         .app_state
         .chat_conversation_repo
@@ -98,7 +98,7 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     )
     .expect("write workspace change");
     let workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -125,7 +125,7 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     .expect("load initial context");
     let target = initial.target.expect("review target");
     let review_conversation_id = ChatConversationId::new();
-    let run = AgentRun::new(review_conversation_id.clone());
+    let run = AgentRun::new(review_conversation_id);
     let run_id = run.id;
     let mut monitor = state
         .app_state
@@ -145,7 +145,7 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     monitor.reviewed_diff_fingerprint = Some("historical-fingerprint".to_string());
     monitor.review_artifact_id = Some(ArtifactId::from_string("historical-review"));
     monitor.review_artifact_version = Some(1);
-    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.review_conversation_id = Some(review_conversation_id);
     monitor.last_run_id = Some(run_id.to_string());
     state
         .app_state
