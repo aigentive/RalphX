@@ -687,6 +687,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (isAgentWorkspaceToolName(name)) {
       result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
         parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+        conversationId: RALPHX_CONVERSATION_ID,
         agentRunId: RALPHX_AGENT_RUN_ID,
       });
     } else if (isAutomationSetupToolName(name)) {

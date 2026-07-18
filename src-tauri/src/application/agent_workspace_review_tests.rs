@@ -1383,6 +1383,18 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
                 .contains("Use the backend-owned Review gate.")
             && !artifact.content_truncated));
     assert!(start.context.monitor.last_run_id.is_some());
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string()),
+        start.context.monitor.last_run_id
+    );
+    assert_eq!(
+        sent_options[0].queue_policy,
+        crate::application::chat_service::SendQueuePolicy::RequireImmediateStart
+    );
     let review_conversation_id = start
         .context
         .monitor
@@ -1570,7 +1582,12 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
         .expect("monitor should persist");
     assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
     assert_eq!(monitor.review_conversation_id, Some(review_conversation_id));
-    assert!(monitor.last_run_id.is_none());
+    assert_eq!(
+        monitor.last_run_id,
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string())
+    );
     assert_eq!(
             monitor.last_error.as_deref(),
             Some(

@@ -1216,8 +1216,17 @@ describe('agent workspace publish tool transport', () => {
     });
     it('routes workspace Review context reads to the current runtime workspace conversation', async () => {
         const callTauriGet = vi.fn().mockResolvedValue({ success: true });
-        await expect(callGetWorkspaceReviewContextTool(callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
-        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
+        await expect(callGetWorkspaceReviewContextTool(callTauriGet, {}, {
+            parentConversationId: 'conversation-from-runtime',
+            conversationId: 'review-conversation-from-runtime',
+            agentRunId: 'run-from-runtime',
+        })).resolves.toEqual({ success: true });
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true', {
+            headers: {
+                'x-ralphx-agent-run-id': 'run-from-runtime',
+                'x-ralphx-conversation-id': 'review-conversation-from-runtime',
+            },
+        });
     });
     it('routes workspace Review artifact writes to the runtime workspace conversation', async () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });

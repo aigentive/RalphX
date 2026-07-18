@@ -12,7 +12,7 @@ use std::{
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 
@@ -22,10 +22,10 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
-    apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
-    AgentWorkspaceReviewTarget,
+    apply_review_artifact_to_monitor, apply_workspace_review_runtime_authority,
+    load_agent_workspace_review_context, review_gate_publish_blocker,
+    start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
+    AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
@@ -675,6 +675,10 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,
+    pub review_artifact_is_current: bool,
+    pub review_artifact_is_outdated: bool,
+    pub can_mutate_review_state: bool,
+    pub review_runtime_state: String,
     pub should_show_tab: bool,
 }
 
@@ -767,6 +771,10 @@ pub struct StartAgentWorkspaceReviewResponse {
     pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,
+    pub review_artifact_is_current: bool,
+    pub review_artifact_is_outdated: bool,
+    pub can_mutate_review_state: bool,
+    pub review_runtime_state: String,
     pub should_show_tab: bool,
     pub started: bool,
     pub skipped_reason: Option<String>,
@@ -781,6 +789,10 @@ pub struct StartAgentWorkspaceReviewFixerResponse {
     pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,
+    pub review_artifact_is_current: bool,
+    pub review_artifact_is_outdated: bool,
+    pub can_mutate_review_state: bool,
+    pub review_runtime_state: String,
     pub should_show_tab: bool,
     pub started: bool,
     pub skipped_reason: Option<String>,
@@ -1497,6 +1509,7 @@ pub async fn update_agent_workspace_pr_review_settings(
 pub async fn get_agent_workspace_review_context(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
+    headers: HeaderMap,
     Query(query): Query<AgentWorkspaceReviewContextQuery>,
 ) -> Result<Json<AgentWorkspaceReviewContextResponse>, JsonError> {
     let started = Instant::now();
@@ -1508,9 +1521,20 @@ pub async fn get_agent_workspace_review_context(
             .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
-    let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
+    let mut context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
+    let caller_run_id = workspace_review_runtime_header(&headers, "x-ralphx-agent-run-id");
+    let caller_conversation_id =
+        workspace_review_runtime_header(&headers, "x-ralphx-conversation-id");
+    apply_workspace_review_runtime_authority(
+        state.app_state.as_ref(),
+        &mut context,
+        caller_run_id.as_deref(),
+        caller_conversation_id.as_deref(),
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
     let target_scope = workspace_review_target_scope_log(context.target.as_ref());
     let diff_fingerprint = compact_workspace_review_log_fingerprint(
         context
@@ -1530,6 +1554,8 @@ pub async fn get_agent_workspace_review_context(
         diff_fingerprint = %diff_fingerprint,
         is_current = context.is_current,
         is_outdated = context.is_outdated,
+        can_mutate_review_state = context.can_mutate_review_state,
+        review_runtime_state = %context.review_runtime_state,
         should_show_tab = context.should_show_tab,
         has_artifact = context.monitor.review_artifact_id.is_some(),
         "Served workspace Review context"
@@ -1549,8 +1575,21 @@ pub async fn get_agent_workspace_review_context(
         goal_context: context.goal_context,
         is_current: context.is_current,
         is_outdated: context.is_outdated,
+        review_artifact_is_current: context.review_artifact_is_current,
+        review_artifact_is_outdated: context.review_artifact_is_outdated,
+        can_mutate_review_state: context.can_mutate_review_state,
+        review_runtime_state: context.review_runtime_state.to_string(),
         should_show_tab: context.should_show_tab,
     }))
+}
+
+fn workspace_review_runtime_header(headers: &HeaderMap, name: &'static str) -> Option<String> {
+    headers.get(name).map(|value| {
+        value
+            .to_str()
+            .map(str::to_string)
+            .unwrap_or_else(|_| "<malformed-runtime-identity>".to_string())
+    })
 }
 
 fn workspace_review_action_error(error: AppError) -> JsonError {
@@ -1664,6 +1703,10 @@ pub async fn start_agent_workspace_review_run(
         goal_context: start.context.goal_context,
         is_current: start.context.is_current,
         is_outdated: start.context.is_outdated,
+        review_artifact_is_current: start.context.review_artifact_is_current,
+        review_artifact_is_outdated: start.context.review_artifact_is_outdated,
+        can_mutate_review_state: start.context.can_mutate_review_state,
+        review_runtime_state: start.context.review_runtime_state.to_string(),
         should_show_tab: start.context.should_show_tab,
         started: start.started,
         skipped_reason: start.skipped_reason,
@@ -1724,6 +1767,10 @@ pub async fn start_agent_workspace_review_fixer_run(
         goal_context: start.context.goal_context,
         is_current: start.context.is_current,
         is_outdated: start.context.is_outdated,
+        review_artifact_is_current: start.context.review_artifact_is_current,
+        review_artifact_is_outdated: start.context.review_artifact_is_outdated,
+        can_mutate_review_state: start.context.can_mutate_review_state,
+        review_runtime_state: start.context.review_runtime_state.to_string(),
         should_show_tab: start.context.should_show_tab,
         started: start.started,
         skipped_reason: start.skipped_reason,

@@ -72,10 +72,15 @@ export function buildArtifactMutationTransportHeaders(context) {
     if (context.contextType === "ideation" && context.contextId) {
         headers["X-RalphX-Caller-Session-Id"] = context.contextId;
     }
-    if (context.agentRunId && context.conversationId) {
-        headers["x-ralphx-agent-run-id"] = context.agentRunId;
-        headers["x-ralphx-conversation-id"] = context.conversationId;
-    }
+    Object.assign(headers, buildRuntimeIdentityTransportHeaders(context));
     return Object.keys(headers).length > 0 ? headers : undefined;
+}
+export function buildRuntimeIdentityTransportHeaders(context) {
+    if (!context.agentRunId || !context.conversationId)
+        return undefined;
+    return {
+        "x-ralphx-agent-run-id": context.agentRunId,
+        "x-ralphx-conversation-id": context.conversationId,
+    };
 }
 //# sourceMappingURL=runtime-context.js.map

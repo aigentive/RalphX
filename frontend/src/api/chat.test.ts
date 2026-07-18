@@ -3464,6 +3464,10 @@ describe("getConversationActiveState", () => {
           events: [],
           target: rawWorkspaceReviewTarget(),
           monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: true,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
           is_current: true,
           is_outdated: false,
           should_show_tab: true,
@@ -3483,6 +3487,10 @@ describe("getConversationActiveState", () => {
     expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);
+    expect(result.reviewArtifactIsCurrent).toBe(true);
+    expect(result.reviewArtifactIsOutdated).toBe(false);
+    expect(result.canMutateReviewState).toBe(false);
+    expect(result.reviewRuntimeState).toBe("missing_runtime_identity");
   });
 
   it("starts a general workspace review run through the encoded REST endpoint", async () => {
