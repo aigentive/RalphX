@@ -473,6 +473,8 @@ macro_rules! register_tauri_commands {
             commands::github_commands::get_github_branch_overview,
             commands::github_commands::get_github_connection_status,
             commands::github_commands::get_pull_request_detail,
+            commands::repository_settings_commands::get_repository_settings,
+            commands::repository_settings_commands::update_repository_settings,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)
             commands::plan_branch_commands::get_plan_branch,
             commands::plan_branch_commands::get_plan_branch_by_task_id,

@@ -73,6 +73,9 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
+pub mod repository_settings_commands;
+#[cfg(test)]
+mod repository_settings_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
@@ -404,6 +407,10 @@ pub use workspace_open_commands::{
 // Plan commands (Active plan management)
 pub use plan_commands::{
     clear_active_plan, get_active_plan, list_plan_selector_candidates, set_active_plan,
+};
+pub use repository_settings_commands::{
+    get_repository_settings, update_repository_settings, RepositorySettingsResponse,
+    UpdateRepositorySettingsInput,
 };
 // Git commands (Phase 66 - Per-task branch isolation)
 pub use git_commands::{
