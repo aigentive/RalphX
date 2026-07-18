@@ -93,6 +93,7 @@ full_integration_cmd() {
   cargo nextest run \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
+    --tests \
     --features test-utils
 }
 

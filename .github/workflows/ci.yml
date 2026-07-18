@@ -384,6 +384,7 @@ jobs:
           cargo nextest run \
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
+            --tests \
             --features test-utils
 
   rust-macos-build:
