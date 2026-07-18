@@ -446,7 +446,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     env:
-      CARGO_BUILD_JOBS: "2"
+      CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
