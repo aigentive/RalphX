@@ -25,6 +25,11 @@ export function usePersonaDraftEvents(): string | null {
       void queryClient.fetchQuery({
         queryKey: personaKeys.detail(nextDraftId),
         queryFn: () => fetchPersona(nextDraftId),
+      }).catch((error: unknown) => {
+        console.error(
+          "Failed to refresh persona draft after persona:draft_updated",
+          error,
+        );
       });
       if (parsed.data.artifact_id) {
         void queryClient.invalidateQueries({

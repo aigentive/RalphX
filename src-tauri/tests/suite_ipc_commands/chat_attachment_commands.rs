@@ -6,7 +6,7 @@ use ralphx_lib::application::chat_service::format_attachments_for_agent;
 use ralphx_lib::application::standalone_workspace::{create_workspace, resolve_workspace};
 use ralphx_lib::application::{AppPaths, AppState};
 use ralphx_lib::commands::chat_attachment_commands::{
-    upload_chat_attachment_for_state, UploadChatAttachmentInput,
+    delete_chat_attachment_for_state, upload_chat_attachment_for_state, UploadChatAttachmentInput,
 };
 use ralphx_lib::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
 use ralphx_lib::error::AppError;
@@ -136,6 +136,83 @@ async fn builder_attachment_render_fails_when_materialized_file_is_missing() {
     assert!(
         !error.contains("<file_path>"),
         "the failed render must not return a dangling prompt path"
+    );
+}
+
+#[tokio::test]
+async fn deleting_builder_attachment_removes_materialized_workspace_copy() {
+    let (_temp, state, conversation) = builder_state();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed builder");
+    upload_chat_attachment_for_state(
+        UploadChatAttachmentInput {
+            conversation_id: conversation.id.as_str(),
+            file_name: "delete-me.txt".to_string(),
+            file_data: b"stale workspace content".to_vec(),
+            mime_type: Some("text/plain".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("upload builder attachment");
+    let attachment = state
+        .chat_attachment_repo
+        .find_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let materialized = ralphx_lib::application::builder_attachment_materializer::materialized_builder_attachment_path(
+        state.app_paths.app_data_dir(),
+        &attachment,
+    )
+    .expect("builder copy exists");
+
+    delete_chat_attachment_for_state(attachment.id.as_str(), &state)
+        .await
+        .expect("delete builder attachment");
+
+    assert!(
+        !materialized.exists(),
+        "builder attachment deletion must remove the workspace copy"
+    );
+}
+
+#[tokio::test]
+async fn deleting_non_builder_attachment_does_not_mutate_builder_workspace_paths() {
+    let (_temp, state, mut conversation) = builder_state();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed ordinary conversation");
+    let created = upload_chat_attachment_for_state(
+        UploadChatAttachmentInput {
+            conversation_id: conversation.id.as_str(),
+            file_name: "ordinary.txt".to_string(),
+            file_data: b"ordinary attachment".to_vec(),
+            mime_type: Some("text/plain".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("upload ordinary attachment");
+    let workspaces_root = ralphx_lib::application::standalone_workspace::standalone_workspaces_root(
+        state.app_paths.app_data_dir(),
+    );
+
+    delete_chat_attachment_for_state(created.id, &state)
+        .await
+        .expect("delete ordinary attachment");
+
+    assert!(
+        !workspaces_root.exists(),
+        "ordinary deletion must not create or inspect a builder workspace"
     );
 }
 

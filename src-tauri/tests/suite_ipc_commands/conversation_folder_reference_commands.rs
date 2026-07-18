@@ -168,12 +168,10 @@ async fn folder_reference_commands_gate_feature_and_context_while_allowing_build
         add_conversation_folder_reference_for_state(input(project_id), &state, false).await,
         Err(AppError::FeatureDisabled(_))
     ));
-    assert!(
-        list_conversation_folder_references_for_state(project_id.as_str(), &state, false)
-            .await
-            .expect("disabled list is empty")
-            .is_empty()
-    );
+    assert!(matches!(
+        list_conversation_folder_references_for_state(project_id.as_str(), &state, false).await,
+        Err(AppError::FeatureDisabled(_))
+    ));
     assert!(matches!(
         remove_conversation_folder_reference_for_state(
             RemoveConversationFolderReferenceInput {

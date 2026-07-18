@@ -162,7 +162,9 @@ pub async fn list_conversation_folder_references_for_state(
     enabled: bool,
 ) -> Result<Vec<ConversationFolderReferenceResponse>, AppError> {
     if !enabled {
-        return Ok(Vec::new());
+        return Err(AppError::FeatureDisabled(
+            COMPOSER_FOLDER_REFERENCES_DISABLED.to_string(),
+        ));
     }
     service(state)
         .list_live(&ChatConversationId::from_string(conversation_id))

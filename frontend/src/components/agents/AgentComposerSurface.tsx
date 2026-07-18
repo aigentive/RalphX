@@ -1781,13 +1781,37 @@ export function AgentComposerSurface({
         />
 
         {(attachments.length > 0 || folders.length > 0 || folderReferences.data?.length ||
+          folderReferences.isError ||
           hasSelectedReferences ||
           attachmentsUploading) && (
           <div className="px-5 pb-3">
+            {folderReferences.isError && (
+              <div
+                className="mb-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"
+                style={{
+                  borderColor: "var(--status-warning-border)",
+                  backgroundColor: "var(--status-warning-muted)",
+                  color: "var(--status-warning)",
+                }}
+              >
+                <span>
+                  Couldn't load folder references — previously attached folders may still be visible to the agent
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 font-medium underline underline-offset-2"
+                  aria-label="Retry folder references"
+                  onClick={() => void folderReferences.refetch()}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
             {folderReferences.data && (
               <FolderReferenceChips
                 references={folderReferences.data}
-                {...(removeFolderReference.variables?.folderReferenceId
+                {...(removeFolderReference.isPending &&
+                removeFolderReference.variables?.folderReferenceId
                   ? { removingId: removeFolderReference.variables.folderReferenceId }
                   : {})}
                 onRemove={(reference) => {

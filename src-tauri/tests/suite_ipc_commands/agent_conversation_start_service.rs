@@ -34,9 +34,10 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType,
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId, ConversationFolderReference,
-    CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSessionFlow, Persona, PersonaId,
-    PersonaStatus, Project, ProjectId, TaskId, TeamIntent,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ConversationFolderReference, CoordinationMode, IdeationAnalysisBaseRefKind,
+    IdeationSessionFlow, MessageRole, Persona, PersonaId, PersonaStatus, Project, ProjectId,
+    TaskId, TeamIntent,
 };
 use ralphx_lib::infrastructure::agents::claude::{
     reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
@@ -1225,6 +1226,115 @@ async fn seeded_persona_builder_rejects_chat_mode_as_locked() {
 }
 
 #[tokio::test]
+async fn seeded_non_builder_with_messages_rejects_conversion_to_persona_builder() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    let state = AppState::new_test();
+    let project_id =
+        ProjectId::from_string("project-message-bearing-builder-conversion".to_string());
+    let seeded = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("seed ordinary conversation");
+    state
+        .chat_message_repo
+        .create(ChatMessage {
+            id: ChatMessageId::new(),
+            session_id: None,
+            project_id: Some(project_id.clone()),
+            task_id: None,
+            conversation_id: Some(seeded.id),
+            role: MessageRole::User,
+            content: "already started as chat".to_string(),
+            metadata: None,
+            parent_message_id: None,
+            tool_calls: None,
+            content_blocks: None,
+            attribution_source: None,
+            provider_harness: None,
+            provider_session_id: None,
+            upstream_provider: None,
+            provider_profile: None,
+            logical_model: None,
+            effective_model_id: None,
+            logical_effort: None,
+            effective_effort: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+            estimated_usd: None,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("seed prior chat message");
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project_id,
+            "Do not convert prior chat history",
+            "persona_builder",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect_err("message-bearing non-builder must not convert to builder");
+
+    assert!(error.contains("[ralphx:conversation_mode_locked]"));
+}
+
+#[tokio::test]
+async fn fresh_empty_non_builder_seed_remains_convertible_to_persona_builder() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().unwrap();
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-empty-builder-conversion",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let seeded = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("seed empty ordinary conversation");
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let started = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Convert the unused seed",
+            "persona_builder",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect("empty non-builder seed remains convertible");
+
+    assert!(started.send_result.was_queued);
+    assert_eq!(
+        started.conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    );
+}
+
+#[tokio::test]
 async fn standalone_persona_builder_uses_workspace_cwd_and_filesystem_enforcement() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
@@ -1346,7 +1456,7 @@ async fn standalone_builder_seed_with_folder_reference_starts_with_enforced_root
 }
 
 #[tokio::test]
-async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
+async fn standalone_chat_rejects_codex_while_project_chat_allows_codex() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
     set_standalone_conversations_override(Some(true));
@@ -1358,14 +1468,14 @@ async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
     state.db = DbConnection::from_shared(Arc::clone(&shared));
     state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
     state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
-    let project = seed_project(&state, "project-builder-codex", temp.path(), temp.path()).await;
+    let project = seed_project(&state, "project-chat-codex", temp.path(), temp.path()).await;
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.pause();
     let app = build_app(state, execution_state);
 
     let mut standalone = standalone_start_input(
-        "Reject unsafe global lane",
-        Some("persona_builder"),
+        "Reject unsafe standalone lane",
+        Some("chat"),
         None,
         None,
         None,
@@ -1373,7 +1483,7 @@ async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
     standalone.provider_harness = Some("codex".to_string());
     let error = start_with_app(&app, standalone)
         .await
-        .expect_err("standalone builder must reject Codex");
+        .expect_err("standalone chat must reject Codex");
     assert!(
         error.contains("Claude harness"),
         "unexpected error: {error}"
@@ -1381,8 +1491,8 @@ async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
 
     let mut project_input = service_start_input(
         &project.id,
-        "Project Codex builder is bounded by project context",
-        "persona_builder",
+        "Project Codex chat remains project bounded",
+        "chat",
         None,
         None,
         None,
@@ -1391,7 +1501,7 @@ async fn standalone_builder_rejects_codex_while_project_builder_allows_codex() {
     project_input.provider_harness = Some("codex".to_string());
     let started = start_with_app(&app, project_input)
         .await
-        .expect("Project-context Codex builder remains allowed");
+        .expect("Project-context Codex chat remains allowed");
     assert!(started.send_result.was_queued);
 }
 

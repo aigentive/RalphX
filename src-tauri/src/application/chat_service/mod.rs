@@ -157,7 +157,9 @@ pub use chat_service_merge::{
 pub(crate) use chat_service_merge::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
 pub use chat_service_mock::{MockChatResponse, MockChatService};
 #[doc(hidden)]
-pub use chat_service_queue::process_queued_messages_for_test;
+pub use chat_service_queue::{
+    process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
+};
 pub use chat_service_replay::{build_rehydration_prompt, ConversationReplay, ReplayBuilder, Turn};
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_assistant_message_for_test;
@@ -866,8 +868,10 @@ pub fn is_persona_builder_conversation(agent_mode: Option<AgentConversationWorks
     agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
 }
 
-pub const STANDALONE_PERSONA_BUILDER_CODEX_ERROR: &str =
-    "Standalone persona builder conversations require the Claude harness";
+pub const STANDALONE_CODEX_UNSUPPORTED_ERROR: &str =
+    "Standalone conversations require the Claude harness";
+pub const PERSONA_BUILDER_FEATURE_DISABLED_ERROR: &str =
+    "PersonaBuilder mode requires the agent_personas feature flag";
 
 #[doc(hidden)]
 pub fn validate_conversation_spawn_harness(
@@ -875,14 +879,25 @@ pub fn validate_conversation_spawn_harness(
     effective_harness: AgentHarnessKind,
 ) -> Result<(), ChatServiceError> {
     if conversation.context_type == ChatContextType::Standalone
-        && is_persona_builder_conversation(conversation.agent_mode)
         && effective_harness == AgentHarnessKind::Codex
     {
         return Err(ChatServiceError::SpawnFailed(
-            STANDALONE_PERSONA_BUILDER_CODEX_ERROR.to_string(),
+            STANDALONE_CODEX_UNSUPPORTED_ERROR.to_string(),
         ));
     }
 
+    Ok(())
+}
+
+pub(super) fn validate_persona_builder_feature_for_conversation(
+    feature_enabled: bool,
+    conversation: &ChatConversation,
+) -> Result<(), ChatServiceError> {
+    if !feature_enabled && is_persona_builder_conversation(conversation.agent_mode) {
+        return Err(ChatServiceError::PersonaUnavailable(
+            PERSONA_BUILDER_FEATURE_DISABLED_ERROR.to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -4397,6 +4412,34 @@ impl<R: Runtime> AppChatService<R> {
         .await
         .map_err(Into::into)
     }
+
+    async fn validate_resumed_persona_builder_feature(
+        &self,
+        context_type: ChatContextType,
+        conversation_id: Option<&ChatConversationId>,
+    ) -> Result<(), ChatServiceError> {
+        if !matches!(
+            context_type,
+            ChatContextType::Project | ChatContextType::Standalone
+        ) {
+            return Ok(());
+        }
+        let Some(conversation_id) = conversation_id else {
+            return Ok(());
+        };
+        let conversation = self
+            .conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+            .ok_or_else(|| {
+                ChatServiceError::ConversationNotFound(conversation_id.as_str().to_string())
+            })?;
+        validate_persona_builder_feature_for_conversation(
+            self.persona_feature_enabled(),
+            &conversation,
+        )
+    }
 }
 
 fn log_send_message_spawn_prep_phase(
@@ -4502,6 +4545,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             context_id,
             options.conversation_id_override.as_ref(),
         );
+        self.validate_resumed_persona_builder_feature(
+            context_type,
+            options.conversation_id_override.as_ref(),
+        )
+        .await?;
         if runtime_context_id != context_id {
             tracing::info!(
                 %context_type,

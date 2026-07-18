@@ -44,6 +44,7 @@ Switching a persona stops an active agent before the new binding takes effect. A
 - A persona changes prompt behavior; it is not a model, skill, project setting, or separate agent.
 - Teammates, delegated agents, pipeline workers/reviewers/mergers, Ideation, Task, Merge, and external MCP sends remain persona-less.
 - Standalone chat does not support persona binding; standalone **Persona** mode is the global builder flow.
+- Standalone conversations use the Claude harness; Codex remains available for project conversations.
 - Native agent paths that cannot accept prompt injection report `persona:injection_skipped` without exposing persona content.
 - Builder attachments must decode as UTF-8 text (binary files are rejected); file-type filtering in the picker is advisory.
 

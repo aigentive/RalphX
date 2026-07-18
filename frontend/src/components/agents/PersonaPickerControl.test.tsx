@@ -168,4 +168,22 @@ describe("PersonaPickerControl", () => {
     expect(screen.getByTestId("persona-picker-popover")).toBeInTheDocument();
     expect(screen.getByTestId("persona-picker-loading")).toBeInTheDocument();
   });
+
+  it("shows a retryable error row instead of the empty No persona option", () => {
+    const refetch = vi.fn();
+    vi.mocked(usePersonas).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof usePersonas>);
+
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByText("Couldn't load personas.")).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: "No persona" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry personas" }));
+    expect(refetch).toHaveBeenCalledOnce();
+  });
 });

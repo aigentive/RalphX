@@ -37,7 +37,7 @@ export function PersonaPickerControl({
     () => ({ type: "globalAndProject", projectId: currentProjectId }) as const,
     [currentProjectId],
   );
-  const { data: personas = [], isLoading } = usePersonas(scope);
+  const { data: personas = [], isLoading, isError, refetch } = usePersonas(scope);
   const activePersonas = useMemo(
     () =>
       personas.filter(
@@ -100,11 +100,19 @@ export function PersonaPickerControl({
         className="w-64 p-1.5"
       >
         <div role="menu" aria-label="Choose persona" className="space-y-0.5">
-          <PersonaOption
-            label="No persona"
-            selected={personaId === null}
-            onSelect={() => onValueChange(null)}
-          />
+          {isError && (
+            <div className="mx-1 my-1 flex items-center justify-between gap-2 rounded px-2 py-2 text-xs text-[var(--status-error)]">
+              <span>Couldn't load personas.</span>
+              <button
+                type="button"
+                className="font-medium underline underline-offset-2"
+                aria-label="Retry personas"
+                onClick={() => void refetch()}
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {isLoading && activePersonas.length === 0 ? (
             <div
               data-testid="persona-picker-loading"
@@ -112,6 +120,13 @@ export function PersonaPickerControl({
             />
           ) : (
             <>
+              {!isError && (
+                <PersonaOption
+                  label="No persona"
+                  selected={personaId === null}
+                  onSelect={() => onValueChange(null)}
+                />
+              )}
               <PersonaOptionGroup
                 label="Global"
                 personas={globalPersonas}

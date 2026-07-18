@@ -50,6 +50,56 @@ pub fn materialized_builder_attachment_path(
     Ok(canonical_path)
 }
 
+/// Idempotently removes one materialized builder attachment from its contained workspace.
+///
+/// # Errors
+/// Returns a typed error when an existing workspace destination is unsafe or cannot be removed.
+pub fn remove_materialized_builder_attachment_if_present(
+    app_data_dir: &Path,
+    attachment: &ChatAttachment,
+) -> AppResult<()> {
+    let workspace = match resolve_workspace(app_data_dir, &attachment.conversation_id.as_str()) {
+        Ok(workspace) => workspace,
+        Err(AppError::StandaloneWorkspaceMissing { .. }) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let path =
+        build_builder_workspace_attachment_path(&workspace, &attachment.id, &attachment.file_name)
+            .map_err(AppError::Validation)?;
+    require_under_root(&path, &workspace, "builder workspace attachment")?;
+    // codeql[rust/path-injection]
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(filesystem_error(
+                "inspect a materialized builder attachment for deletion",
+                error,
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Validation(
+            "Materialized builder attachment must be a non-symlink file".to_string(),
+        ));
+    }
+    // codeql[rust/path-injection]
+    let canonical_path = path.canonicalize().map_err(|error| {
+        filesystem_error(
+            "canonicalize a materialized builder attachment for deletion",
+            error,
+        )
+    })?;
+    require_under_root(
+        &canonical_path,
+        &workspace,
+        "materialized builder attachment",
+    )?;
+    // codeql[rust/path-injection]
+    fs::remove_file(&canonical_path)
+        .map_err(|error| filesystem_error("remove a materialized builder attachment", error))
+}
+
 /// Copies one text attachment from app-owned storage into its conversation workspace.
 ///
 /// # Errors

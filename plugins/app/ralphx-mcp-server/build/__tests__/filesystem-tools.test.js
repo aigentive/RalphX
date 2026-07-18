@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { formatFilesystemToolError, handleFilesystemToolCall as handleFilesystemToolCallWithContext, } from "../filesystem-tools.js";
-const handleFilesystemToolCall = (name, rawArgs, runtimeContext = { filesystemEnforced: false }) => handleFilesystemToolCallWithContext(name, rawArgs, runtimeContext);
+const handleFilesystemToolCall = (name, rawArgs, runtimeContext) => handleFilesystemToolCallWithContext(name, rawArgs, runtimeContext);
+const filesystemNotEnforced = { filesystemEnforced: false };
 describe("filesystem tools", () => {
     const tempDirs = [];
     const originalCwd = process.cwd();
@@ -36,7 +37,7 @@ describe("filesystem tools", () => {
             path: "src/sample.ts",
             start_line: 2,
             end_line: 3,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${target}`);
         expect(text).toContain("LINES: 2-3/4");
@@ -51,16 +52,14 @@ describe("filesystem tools", () => {
         const target = path.join(projectRoot, ".artifacts", "specs", "ralphx-cli", "tracker.md");
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, "# CLI tracker\n\nreadable from project checkout\n");
-        const readResult = await handleFilesystemToolCall("fs_read_file", {
-            path: target,
-        });
+        const readResult = await handleFilesystemToolCall("fs_read_file", { path: target }, filesystemNotEnforced);
         const readText = readResult.content[0]?.text ?? "";
         expect(readText).toContain(`FILE: ${target}`);
         expect(readText).toContain("readable from project checkout");
         const listResult = await handleFilesystemToolCall("fs_list_dir", {
             path: path.dirname(target),
             include_hidden: true,
-        });
+        }, filesystemNotEnforced);
         const listText = listResult.content[0]?.text ?? "";
         expect(listText).toContain("FILE tracker.md");
     });
@@ -72,9 +71,7 @@ describe("filesystem tools", () => {
         fs.writeFileSync(path.join(root, "visible.ts"), "export const ok = true;\n");
         fs.writeFileSync(path.join(root, "secret.log"), "hidden by ignore\n");
         fs.writeFileSync(path.join(root, ".env"), "TOKEN=1\n");
-        const result = await handleFilesystemToolCall("fs_list_dir", {
-            path: ".",
-        });
+        const result = await handleFilesystemToolCall("fs_list_dir", { path: "." }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("DIR  src/");
         expect(text).toContain("FILE visible.ts");
@@ -88,9 +85,7 @@ describe("filesystem tools", () => {
         tempDirs.push(outsideDir);
         const outsideFile = path.join(outsideDir, "secret.txt");
         fs.writeFileSync(outsideFile, "external context\n");
-        const result = await handleFilesystemToolCall("fs_read_file", {
-            path: path.relative(root, outsideFile),
-        });
+        const result = await handleFilesystemToolCall("fs_read_file", { path: path.relative(root, outsideFile) }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${outsideFile}`);
         expect(text).toContain("external context");
@@ -104,9 +99,7 @@ describe("filesystem tools", () => {
         const symlinkPath = path.join(root, "src", "escape.txt");
         fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
         fs.symlinkSync(outsideFile, symlinkPath);
-        const result = await handleFilesystemToolCall("fs_read_file", {
-            path: "src/escape.txt",
-        });
+        const result = await handleFilesystemToolCall("fs_read_file", { path: "src/escape.txt" }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${symlinkPath}`);
         expect(text).toContain("symlinked context");
@@ -121,7 +114,7 @@ describe("filesystem tools", () => {
         const result = await handleFilesystemToolCall("fs_glob", {
             base_path: "linked",
             pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`ROOT: ${path.join(root, "linked")}`);
         expect(text).toContain("secret.ts");
@@ -137,14 +130,14 @@ describe("filesystem tools", () => {
             pattern: "externalNeedle",
             base_path: projectRoot,
             file_pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const grepText = grepResult.content[0]?.text ?? "";
         expect(grepText).toContain(`ROOT: ${projectRoot}`);
         expect(grepText).toContain("service/index.ts:1: export const externalNeedle = true;");
         const globResult = await handleFilesystemToolCall("fs_glob", {
             base_path: projectRoot,
             pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const globText = globResult.content[0]?.text ?? "";
         expect(globText).toContain(`ROOT: ${projectRoot}`);
         expect(globText).toContain("service/index.ts");
@@ -161,7 +154,7 @@ describe("filesystem tools", () => {
             pattern: "delegate_start",
             base_path: ".",
             file_pattern: "**/*.rs",
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("FILE_PATTERN: **/*.rs");
         expect(text).toContain("src-tauri/src/main.rs:2:     println!(\"delegate_start\");");
@@ -177,9 +170,7 @@ describe("filesystem tools", () => {
         fs.writeFileSync(first, "# one\n");
         fs.writeFileSync(second, "# two\n");
         fs.writeFileSync(path.join(root, ".gitignore"), "agents/two/\n");
-        const result = await handleFilesystemToolCall("fs_glob", {
-            pattern: "agents/**/codex/*.md",
-        });
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "agents/**/codex/*.md" }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("agents/one/codex/prompt.md");
         expect(text).not.toContain("agents/two/codex/prompt.md");
@@ -195,7 +186,7 @@ describe("filesystem tools", () => {
             base_path: "src",
             pattern: "**/*.ts",
             max_depth: 0,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("one.ts");
         expect(text).not.toContain("nested/two.ts");
@@ -208,7 +199,7 @@ describe("filesystem tools", () => {
         const result = await handleFilesystemToolCall("fs_read_file", {
             path: "src/large.ts",
             max_bytes: 128,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("TRUNCATED: true");
     });

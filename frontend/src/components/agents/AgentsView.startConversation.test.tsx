@@ -17,7 +17,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
-import { chatKeys } from "@/hooks/useChat";
+import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { personaKeys } from "@/hooks/usePersonas";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -2762,6 +2762,90 @@ describe("AgentsView start conversation", () => {
     ).toBeUndefined();
   });
 
+  it("reveals and invalidates a seeded conversation when abort reports it already started", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const selectConversation = vi.fn();
+    const seededConversation = conversation({
+      id: "conversation-survived-abort",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockRejectedValue(new Error("start response was lost"));
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "upload_chat_attachment") {
+        return Promise.resolve({ id: "attachment-survived-start" });
+      }
+      if (command === "abort_seeded_agent_conversation") {
+        return Promise.reject(
+          new Error(
+            "SEEDED_AGENT_CONVERSATION_ALREADY_STARTED: conversation `conversation-survived-abort` has already started",
+          ),
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation,
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    await expect(
+      result.current({
+        projectId: "project-1",
+        content: "recover the surviving start",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        mode: "edit",
+        base: null,
+        files: [new File(["draft"], "draft.txt", { type: "text/plain" })],
+      }),
+    ).rejects.toThrow("start response was lost");
+
+    expect(selectConversation).toHaveBeenCalledWith(
+      "project-1",
+      "conversation-survived-abort",
+    );
+    expect(
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-survived-abort",
+      ]),
+    ).toBeDefined();
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["agents", "sidebar-conversations"],
+    });
+    expect(invalidateConversationDataQueries).toHaveBeenCalledWith(
+      queryClient,
+      "conversation-survived-abort",
+    );
+  });
+
   it("moves running state when the backend resolves a different conversation id", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -3442,12 +3526,21 @@ describe("AgentsView start conversation", () => {
     const { queryClient } = renderAgentsView();
     queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags({ composerFolderReferences: true }),
+      enabledFeatureFlags({
+        composerFolderReferences: true,
+        standaloneConversations: true,
+      }),
     );
 
     expect(
       await screen.findByTestId("draft-folder-reference-chips"),
     ).toHaveTextContent("design-notes");
+
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+    expect(screen.getByTestId("draft-folder-reference-chips")).toHaveTextContent(
+      "design-notes",
+    );
   });
 
   it("registers a pre-send picked folder against the seeded conversation before sending the first message", async () => {

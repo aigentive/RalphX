@@ -1244,7 +1244,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
-      conversation?.agentMode,
+      conversation,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,

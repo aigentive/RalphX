@@ -54,4 +54,38 @@ describe("usePersonaDraftEvents", () => {
       });
     });
   });
+
+  it("logs a failed authoritative draft refresh", async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error("draft unavailable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    function Wrapper({ children }: { children: ReactNode }) {
+      return (
+        <QueryClientProvider client={queryClient}>
+          <EventProvider>{children}</EventProvider>
+        </QueryClientProvider>
+      );
+    }
+    renderHook(() => usePersonaDraftEvents(), { wrapper: Wrapper });
+
+    await waitFor(() => expect(window.__eventBus).toBeDefined());
+    act(() => {
+      window.__eventBus?.emit("persona:draft_updated", {
+        draft_id: "draft-failed",
+        version: 2,
+        content_hash: "hash-failed",
+        artifact_id: null,
+      });
+    });
+
+    await waitFor(() =>
+      expect(consoleError).toHaveBeenCalledWith(
+        "Failed to refresh persona draft after persona:draft_updated",
+        expect.any(Error),
+      ),
+    );
+    consoleError.mockRestore();
+  });
 });

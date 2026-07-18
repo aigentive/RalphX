@@ -517,9 +517,6 @@ export function AgentsStartComposer({
     }
     setCapabilityMode("solo");
     setPersonaId(null);
-    if (mode !== "persona_builder") {
-      setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, []);
-    }
     if (mode !== "chat" && mode !== "persona_builder") {
       setMode("chat");
       setAutomationAuthoringMode(null);
@@ -529,7 +526,7 @@ export function AgentsStartComposer({
         ),
       );
     }
-  }, [mode, projectId, setComposerDraftFolders]);
+  }, [mode, projectId]);
 
   useEffect(() => {
     if (mode !== "persona_builder") return;

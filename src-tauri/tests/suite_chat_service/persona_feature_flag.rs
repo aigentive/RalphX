@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use ralphx_lib::application::app_paths::AppPaths;
 use ralphx_lib::application::chat_service::{
-    process_queued_messages_for_test, validate_conversation_spawn_harness, AppChatService,
-    ChatService, ChatServiceError, SendMessageOptions, STANDALONE_PERSONA_BUILDER_CODEX_ERROR,
+    process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
+    validate_conversation_spawn_harness, AppChatService, ChatService, ChatServiceError,
+    SendMessageOptions, PERSONA_BUILDER_FEATURE_DISABLED_ERROR, STANDALONE_CODEX_UNSUPPORTED_ERROR,
 };
 use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
@@ -297,7 +298,7 @@ async fn persona_builder_send_does_not_reintroduce_the_retired_ingest_gate() {
 }
 
 #[tokio::test]
-async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
+async fn standalone_chat_fresh_send_rejects_codex_override() {
     let _persona_reset = PersonaFlagOverrideReset;
     let _standalone_reset = StandaloneFlagOverrideReset;
     set_agent_personas_override(Some(true));
@@ -310,7 +311,7 @@ async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
         .chat_conversation_repo
         .create({
             let mut conversation = ChatConversation::new_standalone();
-            conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+            conversation.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
             conversation
         })
         .await
@@ -338,7 +339,7 @@ async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
         .send_message(
             ChatContextType::Standalone,
             &context_id,
-            "Do not switch this builder to Codex.",
+            "Do not start this standalone chat on Codex.",
             SendMessageOptions {
                 conversation_id_override: Some(conversation.id),
                 harness_override: Some(AgentHarnessKind::Codex),
@@ -346,37 +347,41 @@ async fn standalone_persona_builder_fresh_send_rejects_codex_override() {
             },
         )
         .await
-        .expect_err("standalone builder Codex send must reject");
+        .expect_err("standalone chat Codex send must reject");
 
     assert!(matches!(
         error,
         ChatServiceError::SpawnFailed(ref message)
-            if message == STANDALONE_PERSONA_BUILDER_CODEX_ERROR
+            if message == STANDALONE_CODEX_UNSUPPORTED_ERROR
     ));
 }
 
 #[test]
-fn codex_send_guard_allows_project_builder_and_standalone_chat() {
-    let mut project_builder = ChatConversation::new_project(
-        ralphx_lib::domain::entities::ProjectId::from_string("project-builder-codex".to_string()),
+fn codex_send_guard_allows_project_chat_and_rejects_standalone_chat() {
+    let mut project_chat = ChatConversation::new_project(
+        ralphx_lib::domain::entities::ProjectId::from_string("project-chat-codex".to_string()),
     );
-    project_builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
-    validate_conversation_spawn_harness(&project_builder, AgentHarnessKind::Codex)
-        .expect("Project-context builder must still allow Codex sends");
+    project_chat.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    validate_conversation_spawn_harness(&project_chat, AgentHarnessKind::Codex)
+        .expect("Project-context chat must still allow Codex sends");
 
     let mut standalone_chat = ChatConversation::new_standalone();
     standalone_chat.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
-    validate_conversation_spawn_harness(&standalone_chat, AgentHarnessKind::Codex)
-        .expect("Standalone chat must still allow Codex sends");
+    let error = validate_conversation_spawn_harness(&standalone_chat, AgentHarnessKind::Codex)
+        .expect_err("Standalone chat must reject Codex sends");
+    assert!(matches!(
+        error,
+        ChatServiceError::SpawnFailed(ref message) if message == STANDALONE_CODEX_UNSUPPORTED_ERROR
+    ));
 }
 
 #[tokio::test]
-async fn standalone_builder_queue_rejects_codex_override_with_agent_error() {
+async fn standalone_chat_queue_rejects_codex_override_with_agent_error() {
     let _standalone_reset = StandaloneFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let mut conversation = ChatConversation::new_standalone();
-    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
     let conversation = conversation_repo
         .create(conversation)
         .await
@@ -431,7 +436,7 @@ async fn standalone_builder_queue_rejects_codex_override_with_agent_error() {
         .lock()
         .unwrap()
         .iter()
-        .any(|payload| payload.contains(STANDALONE_PERSONA_BUILDER_CODEX_ERROR)));
+        .any(|payload| payload.contains(STANDALONE_CODEX_UNSUPPORTED_ERROR)));
     assert!(app
         .state::<AppState>()
         .agent_run_repo
@@ -444,6 +449,133 @@ async fn standalone_builder_queue_rejects_codex_override_with_agent_error() {
         .message_queue
         .get_queued(ChatContextType::Standalone, &context_id)
         .is_empty());
+}
+
+#[tokio::test]
+async fn resumed_builder_send_rejects_flag_off_and_flag_on_passes_the_gate() {
+    let state = AppState::new_test();
+    let project = Project::new("Resumed builder flag gate".to_string(), ".".to_string());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed resumed builder");
+    let options = SendMessageOptions {
+        conversation_id_override: Some(conversation.id),
+        ..Default::default()
+    };
+
+    let disabled = persona_flag_override_chat_service(&state)
+        .with_persona_feature_enabled(false)
+        .send_message(
+            ChatContextType::Project,
+            project.id.as_str(),
+            "Resume while disabled",
+            options.clone(),
+        )
+        .await
+        .expect_err("disabled builder resume must reject");
+    assert!(matches!(
+        disabled,
+        ChatServiceError::PersonaUnavailable(ref message)
+            if message == PERSONA_BUILDER_FEATURE_DISABLED_ERROR
+    ));
+    assert!(state
+        .agent_run_repo
+        .get_by_conversation(&conversation.id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let enabled = persona_flag_override_chat_service(&state)
+        .with_persona_feature_enabled(true)
+        .send_message(
+            ChatContextType::Project,
+            project.id.as_str(),
+            "Resume while enabled",
+            options,
+        )
+        .await;
+    assert!(
+        !matches!(
+            enabled,
+            Err(ChatServiceError::PersonaUnavailable(ref message))
+                if message == PERSONA_BUILDER_FEATURE_DISABLED_ERROR
+        ),
+        "flag-on builder resume must pass the feature gate: {enabled:?}"
+    );
+}
+
+#[tokio::test]
+async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
+    async fn drain_with_flag(enabled: bool) -> Vec<String> {
+        let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+        let mut conversation =
+            ChatConversation::new_project(ralphx_lib::domain::entities::ProjectId::from_string(
+                format!("queued-builder-flag-{enabled}"),
+            ));
+        conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+        let conversation = conversation_repo.create(conversation).await.unwrap();
+        let mut initial_state = AppState::new_test();
+        initial_state.chat_conversation_repo = conversation_repo;
+        let context_id = conversation.id.as_str();
+        initial_state
+            .message_queue
+            .queue_with_runtime_overrides_and_project_references(
+                ChatContextType::Project,
+                &context_id,
+                "queued builder resume".to_string(),
+                None,
+                None,
+                None,
+                None,
+                ralphx_lib::domain::entities::PersonaDirective::Inherit,
+                None,
+                None,
+                None,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+            );
+        let app = tauri::test::mock_builder()
+            .manage(initial_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&errors);
+        let _listener = app.listen("agent:error", move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+        process_queued_messages_for_test_with_persona_feature(
+            app.handle().clone(),
+            ChatContextType::Project,
+            AgentHarnessKind::Claude,
+            &context_id,
+            conversation.id,
+            "claude-session",
+            std::path::Path::new("/definitely/missing/ralphx-test-cli"),
+            enabled,
+        )
+        .await;
+        let captured_errors = errors.lock().unwrap().clone();
+        captured_errors
+    }
+
+    let disabled_errors = drain_with_flag(false).await;
+    assert!(disabled_errors
+        .iter()
+        .any(|payload| payload.contains(PERSONA_BUILDER_FEATURE_DISABLED_ERROR)));
+
+    let enabled_errors = drain_with_flag(true).await;
+    assert!(enabled_errors
+        .iter()
+        .all(|payload| !payload.contains(PERSONA_BUILDER_FEATURE_DISABLED_ERROR)));
 }
 
 #[tokio::test]

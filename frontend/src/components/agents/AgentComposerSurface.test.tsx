@@ -234,6 +234,32 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => expect(screen.queryByText("brand-kit")).not.toBeInTheDocument());
   });
 
+  it("shows a retryable folder-reference warning instead of treating a failed list as empty", async () => {
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(new Error("folder list unavailable"))
+      .mockResolvedValueOnce([]);
+    renderComposer({ conversationId: "conversation-folder-error" });
+
+    expect(
+      await screen.findByText(
+        "Couldn't load folder references — previously attached folders may still be visible to the agent",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("folder-reference-chips")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry folder references" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Couldn't load folder references — previously attached folders may still be visible to the agent",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("shows the full folder path in a hover tooltip on the persisted chip", async () => {
     const references = [
       {

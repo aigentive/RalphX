@@ -30,6 +30,7 @@ import {
 import { invalidateAutomationQueries } from "@/hooks/useAutomations";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
+import { extractErrorMessage } from "@/lib/errors";
 import {
   useAgentSessionStore,
   type AgentArtifactState,
@@ -106,6 +107,8 @@ interface UseStartAgentConversationArgs {
 }
 
 const AUTOMATION_DRAFT_TITLE_MAX_LENGTH = 80;
+const SEEDED_AGENT_CONVERSATION_ALREADY_STARTED =
+  "SEEDED_AGENT_CONVERSATION_ALREADY_STARTED";
 
 function automationDraftNameFromContent(content: string): string | undefined {
   const normalized = content.replace(/\s+/g, " ").trim();
@@ -647,16 +650,22 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
+        let seededAbortRefused = false;
         if (abortableSeededConversationId) {
           try {
             await invoke("abort_seeded_agent_conversation", {
               conversationId: abortableSeededConversationId,
             });
           } catch (abortError) {
-            console.warn(
-              "Failed to abort a never-started seeded agent conversation",
-              abortError,
+            seededAbortRefused = extractErrorMessage(abortError, "").includes(
+              SEEDED_AGENT_CONVERSATION_ALREADY_STARTED,
             );
+            if (!seededAbortRefused) {
+              console.warn(
+                "Failed to abort a never-started seeded agent conversation",
+                abortError,
+              );
+            }
           }
         }
         const linkedFailure = parseLinkedSetupFailure(err);
@@ -686,11 +695,24 @@ export function useStartAgentConversation({
           setSending(seededStoreKey, false);
         }
         if (seededConversationId && seededStoreKey) {
-          removeOptimisticConversation(seededConversationId, seededStoreKey);
+          if (seededAbortRefused) {
+            invalidateConversationDataQueries(queryClient, seededConversationId);
+            await queryClient.invalidateQueries({
+              queryKey: agentSidebarConversationKeys.all,
+            });
+            setOptimisticSelectedConversationId(seededConversationId);
+            setFocusedProject(targetProjectId);
+            selectConversation(targetProjectId, seededConversationId);
+            setActiveConversation(seededStoreKey, seededConversationId);
+          } else {
+            removeOptimisticConversation(seededConversationId, seededStoreKey);
+          }
         }
         removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
-        setOptimisticSelectedConversationId(null);
-        useAgentSessionStore.getState().clearSelection();
+        if (!seededAbortRefused) {
+          setOptimisticSelectedConversationId(null);
+          useAgentSessionStore.getState().clearSelection();
+        }
         throw err;
       }
     },

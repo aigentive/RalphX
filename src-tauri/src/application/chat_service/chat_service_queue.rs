@@ -611,6 +611,7 @@ struct QueuedAgentContext {
     effective_mode: Option<AgentConversationWorkspaceMode>,
     conversation: Option<ChatConversation>,
     builder_draft: Option<Persona>,
+    builder_context_error: Option<String>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -657,6 +658,7 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
     };
 
     let app_state = handle.state::<AppState>();
+    let mut builder_context_error = None;
     let conversation = match app_state
         .chat_conversation_repo
         .get_by_id(conversation_id)
@@ -682,14 +684,15 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
             .await
         {
             Ok(Some(draft)) => Some(draft),
-            Ok(None) => None,
+            Ok(None) => {
+                builder_context_error = Some(format!(
+                    "Bound PersonaBuilder draft {draft_id} was not found"
+                ));
+                None
+            }
             Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    %conversation_id,
-                    draft_id,
-                    "[QUEUE] Failed to resolve bound PersonaBuilder draft"
-                );
+                builder_context_error =
+                    Some(format!("PersonaBuilder draft lookup failed: {error}"));
                 None
             }
         }
@@ -719,6 +722,7 @@ async fn resolve_queued_agent_context<R: Runtime + 'static>(
         effective_mode: mode,
         conversation,
         builder_draft,
+        builder_context_error,
     })
 }
 
@@ -1152,6 +1156,59 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     continue;
                 }
             };
+            if let Some(conversation) = queued_agent_context.conversation.as_ref() {
+                if let Err(error) = super::validate_persona_builder_feature_for_conversation(
+                    persona_feature_enabled,
+                    conversation,
+                ) {
+                    let error = error.to_string();
+                    tracing::warn!(
+                        error,
+                        %context_type,
+                        context_id,
+                        queued_message_id = %queued_msg.id,
+                        "queue resume blocked because PersonaBuilder is disabled"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            }
+            if let Some(error) = queued_agent_context.builder_context_error.as_ref() {
+                tracing::warn!(
+                    error,
+                    %context_type,
+                    context_id,
+                    "queue resume blocked because PersonaBuilder context could not be loaded"
+                );
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        "agent:error",
+                        AgentErrorPayload {
+                            conversation_id: Some(conversation_id.as_str().to_string()),
+                            context_type: context_type.to_string(),
+                            context_id: context_id.to_string(),
+                            agent_run_id: None,
+                            error: error.clone(),
+                            stderr: None,
+                        },
+                    );
+                }
+                total_processed += 1;
+                continue;
+            }
             let target_harness = queued_target_harness(&queued_msg, harness);
             if let Some(conversation) = queued_agent_context.conversation.as_ref() {
                 if let Err(error) =
@@ -2470,6 +2527,30 @@ pub async fn process_queued_messages_for_test<R: Runtime + 'static>(
     session_id: &str,
     cli_path: &Path,
 ) -> (u32, Option<String>) {
+    process_queued_messages_for_test_with_persona_feature(
+        app_handle,
+        context_type,
+        harness,
+        context_id,
+        conversation_id,
+        session_id,
+        cli_path,
+        true,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn process_queued_messages_for_test_with_persona_feature<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    context_type: ChatContextType,
+    harness: AgentHarnessKind,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    session_id: &str,
+    cli_path: &Path,
+    persona_feature_enabled: bool,
+) -> (u32, Option<String>) {
     let (
         message_queue,
         running_agent_registry,
@@ -2504,7 +2585,7 @@ pub async fn process_queued_messages_for_test<R: Runtime + 'static>(
         &queue_context_id,
         conversation_id,
         session_id,
-        false,
+        persona_feature_enabled,
         &message_queue,
         None,
         None,

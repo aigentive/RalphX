@@ -52,7 +52,11 @@ export function PersonaVersionHistory({
 
   return (
     <>
-      {orderedHistory.length > 0 && (
+      {historyQuery.isError ? (
+        <p className="text-xs text-[var(--status-error)]">
+          Couldn't load version history.
+        </p>
+      ) : orderedHistory.length > 0 && (
         <div>
           <label
             htmlFor={selectId}
@@ -95,6 +99,10 @@ export function PersonaVersionHistory({
             className="h-28 animate-pulse rounded bg-[var(--bg-elevated)]"
             aria-label="Loading historical persona"
           />
+        ) : isHistorical && historicalQuery.isError ? (
+          <p className="text-sm text-[var(--status-error)]">
+            Couldn't load this persona version.
+          </p>
         ) : content ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         ) : (

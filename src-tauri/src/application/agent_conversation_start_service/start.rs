@@ -60,12 +60,17 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         }
 
         let parse_runtime_started = Instant::now();
-        let harness_override = input
-            .provider_harness
-            .as_deref()
-            .map(str::parse::<AgentHarnessKind>)
-            .transpose()?;
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
+        if mode == AgentConversationWorkspaceMode::Tasks {
+            return Err(
+                "Tasks mode is available only for an existing attached task pipeline".to_string(),
+            );
+        }
+        if mode == AgentConversationWorkspaceMode::Autopilot
+            && !self.deps.state.agent_capability_gate.autopilot_enabled()
+        {
+            return Err("Autopilot is disabled in Agent conversation capabilities".to_string());
+        }
         let draft_conversation_id = input
             .conversation_id
             .as_deref()
@@ -98,6 +103,24 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 "{SEEDED_CONVERSATION_MODE_LOCKED_ERROR_CODE} conversation mode is locked"
             ));
         }
+        if let Some(conversation) = seeded_conversation.as_ref().filter(|conversation| {
+            mode == AgentConversationWorkspaceMode::PersonaBuilder
+                && conversation.agent_mode != Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        }) {
+            let has_messages = !self
+                .deps
+                .state
+                .chat_message_repo
+                .get_by_conversation(&conversation.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_empty();
+            if has_messages {
+                return Err(format!(
+                    "{SEEDED_CONVERSATION_MODE_LOCKED_ERROR_CODE} conversation mode is locked"
+                ));
+            }
+        }
         if context_type == ChatContextType::Standalone
             && !matches!(
                 input.mode.as_deref().map(str::trim),
@@ -106,12 +129,13 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         {
             return Err(STANDALONE_MODE_NOT_ALLOWED_ERROR.to_string());
         }
-        let requested_coordination_mode = input
+        let explicitly_requested_coordination_mode = input
             .team_intent
             .as_ref()
             .map(|intent| intent.coordination_mode);
         if mode == AgentConversationWorkspaceMode::PersonaBuilder
-            && requested_coordination_mode.is_some_and(|mode| mode != CoordinationMode::Solo)
+            && explicitly_requested_coordination_mode
+                .is_some_and(|mode| mode != CoordinationMode::Solo)
         {
             return Err(PERSONA_BUILDER_TEAM_INTENT_REJECTED_ERROR.to_string());
         }
@@ -134,58 +158,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             parse_runtime_started,
         );
 
-        let validate_runtime_started = Instant::now();
-        let effective_harness =
-            crate::application::validate_chat_runtime_for_context_with_override(
-                self.deps.state,
-                context_type,
-                &context_log_id,
-                "start_agent_conversation",
-                harness_override,
-            )
-            .await?;
-        if context_type == ChatContextType::Standalone
-            && mode == AgentConversationWorkspaceMode::PersonaBuilder
-            && effective_harness == AgentHarnessKind::Codex
-        {
-            return Err(
-                crate::application::chat_service::STANDALONE_PERSONA_BUILDER_CODEX_ERROR
-                    .to_string(),
-            );
-        }
-        let requested_capability = input
-            .team_intent
-            .as_ref()
-            .map(|intent| intent.coordination_mode)
-            .unwrap_or_default();
-        let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
-            .then(|| {
-                crate::application::agent_capability_validation::codex_ultra_support_for_model(
-                    requested_harness,
-                    input.model_override.as_deref(),
-                )
-            })
-            .flatten();
-        crate::application::agent_capability_validation::validate_agent_capability(
-            requested_capability,
-            requested_harness,
-            &self.deps.state.agent_capability_gate,
-            codex_ultra_supported,
-        )
-        .map_err(|error| error.to_string())?;
-        crate::application::managed_team::validate_native_team_intent(
-            input.team_intent.as_ref(),
-            requested_harness,
-        )
-        .map_err(|error| error.to_string())?;
-        log_start_agent_conversation_phase(
-            &context_log_id,
-            None,
-            "validate_chat_runtime",
-            validate_runtime_started,
-        );
-
         let parse_input_started = Instant::now();
         let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
         let base_branch_mode =
@@ -194,7 +166,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
-        let persona_id = trim_optional_input(input.persona_id).map(PersonaId::from_string);
         let ticket_branch_name_hint =
             first_ticket_branch_name_hint(&input.composer_integration_references);
         let source_pull_request = normalize_agent_workspace_source_pull_request(
@@ -224,6 +195,163 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             parse_input_started,
         );
 
+        let project_lookup_started = Instant::now();
+        let project = match project_id_opt.as_ref() {
+            Some(project_id) => Some(
+                self.deps
+                    .state
+                    .project_repo
+                    .get_by_id(project_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Project not found: {context_log_id}"))?,
+            ),
+            None => None,
+        };
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            None,
+            "load_project",
+            project_lookup_started,
+        );
+
+        let has_explicit_composer_override = input.provider_harness.is_some()
+            || input.model_override.is_some()
+            || input.logical_effort.is_some()
+            || input.codex_fast_mode.is_some()
+            || input.persona_id.is_some()
+            || input.team_intent.is_some();
+        let role_default = if has_explicit_composer_override {
+            None
+        } else if let (Some(project_id), Some(project)) =
+            (input.project_id.as_deref(), project.as_ref())
+        {
+            let role = crate::application::agent_lane_resolution::routing_role_for_chat_launch(
+                agent_name_for_workspace_mode(mode),
+                ChatContextType::Project,
+                None,
+                Some(mode),
+                false,
+            );
+            Some(
+                self.deps
+                    .state
+                    .manual_role_default_service()
+                    .resolve(
+                        Some(project_id),
+                        Some(std::path::Path::new(&project.working_directory)),
+                        role,
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to resolve manual default for {role}: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let role_value = role_default.as_ref().map(|resolved| &resolved.value);
+        let harness_override = match input.provider_harness.as_deref() {
+            Some(provider) => Some(provider.parse::<AgentHarnessKind>()?),
+            None => role_value.map(|value| value.harness),
+        };
+        let effective_model_override = input
+            .model_override
+            .clone()
+            .or_else(|| role_value.and_then(|value| value.model.clone()));
+        let effective_logical_effort = input
+            .logical_effort
+            .or_else(|| role_value.and_then(|value| value.effort));
+        let effective_service_tier_override = match input.codex_fast_mode {
+            Some(fast) => {
+                crate::application::chat_service::codex_fast_mode_service_tier_override(Some(fast))
+            }
+            None => role_value.and_then(|value| match value.service_tier {
+                ManualServiceTier::ProviderDefault => None,
+                ManualServiceTier::Standard => Some("standard".to_string()),
+                ManualServiceTier::Fast => Some("fast".to_string()),
+            }),
+        };
+        let effective_team_intent = input.team_intent.clone().or_else(|| {
+            role_value
+                .and_then(|value| value.coordination_mode)
+                .map(|coordination_mode| TeamIntent {
+                    coordination_mode,
+                    strategy: None,
+                })
+        });
+        let effective_persona_id = input.persona_id.clone().or_else(|| {
+            (mode != AgentConversationWorkspaceMode::PersonaBuilder && agent_personas_enabled())
+                .then(|| role_value.and_then(|value| value.persona_id.as_ref()))
+                .flatten()
+                .map(ToString::to_string)
+        });
+        let persona_id = trim_optional_input(effective_persona_id).map(PersonaId::from_string);
+        let requested_coordination_mode = effective_team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode);
+        if mode == AgentConversationWorkspaceMode::PersonaBuilder
+            && requested_coordination_mode.is_some_and(|mode| mode != CoordinationMode::Solo)
+        {
+            return Err(PERSONA_BUILDER_TEAM_INTENT_REJECTED_ERROR.to_string());
+        }
+
+        let validate_runtime_started = Instant::now();
+        let effective_harness =
+            crate::application::validate_chat_runtime_for_context_with_override(
+                self.deps.state,
+                context_type,
+                &context_log_id,
+                "start_agent_conversation",
+                harness_override,
+            )
+            .await?;
+        let mut spawn_conversation = seeded_conversation.clone().unwrap_or_else(|| {
+            if context_type == ChatContextType::Standalone {
+                ChatConversation::new_standalone()
+            } else {
+                ChatConversation::new_project(
+                    project_id_opt
+                        .clone()
+                        .expect("Project starts resolve a project id before harness validation"),
+                )
+            }
+        });
+        spawn_conversation.agent_mode = Some(mode);
+        crate::application::chat_service::validate_conversation_spawn_harness(
+            &spawn_conversation,
+            effective_harness,
+        )
+        .map_err(|error| error.to_string())?;
+        let requested_capability = requested_coordination_mode.unwrap_or_default();
+        let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
+            .then(|| {
+                crate::application::agent_capability_validation::codex_ultra_support_for_model(
+                    requested_harness,
+                    effective_model_override.as_deref(),
+                )
+            })
+            .flatten();
+        crate::application::agent_capability_validation::validate_agent_capability(
+            requested_capability,
+            requested_harness,
+            &self.deps.state.agent_capability_gate,
+            codex_ultra_supported,
+        )
+        .map_err(|error| error.to_string())?;
+        crate::application::managed_team::validate_native_team_intent(
+            effective_team_intent.as_ref(),
+            requested_harness,
+        )
+        .map_err(|error| error.to_string())?;
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            None,
+            "validate_chat_runtime",
+            validate_runtime_started,
+        );
+
         let ProjectSetupOutput {
             project,
             validated_clickup_task,
@@ -236,6 +364,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         } = self
             .resolve_project_setup(ProjectSetupInput {
                 project_id_opt: project_id_opt.clone(),
+                project,
                 source_persona_id: source_persona_id.clone(),
                 composer_integration_references: input.composer_integration_references.clone(),
                 should_create_workspace,
@@ -465,6 +594,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             project,
             requested_coordination_mode,
             harness_override,
+            effective_model_override,
+            effective_logical_effort,
+            effective_service_tier_override,
+            effective_team_intent,
             mode,
             composer_artifact_references,
         })
