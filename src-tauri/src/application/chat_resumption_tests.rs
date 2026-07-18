@@ -1439,10 +1439,14 @@ async fn create_durable_recovery_candidate_standalone(
 #[tokio::test]
 async fn durable_silent_completion_recovery_scans_both_project_and_standalone() {
     let (execution_state, app_state) = setup_test_state().await;
+    // Keep this scan/recovery test on the established deterministic queue path.
+    // An active launch would resolve a real provider CLI, making this repository
+    // and recovery-policy test depend on machine-specific harness availability.
+    execution_state.pause();
     let runner = build_runner(&app_state, &execution_state);
 
-    create_durable_recovery_candidate(&app_state).await;
-    create_durable_recovery_candidate_standalone(&app_state).await;
+    let project_conversation_id = create_durable_recovery_candidate(&app_state).await;
+    let standalone_conversation_id = create_durable_recovery_candidate_standalone(&app_state).await;
 
     // Prove the restart-recovery *scan* itself finds a candidate in both
     // directions: the Project-context and Standalone-context durable recovery
@@ -1476,14 +1480,34 @@ async fn durable_silent_completion_recovery_scans_both_project_and_standalone() 
         "Standalone candidate must be enumerated"
     );
 
-    // End-to-end, only the Project candidate completes recovery: this test never
-    // attaches a Tauri app handle, so the Standalone candidate's CWD resolution
-    // fails closed (`resolve_working_directory` requires an app-owned data
-    // directory to resolve its private workspace — see Phase 4a.2), and
-    // `send_message` errors for it even though it was correctly discovered and
-    // evaluated. This is expected fail-closed behavior, not a silent
-    // enumeration failure.
-    assert_eq!(runner.recover_durable_silent_completions().await, 1);
+    assert_eq!(runner.recover_durable_silent_completions().await, 2);
+    for (context_type, conversation_id) in [
+        (ChatContextType::Project, project_conversation_id),
+        (ChatContextType::Standalone, standalone_conversation_id),
+    ] {
+        let queued = app_state
+            .message_queue
+            .get_queued(context_type, &conversation_id.as_str());
+        assert_eq!(
+            queued.len(),
+            1,
+            "{context_type} recovery must queue exactly one message"
+        );
+        assert!(
+            silent_completion_recovery_attempt(queued[0].metadata_override.as_deref()) > 0,
+            "{context_type} recovery queue entry must retain its durable attempt marker"
+        );
+        assert!(
+            !app_state
+                .running_agent_registry
+                .is_running(&RunningAgentKey::new(
+                    context_type.to_string(),
+                    conversation_id.as_str(),
+                ))
+                .await,
+            "{context_type} recovery must not dispatch while execution is paused"
+        );
+    }
 }
 
 #[tokio::test]

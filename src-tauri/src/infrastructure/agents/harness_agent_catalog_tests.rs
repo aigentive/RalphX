@@ -2833,14 +2833,22 @@ fn ticket_attachment_surface_stays_off_unrelated_agent_prompts_and_grants() {
 }
 
 #[test]
-fn task_execution_agent_rule_documents_post_change_validation_policy() {
+fn task_execution_agent_rule_documents_focused_validation_policy() {
     let root = project_root();
     let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))
         .expect("read task execution agent rule");
 
     assert!(
+        rule_doc.contains("Target-project instructions own command selection"),
+        "task execution rule should preserve target-project validation ownership"
+    );
+    assert!(
+        rule_doc.contains("narrowest relevant wave/final/re-execution evidence"),
+        "task execution rule should require focused implementation-agent evidence"
+    );
+    assert!(
         rule_doc.contains("Execution agents do not run baseline validation by default"),
-        "task execution rule should state the default post-change validation policy"
+        "task execution rule should state the default pre-change validation policy"
     );
     assert!(
         rule_doc.contains("explicit diagnostic"),

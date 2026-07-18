@@ -18,7 +18,10 @@ import { AgentsStartComposer } from "./AgentsStartComposer";
 import { PersonaPickerControl } from "./PersonaPickerControl";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
-const composerProps = vi.hoisted(() => ({ hasPersonaControl: false }));
+const composerProps = vi.hoisted(() => ({
+  hasPersonaControl: false,
+  modeValue: null as string | null,
+}));
 const personaChipRendered = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/useFeatureFlags", () => ({
@@ -61,13 +64,16 @@ vi.mock("./AgentComposerSurface", () => ({
   AgentComposerProjectCreateButton: () => null,
   AgentComposerProjectLine: () => null,
   AgentComposerSurface: ({
+    mode,
     onSend,
     personaControl,
   }: {
+    mode?: { value: string };
     onSend: (message: string) => Promise<void>;
     personaControl?: React.ReactNode;
   }) => {
     composerProps.hasPersonaControl = personaControl !== undefined;
+    composerProps.modeValue = mode?.value ?? null;
     return (
       <div>
         {personaControl}
@@ -328,6 +334,7 @@ describe("agent personas flag-off sweep", () => {
     vi.clearAllMocks();
     featureFlags.agentPersonas = false;
     composerProps.hasPersonaControl = false;
+    composerProps.modeValue = null;
     localStorage.clear();
     act(() => {
       useUiStore.setState({ activeModal: "settings", modalContext: { section: "personas" } });
@@ -379,6 +386,49 @@ describe("agent personas flag-off sweep", () => {
     expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
     expect(personaChipRendered).not.toHaveBeenCalled();
     expectNoPersonaInvokes();
+  });
+
+  it("keeps project mode while selecting the first available project", async () => {
+    renderWithProviders(
+      <AgentsStartComposer
+        projects={[
+          {
+            id: "project-1",
+            name: "Project",
+            workingDirectory: "/tmp/project",
+          },
+        ]}
+        defaultProjectId={null}
+        defaultRuntime={{
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        }}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{
+          claude: [],
+          codex: [
+            {
+              id: "gpt-5.5",
+              label: "gpt-5.5",
+              menuLabel: "gpt-5.5",
+              defaultEffort: "xhigh",
+              supportedEfforts: ["xhigh"],
+            },
+          ],
+        }}
+        onCreateProject={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(composerProps.modeValue).toBe("edit"));
+    expect(
+      screen.queryByText(
+        /Project-requiring modes are unavailable without a project/,
+      ),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -1442,7 +1442,7 @@ fn build_codex_mcp_overrides_disables_apply_patch_for_persona_extractor() {
     assert!(
         overrides.iter().any(|entry| entry
             == "mcp_servers.ralphx.enabled_tools=[\"fs_read_file\",\"fs_list_dir\",\"fs_grep\",\"fs_glob\",\"ask_user_question\",\"save_persona_draft\",\"get_persona_draft\"]"),
-        "Codex PersonaExtractor must receive exactly its canonical MCP grants; overrides: {overrides:?}"
+        "Codex PersonaExtractor must receive exactly its canonical MCP grants"
     );
 
     for expected in [

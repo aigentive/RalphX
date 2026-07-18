@@ -611,7 +611,7 @@ export function AgentsStartComposer({
   }, [defaultProjectId, featureFlags.standaloneConversations, projectLocked, projects]);
 
   useEffect(() => {
-    if (projectId !== null) {
+    if (!featureFlags.standaloneConversations || projectId !== null) {
       return;
     }
     setCapabilityMode("solo");
@@ -625,7 +625,7 @@ export function AgentsStartComposer({
         ),
       );
     }
-  }, [mode, projectId]);
+  }, [featureFlags.standaloneConversations, mode, projectId]);
 
   useEffect(() => {
     if (mode !== "persona_builder") return;
