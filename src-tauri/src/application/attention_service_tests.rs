@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::entities::ChatContextType;
 
 use std::sync::Arc;
 
@@ -18,11 +19,8 @@ use crate::infrastructure::memory::MemoryPlanArtifactApprovalRepository;
 
 #[test]
 fn attention_item_helpers_keep_unknown_categories_global_and_unmapped_items_last() {
-    use super::attention_service_items::{attention_group, conversation_target, is_in_scope};
+    use super::attention_service_items::{attention_group, is_in_scope};
 
-    let missing_conversation = conversation_target(None, Some("project-1".to_string()));
-
-    assert_eq!(missing_conversation, NotificationTarget::none());
     assert!(is_in_scope(
         None,
         Some(&ProjectId::from_string("project-1".to_string()))
@@ -287,6 +285,144 @@ async fn notification_context_resolver_uses_session_fallback_and_ownership_predi
         .session_has_implementation_task(&automation_session)
         .await
         .unwrap());
+}
+
+#[tokio::test]
+async fn notification_context_resolver_prefers_active_workspace_linked_to_plan_session() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-workspace-plan").await;
+    let session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .title("Workspace-owned plan")
+        .build();
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+    let conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/plan".to_string(),
+        "/tmp/ralphx-plan".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let resolved = NotificationContextResolver::from_app_state(&state)
+        .resolve_ideation_session_target(&session)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolved.target.conversation_id,
+        Some(conversation.id.to_string())
+    );
+    assert_eq!(
+        resolved.target.kind,
+        NotificationTargetKind::AgentConversation
+    );
+}
+
+#[tokio::test]
+async fn notification_context_resolver_uses_validated_trusted_workspace_not_newest_project_chat() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-exact-workspace").await;
+    let trusted = ChatConversation::new_project(project.id.clone());
+    let newer = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(trusted.clone())
+        .await
+        .unwrap();
+    state.chat_conversation_repo.create(newer).await.unwrap();
+    let workspace = AgentConversationWorkspace::new(
+        trusted.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/exact".to_string(),
+        "/tmp/ralphx-exact".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let trusted_id = trusted.id.to_string();
+    let resolved = NotificationContextResolver::from_app_state(&state)
+        .resolve_context_target_with_trusted_conversation(
+            "project",
+            project.id.as_str(),
+            Some(&trusted_id),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resolved.target.conversation_id, Some(trusted_id));
+}
+
+#[tokio::test]
+async fn notification_context_resolver_rejects_trusted_workspace_from_another_project() {
+    let state = AppState::new_test();
+    let expected_project = create_project(&state, "resolver-expected-project").await;
+    let other_project = create_project(&state, "resolver-other-project").await;
+    let conversation = ChatConversation::new_project(other_project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            other_project.id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "ralphx/other".to_string(),
+            "/tmp/ralphx-other".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let conversation_id = conversation.id.to_string();
+    let resolved = NotificationContextResolver::from_app_state(&state)
+        .resolve_context_target_with_trusted_conversation(
+            "project",
+            expected_project.id.as_str(),
+            Some(&conversation_id),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolved.project_id.as_deref(),
+        Some(expected_project.id.as_str())
+    );
+    assert_eq!(resolved.target, NotificationTarget::none());
 }
 
 fn automation(project_id: ProjectId, id: &str, status: AutomationStatus) -> Automation {

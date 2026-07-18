@@ -2,7 +2,31 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizePermissionToolInput, shouldAutoApprovePermission, } from "../permission-handler.js";
+import { handlePermissionRequest, normalizePermissionToolInput, shouldAutoApprovePermission, } from "../permission-handler.js";
+describe("handlePermissionRequest runtime identity", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+    it("attaches only the injected conversation identity to the backend request", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "permission-1" }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ decision: "deny" }), { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+        await handlePermissionRequest({
+            tool_name: "Bash",
+            tool_input: { command: "git push" },
+            conversation_id: "conversation-spoofed",
+        }, { conversationId: "conversation-current" });
+        expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:3847/api/permission/request", expect.objectContaining({
+            headers: expect.objectContaining({
+                "x-ralphx-conversation-id": "conversation-current",
+            }),
+        }));
+        const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+        expect(requestBody).not.toHaveProperty("conversation_id");
+    });
+});
 describe("normalizePermissionToolInput", () => {
     it("adds snake_case and path aliases for Write requests", () => {
         expect(normalizePermissionToolInput("Write", {

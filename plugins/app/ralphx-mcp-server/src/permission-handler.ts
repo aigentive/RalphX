@@ -17,6 +17,10 @@ import path from "node:path";
 import { safeError } from "./redact.js";
 import { buildTauriApiUrl } from "./tauri-client.js";
 import {
+  buildRuntimeTransportHeaders,
+  type RuntimeContext,
+} from "./runtime-context.js";
+import {
   isWithin,
   normalizePathLike,
 } from "./path-policy.js";
@@ -299,7 +303,8 @@ function normalizePermissionArgs(
  * @returns MCP tool result with decision (behavior + updatedInput / message)
  */
 export async function handlePermissionRequest(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  runtimeContext: RuntimeContext = {}
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const { tool_name, tool_input, context } = normalizePermissionArgs(args);
   const normalizedToolInput = normalizePermissionToolInput(tool_name, tool_input);
@@ -368,7 +373,10 @@ export async function handlePermissionRequest(
       buildTauriApiUrl("permission/request"),
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+        },
         body: JSON.stringify(body),
       }
     );

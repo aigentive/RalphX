@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildArtifactMutationTransportHeaders,
+  buildRuntimeTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
   parseCliOptionFromArgs,
 } from "../runtime-context.js";
@@ -21,6 +22,19 @@ describe("parseCliOptionFromArgs", () => {
         "context-id"
       )
     ).toBe("session-123");
+  });
+});
+
+describe("buildRuntimeTransportHeaders", () => {
+  it("carries trusted conversation identity without requiring run authority", () => {
+    expect(
+      buildRuntimeTransportHeaders({ conversationId: "conversation-current" })
+    ).toEqual({ "x-ralphx-conversation-id": "conversation-current" });
+  });
+
+  it("omits missing and blank conversation identity", () => {
+    expect(buildRuntimeTransportHeaders({})).toBeUndefined();
+    expect(buildRuntimeTransportHeaders({ conversationId: "  " })).toBeUndefined();
   });
 });
 
@@ -144,12 +158,14 @@ describe("buildArtifactMutationTransportHeaders", () => {
     });
   });
 
-  it("does not invent partial action authority", () => {
+  it("keeps conversation identity even without action authority", () => {
     expect(
       buildArtifactMutationTransportHeaders({
         contextType: "project",
         conversationId: "conversation-current",
       })
-    ).toBeUndefined();
+    ).toEqual({
+      "x-ralphx-conversation-id": "conversation-current",
+    });
   });
 });

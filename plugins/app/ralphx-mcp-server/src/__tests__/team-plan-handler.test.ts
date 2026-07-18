@@ -101,4 +101,50 @@ describe("handleRequestTeamPlan", () => {
       })
     );
   });
+
+  it("attaches the injected conversation identity to plan registration", async () => {
+    writeTeamConfig({ leadSessionId: "lead-session_01" });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          plan_id: "plan-1",
+          message: "auto approved",
+          auto_approved: true,
+          teammates_spawned: [],
+        }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const spoofedArgs = {
+      process: "ideation",
+      teammates: [],
+      team_name: "alpha-team",
+      conversation_id: "conversation-spoofed",
+    } as Parameters<typeof handleRequestTeamPlan>[0] & {
+      conversation_id: string;
+    };
+    await handleRequestTeamPlan(
+      spoofedArgs,
+      "project",
+      "project-1",
+      undefined,
+      { conversationId: "conversation-current" }
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3847/api/team/plan/request",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-ralphx-conversation-id": "conversation-current",
+        }),
+      })
+    );
+    const requestBody = JSON.parse(
+      String(fetchMock.mock.calls[0]?.[1]?.body)
+    ) as Record<string, unknown>;
+    expect(requestBody).not.toHaveProperty("conversation_id");
+  });
 });
