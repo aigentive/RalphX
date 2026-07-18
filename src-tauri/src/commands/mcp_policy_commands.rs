@@ -119,7 +119,10 @@ fn scope_project_id(project_id: Option<&str>) -> Result<Option<&str>, String> {
     }
 }
 
-fn mutable_key(provider: AgentHarnessKind, server_id: String) -> Result<McpServerKey, String> {
+pub(crate) fn mutable_key(
+    provider: AgentHarnessKind,
+    server_id: String,
+) -> Result<McpServerKey, String> {
     let key = McpServerKey::new(provider, server_id)
         .map_err(|error| format!("invalid_identifier: {error}"))?;
     if key.is_ralphx_owned() {
@@ -147,7 +150,7 @@ async fn project_root(
     Ok(Some(PathBuf::from(project.working_directory)))
 }
 
-fn policy_server_ids(
+pub(crate) fn policy_server_ids(
     provider: AgentHarnessKind,
     global: &[McpPolicyOverride],
     project: &[McpPolicyOverride],
@@ -165,7 +168,7 @@ fn policy_server_ids(
         .collect()
 }
 
-fn known_policy_tools(
+pub(crate) fn known_policy_tools(
     provider: AgentHarnessKind,
     server_id: &str,
     global: &[McpPolicyOverride],
@@ -184,6 +187,14 @@ fn known_policy_tools(
 #[cfg(test)]
 pub(crate) fn to_server_response(effective: EffectiveMcpServerPolicy) -> McpServerResponse {
     to_server_response_with_scope(effective, None)
+}
+
+#[cfg(test)]
+pub(crate) fn to_server_response_with_scope_for_test(
+    effective: EffectiveMcpServerPolicy,
+    scoped: Option<&McpPolicyOverride>,
+) -> McpServerResponse {
+    to_server_response_with_scope(effective, scoped)
 }
 
 fn to_server_response_with_scope(

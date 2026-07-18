@@ -22,6 +22,8 @@ pub mod mcp_policy_config;
 pub mod mcp_policy_agent_client;
 pub mod mcp_policy_service;
 #[cfg(test)]
+mod mcp_policy_agent_client_tests;
+#[cfg(test)]
 mod mcp_policy_config_tests;
 #[cfg(test)]
 mod mcp_policy_service_tests;

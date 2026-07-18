@@ -48,3 +48,79 @@ async fn invalid_required_disable_leaves_repository_unchanged() {
         .is_err());
     assert!(repo.get_global(&key).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn clear_tool_removes_empty_follow_policy_but_preserves_server_override() {
+    let db = SqliteTestDb::new("mcp-policy-clear-tool");
+    let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+
+    assert!(!repo
+        .clear_tool(Some("project-1"), &key, "delete_issue")
+        .await
+        .unwrap());
+    repo.set_tool_state(
+        Some("project-1"),
+        &key,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+    assert!(repo
+        .clear_tool(Some("project-1"), &key, "delete_issue")
+        .await
+        .unwrap());
+    assert!(repo
+        .get_for_project("project-1", &key)
+        .await
+        .unwrap()
+        .is_none());
+
+    repo.set_server_state(Some("project-1"), &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_tool_state(
+        Some("project-1"),
+        &key,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+    assert!(repo
+        .clear_tool(Some("project-1"), &key, "delete_issue")
+        .await
+        .unwrap());
+    let policy = repo
+        .get_for_project("project-1", &key)
+        .await
+        .unwrap()
+        .expect("server override should remain after clearing only tool");
+    assert_eq!(policy.server_state, McpOverrideState::Disabled);
+    assert!(policy.tool_states.is_empty());
+}
+
+#[tokio::test]
+async fn clear_server_is_scope_specific() {
+    let db = SqliteTestDb::new("mcp-policy-clear-server-scope");
+    let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());
+    let key = McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap();
+
+    repo.set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_server_state(Some("project-1"), &key, McpOverrideState::Enabled)
+        .await
+        .unwrap();
+    assert!(repo.clear_server(Some("project-1"), &key).await.unwrap());
+    assert!(repo
+        .get_for_project("project-1", &key)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_global(&key).await.unwrap().unwrap().server_state,
+        McpOverrideState::Disabled
+    );
+}

@@ -168,3 +168,78 @@ async fn launch_policy_merges_global_and_project_denies_for_one_provider() {
         Some(&vec!["delete_issue".to_string()])
     );
 }
+
+#[tokio::test]
+async fn launch_policy_merges_yaml_and_ui_with_project_precedence() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".ralphx")).unwrap();
+    fs::write(
+        home.path().join("mcp.yaml"),
+        "mcp:\n  providers:\n    claude:\n      servers:\n        github:\n          state: disabled\n        slack:\n          tools:\n            post_message: disabled\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join(".ralphx").join("mcp.yaml"),
+        "mcp:\n  providers:\n    claude:\n      servers:\n        github:\n          state: enabled\n          tools:\n            delete_issue: disabled\n",
+    )
+    .unwrap();
+    let repo = Arc::new(MemoryMcpPolicyRepository::new());
+    let linear = McpServerKey::new(AgentHarnessKind::Claude, "linear").unwrap();
+    repo.set_server_state(Some("project-1"), &linear, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = repo;
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, home.path().join("mcp.yaml"));
+
+    let policy = service
+        .resolve_launch_policy(
+            AgentHarnessKind::Claude,
+            Some("project-1"),
+            Some(project.path()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(policy.disabled_servers, vec!["linear"]);
+    assert_eq!(
+        policy.disabled_tools.get("github"),
+        Some(&vec!["delete_issue".to_string()])
+    );
+    assert_eq!(
+        policy.disabled_tools.get("slack"),
+        Some(&vec!["post_message".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn resolve_keeps_existing_required_internal_diagnostic_when_not_colliding() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let mut internal = native(NativeMcpState::Enabled);
+    internal.key = McpServerKey::new(AgentHarnessKind::Claude, "ralphx").unwrap();
+    internal.native_scope = Some("ralphx".to_string());
+    internal.diagnostic = Some("managed by RalphX".to_string());
+    let root = tempfile::tempdir().unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+
+    let effective = service.resolve(internal, None, None).await.unwrap();
+    assert!(effective.enabled);
+    assert_eq!(
+        effective.native.diagnostic.as_deref(),
+        Some("managed by RalphX")
+    );
+    assert_eq!(effective.server_source, McpPolicySource::RequiredInternal);
+}
