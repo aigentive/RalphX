@@ -355,7 +355,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      CARGO_BUILD_JOBS: "2"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
@@ -382,6 +381,7 @@ jobs:
           cargo nextest run \
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
+            --tests \
             --features test-utils
 
   rust-macos-build:
