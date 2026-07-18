@@ -17,7 +17,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
     ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, Task,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::RunningAgentKey;
@@ -337,6 +337,118 @@ async fn archive_requested_remote_close_failure_preserves_active_state() {
         .expect("workspace lookup")
         .expect("workspace retained");
     assert_eq!(persisted.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn archive_without_workspace_archives_conversation_and_returns_cleaned_outcome() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("archive-no-workspace".to_string()));
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+
+    let outcome = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("archive without workspace should succeed");
+
+    assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained")
+        .archived_at
+        .is_some());
+}
+
+#[tokio::test]
+async fn archive_workspace_with_missing_project_preserves_active_state() {
+    let state = AppState::new_test();
+    let missing_project_id = ProjectId::from_string("archive-missing-project".to_string());
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(missing_project_id.clone());
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        missing_project_id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/archive/missing-project".to_string(),
+        "/tmp/ralphx-missing-project-worktree".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let error = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect_err("missing project must block archive authority");
+
+    assert!(error.contains("Project not found"));
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained")
+        .archived_at
+        .is_none());
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup")
+            .expect("workspace retained")
+            .status,
+        AgentConversationWorkspaceStatus::Active
+    );
+}
+
+#[tokio::test]
+async fn explicit_close_without_github_service_preserves_open_workspace() {
+    let (_temp, mut state, conversation_id, _workspace, _github) = setup_archive_state(
+        "explicit-close-no-github",
+        AgentConversationWorkspaceMode::Edit,
+        Some(146),
+    )
+    .await;
+    state.github_service = None;
+
+    let error = close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect_err("missing GitHub integration must block close");
+
+    assert!(error.contains("GitHub integration is unavailable"));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
     assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
     assert!(state
         .agent_conversation_workspace_repo

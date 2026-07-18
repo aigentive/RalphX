@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -13,6 +14,8 @@ use crate::domain::entities::{
 
 use super::git_artifact_cleanup::{
     cleanup_merged_plan_branch_local_artifacts, cleanup_terminal_agent_workspace_local_artifacts,
+    cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches,
+    cleanup_terminal_linked_plan_branch_local_artifacts,
 };
 
 fn run_git(repo: &Path, args: &[&str]) {
@@ -657,4 +660,79 @@ async fn merged_agent_workspace_cleanup_removes_clean_worktree_and_merged_branch
     assert!(report.branch_deleted);
     assert!(!worktree_path.exists());
     assert!(!branch_exists(repo.path(), &branch));
+}
+
+#[tokio::test]
+async fn terminal_linked_plan_cleanup_preserves_non_ralphx_branch() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = "feature/user-plan-branch";
+    run_git(repo.path(), &["branch", branch, "main"]);
+
+    let mut plan_branch = merged_pr_plan_branch(branch, project.id.clone());
+    plan_branch.session_id = IdeationSessionId::from_string("linked-session".to_string());
+    let mut workspace = workspace_for(&project, branch, "merged");
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id = Some(plan_branch.session_id.clone());
+    workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+
+    let report =
+        cleanup_terminal_linked_plan_branch_local_artifacts(&project, &workspace, &plan_branch)
+            .await
+            .expect("cleanup should skip user-owned linked branch");
+
+    assert!(!report.branch_deleted);
+    assert_eq!(
+        report.skipped_reason.as_deref(),
+        Some("branch_not_ralphx_owned")
+    );
+    assert!(branch_exists(repo.path(), branch));
+}
+
+#[tokio::test]
+async fn terminal_workspace_cleanup_removes_unregistered_directory() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "merged");
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path).expect("create unregistered workspace directory");
+    std::fs::write(worktree_path.join("artifact.txt"), "generated\n")
+        .expect("write generated artifact");
+
+    let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+        .await
+        .expect("cleanup should remove unregistered directory");
+
+    assert!(report.worktree_removed);
+    assert!(!report.branch_deleted);
+    assert_eq!(report.skipped_reason, None);
+    assert!(!worktree_path.exists());
+}
+
+#[tokio::test]
+async fn terminal_workspace_cleanup_reports_force_delete_failure_for_checked_out_branch() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "merged");
+    run_git(repo.path(), &["checkout", "-b", &branch]);
+    let known_branches = HashSet::from([branch.clone()]);
+
+    let error = cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches(
+        &project,
+        &workspace,
+        true,
+        Some(&known_branches),
+    )
+    .await
+    .expect_err("deleting the checked-out branch should fail");
+
+    assert!(error
+        .to_string()
+        .contains("Failed to force-delete verified terminal local branch"));
+    assert!(branch_exists(repo.path(), &branch));
 }

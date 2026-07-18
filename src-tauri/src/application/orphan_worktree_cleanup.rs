@@ -177,7 +177,7 @@ pub(crate) async fn run_periodic_orphan_agent_worktree_cleanup(
     }
 }
 
-async fn run_orphan_agent_worktree_cleanup_pass(
+pub(super) async fn run_orphan_agent_worktree_cleanup_pass(
     project_repo: Arc<dyn ProjectRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
