@@ -118,6 +118,10 @@ jobs:
 
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "${yaml_files[@]}"
 
+      - name: Validate Rust full integration safeguards
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-heartbeat.sh
+
       - name: Validate release scripts
         shell: bash
         run: |
@@ -360,6 +364,7 @@ jobs:
         partition: ["1/2", "2/2"]
     env:
       CARGO_BUILD_JOBS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "0"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
