@@ -840,8 +840,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                              'unsafe', 'target_ref_missing', 'workspace_dirty',
                              'branch_missing', 'cleaning'
                            )
-                           AND local_cleanup_checked_at IS NOT NULL
-                           AND local_cleanup_checked_at < ?2
+                           AND (
+                             local_cleanup_checked_at IS NULL
+                             OR local_cleanup_checked_at < ?2
+                           )
                          )
                        )
                      ORDER BY created_at DESC",
@@ -943,10 +945,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
     async fn finalize_local_cleanup(
         &self,
         conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
         status: &str,
         checked_at: DateTime<Utc>,
     ) -> AppResult<bool> {
         let conversation_id = conversation_id.as_str().to_string();
+        let claimed_at = claimed_at.to_rfc3339();
         let status = status.to_string();
         let checked_at = checked_at.to_rfc3339();
         self.db
@@ -956,8 +960,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2,
                          updated_at = ?2
                      WHERE conversation_id = ?3
-                       AND local_cleanup_status = 'cleaning'",
-                    rusqlite::params![status, checked_at, conversation_id],
+                       AND local_cleanup_status = 'cleaning'
+                       AND local_cleanup_checked_at = ?4",
+                    rusqlite::params![status, checked_at, conversation_id, claimed_at],
                 )?;
                 Ok(changed == 1)
             })

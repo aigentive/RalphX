@@ -1906,7 +1906,7 @@ async fn review_pr_monitor_skips_paused_terminal_and_submitting_without_fetching
 }
 
 #[tokio::test]
-async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
+async fn review_pr_monitor_terminal_state_also_persists_cleanup_authority() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
         "review-monitor-terminal-conversation",
@@ -1967,7 +1967,7 @@ async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
         .await
         .unwrap()
         .expect("workspace should exist");
-    assert!(unchanged.publication_pr_status.is_none());
+    assert_eq!(unchanged.publication_pr_status.as_deref(), Some("closed"));
     let events = workspace_repo
         .list_publication_events(&conversation_id)
         .await
@@ -3793,6 +3793,8 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
         &conversation_id,
         &project,
         TerminalAgentWorkspaceCause::MergedPr,
+        "merged",
+        "Pull request merged",
         Duration::from_millis(1),
     )
     .await;
@@ -3804,6 +3806,57 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
         .expect("run lookup should succeed")
         .expect("run should still exist");
     assert_eq!(updated_run.status, AgentRunStatus::Failed);
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_poller_retries_authority_persistence_before_shutdown() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-terminal-authority-retry-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let concrete_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    concrete_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    concrete_workspace_repo.fail_next_publication_update("authority unavailable");
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> = concrete_workspace_repo;
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let plan_branch_repo: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let chat = Arc::new(MockChatService::new());
+    let chat_dyn: Arc<dyn crate::application::chat_service::ChatService> = chat.clone();
+    let stopping = Arc::new(dashmap::DashMap::new());
+
+    super::terminalize_polled_agent_workspace(
+        &workspace_repo,
+        &agent_run_repo,
+        &plan_branch_repo,
+        &chat_dyn,
+        &stopping,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::MergedPr,
+        "merged",
+        "Pull request merged",
+        Duration::from_millis(1),
+    )
+    .await;
+
+    let persisted = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(
+        chat.get_stop_agent_calls().await.len(),
+        1,
+        "runtime shutdown must begin only after terminal authority persists"
+    );
 }
 
 #[tokio::test]

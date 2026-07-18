@@ -268,18 +268,22 @@ pub(super) async fn cleanup_project_orphan_worktrees(
     let target_ref = resolve_target_ref_for_orphan(repo_path).await;
     let mut processed_candidate_paths = HashSet::new();
 
-    let known_workspace_paths = match workspace_repo
+    let known_workspace_paths: HashSet<String> = match workspace_repo
         .list_worktree_paths_by_project_id(&project.id)
         .await
     {
-        Ok(paths) => paths,
+        Ok(paths) => paths
+            .into_iter()
+            .map(PathBuf::from)
+            .map(|path| candidate_path_key(&path))
+            .collect(),
         Err(error) => {
             tracing::debug!(
                 project_id = project.id.as_str(),
                 error = %error,
                 "Orphan cleanup: failed to list workspace paths from DB"
             );
-            HashSet::new()
+            return;
         }
     };
 
@@ -304,7 +308,7 @@ pub(super) async fn cleanup_project_orphan_worktrees(
             continue;
         }
 
-        if known_workspace_paths.contains(&worktree.path) {
+        if known_workspace_paths.contains(&candidate_path_key(&worktree_path)) {
             stats.db_matches += 1;
             continue;
         }
@@ -457,11 +461,10 @@ async fn scan_canonical_directories_with_seen(
 
         stats.directories_scanned += 1;
 
-        let conv_path_str = conv_path.to_string_lossy().to_string();
         if candidate_is_busy(running_agent_registry, &conv_path).await {
             continue;
         }
-        if known_workspace_paths.contains(&conv_path_str) {
+        if known_workspace_paths.contains(&candidate_path_key(&conv_path)) {
             stats.db_matches += 1;
             continue;
         }

@@ -918,13 +918,6 @@ async fn agent_workspace_poll_loop(
         match github.check_pr_status(&working_dir, pr_number).await {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
-                let _ = mark_agent_workspace_pr_terminal(
-                    Arc::clone(&workspace_repo),
-                    &conversation_id,
-                    "merged",
-                    "Pull request merged",
-                )
-                .await;
                 terminalize_polled_agent_workspace(
                     &workspace_repo,
                     &agent_run_repo,
@@ -934,6 +927,8 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::MergedPr,
+                    "merged",
+                    "Pull request merged",
                     interval,
                 )
                 .await;
@@ -943,13 +938,6 @@ async fn agent_workspace_poll_loop(
             }
             Ok(PrStatus::Closed) => {
                 drop(permit);
-                let _ = mark_agent_workspace_pr_terminal(
-                    Arc::clone(&workspace_repo),
-                    &conversation_id,
-                    "closed",
-                    "Pull request closed without merging",
-                )
-                .await;
                 terminalize_polled_agent_workspace(
                     &workspace_repo,
                     &agent_run_repo,
@@ -959,6 +947,8 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::ClosedPr,
+                    "closed",
+                    "Pull request closed without merging",
                     interval,
                 )
                 .await;
@@ -1174,8 +1164,33 @@ async fn terminalize_polled_agent_workspace(
     conversation_id: &ChatConversationId,
     project: &Project,
     cause: TerminalAgentWorkspaceCause,
+    status: &str,
+    summary: &str,
     retry_interval: Duration,
 ) {
+    loop {
+        match mark_agent_workspace_pr_terminal(
+            Arc::clone(workspace_repo),
+            conversation_id,
+            status,
+            summary,
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(error) => tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                retry_secs = retry_interval.as_secs(),
+                "Agent workspace PR poller: terminal authority persistence failed; retrying"
+            ),
+        }
+        tokio::time::sleep(retry_interval).await;
+        if stopping.contains_key(conversation_id) {
+            return;
+        }
+    }
+
     loop {
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(workspace_repo),
@@ -1367,6 +1382,15 @@ async fn mark_agent_workspace_pr_terminal(
             monitor.last_error = (status == "closed").then(|| summary.to_string());
             workspace_repo.upsert_pr_review_monitor(monitor).await?;
         }
+        workspace_repo
+            .update_publication(
+                conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                Some(status),
+                workspace.publication_push_status.as_deref(),
+            )
+            .await?;
         return workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),

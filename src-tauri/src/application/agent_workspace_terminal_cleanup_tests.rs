@@ -200,7 +200,7 @@ async fn terminal_cleanup_persists_unsafe_failure_for_mismatched_workspace_path(
     assert!(outcome
         .message
         .as_deref()
-        .is_some_and(|message| message.contains("workspace_path_mismatch")));
+        .is_some_and(|message| message.contains("workspace path mismatch")));
     assert_eq!(
         repo.local_cleanup_status_for_test(&conversation_id)
             .await
@@ -622,6 +622,67 @@ async fn terminal_cleanup_target_path_returns_direct_workspace_path() {
         .expect("direct workspace path should resolve");
 
     assert_eq!(path, Path::new(&workspace.worktree_path));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_cleanup_target_path_rejects_symlink_before_process_cleanup() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    let outside = tempfile::tempdir().expect("outside target tempdir");
+    setup_repo(repository_dir.path());
+    std::fs::write(outside.path().join("keep.txt"), "keep\n").expect("write outside sentinel");
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc".to_string());
+    let workspace = workspace_for(&project, conversation_id);
+    let workspace_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(workspace_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    std::os::unix::fs::symlink(outside.path(), workspace_path).expect("create workspace symlink");
+
+    let error =
+        terminal_cleanup_target_path(&workspace, &project, &MemoryPlanBranchRepository::new())
+            .await
+            .expect_err("symlinked target must fail before process cleanup");
+
+    assert!(error.contains("symlink"));
+    assert!(outside.path().join("keep.txt").exists());
+}
+
+#[tokio::test]
+async fn terminal_cleanup_target_path_rejects_mismatched_linked_plan_identity() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("bdbdbdbd-bdbd-bdbd-bdbd-bdbdbdbdbdbd".to_string());
+    let mut workspace = workspace_for(&project, conversation_id);
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id =
+        Some(IdeationSessionId::from_string("workspace-session"));
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-linked-mismatch"),
+        IdeationSessionId::from_string("different-session"),
+        project.id.clone(),
+        "ralphx/project/plan-linked-mismatch".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = PlanBranchId::from_string("linked-mismatch");
+    workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+    workspace.branch_name = plan_branch.branch_name.clone();
+    let plan_branch_repo = MemoryPlanBranchRepository::new();
+    plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("persist plan branch");
+
+    let error = terminal_cleanup_target_path(&workspace, &project, &plan_branch_repo)
+        .await
+        .expect_err("mismatched plan identity must fail before process cleanup");
+
+    assert!(error.contains("ideation session"));
 }
 
 #[tokio::test]
@@ -1170,6 +1231,7 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
     async fn finalize_local_cleanup(
         &self,
         conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
         status: &str,
         checked_at: DateTime<Utc>,
     ) -> AppResult<bool> {
@@ -1182,7 +1244,7 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
             return result;
         }
         self.inner
-            .finalize_local_cleanup(conversation_id, status, checked_at)
+            .finalize_local_cleanup(conversation_id, claimed_at, status, checked_at)
             .await
     }
 

@@ -239,7 +239,7 @@ async fn setup_linked_plan_recovery_workspace(
     let conversation_id = ChatConversationId::new();
     let session_id = IdeationSessionId::from_string(format!("session-{name}"));
     let plan_branch_id = PlanBranchId::from_string(format!("plan-branch-{name}"));
-    let branch_name = format!("ralphx/test/{name}");
+    let branch_name = format!("ralphx/test/plan-{name}");
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string(format!("artifact-{name}")),
         session_id.clone(),
@@ -595,7 +595,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
 }
 
 #[tokio::test]
-async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr() {
+async fn marks_terminal_linked_plan_pr_status_and_workspace_authority() {
     let cases = [
         (
             "plan-pr-supervision-terminal-merged",
@@ -668,13 +668,14 @@ async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr()
             .await
             .unwrap()
             .expect("workspace should still exist");
-        assert_eq!(updated.publication_pr_number, None);
-        assert_eq!(updated.publication_push_status, None);
-        assert!(updated
-            .pr_supervision_summary
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Pull request"));
+        assert_eq!(updated.publication_pr_number, Some(702));
+        assert_eq!(
+            updated.publication_pr_status.as_deref(),
+            Some(expected_status)
+        );
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        assert!(updated.pr_supervision_status.is_none());
+        assert!(updated.pr_supervision_summary.is_none());
         let updated_plan = plan_branch_repo
             .get_by_id(&plan_branch_id)
             .await
@@ -1308,6 +1309,7 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
     let (_temp_dir, project, workspace, plan_branch, _head_sha) =
         setup_linked_plan_recovery_workspace("pr-supervision-active-plan-terminal", 704).await;
     let conversation_id = workspace.conversation_id.clone();
+    let plan_worktree_path = workspace.worktree_path.clone();
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
         .create_or_update(workspace.clone())
@@ -1389,6 +1391,28 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
         .expect("plan branch lookup should succeed")
         .expect("plan branch should exist");
     assert_eq!(updated_plan.pr_status, Some(PlanPrStatus::Merged));
+    let updated_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace should exist");
+    assert_eq!(
+        updated_workspace.publication_pr_status.as_deref(),
+        Some("merged"),
+        "workspace authority must match the terminal linked plan PR"
+    );
+    assert_eq!(
+        workspace_repo
+            .get_local_cleanup_status(&conversation_id)
+            .await
+            .expect("cleanup marker lookup")
+            .as_deref(),
+        Some("cleaned")
+    );
+    assert!(
+        !Path::new(&plan_worktree_path).exists(),
+        "terminal linked plan worktree should be removed in-process"
+    );
 }
 
 #[tokio::test]

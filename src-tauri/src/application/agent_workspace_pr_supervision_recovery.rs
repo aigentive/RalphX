@@ -549,7 +549,6 @@ async fn update_terminal_pr_recovery_state(
                 Some(terminal_pr_recovery_summary(pr_status)),
             )
             .await?;
-        return Ok(());
     }
 
     deps.workspace_repo

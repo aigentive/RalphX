@@ -223,7 +223,40 @@ async fn cleanup_force_owned_terminal_artifacts(
         expected_path,
         "agent workspace cleanup",
     )?;
-    if safe_path.exists() {
+    let metadata = match std::fs::symlink_metadata(&safe_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AppError::Infrastructure(format!(
+                "Failed to inspect workspace cleanup target {}: {error}",
+                safe_path.display()
+            )));
+        }
+    };
+    if let Some(metadata) = metadata {
+        if metadata.file_type().is_symlink() {
+            report.skipped_reason = Some("workspace_path_symlink".to_string());
+            return Ok(report);
+        }
+        let canonical_project_workspace_dir =
+            project_workspace_dir.canonicalize().map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "Failed to canonicalize RalphX project workspace directory {}: {error}",
+                    project_workspace_dir.display()
+                ))
+            })?;
+        let canonical_safe_path = safe_path.canonicalize().map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Failed to canonicalize workspace cleanup target {}: {error}",
+                safe_path.display()
+            ))
+        })?;
+        if canonical_safe_path == canonical_project_workspace_dir
+            || !canonical_safe_path.starts_with(&canonical_project_workspace_dir)
+        {
+            report.skipped_reason = Some("workspace_path_canonical_escape".to_string());
+            return Ok(report);
+        }
         if !safe_path.is_dir() {
             report.skipped_reason = Some("workspace_path_not_directory".to_string());
             return Ok(report);

@@ -827,8 +827,12 @@ async fn scan_canonical_directories_skips_known_paths() {
         ],
     );
 
-    let conv_path_str = conv_path.to_string_lossy().to_string();
-    let known_paths: HashSet<String> = HashSet::from([conv_path_str]);
+    let known_path = conv_path
+        .canonicalize()
+        .unwrap_or_else(|_| conv_path.clone())
+        .to_string_lossy()
+        .to_string();
+    let known_paths: HashSet<String> = HashSet::from([known_path]);
     let local_branches = HashSet::from(["ralphx/test/agent-known-scan".to_string()]);
     let registry: Arc<dyn crate::domain::services::RunningAgentRegistry> =
         Arc::new(MemoryRunningAgentRegistry::new());
@@ -1044,6 +1048,50 @@ async fn cleanup_project_skips_busy_registered_and_canonical_worktree_candidate(
         stats.directories_scanned >= 1,
         "canonical directory scan should see the same busy path"
     );
+}
+
+#[tokio::test]
+async fn cleanup_project_fails_closed_when_known_workspace_lookup_fails() {
+    let repo_dir = init_repo();
+    let repo_path = repo_dir.path();
+    let branch = "ralphx/test/agent-repo-failure";
+    run_git(repo_path, &["checkout", "-b", branch]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    let worktree_base = tempfile::tempdir().expect("worktree base");
+    let project =
+        project_with_worktree_parent("test-repo-failure", repo_path, worktree_base.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    let worktree_path = project_dir.join("agent-conversation-repo-failure");
+    run_git(
+        repo_path,
+        &["worktree", "add", &worktree_path.to_string_lossy(), branch],
+    );
+
+    let concrete_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    concrete_workspace_repo.fail_next_worktree_path_list("workspace lookup unavailable");
+    let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
+        concrete_workspace_repo;
+    let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
+    let mut stats = OrphanCleanupStats::default();
+
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
+
+    assert!(
+        worktree_path.exists(),
+        "repository uncertainty must preserve registered worktrees"
+    );
+    assert_eq!(stats.contained_removals, 0);
+    assert_eq!(stats.db_missing_candidates, 0);
 }
 
 #[tokio::test]

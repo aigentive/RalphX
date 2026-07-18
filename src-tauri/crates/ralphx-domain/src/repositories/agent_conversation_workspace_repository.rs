@@ -145,9 +145,11 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn finalize_local_cleanup(
         &self,
         conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
         status: &str,
         checked_at: DateTime<Utc>,
     ) -> AppResult<bool> {
+        let _ = claimed_at;
         self.mark_local_cleanup_status(conversation_id, status, checked_at)
             .await?;
         Ok(true)

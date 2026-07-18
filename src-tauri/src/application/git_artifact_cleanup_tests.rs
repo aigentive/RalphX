@@ -443,6 +443,33 @@ async fn merged_agent_workspace_cleanup_skips_mismatched_or_non_directory_path()
     assert!(worktree_path.exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn merged_agent_workspace_cleanup_rejects_dangling_symlink_without_deleting_branch() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = expected_workspace_branch(&project);
+    let workspace = workspace_for(&project, &branch, "merged");
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    run_git(repo.path(), &["branch", &branch, "main"]);
+    std::os::unix::fs::symlink(worktrees.path().join("missing-target"), worktree_path)
+        .expect("create dangling workspace symlink");
+
+    let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+        .await
+        .expect("cleanup should reject dangling symlink");
+
+    assert_eq!(
+        report.skipped_reason.as_deref(),
+        Some("workspace_path_symlink")
+    );
+    assert!(std::fs::symlink_metadata(worktree_path).is_ok());
+    assert!(branch_exists(repo.path(), &branch));
+}
+
 #[tokio::test]
 async fn merged_agent_workspace_cleanup_tolerates_missing_worktree_path() {
     let repo = init_repo();

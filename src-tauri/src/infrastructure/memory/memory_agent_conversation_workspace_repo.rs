@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -46,6 +46,10 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     next_publication_event_error: Mutex<Option<String>>,
     #[cfg(test)]
+    next_publication_update_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_worktree_path_list_error: Mutex<Option<String>>,
+    #[cfg(test)]
     next_auto_merge_restore_completion_error: Mutex<Option<String>>,
 }
 
@@ -67,6 +71,10 @@ impl MemoryAgentConversationWorkspaceRepository {
             #[cfg(test)]
             next_publication_event_error: Mutex::new(None),
             #[cfg(test)]
+            next_publication_update_error: Mutex::new(None),
+            #[cfg(test)]
+            next_worktree_path_list_error: Mutex::new(None),
+            #[cfg(test)]
             next_auto_merge_restore_completion_error: Mutex::new(None),
         }
     }
@@ -79,6 +87,16 @@ impl MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     pub fn fail_next_publication_event(&self, message: impl Into<String>) {
         *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_publication_update(&self, message: impl Into<String>) {
+        *self.next_publication_update_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_worktree_path_list(&self, message: impl Into<String>) {
+        *self.next_worktree_path_list_error.lock().unwrap() = Some(message.into());
     }
 
     #[cfg(test)]
@@ -248,13 +266,16 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
     async fn finalize_local_cleanup(
         &self,
         conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
         status: &str,
         checked_at: DateTime<Utc>,
     ) -> AppResult<bool> {
         let mut markers = self.local_cleanup_markers.write().await;
         if markers
             .get(conversation_id)
-            .is_none_or(|(current, _)| current != "cleaning")
+            .is_none_or(|(current, current_claimed_at)| {
+                current != "cleaning" || *current_claimed_at != claimed_at
+            })
         {
             return Ok(false);
         }
@@ -504,6 +525,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_update_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
         if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
             workspace.publication_pr_number = pr_number;
             workspace.publication_pr_url = pr_url.map(str::to_string);
@@ -518,6 +544,25 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.updated_at = now;
         }
         Ok(())
+    }
+
+    async fn list_worktree_paths_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<HashSet<String>> {
+        #[cfg(test)]
+        if let Some(message) = self.next_worktree_path_list_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| workspace.project_id == *project_id)
+            .map(|workspace| workspace.worktree_path.clone())
+            .collect())
     }
 
     async fn update_pr_supervision_preferences(

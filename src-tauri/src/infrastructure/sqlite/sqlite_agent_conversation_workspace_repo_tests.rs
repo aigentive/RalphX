@@ -439,20 +439,68 @@ async fn local_cleanup_claim_is_atomic_and_finalize_requires_cleaning() {
     );
     assert!(claims.contains(&AgentWorkspaceLocalCleanupClaim::AlreadyInProgress));
 
-    assert!(repo
-        .finalize_local_cleanup(&conversation_id, "cleaned", chrono::Utc::now())
+    let replacement_claimed_at = claimed_at + chrono::Duration::hours(2);
+    assert_eq!(
+        repo.claim_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            claimed_at + chrono::Duration::seconds(1),
+        )
         .await
-        .expect("finalize winner"));
+        .expect("replacement claim"),
+        AgentWorkspaceLocalCleanupClaim::Claimed
+    );
     assert!(!repo
-        .finalize_local_cleanup(&conversation_id, "failed_unsafe", chrono::Utc::now())
+        .finalize_local_cleanup(
+            &conversation_id,
+            claimed_at,
+            "failed_unsafe",
+            chrono::Utc::now(),
+        )
         .await
-        .expect("late finalize is rejected"));
+        .expect("stale owner finalize is rejected"));
+    assert!(repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            "cleaned",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("replacement owner finalizes"));
     assert_eq!(
         repo.claim_local_cleanup(&conversation_id, chrono::Utc::now(), stale_before)
             .await
             .expect("claim after success"),
         AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
     );
+}
+
+#[tokio::test]
+async fn terminal_cleanup_candidates_retry_markers_without_timestamps() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_pr_number = Some(73);
+    workspace.publication_pr_status = Some("closed".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces
+             SET local_cleanup_status = 'failed_operational', local_cleanup_checked_at = NULL
+             WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .expect("candidate lookup");
+
+    assert_eq!(candidates.len(), 1);
 }
 
 #[tokio::test]

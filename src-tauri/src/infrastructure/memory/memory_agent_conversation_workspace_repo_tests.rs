@@ -251,14 +251,35 @@ async fn local_cleanup_claim_is_single_flight_and_cleaned_is_monotonic() {
     );
     assert!(claims.contains(&AgentWorkspaceLocalCleanupClaim::AlreadyInProgress));
 
-    assert!(repo
-        .finalize_local_cleanup(&conversation_id, "cleaned", chrono::Utc::now())
+    let replacement_claimed_at = claimed_at + chrono::Duration::hours(2);
+    assert_eq!(
+        repo.claim_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            claimed_at + chrono::Duration::seconds(1),
+        )
         .await
-        .expect("finalize winner"));
+        .expect("replacement claim"),
+        AgentWorkspaceLocalCleanupClaim::Claimed
+    );
     assert!(!repo
-        .finalize_local_cleanup(&conversation_id, "failed_operational", chrono::Utc::now())
+        .finalize_local_cleanup(
+            &conversation_id,
+            claimed_at,
+            "failed_operational",
+            chrono::Utc::now(),
+        )
         .await
-        .expect("late finalize is rejected"));
+        .expect("stale owner finalize is rejected"));
+    assert!(repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            "cleaned",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("replacement owner finalizes"));
     assert_eq!(
         repo.claim_local_cleanup(&conversation_id, chrono::Utc::now(), stale_before)
             .await

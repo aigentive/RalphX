@@ -5,7 +5,11 @@ use std::time::Instant;
 use chrono::{Duration, Utc};
 use serde::Serialize;
 
-use crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path;
+use crate::application::agent_conversation_workspace::{
+    expand_worktree_parent_public, resolve_agent_conversation_project_workspace_dir,
+    resolve_agent_conversation_workspace_path_from_record_identity,
+    resolve_linked_plan_branch_agent_worktree_path, validate_workspace_linked_plan_branch,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_terminal_agent_workspace_local_artifacts,
@@ -101,7 +105,9 @@ impl TerminalAgentWorkspaceOutcome {
 }
 
 enum TerminalCleanupTarget {
-    Direct,
+    Direct {
+        worktree_path: PathBuf,
+    },
     LinkedPlan {
         plan_branch: Box<PlanBranch>,
         worktree_path: PathBuf,
@@ -263,7 +269,7 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
     let (cleanup_status, cleanup_result, message) = match target {
         Ok(target) => {
             let worktree_path = match &target {
-                TerminalCleanupTarget::Direct => PathBuf::from(&workspace.worktree_path),
+                TerminalCleanupTarget::Direct { worktree_path } => worktree_path.clone(),
                 TerminalCleanupTarget::LinkedPlan { worktree_path, .. } => worktree_path.clone(),
             };
             if worktree_path.exists() {
@@ -291,7 +297,7 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
     };
 
     let finalized = match workspace_repo
-        .finalize_local_cleanup(conversation_id, cleanup_status, Utc::now())
+        .finalize_local_cleanup(conversation_id, now, cleanup_status, Utc::now())
         .await
     {
         Ok(finalized) => finalized,
@@ -349,7 +355,11 @@ async fn resolve_cleanup_target(
     plan_branch_repo: Option<&dyn PlanBranchRepository>,
 ) -> Result<TerminalCleanupTarget, String> {
     let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
-        return Ok(TerminalCleanupTarget::Direct);
+        let worktree_path =
+            resolve_agent_conversation_workspace_path_from_record_identity(project, workspace)
+                .map_err(|error| error.to_string())?;
+        let worktree_path = validate_process_cleanup_target_path(project, &worktree_path)?;
+        return Ok(TerminalCleanupTarget::Direct { worktree_path });
     };
     let repo = plan_branch_repo.ok_or_else(|| {
         format!(
@@ -367,12 +377,62 @@ async fn resolve_cleanup_target(
                 plan_branch_id.as_str()
             )
         })?;
+    validate_workspace_linked_plan_branch(project, workspace, &plan_branch)
+        .map_err(|error| error.to_string())?;
     let worktree_path = resolve_linked_plan_branch_agent_worktree_path(project, &plan_branch)
         .map_err(|error| error.to_string())?;
+    let worktree_path = validate_process_cleanup_target_path(project, &worktree_path)?;
     Ok(TerminalCleanupTarget::LinkedPlan {
         plan_branch: Box::new(plan_branch),
         worktree_path,
     })
+}
+
+fn validate_process_cleanup_target_path(
+    project: &Project,
+    worktree_path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let project_workspace_dir = resolve_agent_conversation_project_workspace_dir(project)
+        .map_err(|error| error.to_string())?;
+    let worktree_parent = expand_worktree_parent_public(project.worktree_parent_or_default())
+        .map_err(|error| error.to_string())?;
+    if worktree_path == project_workspace_dir
+        || worktree_path == worktree_parent
+        || !worktree_path.starts_with(&project_workspace_dir)
+    {
+        return Err("Workspace cleanup target is outside the RalphX project directory".to_string());
+    }
+
+    let metadata = match std::fs::symlink_metadata(worktree_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect workspace cleanup target: {error}"
+            ));
+        }
+    };
+    if let Some(metadata) = metadata {
+        if metadata.file_type().is_symlink() {
+            return Err("Workspace cleanup target is a symlink".to_string());
+        }
+        let canonical_project_dir = project_workspace_dir.canonicalize().map_err(|error| {
+            format!("Failed to canonicalize RalphX project workspace directory: {error}")
+        })?;
+        let canonical_target = worktree_path
+            .canonicalize()
+            .map_err(|error| format!("Failed to canonicalize workspace cleanup target: {error}"))?;
+        if canonical_target == canonical_project_dir
+            || !canonical_target.starts_with(&canonical_project_dir)
+        {
+            return Err(
+                "Workspace cleanup target escapes the canonical RalphX project directory"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(worktree_path.to_path_buf())
 }
 
 pub(crate) async fn terminal_cleanup_target_path(
@@ -381,7 +441,7 @@ pub(crate) async fn terminal_cleanup_target_path(
     plan_branch_repo: &dyn PlanBranchRepository,
 ) -> Result<PathBuf, String> {
     match resolve_cleanup_target(workspace, project, Some(plan_branch_repo)).await? {
-        TerminalCleanupTarget::Direct => Ok(PathBuf::from(&workspace.worktree_path)),
+        TerminalCleanupTarget::Direct { worktree_path } => Ok(worktree_path),
         TerminalCleanupTarget::LinkedPlan { worktree_path, .. } => Ok(worktree_path),
     }
 }
@@ -393,7 +453,7 @@ async fn run_local_cleanup(
 ) -> crate::error::AppResult<LocalGitArtifactCleanupReport> {
     git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
         match target {
-            TerminalCleanupTarget::Direct => {
+            TerminalCleanupTarget::Direct { .. } => {
                 cleanup_terminal_agent_workspace_local_artifacts(project, workspace, true).await
             }
             TerminalCleanupTarget::LinkedPlan { plan_branch, .. } => {
