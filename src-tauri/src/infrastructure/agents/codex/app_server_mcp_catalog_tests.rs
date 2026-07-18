@@ -67,7 +67,10 @@ esac"#,
         "secret description",
         "/secret/home",
     ] {
-        assert!(!debug.contains(secret), "catalog leaked {secret}");
+        assert!(
+            !debug.contains(secret),
+            "catalog leaked sensitive provider content"
+        );
     }
 }
 
