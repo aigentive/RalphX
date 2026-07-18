@@ -238,7 +238,7 @@ export const SUPPORT_TOOLS = [
                             validate: {
                                 type: "array",
                                 items: { type: "string" },
-                                description: "Validation commands (e.g., ['npm run typecheck', 'npm run lint'])",
+                                description: "Auto-detected analysis must leave this empty. Task agents select focused commands after they know the changed surface; user-managed custom analysis remains separate.",
                             },
                             worktree_setup: {
                                 type: "array",
