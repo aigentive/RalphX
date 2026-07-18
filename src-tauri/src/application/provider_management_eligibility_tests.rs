@@ -25,6 +25,24 @@ fn probe(available: bool) -> HarnessRuntimeProbe {
 }
 
 #[test]
+fn ready_provider_passes_guard_and_disabled_rows_are_ignored() {
+    let mut claude = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    claude.enabled = true;
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = false;
+    let probes = HashMap::from([
+        (AgentHarnessKind::Claude, probe(true)),
+        (AgentHarnessKind::Codex, probe(true)),
+    ]);
+    let eligibility =
+        resolve_provider_management_eligibility_with_probes(&[claude, codex], &probes, Utc::now());
+
+    assert_eq!(eligibility.providers, vec![AgentHarnessKind::Claude]);
+    assert!(eligibility.ensure_ready(AgentHarnessKind::Claude).is_ok());
+    assert!(eligibility.ensure_ready(AgentHarnessKind::Codex).is_err());
+}
+
+#[test]
 fn enabled_but_unavailable_provider_is_not_manageable_or_defaulted() {
     let mut claude = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
     claude.enabled = true;

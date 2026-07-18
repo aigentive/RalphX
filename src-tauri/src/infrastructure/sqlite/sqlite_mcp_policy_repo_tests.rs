@@ -5,6 +5,66 @@ use crate::testing::SqliteTestDb;
 use super::SqliteMcpPolicyRepository;
 
 #[tokio::test]
+async fn lists_global_and_project_policies_without_cross_scope_leakage() {
+    let db = SqliteTestDb::new("mcp-policy-list-scopes");
+    let repo = SqliteMcpPolicyRepository::new(db.new_connection());
+    let github = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    let linear = McpServerKey::new(AgentHarnessKind::Claude, "linear").unwrap();
+
+    repo.set_server_state(None, &github, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_server_state(Some("project-1"), &linear, McpOverrideState::Enabled)
+        .await
+        .unwrap();
+
+    let global = repo.list_global().await.unwrap();
+    let project = repo.list_for_project("project-1").await.unwrap();
+    assert_eq!(global.len(), 1);
+    assert_eq!(global[0].key.server_id, "github");
+    assert_eq!(project.len(), 1);
+    assert_eq!(project[0].key.server_id, "linear");
+}
+
+#[tokio::test]
+async fn invalid_tool_names_fail_before_mutating_rows() {
+    let db = SqliteTestDb::new("mcp-policy-invalid-tool");
+    let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());
+    let key = McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap();
+
+    assert!(repo
+        .set_tool_state(None, &key, "../unsafe", McpOverrideState::Disabled)
+        .await
+        .is_err());
+    assert!(repo.get_global(&key).await.unwrap().is_none());
+
+    repo.set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    assert!(repo.clear_tool(None, &key, "../unsafe").await.is_err());
+    assert_eq!(
+        repo.get_global(&key).await.unwrap().unwrap().server_state,
+        McpOverrideState::Disabled
+    );
+}
+
+#[tokio::test]
+async fn clearing_missing_tool_from_existing_policy_is_a_noop() {
+    let db = SqliteTestDb::new("mcp-policy-clear-missing-tool");
+    let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+
+    repo.set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+
+    assert!(!repo.clear_tool(None, &key, "missing_tool").await.unwrap());
+    let policy = repo.get_global(&key).await.unwrap().unwrap();
+    assert_eq!(policy.server_state, McpOverrideState::Disabled);
+    assert!(policy.tool_states.is_empty());
+}
+
+#[tokio::test]
 async fn policy_round_trips_server_and_tool_fields_by_scope() {
     let db = SqliteTestDb::new("mcp-policy-round-trip");
     let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());

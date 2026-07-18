@@ -87,6 +87,102 @@ fn ralphx_enabled_never_exceeds_native_trust_or_auth_state() {
 }
 
 #[tokio::test]
+async fn resolve_applies_yaml_and_ui_overrides_to_provider_server() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".ralphx")).unwrap();
+    fs::write(
+        home.path().join("mcp.yaml"),
+        "mcp:\n  providers:\n    claude:\n      servers:\n        github:\n          tools:\n            archive_issue: disabled\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join(".ralphx").join("mcp.yaml"),
+        "mcp:\n  providers:\n    claude:\n      servers:\n        github:\n          state: disabled\n",
+    )
+    .unwrap();
+    let repo = Arc::new(MemoryMcpPolicyRepository::new());
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    repo.set_tool_state(
+        Some("project-1"),
+        &key,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, home.path().join("mcp.yaml"));
+
+    let effective = service
+        .resolve(
+            native(NativeMcpState::Enabled),
+            Some("project-1"),
+            Some(project.path()),
+        )
+        .await
+        .unwrap();
+
+    assert!(!effective.enabled);
+    assert_eq!(effective.server_state, McpOverrideState::Disabled);
+    assert_eq!(effective.server_source, McpPolicySource::ProjectYaml);
+    assert_eq!(
+        effective.disabled_tools,
+        vec!["archive_issue".to_string(), "delete_issue".to_string()]
+    );
+    assert_eq!(
+        effective.tool_sources.get("delete_issue"),
+        Some(&McpPolicySource::ProjectUi)
+    );
+}
+
+#[tokio::test]
+async fn service_mutators_delegate_to_repository_by_scope() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+    let key = McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap();
+
+    let server = service
+        .set_server_state(Some("project-1"), &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    let tool = service
+        .set_tool_state(
+            Some("project-1"),
+            &key,
+            "create_issue",
+            McpOverrideState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(server.server_state, McpOverrideState::Disabled);
+    assert_eq!(
+        tool.tool_states.get("create_issue"),
+        Some(&McpOverrideState::Disabled)
+    );
+    assert!(service
+        .clear_tool(Some("project-1"), &key, "create_issue")
+        .await
+        .unwrap());
+    assert!(service.clear_server(Some("project-1"), &key).await.unwrap());
+    assert!(!service.clear_server(Some("project-1"), &key).await.unwrap());
+}
+
+#[tokio::test]
 async fn required_internal_server_is_locked_and_cannot_accumulate_denies() {
     use std::sync::Arc;
 

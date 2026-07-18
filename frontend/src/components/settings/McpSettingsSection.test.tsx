@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -34,6 +34,7 @@ const testState = vi.hoisted(() => ({
   updateTool: vi.fn().mockResolvedValue(undefined),
   refreshProvider: vi.fn().mockResolvedValue(undefined),
   hookCalls: [] as Array<[string | null, string | null, boolean]>,
+  activeProject: null as { id: string; name: string } | null,
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
@@ -72,8 +73,8 @@ vi.mock("@/hooks/useMcpPolicy", () => ({
 
 vi.mock("@/stores/projectStore", () => ({
   selectActiveProject: (state: { activeProject: unknown }) => state.activeProject,
-  useProjectStore: (selector: (state: { activeProject: null }) => unknown) =>
-    selector({ activeProject: null }),
+  useProjectStore: (selector: (state: { activeProject: { id: string; name: string } | null }) => unknown) =>
+    selector({ activeProject: testState.activeProject }),
 }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -121,6 +122,7 @@ describe("McpSettingsSection", () => {
     testState.defaultProvider = null;
     testState.catalog = undefined;
     testState.hookCalls = [];
+    testState.activeProject = null;
     vi.clearAllMocks();
   });
 
@@ -169,6 +171,80 @@ describe("McpSettingsSection", () => {
       projectId: null,
       provider: "codex",
       serverId: "github",
+      state: "disabled",
+    });
+  });
+
+  it("applies project-scoped exact denies and tool overrides", async () => {
+    const user = userEvent.setup();
+    testState.activeProject = { id: "project-1", name: "Roadmap" };
+    testState.providers = [provider("claude", true, true)];
+    testState.defaultProvider = "claude";
+    testState.catalog = {
+      servers: [
+        {
+          ...server("claude", "notion"),
+          nativeState: "pending_approval",
+          effectiveEnabled: false,
+          configuredState: "disabled",
+          effectiveState: "disabled",
+          effectiveSource: "project_ui",
+          diagnostic: "Provider approval required",
+          knownTools: [
+            {
+              toolName: "delete_page",
+              configuredState: "follow",
+              effectiveState: "enabled",
+              effectiveSource: "provider_native",
+            },
+          ],
+        },
+      ],
+    };
+
+    render(<McpSettingsSection />);
+
+    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
+    expect(screen.getByText(/Overrides for Roadmap/)).toBeInTheDocument();
+    expect(screen.getByText("Provider approval required")).toBeInTheDocument();
+    expect(
+      screen.getByText("Enable or approve this server in Claude before RalphX can use it."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Refresh Claude MCP catalog" }));
+    expect(testState.refreshProvider).toHaveBeenCalledWith("claude");
+
+    const toolSelect = screen.getByRole("combobox", { name: "notion delete_page policy" });
+    toolSelect.focus();
+    await user.keyboard("{Enter}{ArrowDown}{ArrowDown}{Enter}");
+    expect(testState.updateTool).toHaveBeenCalledWith({
+      projectId: "project-1",
+      provider: "claude",
+      serverId: "notion",
+      toolName: "delete_page",
+      state: "disabled",
+    });
+
+    await user.type(screen.getByRole("textbox", { name: "Exact MCP server ID" }), "linear");
+    await user.click(screen.getByRole("button", { name: "Add deny" }));
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      projectId: "project-1",
+      provider: "claude",
+      serverId: "linear",
+      state: "disabled",
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Exact MCP server ID" })).toHaveValue(""),
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "Exact MCP server ID" }), "slack");
+    await user.type(screen.getByRole("textbox", { name: "Exact MCP tool name" }), "post_message");
+    await user.click(screen.getByRole("button", { name: "Add deny" }));
+    expect(testState.updateTool).toHaveBeenCalledWith({
+      projectId: "project-1",
+      provider: "claude",
+      serverId: "slack",
+      toolName: "post_message",
       state: "disabled",
     });
   });
