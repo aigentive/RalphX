@@ -1221,6 +1221,16 @@ impl AppState {
         let path = app_paths.database_path()?;
         let conn = open_connection(&path)?;
         run_migrations(&conn)?;
+        let remove_inherited_github_cli_tokens = conn
+            .query_row(
+                "SELECT remove_inherited_github_cli_tokens FROM app_state WHERE id = 1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        crate::infrastructure::subprocess_env_policy::set_remove_inherited_github_cli_tokens(
+            remove_inherited_github_cli_tokens,
+        );
 
         let shared_conn = Arc::new(Mutex::new(conn));
         Self::build_from_shared_conn(

@@ -151,6 +151,40 @@ fn should_forward_allows_auth_env_vars() {
 }
 
 #[test]
+fn should_forward_blocks_github_cli_token_vars_but_not_other_provider_auth() {
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert!(
+            !login_shell_env::should_forward_for_test(key),
+            "GitHub CLI token key {key:?} must not be forwarded"
+        );
+    }
+    assert!(login_shell_env::should_forward_for_test("OPENAI_API_KEY"));
+    assert!(login_shell_env::should_forward_for_test(
+        "ANTHROPIC_API_KEY"
+    ));
+}
+
+#[test]
+fn should_forward_allows_github_cli_tokens_after_explicit_opt_out() {
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert!(
+            login_shell_env::should_forward_with_github_token_removal_for_test(key, false),
+            "GitHub CLI token key {key:?} must be forwarded after opt-out"
+        );
+    }
+}
+
+#[test]
 fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
     // Use the test override so we don't shell out. The override is process-wide
     // (OnceLock); other tests in this module avoid `captured()`, so installing
@@ -165,6 +199,7 @@ fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
         "sk-openai-from-shell".to_string(),
     );
     shell_env.insert("MY_CUSTOM_VAR".to_string(), "user-defined".to_string());
+    shell_env.insert("GITHUB_TOKEN".to_string(), "stale-secret".to_string());
     // These MUST NOT leak through — they would clobber RalphX-managed values
     // applied AFTER apply_to_std in claude/codex spawn helpers.
     shell_env.insert("PATH".to_string(), "/should/not/win".to_string());
@@ -229,6 +264,11 @@ fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
     assert!(
         envs.iter().all(|(k, _)| k.as_str() != "SHLVL"),
         "shell-state keys (SHLVL, _, PWD, OLDPWD) must NOT be forwarded"
+    );
+    assert!(
+        envs.iter()
+            .all(|(key, value)| key != "GITHUB_TOKEN" || value.is_none()),
+        "GitHub CLI token vars must be explicitly removed from the child"
     );
 }
 

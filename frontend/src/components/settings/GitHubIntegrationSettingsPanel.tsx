@@ -65,6 +65,8 @@ export function GitHubIntegrationSettingsPanel() {
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-[var(--text-muted)]">
             RalphX reads the local CLI status and does not store a GitHub token.
+            After signing in again, restart terminals that were already open; new
+            terminals use the updated GitHub CLI credentials.
           </p>
           <Button
             type="button"

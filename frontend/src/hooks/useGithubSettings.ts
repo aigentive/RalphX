@@ -15,6 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useProjectStore } from "@/stores/projectStore";
+import { prKeys } from "./usePullRequestDetail";
 
 export interface GitAuthDiagnostics {
   fetchUrl: string | null;
@@ -91,6 +92,12 @@ interface ProjectGitAuthMutationArgs {
   projectId: string;
 }
 
+function invalidateGitHubAuthQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["gh-auth-status"] });
+  void queryClient.invalidateQueries({ queryKey: prKeys.connectionStatus() });
+  void queryClient.invalidateQueries({ queryKey: ["git-auth-diagnostics"] });
+}
+
 /**
  * Explicitly switch a convertible GitHub HTTPS origin remote to SSH.
  */
@@ -122,8 +129,7 @@ export function useSetupGhGitAuth() {
   return useMutation({
     mutationFn: () => invoke<boolean>("setup_gh_git_auth", {}),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["gh-auth-status"] });
-      void queryClient.invalidateQueries({ queryKey: ["git-auth-diagnostics"] });
+      invalidateGitHubAuthQueries(queryClient);
     },
   });
 }
@@ -141,8 +147,7 @@ export function useLoginGhWithBrowser() {
   return useMutation({
     mutationFn: () => invoke<boolean>("login_gh_with_browser", {}),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["gh-auth-status"] });
-      void queryClient.invalidateQueries({ queryKey: ["git-auth-diagnostics"] });
+      invalidateGitHubAuthQueries(queryClient);
     },
   });
 }

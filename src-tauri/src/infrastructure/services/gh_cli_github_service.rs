@@ -156,7 +156,9 @@ impl GhCliGithubService {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
-        let mut child = tokio::process::Command::new(resolve_gh_cli_path())
+        let mut command = tokio::process::Command::new(resolve_gh_cli_path());
+        apply_git_subprocess_env(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(working_dir)
             .stdout(Stdio::piped())
@@ -271,7 +273,9 @@ impl GhCliGithubService {
     /// on either stream. No `current_dir` override is set: `gh auth status` is
     /// global and we avoid feeding any caller-derived path into the launch sink.
     async fn run_gh_auth_status_process() -> GhAuthStatusRaw {
-        let spawn_result = tokio::process::Command::new(resolve_gh_cli_path())
+        let mut command = tokio::process::Command::new(resolve_gh_cli_path());
+        apply_git_subprocess_env(&mut command);
+        let spawn_result = command
             .args(["auth", "status"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

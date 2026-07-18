@@ -53,6 +53,9 @@ describe("GitHubIntegrationSettingsPanel", () => {
     expect(screen.getByText("Account octocat")).toBeInTheDocument();
     expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/restart terminals that were already open/i),
+    ).toBeInTheDocument();
   });
 
   it("shows gh auth login guidance when gh is installed but unauthenticated", () => {

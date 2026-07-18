@@ -106,6 +106,8 @@ impl GitRemoteAuthConfig {
 
 pub(crate) fn apply_git_subprocess_env(command: &mut Command) {
     command.envs(git_subprocess_env());
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_tokio_command(command);
 }
 
 pub(crate) fn git_subprocess_env() -> Vec<(String, String)> {
@@ -146,9 +148,10 @@ pub(crate) fn git_remote_url_kind_label(kind: Option<GitRemoteUrlKind>) -> &'sta
 }
 
 pub(crate) async fn check_gh_auth_status() -> bool {
-    let mut child = match Command::new(resolve_gh_cli_path())
+    let mut command = Command::new(resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let mut child = match command
         .args(["auth", "status"])
-        .envs(git_subprocess_env())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -165,9 +168,10 @@ pub(crate) async fn check_gh_auth_status() -> bool {
 }
 
 pub(crate) async fn check_gh_auth_token_available() -> bool {
-    let child = match Command::new(resolve_gh_cli_path())
+    let mut command = Command::new(resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = match command
         .args(gh_auth_token_args())
-        .envs(git_subprocess_env())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)

@@ -13,6 +13,7 @@ pub mod memory;
 pub mod services;
 pub mod secret_store;
 pub mod sqlite;
+pub(crate) mod subprocess_env_policy;
 pub mod supervisor;
 pub mod tool_paths;
 pub mod external_mcp_supervisor;
@@ -48,7 +49,11 @@ mod external_mcp_supervisor_tests;
 #[cfg(test)]
 mod granola_client_tests;
 #[cfg(test)]
+mod git_auth_policy_tests;
+#[cfg(test)]
 mod login_shell_env_tests;
+#[cfg(test)]
+mod subprocess_env_policy_tests;
 #[cfg(test)]
 mod tool_paths_tests;
 #[cfg(test)]
