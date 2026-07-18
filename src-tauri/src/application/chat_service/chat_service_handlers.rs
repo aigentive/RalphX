@@ -40,13 +40,13 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
-use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::services::{TaskScheduler, WebhookPublisher};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{stream_timeouts, ContentBlockItem, ToolCall};
 
@@ -367,7 +367,7 @@ async fn resolve_recovery_retry_persona<R: Runtime>(
         super::persona_resolve_flags_for_conversation(
             feature_enabled,
             false,
-            agent_name_override_set,
+            agent_name_override_set || conversation.bound_agent_name.is_some(),
             context_type,
             conversation,
             workspace_mode,
@@ -580,19 +580,8 @@ pub(crate) fn validation_cache_fresh_for_episode(
 async fn validated_completion_override(
     task: &Task,
     episode_entered_at: chrono::DateTime<chrono::Utc>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
 ) -> bool {
-    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
-        Ok(Some(cache)) => cache,
-        Ok(None) => return false,
-        Err(e) => {
-            tracing::warn!(
-                task_id = task.id.as_str(),
-                error = %e,
-                "Failed to parse validation_cache for completion override"
-            );
-            return false;
-        }
-    };
     let Some(worktree_path) = task.worktree_path.as_deref() else {
         return false;
     };
@@ -615,6 +604,48 @@ async fn validated_completion_override(
                 task_id = task.id.as_str(),
                 error = %e,
                 "Failed to resolve HEAD SHA for completion override"
+            );
+            return false;
+        }
+    };
+
+    let Some(validation_run_repo) = validation_run_repo.as_ref() else {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            "First-class validation repository unavailable for completion override"
+        );
+        return false;
+    };
+    match validation_run_repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+    {
+        Ok(Some(evidence)) => {
+            return crate::application::validation_service::validation_run_proves_current_completion(
+                &evidence,
+                &current_head_sha,
+                episode_entered_at,
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %error,
+                "First-class validation query failed for completion override"
+            );
+            return false;
+        }
+        Ok(None) => {}
+    }
+
+    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
+        Ok(Some(cache)) => cache,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to parse validation_cache for completion override"
             );
             return false;
         }
@@ -661,6 +692,10 @@ struct RuntimeSupportRepos {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
 }
 
 impl RuntimeSupportRepos {
@@ -670,6 +705,8 @@ impl RuntimeSupportRepos {
         agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+        task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+        validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     ) -> Self {
         Self {
             execution_settings_repo: execution_settings_repo.as_ref().map(Arc::clone),
@@ -677,7 +714,21 @@ impl RuntimeSupportRepos {
             agent_provider_settings_repo: agent_provider_settings_repo.as_ref().map(Arc::clone),
             plan_branch_repo: plan_branch_repo.as_ref().map(Arc::clone),
             interactive_process_registry: interactive_process_registry.as_ref().map(Arc::clone),
+            task_step_repo: task_step_repo.as_ref().map(Arc::clone),
+            validation_run_repo: validation_run_repo.as_ref().map(Arc::clone),
+            external_events_repo: None,
+            webhook_publisher: None,
         }
+    }
+
+    fn with_completion_event_delivery(
+        mut self,
+        external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        self.external_events_repo = external_events_repo.as_ref().map(Arc::clone);
+        self.webhook_publisher = webhook_publisher.as_ref().map(Arc::clone);
+        self
     }
 }
 
@@ -816,6 +867,14 @@ fn build_runtime_factory_deps<R: Runtime>(
         runtime_support.plan_branch_repo,
         runtime_support.interactive_process_registry,
     )
+    .with_completion_authority_repositories(
+        runtime_support.task_step_repo,
+        runtime_support.validation_run_repo,
+    )
+    .with_completion_event_delivery(
+        runtime_support.external_events_repo,
+        runtime_support.webhook_publisher,
+    )
     .with_agent_conversation_workspace_repo(
         app_handle
             .as_ref()
@@ -873,6 +932,9 @@ fn build_recovery_retry_background_context<R: Runtime>(
     team_mode: bool,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
@@ -929,6 +991,9 @@ fn build_recovery_retry_background_context<R: Runtime>(
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
+            validation_run_repo: validation_run_repo.as_ref().map(Arc::clone),
+            external_events_repo: external_events_repo.as_ref().map(Arc::clone),
+            webhook_publisher: webhook_publisher.as_ref().map(Arc::clone),
             review_repo: review_repo.clone(),
         },
         execution_state: execution_state.clone(),
@@ -1397,6 +1462,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -1413,7 +1481,10 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         agent_provider_settings_repo,
         plan_branch_repo,
         interactive_process_registry,
-    );
+        task_step_repo,
+        validation_run_repo,
+    )
+    .with_completion_event_delivery(external_events_repo, webhook_publisher);
 
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
@@ -1510,8 +1581,12 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     .with_task_scheduler(task_scheduler);
                     let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
                     let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
-                        validated_completion_override(&current_task_for_gate, episode_entered_at)
-                            .await
+                        validated_completion_override(
+                            &current_task_for_gate,
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
                     } else {
                         false
                     };
@@ -1567,7 +1642,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 "Worker run ended with all steps completed; transitioning to PendingReview"
                             );
                         if let Err(e) = transition_service
-                            .transition_task(&task_id, InternalStatus::PendingReview)
+                            .transition_execution_completed_to_review(&task_id, agent_run_id)
                             .await
                         {
                             tracing::error!(
@@ -1594,7 +1669,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                         if let Err(e) = transition_service
-                            .transition_task(&task_id, InternalStatus::PendingReview)
+                            .transition_execution_completed_to_review(&task_id, agent_run_id)
                             .await
                         {
                             tracing::error!(
@@ -2134,6 +2209,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
@@ -2145,7 +2223,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         agent_provider_settings_repo,
         plan_branch_repo,
         interactive_process_registry,
-    );
+        task_step_repo,
+        validation_run_repo,
+    )
+    .with_completion_event_delivery(external_events_repo, webhook_publisher);
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
     let stored_provider_harness = conversation_provider_session_ref
@@ -2216,6 +2297,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 memory_event_repo,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
+                external_events_repo,
+                webhook_publisher,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2299,6 +2383,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 memory_event_repo,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
+                external_events_repo,
+                webhook_publisher,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2644,6 +2731,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         team_mode,
                                         review_repo,
                                         task_step_repo,
+                                        validation_run_repo,
+                                        external_events_repo,
+                                        webhook_publisher,
                                         interactive_process_registry,
                                         verification_child_registry,
                                     ),
@@ -2720,7 +2810,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     AttemptResolution::Current {
                         task,
                         episode_entered_at,
-                    } => validated_completion_override(task.as_ref(), episode_entered_at).await,
+                    } => {
+                        validated_completion_override(
+                            task.as_ref(),
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
+                    }
                     _ => false,
                 }
             };
@@ -2746,7 +2843,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 );
 
                 if transition_service
-                    .transition_task(&task_id, InternalStatus::PendingReview)
+                    .transition_execution_completed_to_review(&task_id, agent_run_id)
                     .await
                     .is_ok()
                 {
@@ -3235,13 +3332,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
                             )
                         ) {
-                        let validation_complete = if let Some(episode_entered_at) =
-                            episode_entered_at
-                        {
-                            validated_completion_override(&current_task, episode_entered_at).await
-                        } else {
-                            false
-                        };
+                        let validation_complete =
+                            if let Some(episode_entered_at) = episode_entered_at {
+                                validated_completion_override(
+                                    &current_task,
+                                    episode_entered_at,
+                                    validation_run_repo,
+                                )
+                                .await
+                            } else {
+                                false
+                            };
 
                         if validation_complete {
                             let all_steps_done =

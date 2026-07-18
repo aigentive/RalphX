@@ -11,6 +11,7 @@ fn merged_suite_requires_nextest() {
 mod support;
 
 mod api_keys_handlers;
+mod automations_handlers;
 mod artifacts_handlers;
 mod conversations_handlers;
 mod delegation_handlers;

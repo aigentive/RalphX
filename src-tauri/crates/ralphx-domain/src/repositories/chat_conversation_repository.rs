@@ -126,6 +126,13 @@ pub trait ChatConversationRepository: Send + Sync {
         mode: Option<AgentConversationWorkspaceMode>,
     ) -> AppResult<()>;
 
+    /// Persist or clear the canonical specialist identity for a parented child.
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Set or clear the persona bound to a conversation.
     async fn update_persona_binding(
         &self,
@@ -145,6 +152,15 @@ pub trait ChatConversationRepository: Send + Sync {
         &self,
         id: &ChatConversationId,
         mode: CoordinationMode,
+    ) -> AppResult<()>;
+
+    /// Atomically replace the conversation bindings owned by a role default.
+    async fn update_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
     ) -> AppResult<()>;
 
     /// Compatibility helper for legacy Claude-specific callers.

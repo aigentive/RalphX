@@ -228,6 +228,7 @@ async fn build_drafter_with_repos(
         workspace_repo,
         chat_conversation_repo,
         provider_repo,
+        Arc::new(super::AppState::new_test().manual_role_default_service()),
         agent_clients,
     )
 }

@@ -16,9 +16,12 @@ pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
+pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
 pub mod agent_workspace_continuation;
@@ -35,6 +38,9 @@ mod agent_workspace_review_mode_guard_tests;
 pub mod agent_workspace_review_auto_merge;
 #[cfg(test)]
 mod agent_workspace_review_auto_merge_tests;
+#[cfg(test)]
+mod agent_workspace_review_run_guard_tests;
+pub(crate) mod agent_workspace_review_approval;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 #[cfg(test)]
@@ -53,6 +59,8 @@ pub mod chat_service;
 pub mod clickup_integration_service;
 pub mod clickup_git_association;
 pub mod dependency_service;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
 pub mod diff_service;
@@ -124,6 +132,8 @@ pub mod priority_service;
 pub mod project_pr_template;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
+#[cfg(test)]
+mod provider_onboarding_gate_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -145,6 +155,8 @@ pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
+#[cfg(test)]
+mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
@@ -247,8 +259,8 @@ pub use granola_integration_service::{
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
-    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    resolve_lane_harness_config, resolve_primary_ideation_harness_availability_for_state,
+    team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
     IDEATION_LANES,
 };
@@ -342,6 +354,10 @@ mod agent_workspace_continuation_tests;
 mod agent_issue_report_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
+#[cfg(test)]
+mod manual_role_default_service_tests;
+#[cfg(test)]
+mod manual_router_config_tests;
 #[cfg(test)]
 mod agent_planning_session_titles_tests;
 #[cfg(test)]

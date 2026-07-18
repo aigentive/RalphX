@@ -29,6 +29,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,
@@ -80,6 +81,34 @@ async fn update_persona_binding_sets_and_clears() {
             .unwrap()
             .persona_id,
         None
+    );
+}
+
+#[tokio::test]
+async fn bound_agent_name_round_trips_and_updates() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let parent = make_conversation(ChatContextType::Project, "project-bound-agent-parent");
+    let parent_id = parent.id.as_str().to_string();
+    repo.create(parent).await.unwrap();
+    let mut conversation = make_conversation(ChatContextType::Project, "project-bound-agent");
+    conversation.parent_conversation_id = Some(parent_id);
+    conversation.bound_agent_name = Some("ralphx-workspace-reviewer".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    let loaded = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+
+    repo.update_bound_agent_name(&conversation.id, Some("ralphx-workspace-repair"))
+        .await
+        .unwrap();
+    let updated = repo.get_by_id(&conversation.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-repair")
     );
 }
 
@@ -290,6 +319,7 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::RxNativeTeam,
@@ -777,6 +807,64 @@ async fn test_update_provider_session_ref_for_codex() {
     assert_eq!(loaded.claude_session_id, None);
 }
 
+#[tokio::test]
+async fn test_update_role_default_bindings_updates_mode_persona_and_session_tuple() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-role-bindings");
+    conversation.persona_id = Some("old-persona".to_string());
+    conversation.claude_session_id = Some("old-claude-session".to_string());
+    conversation.provider_session_id = Some("old-provider-session".to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    let conversation_id = conversation.id.clone();
+    repo.create(conversation).await.unwrap();
+
+    repo.update_role_default_bindings(
+        &conversation_id,
+        CoordinationMode::RxNativeWorkflow,
+        Some("new-persona"),
+        true,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("new-persona"));
+    assert!(loaded.claude_session_id.is_none());
+    assert!(loaded.provider_session_id.is_none());
+    assert!(loaded.provider_harness.is_none());
+}
+
+#[tokio::test]
+async fn test_update_role_default_bindings_preserves_session_tuple_when_requested() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-role-bindings");
+    conversation.claude_session_id = Some("keep-claude-session".to_string());
+    conversation.provider_session_id = Some("keep-provider-session".to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    let conversation_id = conversation.id.clone();
+    repo.create(conversation).await.unwrap();
+
+    repo.update_role_default_bindings(&conversation_id, CoordinationMode::Solo, None, false)
+        .await
+        .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::Solo);
+    assert_eq!(loaded.persona_id, None);
+    assert_eq!(
+        loaded.claude_session_id.as_deref(),
+        Some("keep-claude-session")
+    );
+    assert_eq!(
+        loaded.provider_session_id.as_deref(),
+        Some("keep-provider-session")
+    );
+    assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
+}
+
 // --- clear_claude_session_id ---
 
 #[tokio::test]
@@ -795,6 +883,7 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,

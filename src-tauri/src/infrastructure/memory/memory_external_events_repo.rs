@@ -51,6 +51,43 @@ impl ExternalEventsRepository for MemoryExternalEventsRepository {
         Ok(id)
     }
 
+    async fn insert_event_once_for_attempt(
+        &self,
+        event_type: &str,
+        project_id: &str,
+        agent_run_id: &str,
+        payload: &str,
+    ) -> AppResult<bool> {
+        let mut events = self.events.write().await;
+        let exists = events.iter().any(|event| {
+            event.event_type == event_type
+                && event.project_id == project_id
+                && serde_json::from_str::<serde_json::Value>(&event.payload)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("agent_run_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .as_deref()
+                    == Some(agent_run_id)
+        });
+        if exists {
+            return Ok(false);
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        events.push(ExternalEventRecord {
+            id,
+            event_type: event_type.to_string(),
+            project_id: project_id.to_string(),
+            payload: payload.to_string(),
+            created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        });
+        Ok(true)
+    }
+
     async fn get_events_after_cursor(
         &self,
         project_ids: &[String],

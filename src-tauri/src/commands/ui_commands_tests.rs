@@ -23,6 +23,7 @@ impl UiFeatureFlagOverridesRepository for FailingCapabilityOverridesRepository {
         &self,
         _team: Option<bool>,
         _workflows: Option<bool>,
+        _autopilot: Option<bool>,
     ) -> AppResult<UiFeatureFlagOverrides> {
         Err(AppError::Database("simulated write failure".to_string()))
     }
@@ -41,6 +42,10 @@ fn get_ui_feature_flags_includes_agent_personas() {
     );
     assert_eq!(
         json.get("agentConversationWorkflows"),
+        Some(&serde_json::json!(false))
+    );
+    assert_eq!(
+        json.get("agentConversationAutopilot"),
         Some(&serde_json::json!(false))
     );
     assert!(json.get("agent_personas").is_none());
@@ -128,6 +133,7 @@ async fn updating_capabilities_persists_then_updates_the_live_gate() {
             agent_personas: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: Some(false),
+            agent_conversation_autopilot: Some(true),
         },
         &state,
     )
@@ -141,10 +147,13 @@ async fn updating_capabilities_persists_then_updates_the_live_gate() {
         .expect("capability row should be readable");
     assert!(persisted.agent_conversation_team);
     assert!(!persisted.agent_conversation_workflows);
+    assert!(persisted.agent_conversation_autopilot);
     assert!(state.agent_capability_gate.team_enabled());
     assert!(!state.agent_capability_gate.workflows_enabled());
+    assert!(state.agent_capability_gate.autopilot_enabled());
     assert!(response.agent_conversation_team);
     assert!(!response.agent_conversation_workflows);
+    assert!(response.agent_conversation_autopilot);
 }
 
 #[tokio::test]
@@ -157,6 +166,7 @@ async fn failed_capability_write_leaves_the_live_gate_unchanged() {
             agent_personas: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: None,
+            agent_conversation_autopilot: None,
         },
         &state,
     )

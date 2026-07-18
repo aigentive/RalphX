@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RalphX",
-  "version": "0.69.0",
+  "version": "0.70.0",
   "identifier": "com.ralphx.app",
   "build": {
-    "beforeDevCommand": "./scripts/build-workflow-runner.sh dev && npm --prefix ../frontend run dev",
+    "beforeDevCommand": "../src-tauri/scripts/build-workflow-runner.sh dev && npm run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "./scripts/build-workflow-runner.sh release && npm --prefix ../frontend run build",
+    "beforeBuildCommand": "../src-tauri/scripts/build-workflow-runner.sh release && npm run build",
     "frontendDist": "../frontend/dist"
   },
   "app": {

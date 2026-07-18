@@ -40,6 +40,7 @@ impl UiFeatureFlagOverridesRepository for MemoryUiFeatureFlagOverridesRepository
         &self,
         team: Option<bool>,
         workflows: Option<bool>,
+        autopilot: Option<bool>,
     ) -> AppResult<UiFeatureFlagOverrides> {
         let mut overrides = self.overrides.write().await;
         if let Some(team) = team {
@@ -47,6 +48,9 @@ impl UiFeatureFlagOverridesRepository for MemoryUiFeatureFlagOverridesRepository
         }
         if let Some(workflows) = workflows {
             overrides.agent_conversation_workflows = workflows;
+        }
+        if let Some(autopilot) = autopilot {
+            overrides.agent_conversation_autopilot = autopilot;
         }
         Ok(overrides.clone())
     }

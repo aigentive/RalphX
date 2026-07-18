@@ -297,6 +297,55 @@ pub async fn start_http_server(
             post(verify_automation_decomposition),
         )
         .route("/api/finalize_automation", post(finalize_automation))
+        .route("/api/run_automation_now", post(run_automation_now))
+        .route(
+            "/api/pause_automation",
+            post(pause_automation_for_setup_agent),
+        )
+        .route(
+            "/api/resume_automation",
+            post(resume_automation_for_setup_agent),
+        )
+        .route(
+            "/api/cancel_automation_run",
+            post(cancel_latest_automation_run),
+        )
+        .route(
+            "/api/cancel_automation",
+            post(cancel_automation_for_setup_agent),
+        )
+        .route(
+            "/api/restart_automation",
+            post(restart_automation_for_setup_agent),
+        )
+        .route(
+            "/api/retry_automation_judge",
+            post(retry_automation_judge_for_setup_agent),
+        )
+        .route(
+            "/api/retry_automation_plan_judge",
+            post(retry_automation_plan_judge_for_setup_agent),
+        )
+        .route(
+            "/api/skip_automation_judge",
+            post(skip_latest_automation_judge),
+        )
+        .route(
+            "/api/get_automation_publish_status",
+            post(get_automation_publish_status),
+        )
+        .route(
+            "/api/check_automation_publish_readiness",
+            post(check_automation_publish_readiness),
+        )
+        .route(
+            "/api/update_automation_from_base",
+            post(update_automation_from_base),
+        )
+        .route(
+            "/api/publish_automation_workspace",
+            post(publish_automation_workspace),
+        )
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
         .route("/api/add_task_note", post(add_task_note))
@@ -455,6 +504,10 @@ pub async fn start_http_server(
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-fixer-runs",
             post(start_agent_workspace_review_fixer_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-approve-anyway",
+            post(approve_agent_workspace_review_anyway_handler),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-artifact",

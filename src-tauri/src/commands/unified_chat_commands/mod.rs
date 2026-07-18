@@ -359,6 +359,8 @@ pub struct AgentConversationWorkspaceResponse {
     pub branch_name: String,
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<String>,
+    pub task_pipeline_session_id: Option<String>,
+    pub task_pipeline_available: bool,
     pub linked_plan_branch_id: Option<String>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequestResponse>,
     pub publication_pr_number: Option<i64>,
@@ -423,6 +425,7 @@ pub struct AgentConversationForkedPayload {
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
     fn from(workspace: AgentConversationWorkspace) -> Self {
+        let task_pipeline_available = workspace.task_pipeline_session_id.is_some();
         Self {
             conversation_id: workspace.conversation_id.as_str(),
             project_id: workspace.project_id.as_str().to_string(),
@@ -437,6 +440,10 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             linked_ideation_session_id: workspace
                 .linked_ideation_session_id
                 .map(|id| id.as_str().to_string()),
+            task_pipeline_session_id: workspace
+                .task_pipeline_session_id
+                .map(|id| id.as_str().to_string()),
+            task_pipeline_available,
             linked_plan_branch_id: workspace
                 .linked_plan_branch_id
                 .map(|id| id.as_str().to_string()),
@@ -1729,6 +1736,7 @@ pub struct AgentConversationResponse {
     pub effective_effort: Option<String>,
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
+    pub bound_agent_name: Option<String>,
     pub persona_id: Option<String>,
     pub builder_draft_id: Option<String>,
     pub last_run_persona_run_id: Option<String>,
@@ -1771,6 +1779,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_effort: None,
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            bound_agent_name: c.bound_agent_name,
             persona_id: c.persona_id,
             builder_draft_id: c.builder_draft_id,
             last_run_persona_run_id: None,
@@ -2243,6 +2252,29 @@ fn timeline_item_content_block(
     block
 }
 
+async fn reconcile_delegated_timeline_item_result(
+    state: &AppState,
+    item: &mut ChatTimelineItem,
+    snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
+) {
+    let Some(tool_name) = item.tool_name.as_deref() else {
+        return;
+    };
+    if !is_delegate_start_tool_name(tool_name) {
+        return;
+    }
+    let Some(mut result) = item
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+    else {
+        return;
+    };
+
+    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await;
+    item.result_json = Some(result.to_string());
+}
+
 /// Response for agent run status
 #[derive(Debug, Serialize)]
 pub struct AgentRunStatusResponse {
@@ -2281,7 +2313,9 @@ struct DelegatedToolRuntimeSnapshot {
 }
 
 fn is_delegate_start_tool_name(name: &str) -> bool {
-    name == "delegate_start" || name.ends_with("::delegate_start")
+    name == "delegate_start"
+        || name.ends_with("::delegate_start")
+        || name.ends_with("__delegate_start")
 }
 
 fn parse_wrapped_mcp_result_object(result: &JsonValue) -> Option<JsonMap<String, JsonValue>> {
@@ -2463,90 +2497,176 @@ async fn load_delegated_tool_runtime_snapshot(
     })
 }
 
+fn merge_delegated_snapshot_wrapped_fields(
+    result_object: &mut JsonMap<String, JsonValue>,
+    snapshot: &DelegatedToolRuntimeSnapshot,
+    merge_fields: fn(&mut JsonMap<String, JsonValue>, &DelegatedToolRuntimeSnapshot),
+) {
+    let structured_content_key = if result_object.contains_key("structured_content") {
+        Some("structured_content")
+    } else if result_object.contains_key("structuredContent") {
+        Some("structuredContent")
+    } else {
+        None
+    };
+    if let Some(JsonValue::Object(structured_content)) =
+        structured_content_key.and_then(|key| result_object.get_mut(key))
+    {
+        merge_fields(structured_content, snapshot);
+    }
+
+    if let Some(content) = result_object
+        .get_mut("content")
+        .and_then(JsonValue::as_array_mut)
+    {
+        for entry in content {
+            let Some(text) = entry.get_mut("text") else {
+                continue;
+            };
+            let Some(raw) = text.as_str() else {
+                continue;
+            };
+            let Ok(JsonValue::Object(mut nested)) = serde_json::from_str::<JsonValue>(raw) else {
+                continue;
+            };
+            merge_fields(&mut nested, snapshot);
+            *text = JsonValue::String(JsonValue::Object(nested).to_string());
+            break;
+        }
+    }
+}
+
 fn merge_delegated_snapshot_into_result(
     result: &mut JsonValue,
     snapshot: &DelegatedToolRuntimeSnapshot,
 ) {
+    fn merge_fields(
+        result_object: &mut JsonMap<String, JsonValue>,
+        snapshot: &DelegatedToolRuntimeSnapshot,
+    ) {
+        result_object.insert(
+            "job_status".to_string(),
+            JsonValue::String(snapshot.session_status.clone()),
+        );
+        result_object.insert(
+            "status".to_string(),
+            JsonValue::String(snapshot.session_status.clone()),
+        );
+        result_object.insert(
+            "agent_name".to_string(),
+            JsonValue::String(snapshot.agent_name.clone()),
+        );
+        result_object.insert(
+            "delegated_session_id".to_string(),
+            JsonValue::String(snapshot.session_id.clone()),
+        );
+        result_object.insert(
+            "harness".to_string(),
+            JsonValue::String(snapshot.harness.clone()),
+        );
+        if let Some(conversation_id) = snapshot.conversation_id.as_ref() {
+            result_object.insert(
+                "delegated_conversation_id".to_string(),
+                JsonValue::String(conversation_id.clone()),
+            );
+        }
+        if let Some(agent_run_id) = snapshot.agent_run_id.as_ref() {
+            result_object.insert(
+                "delegated_agent_run_id".to_string(),
+                JsonValue::String(agent_run_id.clone()),
+            );
+        }
+        if let Some(provider_session_id) = snapshot.provider_session_id.as_ref() {
+            result_object.insert(
+                "provider_session_id".to_string(),
+                JsonValue::String(provider_session_id.clone()),
+            );
+        }
+        if let Some(error) = snapshot.session_error.as_ref() {
+            result_object.insert("error".to_string(), JsonValue::String(error.clone()));
+        }
+        if let Some(completed_at) = snapshot.completed_at.as_ref() {
+            result_object.insert(
+                "completed_at".to_string(),
+                JsonValue::String(completed_at.clone()),
+            );
+        }
+
+        result_object.insert(
+            "delegated_status".to_string(),
+            serde_json::json!({
+                "session": {
+                    "id": snapshot.session_id,
+                    "title": snapshot.title,
+                    "status": snapshot.session_status,
+                    "parent_context_type": "ideation",
+                    "parent_context_id": JsonValue::Null,
+                    "agent_name": snapshot.agent_name,
+                    "harness": snapshot.harness,
+                    "provider_session_id": snapshot.provider_session_id,
+                    "created_at": snapshot.created_at,
+                    "updated_at": snapshot.updated_at,
+                    "completed_at": snapshot.completed_at,
+                },
+                "agent_state": {
+                    "estimated_status": delegated_agent_state_label(&snapshot.session_status),
+                },
+                "conversation_id": snapshot.conversation_id,
+                "latest_run": snapshot.latest_run,
+                "recent_messages": if snapshot.recent_messages.is_empty() {
+                    JsonValue::Null
+                } else {
+                    JsonValue::Array(snapshot.recent_messages.clone())
+                },
+            }),
+        );
+    }
+
     let JsonValue::Object(result_object) = result else {
         return;
     };
 
-    result_object.insert(
-        "job_status".to_string(),
-        JsonValue::String(snapshot.session_status.clone()),
-    );
-    result_object.insert(
-        "status".to_string(),
-        JsonValue::String(snapshot.session_status.clone()),
-    );
-    result_object.insert(
-        "agent_name".to_string(),
-        JsonValue::String(snapshot.agent_name.clone()),
-    );
-    result_object.insert(
-        "delegated_session_id".to_string(),
-        JsonValue::String(snapshot.session_id.clone()),
-    );
-    result_object.insert(
-        "harness".to_string(),
-        JsonValue::String(snapshot.harness.clone()),
-    );
-    if let Some(conversation_id) = snapshot.conversation_id.as_ref() {
-        result_object.insert(
-            "delegated_conversation_id".to_string(),
-            JsonValue::String(conversation_id.clone()),
-        );
-    }
-    if let Some(agent_run_id) = snapshot.agent_run_id.as_ref() {
-        result_object.insert(
-            "delegated_agent_run_id".to_string(),
-            JsonValue::String(agent_run_id.clone()),
-        );
-    }
-    if let Some(provider_session_id) = snapshot.provider_session_id.as_ref() {
-        result_object.insert(
-            "provider_session_id".to_string(),
-            JsonValue::String(provider_session_id.clone()),
-        );
-    }
-    if let Some(error) = snapshot.session_error.as_ref() {
-        result_object.insert("error".to_string(), JsonValue::String(error.clone()));
-    }
-    if let Some(completed_at) = snapshot.completed_at.as_ref() {
-        result_object.insert(
-            "completed_at".to_string(),
-            JsonValue::String(completed_at.clone()),
-        );
-    }
+    merge_delegated_snapshot_wrapped_fields(result_object, snapshot, merge_fields);
+    merge_fields(result_object, snapshot);
+}
 
-    result_object.insert(
-        "delegated_status".to_string(),
-        serde_json::json!({
-            "session": {
-                "id": snapshot.session_id,
-                "title": snapshot.title,
-                "status": snapshot.session_status,
-                "parent_context_type": "ideation",
-                "parent_context_id": JsonValue::Null,
-                "agent_name": snapshot.agent_name,
-                "harness": snapshot.harness,
-                "provider_session_id": snapshot.provider_session_id,
-                "created_at": snapshot.created_at,
-                "updated_at": snapshot.updated_at,
-                "completed_at": snapshot.completed_at,
-            },
-            "agent_state": {
-                "estimated_status": delegated_agent_state_label(&snapshot.session_status),
-            },
-            "conversation_id": snapshot.conversation_id,
-            "latest_run": snapshot.latest_run,
-            "recent_messages": if snapshot.recent_messages.is_empty() {
-                JsonValue::Null
-            } else {
-                JsonValue::Array(snapshot.recent_messages.clone())
-            },
-        }),
-    );
+async fn reconcile_delegated_result_value(
+    state: &AppState,
+    result: &mut JsonValue,
+    snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
+) {
+    let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
+        return;
+    };
+
+    let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
+    let Some(delegated_session_id) = delegated_session_id else {
+        return;
+    };
+    let delegated_conversation_id = get_string_field(&parsed_result, "delegated_conversation_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
+    let delegated_agent_run_id = get_string_field(&parsed_result, "delegated_agent_run_id")
+        .or_else(|| get_string_field(&parsed_result, "delegatedAgentRunId"));
+
+    let snapshot = if let Some(snapshot) = snapshot_cache.get(delegated_session_id) {
+        snapshot.clone()
+    } else {
+        let Some(snapshot) = load_delegated_tool_runtime_snapshot(
+            state,
+            delegated_session_id,
+            delegated_conversation_id,
+            delegated_agent_run_id,
+        )
+        .await
+        else {
+            return;
+        };
+        snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
+        snapshot
+    };
+
+    merge_delegated_snapshot_into_result(result, &snapshot);
 }
 
 async fn reconcile_delegated_result_payloads(
@@ -2578,39 +2698,7 @@ async fn reconcile_delegated_result_payloads(
             let Some(result) = item_object.get_mut("result") else {
                 continue;
             };
-            let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
-                continue;
-            };
-
-            let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
-                .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
-            let Some(delegated_session_id) = delegated_session_id else {
-                continue;
-            };
-            let delegated_conversation_id =
-                get_string_field(&parsed_result, "delegated_conversation_id")
-                    .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
-            let delegated_agent_run_id = get_string_field(&parsed_result, "delegated_agent_run_id")
-                .or_else(|| get_string_field(&parsed_result, "delegatedAgentRunId"));
-
-            let snapshot = if let Some(snapshot) = snapshot_cache.get(delegated_session_id) {
-                snapshot.clone()
-            } else {
-                let Some(snapshot) = load_delegated_tool_runtime_snapshot(
-                    state,
-                    delegated_session_id,
-                    delegated_conversation_id,
-                    delegated_agent_run_id,
-                )
-                .await
-                else {
-                    continue;
-                };
-                snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
-                snapshot
-            };
-
-            merge_delegated_snapshot_into_result(result, &snapshot);
+            reconcile_delegated_result_value(state, result, snapshot_cache).await;
         }
 
         Some(parsed)
@@ -2863,6 +2951,8 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
         mode,
         AgentConversationWorkspaceMode::Edit
             | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Tasks
+            | AgentConversationWorkspaceMode::Autopilot
             | AgentConversationWorkspaceMode::Ideation
             | AgentConversationWorkspaceMode::ReviewPr
     )
@@ -2988,10 +3078,11 @@ fn validate_agent_conversation_mode_transition(
         return Err("Automation and PersonaBuilder conversations cannot change mode".to_string());
     }
     reject_persona_builder_workspace_mode(&target_mode.to_string())?;
-    if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
+    if workspace_mode_lock.locked && target_mode != current_mode {
         return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
-            "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
-                .to_string()
+            format!(
+                "This workspace is owned by active planning or execution state and cannot leave {current_mode} mode"
+            )
         }));
     }
 
@@ -2999,140 +3090,7 @@ fn validate_agent_conversation_mode_transition(
 }
 
 #[cfg(test)]
-mod agent_mode_workspace_tests {
-    use super::*;
-
-    #[test]
-    fn only_write_capable_agent_conversation_modes_require_workspace() {
-        assert!(!agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Chat
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Edit
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Plan
-        ));
-        assert!(agent_mode_requires_workspace(
-            AgentConversationWorkspaceMode::Ideation
-        ));
-    }
-
-    #[test]
-    fn source_pr_backed_chat_mode_creates_workspace() {
-        let source_pull_request = AgentWorkspaceSourcePullRequest {
-            number: 123,
-            url: None,
-            title: None,
-            head_ref_name: "feature/source-pr".to_string(),
-            base_ref_name: Some("main".to_string()),
-            head_ref_oid: None,
-        };
-
-        assert!(agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Chat,
-            Some(&source_pull_request),
-        ));
-        assert!(!agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Chat,
-            None,
-        ));
-        assert!(agent_mode_should_create_workspace(
-            AgentConversationWorkspaceMode::Edit,
-            None,
-        ));
-    }
-
-    #[test]
-    fn plan_agent_conversation_mode_round_trips_through_api_string() {
-        let mode = "plan"
-            .parse::<AgentConversationWorkspaceMode>()
-            .expect("plan mode should parse");
-
-        assert_eq!(mode, AgentConversationWorkspaceMode::Plan);
-        assert_eq!(mode.to_string(), "plan");
-    }
-
-    #[test]
-    fn review_pr_agent_conversation_mode_round_trips_through_api_string() {
-        let mode = "review_pr"
-            .parse::<AgentConversationWorkspaceMode>()
-            .expect("review_pr mode should parse");
-
-        assert_eq!(mode, AgentConversationWorkspaceMode::ReviewPr);
-        assert_eq!(mode.to_string(), "review_pr");
-    }
-
-    #[test]
-    fn active_agent_conversations_support_expected_valid_mode_transition_matrix() {
-        let modes = [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::Ideation,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ];
-
-        for current_mode in modes {
-            for target_mode in modes {
-                assert!(
-                    validate_agent_conversation_mode_transition(
-                        current_mode,
-                        target_mode,
-                        &AgentConversationWorkspaceModeLock::unlocked()
-                    )
-                    .is_ok(),
-                    "{current_mode} -> {target_mode} should be allowed"
-                )
-            }
-        }
-    }
-
-    #[test]
-    fn active_state_owned_conversations_cannot_leave_ideation_mode() {
-        for target_mode in [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ] {
-            let error = validate_agent_conversation_mode_transition(
-                AgentConversationWorkspaceMode::Ideation,
-                target_mode,
-                &AgentConversationWorkspaceModeLock::locked("Plan execution is still active"),
-            )
-            .expect_err("state-owned conversations should not leave ideation mode");
-
-            assert!(error.contains("Plan execution is still active"));
-        }
-    }
-
-    #[test]
-    fn state_owned_workspaces_can_target_ideation_mode() {
-        for target_mode in [
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Edit,
-            AgentConversationWorkspaceMode::Plan,
-            AgentConversationWorkspaceMode::ReviewPr,
-        ] {
-            let error = validate_agent_conversation_mode_transition(
-                AgentConversationWorkspaceMode::Chat,
-                target_mode,
-                &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-            )
-            .expect_err("state-owned workspaces should not leave ideation ownership");
-
-            assert!(error.contains("Ideation session is still active"));
-        }
-
-        assert!(validate_agent_conversation_mode_transition(
-            AgentConversationWorkspaceMode::Chat,
-            AgentConversationWorkspaceMode::Ideation,
-            &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
-        )
-        .is_ok());
-    }
-}
+mod agent_mode_workspace_tests;
 
 fn build_agent_workspace_commit_message(conversation: &ChatConversation) -> String {
     let title = conversation
@@ -3525,6 +3483,22 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .agent_mode
         .or_else(|| existing_workspace.as_ref().map(|workspace| workspace.mode))
         .unwrap_or(AgentConversationWorkspaceMode::Chat);
+    if target_mode == AgentConversationWorkspaceMode::Autopilot
+        && current_mode != AgentConversationWorkspaceMode::Autopilot
+        && !state.agent_capability_gate.autopilot_enabled()
+    {
+        return Err("Autopilot is disabled in Agent conversation capabilities".to_string());
+    }
+    if target_mode == AgentConversationWorkspaceMode::Tasks
+        && existing_workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.task_pipeline_session_id.is_none())
+    {
+        return Err(
+            "Tasks mode is available only for this conversation's attached task pipeline"
+                .to_string(),
+        );
+    }
     let workspace_mode_lock = match existing_workspace.as_ref() {
         Some(workspace) => resolve_agent_conversation_workspace_mode_lock(state, workspace).await?,
         None => AgentConversationWorkspaceModeLock::unlocked(),
@@ -3555,9 +3529,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
-            let preserve_planning_session_link = if target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && workspace.linked_plan_branch_id.is_none()
+            let preserve_planning_session_link = if !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && workspace.linked_plan_branch_id.is_none()
             {
                 linked_ideation_session_is_planning(state, &workspace).await?
             } else {
@@ -3571,9 +3546,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             } else {
                 false
             };
-            let should_detach_inactive_owner = target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && !workspace_mode_lock.locked
+            let should_detach_inactive_owner = !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && !workspace_mode_lock.locked
                 && (workspace.linked_ideation_session_id.is_some()
                     || workspace.linked_plan_branch_id.is_some())
                 && !preserve_planning_session_link;
@@ -4663,7 +4639,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 Arc::clone(&state.agent_conversation_workspace_repo),
             )
             .await
-                .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?;
             return Ok(());
         }
     }
@@ -7739,38 +7715,6 @@ pub struct AgentWorkspaceRepairRuntimeOverrides {
     pub logical_effort: Option<LogicalEffort>,
 }
 
-async fn resolve_agent_workspace_repair_runtime_overrides(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AgentWorkspaceRepairRuntimeOverrides {
-    let conversation = state
-        .chat_conversation_repo
-        .get_by_id(&workspace.conversation_id)
-        .await
-        .ok()
-        .flatten();
-    let latest_run = state
-        .agent_run_repo
-        .get_latest_for_conversation(&workspace.conversation_id)
-        .await
-        .ok()
-        .flatten();
-
-    AgentWorkspaceRepairRuntimeOverrides {
-        harness: conversation
-            .as_ref()
-            .and_then(ChatConversation::provider_session_ref)
-            .map(|session_ref| session_ref.harness)
-            .or_else(|| latest_run.as_ref().and_then(|run| run.harness)),
-        model: latest_run.as_ref().and_then(|run| {
-            run.logical_model
-                .clone()
-                .or_else(|| run.effective_model_id.clone())
-        }),
-        logical_effort: latest_run.as_ref().and_then(|run| run.logical_effort),
-    }
-}
-
 #[doc(hidden)]
 pub async fn send_agent_workspace_publish_repair_message<S>(
     service: &S,
@@ -8026,8 +7970,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     )
     .await;
 
-    let runtime_overrides =
-        resolve_agent_workspace_repair_runtime_overrides(state, workspace).await;
+    let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
     if should_defer_agent_workspace_repair_message(state, workspace).await {
         spawn_deferred_agent_workspace_repair_message(
             state,
@@ -8593,10 +8536,15 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mut items = page.items;
+    let mut snapshot_cache = HashMap::new();
+    for item in &mut items {
+        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache).await;
+    }
+
     Ok(Some(AgentConversationTimelinePageResponse {
         conversation: agent_conversation_response_for_state(state, conversation).await?,
-        items: page
-            .items
+        items: items
             .into_iter()
             .map(AgentTimelineItemResponse::from)
             .collect(),
@@ -8687,6 +8635,8 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
         return Ok(None);
     }
 
+    let mut item = item;
+    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new()).await;
     let detail_message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
     let block = timeline_item_content_block(
         &item,
@@ -9580,7 +9530,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Chat => AgentConversationRuntimeIndexMode::Chat,
         AgentConversationWorkspaceMode::Edit => AgentConversationRuntimeIndexMode::Agent,
         AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
-        AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
+        AgentConversationWorkspaceMode::Tasks
+        | AgentConversationWorkspaceMode::Autopilot
+        | AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
         AgentConversationWorkspaceMode::PersonaBuilder => {

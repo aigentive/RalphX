@@ -6,9 +6,9 @@ use crate::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -25,6 +25,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Option<AgentConversationWorkspace>>;
 
     async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
+    async fn get_by_task_pipeline_session_id(
         &self,
         _ideation_session_id: &IdeationSessionId,
     ) -> AppResult<Option<AgentConversationWorkspace>> {
@@ -385,6 +392,17 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
         Ok(None)
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        _approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Err(crate::error::AppError::Infrastructure(
+            "Workspace Review approval is unsupported by this repository".to_string(),
+        ))
     }
 
     async fn list_reviewing_workspace_review_monitors(

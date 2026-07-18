@@ -48,6 +48,7 @@ pub mod ideation_commands;
 pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod methodology_commands;
+pub mod manual_role_default_commands;
 pub mod metrics_commands;
 pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;
@@ -63,6 +64,8 @@ pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
+#[cfg(test)]
+mod project_commands_tests;
 pub mod provider_cli_management_commands;
 pub mod qa_commands;
 pub mod question_commands;
@@ -113,9 +116,9 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_plan_commands::{
-    copy_agent_conversation_plan, import_agent_conversation_plan,
-    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
-    ImportAgentConversationPlanInput,
+    activate_agent_task_pipeline, copy_agent_conversation_plan, import_agent_conversation_plan,
+    start_agent_task_pipeline, ActivateAgentTaskPipelineInput, AgentConversationPlanSeedResponse,
+    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -155,7 +158,8 @@ pub use crate::application::automation::api::{
 };
 pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
-    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
+    restart_automation, retry_automation_judge, retry_automation_plan_judge, stop_automation,
+    update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
 };
 pub use persona_builder_commands::{
@@ -255,6 +259,15 @@ pub use methodology_commands::{
     MethodologyActivationResponse, MethodologyPhaseResponse, MethodologyResponse,
     MethodologyTemplateResponse, WorkflowSchemaResponse,
 };
+pub use manual_role_default_commands::{
+    clear_manual_role_default, get_agent_conversation_role_default,
+    get_manual_role_defaults, get_start_composer_role_default,
+    reset_agent_conversation_role_default, update_manual_role_default,
+    ManualRoleCatalogResponse, ManualRoleDefaultInput,
+};
+
+#[cfg(test)]
+mod manual_role_default_commands_tests;
 pub use metrics_commands::{
     compute_insights_stats, compute_project_stats, get_column_metrics, get_insights_pr_insights,
     get_insights_stats, get_insights_trends, get_metrics_config, get_project_pr_insights,

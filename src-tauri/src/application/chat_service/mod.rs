@@ -39,9 +39,7 @@ use crate::application::agent_conversation_workspace::{
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
-use crate::application::agent_workspace_continuation::{
-    classify_agent_workspace_continuation_with_plan_branch,
-};
+use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation_with_plan_branch;
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
@@ -62,7 +60,9 @@ use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -73,29 +73,33 @@ use crate::domain::entities::{
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
     IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, PersonaId,
-    PersonaStatus, ProjectId, TaskId,
-    TeamIntent, TeamMessageTarget,
+    PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, BranchUpdateRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
     QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, QueueKey, QueuedMessage,
     RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
+use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER, AGENT_TASK_MANAGER,
+};
+use crate::infrastructure::agents::harness_agent_catalog::{
+    load_canonical_agent_definition, resolve_project_root_from_plugin_dir,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -115,11 +119,11 @@ const REGISTRY_PID_ZERO_GRACE_SECONDS: i64 = 30;
 const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user";
 
 // Re-exports from extracted modules
-#[doc(hidden)]
-pub use chat_service_context::create_assistant_message;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::build_launch_plan_for_harness_with_persona_for_test;
+#[doc(hidden)]
+pub use chat_service_context::create_assistant_message;
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub use chat_service_context::ResolvedChatHarnessLaunch;
@@ -163,6 +167,7 @@ pub use chat_service_streaming::{
     StreamOutcome, StreamTimeoutConfig,
 };
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
+pub(crate) use chat_service_types::{decode_pending_initial_prompt, encode_pending_initial_prompt};
 pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
@@ -172,9 +177,6 @@ pub use chat_service_types::{
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
     TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
     TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
-};
-pub(crate) use chat_service_types::{
-    decode_pending_initial_prompt, encode_pending_initial_prompt,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -731,7 +733,10 @@ pub fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) ->
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
-        AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::Tasks => AGENT_TASK_MANAGER,
+        AgentConversationWorkspaceMode::Autopilot | AgentConversationWorkspaceMode::Ideation => {
+            AGENT_CHAT_PROJECT
+        }
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
         AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,
@@ -764,6 +769,28 @@ fn resolve_agent_name_for_send<'a>(
                 team_mode,
             )
         })
+}
+
+fn preferred_agent_override<'a>(
+    explicit_agent_name: Option<&'a str>,
+    bound_agent_name: Option<&'a str>,
+) -> Option<&'a str> {
+    explicit_agent_name.or(bound_agent_name)
+}
+
+fn canonical_parented_agent_binding(
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    explicit_agent_name: Option<&str>,
+) -> Option<String> {
+    conversation.parent_conversation_id.as_ref()?;
+    let agent_name = explicit_agent_name?.trim();
+    if agent_name.is_empty() {
+        return None;
+    }
+
+    let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
+    load_canonical_agent_definition(&project_root, agent_name).map(|definition| definition.name)
 }
 
 /// Resolve the effective agent-conversation mode used for agent selection on a
@@ -818,9 +845,7 @@ pub(super) fn persona_resolve_flags_for_conversation(
 }
 
 /// Returns whether this conversation uses the PersonaBuilder ingest-only runtime mode.
-pub fn is_persona_builder_conversation(
-    agent_mode: Option<AgentConversationWorkspaceMode>,
-) -> bool {
+pub fn is_persona_builder_conversation(agent_mode: Option<AgentConversationWorkspaceMode>) -> bool {
     agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
 }
 
@@ -859,6 +884,51 @@ fn plan_mode_runtime_message(
         planning_session_id.as_str(),
         message
     )
+}
+
+fn supervised_workspace_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+    source_message_id: Option<&str>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    match workspace.mode {
+        AgentConversationWorkspaceMode::Autopilot => format!(
+            "<autopilot_mode_context>\n\
+             <agent_conversation_id>{}</agent_conversation_id>\n\
+             <workspace_mode>autopilot</workspace_mode>\n\
+             <contract>The user explicitly opted into Autopilot for this native conversation. Continue autonomously within the workspace and the user's request, while preserving normal safety and publication boundaries.</contract>\n\
+             </autopilot_mode_context>\n\
+             <user_request>{}</user_request>",
+            workspace.conversation_id.as_str(),
+            message
+        ),
+        AgentConversationWorkspaceMode::Tasks => {
+            let (Some(session_id), Some(source_message_id)) = (
+                workspace.task_pipeline_session_id.as_ref(),
+                source_message_id,
+            ) else {
+                return message;
+            };
+            format!(
+                "<task_pipeline_context>\n\
+                 <agent_conversation_id>{}</agent_conversation_id>\n\
+                 <task_pipeline_session_id>{}</task_pipeline_session_id>\n\
+                 <source_message_id>{}</source_message_id>\n\
+                 <workspace_mode>tasks</workspace_mode>\n\
+                 <contract>Manage only this existing task pipeline. Append work only for an explicit user request in this source message, using this exact conversation and message identity. Do not create a new pipeline or start proposals without the user's typed action.</contract>\n\
+                 </task_pipeline_context>\n\
+                 <user_request>{}</user_request>",
+                workspace.conversation_id.as_str(),
+                session_id.as_str(),
+                source_message_id,
+                message
+            )
+        }
+        _ => message,
+    }
 }
 
 fn persona_builder_runtime_message(
@@ -1105,6 +1175,9 @@ pub(crate) fn team_intent_for_persisted_coordination_mode(
 /// Options for customizing message sending behavior.
 #[derive(Debug, Default, Clone)]
 pub struct SendMessageOptions {
+    /// Backend-owned semantic role for orchestrated launches whose parent context
+    /// cannot be reconstructed from the delegated conversation alone.
+    pub routing_role_override: Option<RoutingRole>,
     /// Optional JSON metadata string to attach to the user message.
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
@@ -1172,6 +1245,16 @@ pub struct SendMessageOptions {
 /// - Task transitions: only TaskExecution context triggers state changes
 #[async_trait]
 pub trait ChatService: Send + Sync {
+    fn set_task_step_repo(&self, _repo: Arc<dyn TaskStepRepository>) {}
+
+    fn set_validation_run_repo(&self, _repo: Arc<dyn ValidationRunRepository>) {}
+    fn set_completion_event_delivery(
+        &self,
+        _external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        _webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) {
+    }
+
     /// Send a message in a context-aware conversation
     ///
     /// Returns immediately with conversation_id and agent_run_id.
@@ -1339,6 +1422,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    manual_role_default_service:
+        Option<Arc<crate::application::manual_role_default_service::ManualRoleDefaultService>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
@@ -1365,7 +1450,10 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_conversation_granola_note_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationGranolaNoteRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
-    task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    task_step_repo: std::sync::Mutex<Option<Arc<dyn TaskStepRepository>>>,
+    validation_run_repo: std::sync::Mutex<Option<Arc<dyn ValidationRunRepository>>>,
+    external_events_repo: std::sync::Mutex<Option<Arc<dyn ExternalEventsRepository>>>,
+    webhook_publisher: std::sync::Mutex<Option<Arc<dyn WebhookPublisher>>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
     model: String,
     /// When true, agent resolution uses team-lead variants if configured.
@@ -1433,6 +1521,7 @@ impl<R: Runtime> AppChatService<R> {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
             granola_integration_service: None,
@@ -1455,7 +1544,10 @@ impl<R: Runtime> AppChatService<R> {
             agent_conversation_linear_issue_repo: std::sync::Mutex::new(None),
             agent_conversation_granola_note_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
-            task_step_repo: None,
+            task_step_repo: std::sync::Mutex::new(None),
+            validation_run_repo: std::sync::Mutex::new(None),
+            external_events_repo: std::sync::Mutex::new(None),
+            webhook_publisher: std::sync::Mutex::new(None),
             review_repo: None,
             model: "sonnet".to_string(),
             team_mode: AtomicBool::new(false),
@@ -1497,9 +1589,8 @@ impl<R: Runtime> AppChatService<R> {
     }
 
     fn persona_feature_enabled(&self) -> bool {
-        self.persona_feature_enabled_override.unwrap_or_else(
-            crate::infrastructure::agents::claude::agent_personas_enabled,
-        )
+        self.persona_feature_enabled_override
+            .unwrap_or_else(crate::infrastructure::agents::claude::agent_personas_enabled)
     }
 
     fn has_live_persona_builder_ingest_session(
@@ -1725,6 +1816,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_manual_role_default_service(
+        mut self,
+        service: Arc<crate::application::manual_role_default_service::ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
+        self
+    }
+
     pub fn with_atlassian_integration_service(
         mut self,
         service: Arc<AtlassianIntegrationService>,
@@ -1921,7 +2020,35 @@ impl<R: Runtime> AppChatService<R> {
             }
         }
 
+        self.persist_parented_agent_binding_for_send(
+            &mut conversation,
+            options.agent_name_override.as_deref(),
+        )
+        .await?;
+
         Ok((conversation, created))
+    }
+
+    async fn persist_parented_agent_binding_for_send(
+        &self,
+        conversation: &mut ChatConversation,
+        explicit_agent_name: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(bound_agent_name) =
+            canonical_parented_agent_binding(&self.plugin_dir, conversation, explicit_agent_name)
+        else {
+            return Ok(());
+        };
+        if conversation.bound_agent_name.as_deref() == Some(bound_agent_name.as_str()) {
+            return Ok(());
+        }
+
+        self.conversation_repo
+            .update_bound_agent_name(&conversation.id, Some(bound_agent_name.as_str()))
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        conversation.bound_agent_name = Some(bound_agent_name);
+        Ok(())
     }
 
     pub fn with_question_state(mut self, state: Arc<QuestionState>) -> Self {
@@ -1971,8 +2098,23 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
-    pub fn with_task_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
-        self.task_step_repo = Some(repo);
+    pub fn with_task_step_repo(self, repo: Arc<dyn TaskStepRepository>) -> Self {
+        *self.task_step_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        *self.validation_run_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
+    pub fn with_completion_event_delivery(
+        self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        *self.external_events_repo.lock().unwrap() = external_events_repo;
+        *self.webhook_publisher.lock().unwrap() = webhook_publisher;
         self
     }
 
@@ -3896,6 +4038,7 @@ impl<R: Runtime> AppChatService<R> {
         selection_snapshot: Option<&ComposerSelectionSnapshot>,
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
+        source_message_id: Option<&str>,
     ) -> Result<String, ChatServiceError> {
         let builder_conversation = if let Some(conversation_id) = conversation_id_override {
             self.conversation_repo
@@ -4035,8 +4178,13 @@ impl<R: Runtime> AppChatService<R> {
         );
         let with_plan_mode =
             plan_mode_runtime_message(with_persona_builder, agent_workspace.as_ref());
-        Ok(edit_mode_plan_handoff_runtime_message(
+        let with_supervised_mode = supervised_workspace_runtime_message(
             with_plan_mode,
+            agent_workspace.as_ref(),
+            source_message_id,
+        );
+        Ok(edit_mode_plan_handoff_runtime_message(
+            with_supervised_mode,
             agent_workspace.as_ref(),
             edit_plan_handoff_artifact.as_ref(),
         ))
@@ -4138,7 +4286,7 @@ impl<R: Runtime> AppChatService<R> {
             persona_resolve_flags_for_conversation(
                 self.persona_feature_enabled(),
                 options.is_external_mcp,
-                options.agent_name_override.is_some(),
+                options.agent_name_override.is_some() || conversation.bound_agent_name.is_some(),
                 conversation.context_type,
                 conversation,
                 workspace_mode,
@@ -4210,6 +4358,23 @@ pub(super) async fn load_turn_attachments_from_repo(
 
 #[async_trait]
 impl<R: Runtime + 'static> ChatService for AppChatService<R> {
+    fn set_task_step_repo(&self, repo: Arc<dyn TaskStepRepository>) {
+        *self.task_step_repo.lock().unwrap() = Some(repo);
+    }
+
+    fn set_validation_run_repo(&self, repo: Arc<dyn ValidationRunRepository>) {
+        *self.validation_run_repo.lock().unwrap() = Some(repo);
+    }
+
+    fn set_completion_event_delivery(
+        &self,
+        external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
+    ) {
+        *self.external_events_repo.lock().unwrap() = external_events_repo;
+        *self.webhook_publisher.lock().unwrap() = webhook_publisher;
+    }
+
     async fn send_message(
         &self,
         context_type: ChatContextType,
@@ -4640,6 +4805,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .await?
             };
             let attachment_context = self.format_attachment_context(&turn_attachments).await?;
+            let persisted_metadata = persisted_user_metadata(&options);
+            let pending_user_message = (!resume_in_place).then(|| {
+                chat_service_context::create_user_message(
+                    context_type,
+                    context_id,
+                    message,
+                    conversation.id,
+                    persisted_metadata.clone(),
+                    options.created_at,
+                )
+            });
 
             // Build the prompt with context wrapping, then format as stream-json input.
             // Session history is NOT injected here — the agent is already running and
@@ -4655,6 +4831,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     options.composer_selection_snapshot.as_ref(),
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
+                    pending_user_message
+                        .as_ref()
+                        .map(|message| message.id.as_str()),
                 )
                 .await?;
             let stdin_prompt = chat_service_context::build_initial_prompt(
@@ -4690,20 +4869,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         }
                     }
 
-                    let persisted_metadata = persisted_user_metadata(&options);
                     let hide_user_message =
                         message_metadata_hidden_from_ui(persisted_metadata.as_deref());
 
                     // Store user message for conversation history
-                    if !resume_in_place {
-                        let user_msg = chat_service_context::create_user_message(
-                            context_type,
-                            context_id,
-                            message,
-                            conversation.id,
-                            persisted_metadata.clone(),
-                            options.created_at,
-                        );
+                    if let Some(user_msg) = pending_user_message {
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
                         if self
@@ -4911,7 +5081,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             &context_type,
             entity_status.as_deref(),
             team_mode_val,
-            options.agent_name_override.as_deref(),
+            preferred_agent_override(
+                options.agent_name_override.as_deref(),
+                conversation.bound_agent_name.as_deref(),
+            ),
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
@@ -4981,16 +5154,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let run_chain_id = agent_run.run_chain_id.clone();
 
         let branch_update_binding = if context_type == ChatContextType::BranchUpdate {
-            let branch_update_repo = self
-                .branch_update_repo
-                .lock()
-                .unwrap()
-                .clone()
-                .ok_or_else(|| {
-                    ChatServiceError::SpawnFailed(
-                        "Branch updater has no durable authority repository".to_string(),
-                    )
-                })?;
+            let branch_update_repo =
+                self.branch_update_repo
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| {
+                        ChatServiceError::SpawnFailed(
+                            "Branch updater has no durable authority repository".to_string(),
+                        )
+                    })?;
             let task_id = TaskId::from_string(context_id.to_string());
             let operation = branch_update_repo
                 .get_active_operation(&task_id)
@@ -5537,7 +5710,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
 
         // 4. Store user message
-        if !resume_in_place {
+        let source_message_id = if !resume_in_place {
             let user_msg = chat_service_context::create_user_message(
                 context_type,
                 context_id,
@@ -5633,6 +5806,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     },
                 );
             }
+            Some(user_msg_id)
         } else if let Err(error) = self
             .persist_hidden_resume_in_place_marker(
                 context_type,
@@ -5643,7 +5817,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await
         {
             cleanup_and_err!(error);
-        }
+        } else {
+            None
+        };
 
         // 6. Resolve working directory
         let working_directory_started = Instant::now();
@@ -5719,42 +5895,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             project_id_started,
         );
 
-        if context_type == ChatContextType::Ideation {
-            let Some(lane_repo) = self.agent_lane_settings_repo.as_ref() else {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(
-                    "Unified ideation chat service requires agent lane settings repo".to_string(),
-                ));
-            };
-            let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() else {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(
-                    "Unified ideation chat service requires agent provider settings repo"
-                        .to_string(),
-                ));
-            };
-            let probes =
-                match crate::application::provider_aware_runtime_probes_for_repo(provider_repo)
-                    .await
-                {
-                    Ok(probes) => probes,
-                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(error)),
-                };
-            let lane_config = crate::application::resolve_lane_harness_config(
-                lane_repo,
-                project_id.as_deref(),
-                AgentLane::IdeationPrimary,
-            )
-            .await;
-            let lane_availability =
-                crate::application::build_lane_harness_availability(lane_config, &probes);
-            if !lane_availability.available {
-                let error = lane_availability
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "Configured ideation harness is not available".to_string());
-                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
-            }
-        }
-
         // 7. Increment running count for task execution contexts BEFORE spawning
         // This tracks concurrency for agent-active states (Executing, Reviewing, ReExecuting)
         // The count is decremented in TransitionHandler::on_exit when leaving these states
@@ -5772,17 +5912,76 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         // 7a. Build and spawn command
         let spawn_settings_started = Instant::now();
-        let mut resolved_spawn_settings =
-            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+        let ideation_verification = if context_type == ChatContextType::Ideation {
+            match self
+                .ideation_session_repo
+                .get_by_id(&IdeationSessionId::from_string(context_id.to_string()))
+                .await
+            {
+                Ok(Some(session)) => session.session_purpose == SessionPurpose::Verification,
+                Ok(None) => false,
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
+                }
+            }
+        } else {
+            false
+        };
+        let routing_role = options.routing_role_override.unwrap_or_else(|| {
+            crate::application::agent_lane_resolution::routing_role_for_chat_launch(
                 agent_name,
-                project_id.as_deref(),
                 context_type,
                 entity_status.as_deref(),
-                spawn_harness_override,
-                options.model_override.as_deref(),
-                self.agent_lane_settings_repo.as_ref(),
+                agent_conversation_mode,
+                ideation_verification,
             )
-            .await;
+        });
+        let project_root = match project_id.as_deref() {
+            Some(project_id) => match self
+                .project_repo
+                .get_by_id(&ProjectId::from_string(project_id.to_string()))
+                .await
+            {
+                Ok(Some(project)) => Some(PathBuf::from(project.working_directory)),
+                Ok(None) => cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                    "Project not found while resolving {routing_role}: {project_id}"
+                ))),
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
+                }
+            },
+            None => None,
+        };
+        let mut resolved_spawn_settings =
+            if let Some(defaults) = self.manual_role_default_service.as_ref() {
+                match crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+                    agent_name,
+                    project_id.as_deref(),
+                    project_root.as_deref(),
+                    routing_role,
+                    spawn_harness_override,
+                    options.model_override.as_deref(),
+                    defaults,
+                )
+                .await
+                {
+                    Ok(resolved) => resolved,
+                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                        "Failed to resolve manual default for {routing_role}: {error}"
+                    ))),
+                }
+            } else {
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_name,
+                    project_id.as_deref(),
+                    context_type,
+                    entity_status.as_deref(),
+                    spawn_harness_override,
+                    options.model_override.as_deref(),
+                    self.agent_lane_settings_repo.as_ref(),
+                )
+                .await
+            };
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
         log_send_message_spawn_prep_phase(
             context_type,
@@ -6096,6 +6295,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 options.composer_selection_snapshot.as_ref(),
                 Some(&conversation_id),
                 Some(&working_directory),
+                source_message_id.as_deref(),
             )
             .await?;
         let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
@@ -6267,7 +6467,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message_queue: Arc::clone(&self.message_queue),
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
                 task_proposal_repo: self.task_proposal_repo.clone(),
-                task_step_repo: self.task_step_repo.clone(),
+                task_step_repo: self.task_step_repo.lock().unwrap().clone(),
+                validation_run_repo: self.validation_run_repo.lock().unwrap().clone(),
+                external_events_repo: self.external_events_repo.lock().unwrap().clone(),
+                webhook_publisher: self.webhook_publisher.lock().unwrap().clone(),
                 review_repo: self.review_repo.clone(),
             },
             execution_state: self.execution_state.clone(),
@@ -7301,7 +7504,6 @@ mod coordination_mode_send_tests {
         ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
         TeamIntent,
     };
-
     use super::SendMessageOptions;
 
     #[tokio::test]
@@ -8844,6 +9046,8 @@ mod bulk_running_state_tests {
 
 #[cfg(test)]
 mod chat_service_composer_references_tests;
+#[cfg(test)]
+mod chat_service_context_tests;
 #[cfg(test)]
 mod chat_service_redaction_tests;
 #[cfg(test)]

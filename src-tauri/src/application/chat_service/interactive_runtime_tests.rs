@@ -1,21 +1,27 @@
+use super::chat_service_context::noninteractive_agent_name;
+use super::SendMessageOptions;
 use super::{
-    agent_conversation_mode_for_send, conversation_spawn_harness_override,
-    edit_mode_plan_handoff_runtime_message, get_agent_name,
+    agent_conversation_mode_for_send, canonical_parented_agent_binding,
+    conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
     interactive_run_started_provider_session, persona_builder_runtime_message,
     persona_switch_requires_process_invalidation, plan_mode_runtime_message,
-    provider_harness_switch_requires_fresh_session, registered_persona_metadata,
-    resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
-    spawn_settings_require_task_metadata,
+    preferred_agent_override, provider_harness_switch_requires_fresh_session,
+    registered_persona_metadata, resolve_agent_name_for_send,
+    should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
+    supervised_workspace_runtime_message,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::application::persona_prompt::ResolvedPersona;
+use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
     ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, Persona, PersonaId, PersonaStatus, ProjectId, TaskId,
 };
+use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER;
 use chrono::Utc;
+use std::path::PathBuf;
 
 fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
     ResolvedPersona {
@@ -25,6 +31,112 @@ fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
         content_hash: content_hash.to_string(),
         block: String::new(),
     }
+}
+
+#[test]
+fn explicit_agent_override_precedes_persisted_child_binding() {
+    assert_eq!(
+        preferred_agent_override(
+            Some("ralphx-workspace-repair"),
+            Some("ralphx-workspace-reviewer"),
+        ),
+        Some("ralphx-workspace-repair")
+    );
+    assert_eq!(
+        preferred_agent_override(None, Some("ralphx-workspace-reviewer")),
+        Some("ralphx-workspace-reviewer")
+    );
+}
+
+#[test]
+fn noninteractive_specialist_override_drives_runtime_settings_resolution() {
+    assert_eq!(
+        noninteractive_agent_name(
+            ChatContextType::Project,
+            None,
+            Some("ralphx-workspace-reviewer"),
+        ),
+        "ralphx-workspace-reviewer"
+    );
+    assert_eq!(
+        noninteractive_agent_name(ChatContextType::Project, None, None),
+        AGENT_CHAT_PROJECT
+    );
+}
+
+#[test]
+fn only_parented_conversations_bind_successfully_resolved_canonical_agents() {
+    let plugin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri has a repository parent")
+        .join("plugins/app");
+    let mut child = ChatConversation::new_task(TaskId::from_string("task-child".to_string()));
+    child.parent_conversation_id = Some("parent-conversation".to_string());
+
+    assert_eq!(
+        canonical_parented_agent_binding(&plugin_dir, &child, Some("ralphx-workspace-reviewer"),)
+            .as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    assert_eq!(
+        canonical_parented_agent_binding(&plugin_dir, &child, Some("not-a-canonical-agent")),
+        None
+    );
+
+    child.parent_conversation_id = None;
+    assert_eq!(
+        canonical_parented_agent_binding(&plugin_dir, &child, Some("ralphx-workspace-reviewer"),),
+        None
+    );
+}
+
+#[tokio::test]
+async fn parented_specialist_override_persists_bound_agent_before_spawn() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-bound-reviewer-send".to_string());
+    let parent = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("parent conversation should persist");
+    let mut child = ChatConversation::new_project(project_id.clone());
+    child.parent_conversation_id = Some(parent.id.as_str());
+    let child_id = child.id;
+    state
+        .chat_conversation_repo
+        .create(child)
+        .await
+        .expect("child conversation should persist");
+    let service = state.build_chat_service();
+
+    let (resolved, created) = service
+        .get_or_create_conversation_for_send(
+            ChatContextType::Project,
+            project_id.as_str(),
+            &SendMessageOptions {
+                conversation_id_override: Some(child_id),
+                agent_name_override: Some(AGENT_WORKSPACE_REVIEWER.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("conversation should resolve");
+
+    assert!(!created);
+    assert_eq!(
+        resolved.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&child_id)
+        .await
+        .expect("conversation should load")
+        .expect("conversation should exist");
+    assert_eq!(
+        stored.bound_agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
 }
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
@@ -377,6 +489,58 @@ fn plan_mode_runtime_message_injects_linked_planning_session_context() {
     assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
     assert!(message.contains("Use this planning session for ask_user_question"));
     assert!(message.contains("<user_request>draft the implementation</user_request>"));
+}
+
+#[test]
+fn supervised_runtime_message_injects_autopilot_opt_in() {
+    let workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("conversation-autopilot-1"),
+        ProjectId::from_string("project-autopilot-1".to_string()),
+        AgentConversationWorkspaceMode::Autopilot,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-autopilot".to_string(),
+        "/tmp/ralphx-autopilot-workspace".to_string(),
+    );
+
+    let message = supervised_workspace_runtime_message(
+        "finish the change".to_string(),
+        Some(&workspace),
+        Some("message-autopilot-1"),
+    );
+
+    assert!(message.contains("<workspace_mode>autopilot</workspace_mode>"));
+    assert!(message.contains("explicitly opted into Autopilot"));
+    assert!(message.contains("<user_request>finish the change</user_request>"));
+}
+
+#[test]
+fn supervised_runtime_message_injects_exact_tasks_source_identity() {
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("conversation-tasks-1"),
+        ProjectId::from_string("project-tasks-1".to_string()),
+        AgentConversationWorkspaceMode::Tasks,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-tasks".to_string(),
+        "/tmp/ralphx-tasks-workspace".to_string(),
+    );
+    workspace.task_pipeline_session_id = Some(IdeationSessionId::from_string("pipeline-1"));
+
+    let message = supervised_workspace_runtime_message(
+        "please add this follow-up".to_string(),
+        Some(&workspace),
+        Some("message-tasks-1"),
+    );
+
+    assert!(message.contains("<workspace_mode>tasks</workspace_mode>"));
+    assert!(message.contains("<task_pipeline_session_id>pipeline-1</task_pipeline_session_id>"));
+    assert!(message.contains("<source_message_id>message-tasks-1</source_message_id>"));
+    assert!(message.contains("explicit user request in this source message"));
 }
 
 #[test]

@@ -90,6 +90,7 @@ const {
   getAgentConversationRuntimeStatusesMock,
   startWorkspaceReviewMock,
   startWorkspaceReviewFixerMock,
+  approveWorkspaceReviewAnywayMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -101,6 +102,8 @@ const {
   closeWorkspacePrMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  activateAgentTaskPipelineMock,
+  startAgentTaskPipelineMock,
   listAgentConversationIssuesMock,
   getAutomationMock,
   pauseAutomationMock,
@@ -156,6 +159,7 @@ const {
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   startWorkspaceReviewMock: vi.fn(),
   startWorkspaceReviewFixerMock: vi.fn(),
+  approveWorkspaceReviewAnywayMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -167,6 +171,8 @@ const {
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  activateAgentTaskPipelineMock: vi.fn(),
+  startAgentTaskPipelineMock: vi.fn(),
   listAgentConversationIssuesMock: vi.fn(),
   getAutomationMock: vi.fn(),
   pauseAutomationMock: vi.fn(),
@@ -222,6 +228,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         startWorkspaceReviewMock(...args),
       startAgentWorkspaceReviewFixer: (...args: unknown[]) =>
         startWorkspaceReviewFixerMock(...args),
+      approveAgentWorkspaceReviewAnyway: (...args: unknown[]) =>
+        approveWorkspaceReviewAnywayMock(...args),
       listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
         listPublicationEventsMock(...args),
       getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
@@ -243,6 +251,10 @@ vi.mock("@/api/chat", async (importOriginal) => {
       sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
       switchAgentConversationMode: (...args: unknown[]) =>
         switchAgentConversationModeMock(...args),
+      activateAgentTaskPipeline: (...args: unknown[]) =>
+        activateAgentTaskPipelineMock(...args),
+      startAgentTaskPipeline: (...args: unknown[]) =>
+        startAgentTaskPipelineMock(...args),
       listAgentConversationIssues: (...args: unknown[]) =>
         listAgentConversationIssuesMock(...args),
     },
@@ -536,10 +548,16 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/useDependencyGraph", () => ({
-  useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
-  useDependencyTiers: () => ({ tierMap: new Map(), maxTier: 0 }),
-}));
+vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/hooks/useDependencyGraph")
+  >();
+  return {
+    ...actual,
+    useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
+    useDependencyTiers: () => ({ tierMap: new Map(), maxTier: 0 }),
+  };
+});
 
 vi.mock("@/hooks/useTasks", () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
@@ -586,6 +604,11 @@ vi.mock("@/hooks/useGithubSettings", () => ({
     mutateAsync: resumeDeferredGitStartupMock,
     isPending: false,
   }),
+}));
+
+vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
+  useGitHubConnectionStatus: (...args: unknown[]) =>
+    useGhAuthStatusMock(...args),
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -991,6 +1014,11 @@ function workspaceReviewContext(
     autoMergeGuardPrNumber?: number | null;
     autoMergeGuardMethod?: string | null;
     autoMergeGuardLastError?: string | null;
+    reviewGateBypassedAt?: string | null;
+    reviewGateBypassedTargetScope?: "selected_source" | "workspace_delta" | null;
+    reviewGateBypassedDiffFingerprint?: string | null;
+    reviewGateBypassedArtifactId?: string | null;
+    reviewGateBypassedArtifactVersion?: number | null;
     isCurrent?: boolean;
     isOutdated?: boolean;
     shouldShowTab?: boolean;
@@ -1040,6 +1068,15 @@ function workspaceReviewContext(
       workspaceHeadSha: target?.scope === "workspace_delta" ? target.headSha : null,
       currentDiffFingerprint: target?.diffFingerprint ?? null,
       previousVersionId: null,
+      reviewGateBypassedAt: overrides.reviewGateBypassedAt ?? null,
+      reviewGateBypassedTargetScope:
+        overrides.reviewGateBypassedTargetScope ?? null,
+      reviewGateBypassedDiffFingerprint:
+        overrides.reviewGateBypassedDiffFingerprint ?? null,
+      reviewGateBypassedArtifactId:
+        overrides.reviewGateBypassedArtifactId ?? null,
+      reviewGateBypassedArtifactVersion:
+        overrides.reviewGateBypassedArtifactVersion ?? null,
       reviewBlockingSummary: overrides.reviewBlockingSummary ?? null,
       reviewBlockingFingerprint: null,
       reviewFixerStatus: overrides.reviewFixerStatus ?? null,
@@ -1590,6 +1627,7 @@ describe("AgentsArtifactPane", () => {
       started: false,
       skippedReason: null,
     });
+    approveWorkspaceReviewAnywayMock.mockReset();
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -1707,6 +1745,18 @@ describe("AgentsArtifactPane", () => {
         linkedIdeationSessionId: "session-1",
       }),
     });
+    activateAgentTaskPipelineMock.mockResolvedValue(
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+    );
+    startAgentTaskPipelineMock.mockResolvedValue({
+      tasksCreated: 1,
+      executionPlanId: "execution-plan-1",
+    });
     listAgentConversationIssuesMock.mockResolvedValue([]);
     getAutomationMock.mockResolvedValue(automationDetailFixture());
     pauseAutomationMock.mockResolvedValue(
@@ -1791,7 +1841,14 @@ describe("AgentsArtifactPane", () => {
       refetch: vi.fn(),
     });
     useGhAuthStatusMock.mockReturnValue({
-      data: true,
+      data: {
+        state: "authenticated",
+        diagnostic: null,
+        ghInstalled: true,
+        authenticated: true,
+        host: "github.com",
+        account: "octocat",
+      },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
@@ -2311,7 +2368,7 @@ describe("AgentsArtifactPane", () => {
       "aria-disabled",
       "true",
     );
-    expect(screen.queryByTestId("agents-artifact-tab-publish")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-jira")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-granola")).not.toBeInTheDocument();
@@ -2343,7 +2400,7 @@ describe("AgentsArtifactPane", () => {
         automationId: "automation-1",
         automationRunId: "run-1",
       },
-      { hiddenTabs: ["automation"] },
+      { hiddenTabs: ["automation", "publish"] },
     );
 
     await waitFor(() =>
@@ -2386,6 +2443,70 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.getByTestId("agents-artifact-tab-automation"),
     ).toBeInTheDocument();
+  });
+
+  it("shows the versioned setup spec as a Plan tab", async () => {
+    const queryClient = createTestQueryClient();
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        automation: automationFixture({ specArtifactId: "spec-artifact-2" }),
+      }),
+    );
+    const setupPlan = {
+      ...draftPlanArtifact(),
+      id: "spec-artifact-2",
+      name: "Automation setup plan",
+      content: {
+        type: "inline" as const,
+        text: "# Automation setup plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "automation-setup-agent",
+        version: 2,
+      },
+    };
+    getArtifactMock.mockResolvedValue(setupPlan);
+    queryClient.setQueryData(
+      ["agents", "artifact", "spec-artifact-2"],
+      setupPlan,
+    );
+
+    renderPane(
+      "plan",
+      workspace({ mode: "automation" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(await screen.findByText("Automation setup plan")).toBeInTheDocument();
+  });
+
+  it("reuses Commit & Publish for the automation setup workspace", async () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "automation" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
   });
 
   it("selects task details from an external task focus request", async () => {
@@ -2496,7 +2617,7 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
     expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
-    expect(screen.getByText("No ideation run attached")).toBeInTheDocument();
+    expect(await screen.findByText("No ideation run attached")).toBeInTheDocument();
   });
 
   it("keeps a focused automation run scoped to its Plan tab from the setup conversation", async () => {
@@ -3008,6 +3129,40 @@ describe("AgentsArtifactPane", () => {
     ).toBeNull();
   });
 
+  it("colors an approved-anyway blocking Review tab as a warning", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewOutcome: "blocking",
+        reviewGateStatus: "passed",
+        reviewArtifactId: "review-artifact-1",
+        reviewArtifactVersion: 2,
+        reviewGateBypassedAt: "2026-07-10T00:05:00.000Z",
+        reviewGateBypassedTargetScope: "selected_source",
+        reviewGateBypassedDiffFingerprint: "fingerprint-351",
+        reviewGateBypassedArtifactId: "review-artifact-1",
+        reviewGateBypassedArtifactVersion: 2,
+        isCurrent: true,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+    const reviewIcon = reviewTab.querySelector("svg");
+
+    expect(reviewIcon).toHaveStyle({ color: "var(--status-warning)" });
+    expect(reviewIcon).not.toHaveStyle({ color: "var(--status-success)" });
+  });
+
   it("starts an initial Review only from the Run review action", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -3184,6 +3339,82 @@ describe("AgentsArtifactPane", () => {
     expect(invalidateQueriesSpy).toHaveBeenCalledWith({
       queryKey: chatKeys.conversationTimeline("conversation-1"),
     });
+  });
+
+  it("approves the exact blocking Review snapshot and updates the shared cache", async () => {
+    const user = userEvent.setup();
+    const queryClient = createTestQueryClient();
+    const initialContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "blocking",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "A human must accept this blocker.",
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    const approvedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "passed",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "A human must accept this blocker.",
+      reviewGateBypassedAt: "2026-07-10T00:05:00.000Z",
+      reviewGateBypassedTargetScope: "selected_source",
+      reviewGateBypassedDiffFingerprint: "fingerprint-351",
+      reviewGateBypassedArtifactId: "review-artifact-1",
+      reviewGateBypassedArtifactVersion: 2,
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValue(approvedContext);
+    approveWorkspaceReviewAnywayMock.mockResolvedValue({
+      success: true,
+      monitor: approvedContext.monitor,
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByText("Review blocking")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(screen.getByTestId("agents-review-approve-anyway"));
+    await user.click(screen.getByRole("button", { name: "Approve anyway" }));
+
+    await waitFor(() =>
+      expect(approveWorkspaceReviewAnywayMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          targetScope: "selected_source",
+          diffFingerprint: "fingerprint-351",
+          artifactId: "review-artifact-1",
+          artifactVersion: 2,
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData<AgentWorkspaceReviewContext>(
+          agentWorkspaceKeys.workspaceReview("conversation-1"),
+        )?.monitor.reviewGateBypassedDiffFingerprint,
+      ).toBe("fingerprint-351"),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Review approved anyway for the current changes",
+    );
   });
 
   it("shows Fixing instead of Fix Issues while the review fixer is active", async () => {
@@ -4667,7 +4898,14 @@ describe("AgentsArtifactPane", () => {
 
   it("shows a GitHub PR sign-in action for all-SSH publish workspaces when gh is missing", () => {
     useGhAuthStatusMock.mockReturnValue({
-      data: false,
+      data: {
+        state: "unauthenticated",
+        diagnostic: "missing_credentials",
+        ghInstalled: true,
+        authenticated: false,
+        host: "github.com",
+        account: null,
+      },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
@@ -5291,7 +5529,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
   });
 
-  it("promotes a Plan workspace to Ideation before requesting proposals", async () => {
+  it("activates a durable Tasks pipeline before requesting proposals", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -5369,30 +5607,31 @@ describe("AgentsArtifactPane", () => {
         name: /Create Proposals/i,
       },
     );
-    switchAgentConversationModeMock.mockClear();
+    activateAgentTaskPipelineMock.mockClear();
     sendAgentMessageMock.mockClear();
 
     await userEvent.click(createProposalsButton);
 
     await waitFor(() =>
-      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+      expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
-        mode: "ideation",
+        sessionId: "session-1",
       }),
     );
     await waitFor(() =>
       expect(sendAgentMessageMock).toHaveBeenCalledWith(
         "ideation",
         "session-1",
-        expect.stringContaining("Proceed to proposals"),
+        expect.stringContaining("Create implementation task proposals"),
       ),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
-      "ideation",
+      "tasks",
       expect.objectContaining({
         linkedIdeationSessionId: "session-1",
-        mode: "ideation",
+        taskPipelineSessionId: "session-1",
+        mode: "tasks",
       }),
     );
     expect(onFocusIdeationSessionForConversation).toHaveBeenCalledWith(
@@ -5403,7 +5642,41 @@ describe("AgentsArtifactPane", () => {
       "ideation-conversation-1",
     );
     expect(sendAgentMessageMock.mock.invocationCallOrder[0]!).toBeGreaterThan(
-      switchAgentConversationModeMock.mock.invocationCallOrder[0]!,
+      activateAgentTaskPipelineMock.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("retries proposal decomposition from an attached Tasks pipeline", async () => {
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    activateAgentTaskPipelineMock.mockClear();
+    sendAgentMessageMock.mockClear();
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+      vi.fn(),
+      false,
+      conversation({ agentMode: "tasks" }),
+    );
+
+    const createProposalsButton = await screen.findByRole("button", {
+      name: /Create Proposals/i,
+    });
+    await userEvent.click(createProposalsButton);
+
+    expect(activateAgentTaskPipelineMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "ideation",
+        "session-1",
+        expect.stringContaining("Create implementation task proposals"),
+      ),
     );
   });
 
@@ -6612,6 +6885,47 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("starts the complete reviewed proposal set from Tasks mode", async () => {
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({}, [
+        taskProposal({
+          id: "proposal-1",
+          status: "pending",
+          createdTaskId: null,
+        }),
+      ]),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    startAgentTaskPipelineMock.mockClear();
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "tasks",
+        linkedIdeationSessionId: "session-1",
+        taskPipelineSessionId: "session-1",
+        taskPipelineAvailable: true,
+      }),
+      vi.fn(),
+      false,
+      conversation({ agentMode: "tasks" }),
+    );
+
+    const startTasks = await screen.findByRole("button", {
+      name: /Start Tasks \(1\)/i,
+    });
+    await userEvent.click(startTasks);
+
+    await waitFor(() =>
+      expect(startAgentTaskPipelineMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        sessionId: "session-1",
+        proposalIds: ["proposal-1"],
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Started 1 task");
   });
 
   it("uses the success lifecycle banner only when accepted work exists", async () => {

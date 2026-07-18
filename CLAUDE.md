@@ -15,7 +15,7 @@ If one is missing, skip it and continue; do not fail work or run bare `sed`/`cat
 
 ## Project: RalphX
 Native Mac GUI for autonomous AI dev: Kanban, multi-agent orchestration, ideation chat.
-Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Stateful workflow review: `.claude/rules/stateful-workflow-review.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery consistency: `.claude/rules/merge-recovery-consistency.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation topology: `.claude/rules/delegation-topology.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Production CLI resolution: `.claude/rules/production-cli-resolution.md` | CodeQL path safety: `.claude/rules/codeql-path-safety.md` | Ideation verification architecture: `.claude/rules/ideation-verification-architecture.md` | Follow-up blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent type map: `.claude/rules/agent-type-map.md` | Task detail views: `.claude/rules/task-detail-views.md` | Frontend interaction performance: `.claude/rules/frontend-interaction-performance.md` | Icon-only buttons: `.claude/rules/icon-only-buttons.md` | Rust API safety: `.claude/rules/rust-stable-apis.md` | Rust test execution: `.claude/rules/rust-test-execution.md` | WKWebView CSS vars: `.claude/rules/wkwebview-css-vars.md` | Release script validation: `.claude/rules/release-script-validation.md` | PR descriptions: `.claude/rules/pr-descriptions.md`
+Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Stateful workflow review: `.claude/rules/stateful-workflow-review.md` | Big-PR review checklist: `.claude/rules/big-pr-review-checklist.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery consistency: `.claude/rules/merge-recovery-consistency.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation topology: `.claude/rules/delegation-topology.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Production CLI resolution: `.claude/rules/production-cli-resolution.md` | CodeQL path safety: `.claude/rules/codeql-path-safety.md` | Ideation verification architecture: `.claude/rules/ideation-verification-architecture.md` | Follow-up blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent type map: `.claude/rules/agent-type-map.md` | Task detail views: `.claude/rules/task-detail-views.md` | Frontend interaction performance: `.claude/rules/frontend-interaction-performance.md` | Icon-only buttons: `.claude/rules/icon-only-buttons.md` | Rust API safety: `.claude/rules/rust-stable-apis.md` | Rust test execution: `.claude/rules/rust-test-execution.md` | WKWebView CSS vars: `.claude/rules/wkwebview-css-vars.md` | Release script validation: `.claude/rules/release-script-validation.md` | PR descriptions: `.claude/rules/pr-descriptions.md`
 CodeQL path safety applies to production and tests; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 Production CLI resolution applies to installed app launches; all runtime subprocess binaries must go through the shared resolver surface.
 
@@ -26,7 +26,7 @@ ralphx/
 │  ├─ src/                # Frontend app code
 │  └─ tests/              # Frontend/Vitest/Playwright tests
 ├─ src-tauri/             # Backend (Rust/Tauri) → src-tauri/CLAUDE.md
-│  ├─ src/http_server/    # Axum :3847 backend for internal/public MCP adapters
+│  ├─ src/http_server/    # Axum backend for MCP adapters (prod :3847 | dev :3857 | RALPHX_BACKEND_PORT)
 │  └─ ralphx.db           # SQLite (dev)
 ├─ agents/                # Canonical agent metadata + harness-specific prompts
 ├─ config/harnesses/      # Harness-global settings and lane defaults
@@ -60,6 +60,7 @@ Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/ag
 
 | # | Rule |
 |---|------|
+| 0 | **Pattern alignment first (NON-NEGOTIABLE):** Before ANY bug fix or feature, locate the owning service/component and its established pattern (subtree CLAUDE.md pattern tables, `.claude/rules/*`, `docs/architecture/`) and extend that seam. ❌ Parallel services/managers/stores when an existing seam owns the domain. A genuinely new pattern requires explicit justification in the PR body + a one-liner added to the relevant CLAUDE.md (rule 11) |
 | 1 | TDD mandatory — tests FIRST |
 | 1.5 | **Orchestration chain tests** — see `src-tauri/CLAUDE.md` Integration Tests section |
 | 2 | Anti-AI-slop — see Design System section |
@@ -86,13 +87,14 @@ Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/ag
 | 23 | **Icon-only buttons:** Must have an accessible name and the app tooltip component; native `title` alone is not enough. Details: `.claude/rules/icon-only-buttons.md` |
 | 24 | **Frontend interaction performance (NON-NEGOTIABLE):** User-triggered panes/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Details: `.claude/rules/frontend-interaction-performance.md` |
 | 25 | **Stateful workflow review (NON-NEGOTIABLE):** For completion/cache/retry/recovery/state-machine changes, prove current-attempt authority, fail-closed reads, event ordering, prompt/schema alignment, path containment, and production-path tests. Details: `.claude/rules/stateful-workflow-review.md` |
+| 26 | **Big-PR review checklist:** Before merging any large feature/refactor PR, run the 12 falsifiable checks in `.claude/rules/big-pr-review-checklist.md` — they target the 11 failure classes big PRs here actually ship (scope leaks, stale-metadata trust, competing UI writers, UI-inferred state, recovery-path divergence, …) |
 
 ## Adversarial Plan Convergence (NON-NEGOTIABLE)
 
 Plan-verification run/round/gap lineage and terminal classification are backend-owned; the active model may choose permitted lenses/delegates but must not replay orchestration bookkeeping. Follow `.claude/rules/ideation-verification-architecture.md` and the live profile prompt; implementation still requires the product's user-confirmation gate.
 
 ## Design System
-`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter | **INVOKE `/tailwind-v4-shadcn` before UI work**
+`specs/design/styleguide.md` (tokens, components, layout rules — initial spec, grows with app) | `specs/DESIGN.md` | Accent: `#ff6b35` (warm orange) ❌ purple/blue | Font: SF Pro ❌ Inter
 
 Input outline removal:
 ```tsx
@@ -113,6 +115,5 @@ style={{ boxShadow: "none", outline: "none" }}
 - DB: `sqlite3 src-tauri/ralphx.db "SELECT * FROM table_name;"`
 - App logs: per-launch file — dev: `.artifacts/logs/ralphx_YYYY-MM-DD_HH-MM-SS.log` | prod: `~/Library/Application Support/com.ralphx.app/logs/` | latest: `ls -t .artifacts/logs/*.log | head -1` | config: `file_logging` in `config/ralphx.yaml` / `RALPHX_FILE_LOGGING` env (default: true)
 - Debug logs: `scripts/find-debug-logs.sh -a "<agent-name>" -d "YYYY-MM-DD" -v` — find Claude debug logs by agent name/date/keywords
-- Slash commands: `/activate-prd <path>` — switch PRD | `/create-prd` — PRD wizard
 - Claude integration docs: `docs/ai-docs/claude-code/README.md` — lightweight local index plus official-doc stubs; fetch official Claude Code docs when current vendor behavior matters
 - OpenAI GPT-5 prompting notes: `docs/ai-docs/openai/README.md` — route by configured target model; do not apply one model's guide wholesale to another family

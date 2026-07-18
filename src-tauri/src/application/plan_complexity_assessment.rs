@@ -7,7 +7,7 @@ use tauri::Emitter;
 
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::AppState;
-use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{Artifact, ArtifactContent, IdeationSessionId};
 use crate::error::{AppError, AppResult};
 use crate::http_server::types::{
@@ -83,7 +83,14 @@ async fn run_plan_complexity_assessor(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Project not found: {}", session.project_id)))?;
     let runtime = state
-        .resolve_plan_complexity_runtime_for_session(&session)
+        .resolve_manual_role_background_agent_runtime(
+            Some(project.id.as_str()),
+            Some(std::path::Path::new(&project.working_directory)),
+            RoutingRole::UtilityLightweight,
+            agent_names::AGENT_PLAN_COMPLEXITY_ASSESSOR,
+            "plan complexity assessor",
+            None,
+        )
         .await?;
     let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(

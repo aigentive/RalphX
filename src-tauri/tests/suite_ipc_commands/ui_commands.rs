@@ -34,6 +34,7 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
             agent_personas: Some(true),
             agent_conversation_team: None,
             agent_conversation_workflows: None,
+            agent_conversation_autopilot: None,
         },
         app.state(),
     )

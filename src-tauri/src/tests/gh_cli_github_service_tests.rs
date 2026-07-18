@@ -945,12 +945,13 @@ mod mock_roundtrip {
     use async_trait::async_trait;
 
     use crate::domain::services::github_service::{
-        GithubConnectionStatus, GithubServiceTrait, PrMergeStateStatus, PrMergeableState,
-        PrReviewSubmissionEvent, PrStatus,
+        GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
+        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent,
+        PrStatus,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
-        GhAuthStatusRaw, GhCliCommandRunner, GhCliGithubService,
+        GhCliCommandRunner, GhCliGithubService,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use crate::AppResult;
@@ -960,7 +961,7 @@ mod mock_roundtrip {
         gh_results: Mutex<Vec<AppResult<Vec<String>>>>,
         gh_calls: Mutex<Vec<Vec<String>>>,
         git_calls: Mutex<Vec<Vec<String>>>,
-        auth_status: Mutex<Option<GhAuthStatusRaw>>,
+        connection_status: Mutex<Option<GithubConnectionStatus>>,
         auth_status_calls: Mutex<u32>,
     }
 
@@ -972,9 +973,9 @@ mod mock_roundtrip {
             }
         }
 
-        fn with_auth_status(raw: GhAuthStatusRaw) -> Self {
+        fn with_connection_status(status: GithubConnectionStatus) -> Self {
             Self {
-                auth_status: Mutex::new(Some(raw)),
+                connection_status: Mutex::new(Some(status)),
                 ..Default::default()
             }
         }
@@ -1002,25 +1003,21 @@ mod mock_roundtrip {
             Ok(())
         }
 
-        async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+        async fn run_gh_connection_probe(&self) -> GithubConnectionStatus {
             *self.auth_status_calls.lock().unwrap() += 1;
-            self.auth_status.lock().unwrap().clone().unwrap_or_default()
+            self.connection_status
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(GithubConnectionStatus::cli_unavailable)
         }
     }
 
     #[tokio::test]
     async fn fetch_github_connection_status_installed_authenticated() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: true,
-            output_lines: vec![
-                "github.com".to_string(),
-                "  ✓ Logged in to github.com account adriandemian (keyring)".to_string(),
-                "  - Active account: true".to_string(),
-                "  - Token: gho_************".to_string(),
-                "  ✓ Logged in to github.com account otheruser (keyring)".to_string(),
-                "  - Active account: false".to_string(),
-            ],
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::authenticated("github.com", "adriandemian"),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
@@ -1028,6 +1025,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             GithubConnectionStatus {
+                state: GithubConnectionState::Authenticated,
+                diagnostic: None,
                 gh_installed: true,
                 authenticated: true,
                 host: Some("github.com".to_string()),
@@ -1039,13 +1038,9 @@ mod mock_roundtrip {
 
     #[tokio::test]
     async fn fetch_github_connection_status_installed_unauthenticated() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: true,
-            output_lines: vec![
-                "You are not logged into any GitHub hosts. Run gh auth login to authenticate."
-                    .to_string(),
-            ],
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::unauthenticated(),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
@@ -1053,6 +1048,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             GithubConnectionStatus {
+                state: GithubConnectionState::Unauthenticated,
+                diagnostic: Some(GithubConnectionDiagnostic::MissingCredentials),
                 gh_installed: true,
                 authenticated: false,
                 host: None,
@@ -1063,16 +1060,74 @@ mod mock_roundtrip {
 
     #[tokio::test]
     async fn fetch_github_connection_status_missing_binary() {
-        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
-            gh_installed: false,
-            output_lines: Vec::new(),
-        }));
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::cli_unavailable(),
+        ));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let status = service.fetch_github_connection_status().await.unwrap();
 
         assert_eq!(status, GithubConnectionStatus::unavailable());
         assert!(!status.gh_installed);
+        assert_eq!(status.state, GithubConnectionState::CliUnavailable);
+        assert_eq!(
+            status.diagnostic,
+            Some(GithubConnectionDiagnostic::CliLaunch)
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_preserves_provider_unavailable() {
+        let runner = Arc::new(MockGhCliRunner::with_connection_status(
+            GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Http5xx),
+        ));
+        let service = GhCliGithubService::with_runner(runner);
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(status.state, GithubConnectionState::ProviderUnavailable);
+        assert_eq!(status.diagnostic, Some(GithubConnectionDiagnostic::Http5xx));
+        assert!(status.gh_installed);
+        assert!(!status.authenticated);
+    }
+
+    #[test]
+    fn github_connection_status_helpers_separate_repair_from_transient_states() {
+        let cases = [
+            (
+                GithubConnectionStatus::authenticated("github.com", "octo"),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::unauthenticated(), true, false),
+            (GithubConnectionStatus::credential_rejected(), true, true),
+            (
+                GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Network),
+                false,
+                true,
+            ),
+            (GithubConnectionStatus::cli_unavailable(), false, false),
+            (
+                GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::Timeout),
+                false,
+                false,
+            ),
+        ];
+
+        for (status, requires_repair, has_local_credential) in cases {
+            assert_eq!(
+                status.requires_credential_repair(),
+                requires_repair,
+                "{:?} repair classification drifted",
+                status.state
+            );
+            assert_eq!(
+                status.has_local_credential(),
+                has_local_credential,
+                "{:?} local credential classification drifted",
+                status.state
+            );
+        }
     }
 
     #[tokio::test]

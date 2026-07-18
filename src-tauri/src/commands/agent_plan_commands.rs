@@ -1,8 +1,19 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::application::AppState;
+pub(crate) use crate::application::agent_task_pipeline_service::validate_complete_task_pipeline_proposal_selection;
+use crate::application::{
+    agent_task_pipeline_service::{
+        activate_agent_task_pipeline as activate_agent_task_pipeline_service,
+        validate_supervised_task_pipeline,
+    },
+    AppState,
+};
 use crate::commands::agent_composer_commands::plan_references::session_can_reference_plan;
+use crate::commands::ideation_commands::{
+    apply_supervised_proposals_to_kanban_for_state, ApplyProposalsInput,
+    ApplyProposalsResultResponse,
+};
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, ensure_plan_workspace_planning_session_link_for_send,
     switch_agent_conversation_mode_for_state_allowing_running, AgentConversationResponse,
@@ -35,6 +46,22 @@ pub struct ImportAgentConversationPlanInput {
     pub conversation_id: String,
     pub title: String,
     pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateAgentTaskPipelineInput {
+    pub conversation_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartAgentTaskPipelineInput {
+    pub conversation_id: String,
+    pub session_id: String,
+    pub proposal_ids: Vec<String>,
+    pub base_branch_override: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +146,58 @@ pub async fn import_agent_conversation_plan(
     state: State<'_, AppState>,
 ) -> Result<AgentConversationPlanSeedResponse, String> {
     import_agent_conversation_plan_for_state(input, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn activate_agent_task_pipeline(
+    input: ActivateAgentTaskPipelineInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    activate_agent_task_pipeline_for_state(input, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_agent_task_pipeline(
+    input: StartAgentTaskPipelineInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ApplyProposalsResultResponse, String> {
+    validate_supervised_task_pipeline(
+        state.inner(),
+        &input.conversation_id,
+        &input.session_id,
+        AgentConversationWorkspaceMode::Tasks,
+    )
+    .await?;
+    validate_complete_task_pipeline_proposal_selection(
+        state.inner(),
+        &input.session_id,
+        &input.proposal_ids,
+    )
+    .await?;
+    apply_supervised_proposals_to_kanban_for_state(
+        ApplyProposalsInput {
+            session_id: input.session_id,
+            proposal_ids: input.proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: input.base_branch_override,
+        },
+        input.conversation_id,
+        &state,
+        &app,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn activate_agent_task_pipeline_for_state(
+    input: ActivateAgentTaskPipelineInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let workspace =
+        activate_agent_task_pipeline_service(state, &input.conversation_id, &input.session_id)
+            .await?;
+    agent_workspace_response_for_state(state, workspace).await
 }
 
 #[doc(hidden)]

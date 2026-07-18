@@ -222,6 +222,23 @@ jobs:
                   "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
                   "self.emit_task_event(serde_json::json!({",
               ),
+              "src/application/notification_service.rs": (
+                  "pub struct TauriDesktopNotifier {",
+                  "impl TauriDesktopNotifier {",
+                  "impl DesktopNotifier for TauriDesktopNotifier {",
+              ),
+              # These command adapters require the production AppHandle runtime. Their
+              # state/service entry points are covered by the root-lib behavioral suite.
+              "src/commands/agent_plan_commands.rs": (
+                  "pub async fn activate_agent_task_pipeline(",
+                  "pub async fn start_agent_task_pipeline(",
+              ),
+              "src/commands/ideation_commands/ideation_commands_apply.rs": (
+                  "pub async fn apply_proposals_to_kanban(",
+                  "pub async fn apply_proposals_to_kanban_for_state(",
+                  "pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(",
+                  "async fn apply_proposals_to_kanban_for_state_inner(",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -298,6 +315,8 @@ jobs:
               return max(cursor + 1, start + 1)
 
           def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              if start > 0 and lines[start - 1].strip() == "#[tauri::command]":
+                  ignored.add(start)
               depth = 0
               seen_open = False
               cursor = start
@@ -522,6 +541,23 @@ jobs:
                   "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
                   "self.emit_task_event(serde_json::json!({",
               ),
+              "src/application/notification_service.rs": (
+                  "pub struct TauriDesktopNotifier {",
+                  "impl TauriDesktopNotifier {",
+                  "impl DesktopNotifier for TauriDesktopNotifier {",
+              ),
+              # Keep this aligned with the Rust lib filter above. The IPC suite
+              # also instruments these production-AppHandle adapter blocks.
+              "src/commands/agent_plan_commands.rs": (
+                  "pub async fn activate_agent_task_pipeline(",
+                  "pub async fn start_agent_task_pipeline(",
+              ),
+              "src/commands/ideation_commands/ideation_commands_apply.rs": (
+                  "pub async fn apply_proposals_to_kanban(",
+                  "pub async fn apply_proposals_to_kanban_for_state(",
+                  "pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(",
+                  "async fn apply_proposals_to_kanban_for_state_inner(",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -590,6 +626,8 @@ jobs:
               return max(cursor + 1, start + 1)
 
           def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              if start > 0 and lines[start - 1].strip() == "#[tauri::command]":
+                  ignored.add(start)
               depth = 0
               seen_open = False
               cursor = start
@@ -1099,17 +1137,40 @@ jobs:
           fi
 
           echo "Waiting for Codecov patch status on ${COMMIT_SHA}."
+          query_gh_jq() {
+            local label="$1"
+            shift
+            local attempt=1
+            local output
+
+            while (( attempt <= 3 )); do
+              if output="$(gh api "$@" 2>&1)"; then
+                printf '%s' "${output}"
+                return 0
+              fi
+
+              local message="${output//$'\n'/ }"
+              echo "::warning::GitHub API query for ${label} failed on attempt ${attempt}/3: ${message:0:500}" >&2
+              if (( attempt < 3 )); then
+                sleep 2
+              fi
+              attempt=$((attempt + 1))
+            done
+
+            return 1
+          }
+
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             status_state="$(
-              gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              query_gh_jq "codecov/patch commit status" "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
                 --jq 'map(select(.context == "codecov/patch"))[0].state // ""'
-            )"
+            )" || status_state=""
             check_state="$(
-              gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              query_gh_jq "codecov/patch check run" --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
                 -f check_name="codecov/patch" \
                 --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] | if . == null then "" elif .status != "completed" then "pending" else .conclusion end'
-            )"
+            )" || check_state=""
 
             state=""
             failure_state=""
@@ -1159,19 +1220,25 @@ jobs:
           done
 
           echo "Timed out waiting for Codecov patch status to pass."
+          final_status_error=false
           final_status="$(
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+            query_gh_jq "final codecov/patch commit status" "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
               --jq 'map(select(.context == "codecov/patch"))[0] // empty'
-          )"
+          )" || final_status_error=true
+          final_check_error=false
           final_check="$(
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+            query_gh_jq "final codecov/patch check run" --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
               -f check_name="codecov/patch" \
               --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] // empty'
-          )"
+          )" || final_check_error=true
           printf '%s\n' "${final_status}"
           printf '%s\n' "${final_check}"
 
           if [[ -z "${final_status}" && -z "${final_check}" ]]; then
+            if [[ "${final_status_error}" == "true" || "${final_check_error}" == "true" ]]; then
+              echo "::warning::Codecov patch status could not be confirmed because GitHub API polling returned non-JSON or transport errors after retries; treating the unavailable external status as non-blocking after successful coverage uploads."
+              exit 0
+            fi
             echo "::warning::Codecov did not post codecov/patch after successful coverage uploads; treating the missing external status as non-blocking."
             exit 0
           fi

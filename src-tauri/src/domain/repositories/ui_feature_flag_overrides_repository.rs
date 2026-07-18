@@ -13,5 +13,6 @@ pub trait UiFeatureFlagOverridesRepository: Send + Sync {
         &self,
         team: Option<bool>,
         workflows: Option<bool>,
+        autopilot: Option<bool>,
     ) -> AppResult<UiFeatureFlagOverrides>;
 }

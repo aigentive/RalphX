@@ -260,6 +260,20 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        let mut conversations = self.conversations.write().await;
+        let conversation = conversations.get_mut(id).ok_or_else(|| {
+            crate::error::AppError::NotFound("Chat conversation not found".to_string())
+        })?;
+        conversation.bound_agent_name = bound_agent_name.map(str::to_string);
+        conversation.updated_at = Utc::now();
+        Ok(())
+    }
+
     async fn update_persona_binding(
         &self,
         id: &ChatConversationId,
@@ -294,6 +308,27 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         let mut convos = self.conversations.write().await;
         if let Some(conversation) = convos.get_mut(id) {
             conversation.set_coordination_mode(mode);
+        }
+        Ok(())
+    }
+
+    async fn update_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.coordination_mode = mode;
+            conversation.persona_id = persona_id.map(str::to_string);
+            if clear_provider_session {
+                conversation.claude_session_id = None;
+                conversation.provider_session_id = None;
+                conversation.provider_harness = None;
+            }
+            conversation.updated_at = Utc::now();
         }
         Ok(())
     }

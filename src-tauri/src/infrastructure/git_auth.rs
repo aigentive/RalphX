@@ -1,11 +1,16 @@
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+use std::time::Instant;
 
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::domain::services::github_service::{
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
+};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_path};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use crate::utils::secret_redactor::redact;
@@ -147,46 +152,187 @@ pub(crate) fn git_remote_url_kind_label(kind: Option<GitRemoteUrlKind>) -> &'sta
     kind_label(kind)
 }
 
-pub(crate) async fn check_gh_auth_status() -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhTokenProbe {
+    Present,
+    Absent,
+    CliUnavailable,
+    TimedOut,
+    Failed,
+}
+
+async fn probe_gh_auth_token() -> GhTokenProbe {
     let mut command = Command::new(resolve_gh_cli_path());
     apply_git_subprocess_env(&mut command);
     let mut child = match command
-        .args(["auth", "status"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .args(gh_auth_token_args())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return false,
+        Err(_) => return GhTokenProbe::CliUnavailable,
     };
 
-    match timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(Ok(status)) => status.success(),
-        _ => false,
+    let deadline = Duration::from_secs(git_runtime_config().cmd_timeout_secs);
+    match timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) if status.success() => GhTokenProbe::Present,
+        Ok(Ok(_)) => GhTokenProbe::Absent,
+        Ok(Err(_)) => GhTokenProbe::Failed,
+        Err(_) => GhTokenProbe::TimedOut,
     }
 }
 
 pub(crate) async fn check_gh_auth_token_available() -> bool {
+    matches!(probe_gh_auth_token().await, GhTokenProbe::Present)
+}
+
+/// Observe local GitHub credential presence and validate it against GitHub.
+///
+/// The token command's stdout is discarded so credential material never enters
+/// memory. Live validation requests only the public account login.
+pub(crate) async fn probe_github_connection_status() -> GithubConnectionStatus {
+    let started_at = Instant::now();
+    let status = match probe_gh_auth_token().await {
+        GhTokenProbe::Absent => GithubConnectionStatus::unauthenticated(),
+        GhTokenProbe::CliUnavailable => GithubConnectionStatus::cli_unavailable(),
+        GhTokenProbe::TimedOut => {
+            GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::Timeout)
+        }
+        GhTokenProbe::Failed => {
+            GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::UnexpectedResponse)
+        }
+        GhTokenProbe::Present => validate_github_credential().await,
+    };
+
+    tracing::info!(
+        state = ?status.state,
+        diagnostic = ?status.diagnostic,
+        gh_installed = status.gh_installed,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "GitHub connection probe completed"
+    );
+    status
+}
+
+async fn validate_github_credential() -> GithubConnectionStatus {
     let mut command = Command::new(resolve_gh_cli_path());
     apply_git_subprocess_env(&mut command);
     let child = match command
-        .args(gh_auth_token_args())
+        .args(["api", "user", "--hostname", "github.com", "--jq", ".login"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return false,
+        Err(_) => return GithubConnectionStatus::cli_unavailable(),
     };
 
-    match timeout(Duration::from_secs(2), child.wait_with_output()).await {
-        Ok(Ok(output)) => {
-            output.status.success() && output.stdout.iter().any(|byte| !byte.is_ascii_whitespace())
+    let deadline = Duration::from_secs(git_runtime_config().cmd_timeout_secs);
+    match timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            let account = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if is_valid_github_login(&account) {
+                GithubConnectionStatus::authenticated("github.com", account)
+            } else {
+                GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::MalformedResponse)
+            }
         }
-        _ => false,
+        Ok(Ok(output)) => {
+            let safe_stderr = redact(&String::from_utf8_lossy(&output.stderr));
+            let (state, diagnostic) = classify_gh_api_failure(&safe_stderr);
+            match state {
+                GithubConnectionState::CredentialRejected => {
+                    GithubConnectionStatus::credential_rejected()
+                }
+                GithubConnectionState::ProviderUnavailable => {
+                    GithubConnectionStatus::provider_unavailable(diagnostic)
+                }
+                GithubConnectionState::ProbeFailed => {
+                    GithubConnectionStatus::probe_failed(diagnostic)
+                }
+                GithubConnectionState::Authenticated
+                | GithubConnectionState::Unauthenticated
+                | GithubConnectionState::CliUnavailable => GithubConnectionStatus::probe_failed(
+                    GithubConnectionDiagnostic::UnexpectedResponse,
+                ),
+            }
+        }
+        Ok(Err(_)) => {
+            GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::UnexpectedResponse)
+        }
+        Err(_) => GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Timeout),
     }
+}
+
+pub(crate) fn classify_gh_api_failure(
+    failure: &str,
+) -> (GithubConnectionState, GithubConnectionDiagnostic) {
+    const CREDENTIAL_REJECTION_FRAGMENTS: &[&str] = &["bad credentials", "requires authentication"];
+    const NETWORK_FRAGMENTS: &[&str] = &[
+        "network is unreachable",
+        "connection refused",
+        "connection reset",
+        "could not resolve host",
+        "failed to connect",
+        "temporary failure in name resolution",
+    ];
+
+    let normalized = failure.to_ascii_lowercase();
+    if http_status_code(&normalized) == Some(401)
+        || CREDENTIAL_REJECTION_FRAGMENTS
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
+    {
+        return (
+            GithubConnectionState::CredentialRejected,
+            GithubConnectionDiagnostic::CredentialsRejected,
+        );
+    }
+    if http_status_code(&normalized).is_some_and(|code| (500..=599).contains(&code)) {
+        return (
+            GithubConnectionState::ProviderUnavailable,
+            GithubConnectionDiagnostic::Http5xx,
+        );
+    }
+    if NETWORK_FRAGMENTS
+        .iter()
+        .any(|fragment| normalized.contains(fragment))
+    {
+        return (
+            GithubConnectionState::ProviderUnavailable,
+            GithubConnectionDiagnostic::Network,
+        );
+    }
+    (
+        GithubConnectionState::ProbeFailed,
+        GithubConnectionDiagnostic::UnexpectedResponse,
+    )
+}
+
+pub(crate) fn http_status_code(value: &str) -> Option<u16> {
+    let words = value
+        .split_whitespace()
+        .map(|word| word.trim_matches(|character: char| !character.is_ascii_alphanumeric()))
+        .collect::<Vec<_>>();
+    words.windows(2).find_map(|pair| {
+        pair[0]
+            .eq_ignore_ascii_case("http")
+            .then(|| pair[1].parse::<u16>().ok())
+            .flatten()
+    })
+}
+
+pub(crate) fn is_valid_github_login(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 39
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 fn gh_auth_token_args() -> [&'static str; 4] {

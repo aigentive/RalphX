@@ -74,6 +74,7 @@ async fn create_script_uses_backend_derived_permission_and_invocation_ceiling() 
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -112,6 +113,7 @@ async fn launch_rejects_script_that_user_has_not_hash_approved() {
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -160,6 +162,7 @@ async fn approval_rejects_script_after_conversation_leaves_workflow_mode() {
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -209,6 +212,7 @@ async fn launch_rejects_approved_script_after_conversation_leaves_workflow_mode(
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -273,6 +277,7 @@ async fn resume_rejects_run_after_conversation_leaves_workflow_mode() {
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -359,6 +364,7 @@ async fn recovery_fails_unclaimed_run_after_conversation_leaves_workflow_mode() 
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -443,6 +449,7 @@ async fn disabled_startup_recovery_settles_expired_running_run_as_paused() {
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: true,
+        autopilot: false,
     });
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("project-1".into()));
@@ -507,6 +514,7 @@ async fn disabled_startup_recovery_settles_expired_running_run_as_paused() {
     app_state.agent_capability_gate.replace(AgentCapabilities {
         team: false,
         workflows: false,
+        autopilot: false,
     });
 
     assert_eq!(recover_agent_workflow_runs(&state).await.unwrap(), 0);

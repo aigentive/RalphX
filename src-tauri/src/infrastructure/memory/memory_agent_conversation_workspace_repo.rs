@@ -13,8 +13,9 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -187,6 +188,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .values()
             .filter(|workspace| {
                 workspace.linked_ideation_session_id.as_ref() == Some(ideation_session_id)
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned())
+    }
+
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| {
+                workspace.task_pipeline_session_id.as_ref() == Some(ideation_session_id)
             })
             .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
             .cloned())
@@ -887,6 +904,61 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .cloned())
     }
 
+    async fn approve_workspace_review_anyway(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let workspaces = self.workspaces.read().await;
+        let Some(workspace) = workspaces.get(conversation_id) else {
+            return Ok(None);
+        };
+        if workspace_review_approval_publish_status_is_active(
+            workspace.publication_push_status.as_deref(),
+        ) {
+            return Ok(None);
+        }
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        let fixer_active = matches!(
+            monitor.review_fixer_status.as_deref(),
+            Some("routing" | "queued" | "running")
+        );
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
+            || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
+            || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
+            || monitor.current_target_scope != Some(snapshot.target_scope)
+            || monitor.reviewed_target_scope != Some(snapshot.target_scope)
+            || monitor.current_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.reviewed_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
+            || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || fixer_active
+        {
+            return Ok(None);
+        }
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_gate_bypassed_at = Some(approved_at);
+        monitor.review_gate_bypassed_target_scope = Some(snapshot.target_scope);
+        monitor.review_gate_bypassed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+        monitor.review_gate_bypassed_artifact_id = Some(snapshot.artifact_id.clone());
+        monitor.review_gate_bypassed_artifact_version = Some(snapshot.artifact_version);
+        monitor.updated_at = approved_at;
+        let updated = monitor.clone();
+        self.publication_events
+            .write()
+            .await
+            .entry(*conversation_id)
+            .or_default()
+            .push(snapshot.audit_event(*conversation_id, approved_at));
+        Ok(Some(updated))
+    }
+
     async fn list_reviewing_workspace_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
@@ -1143,6 +1215,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .retain(|_, action| action.conversation_id != *conversation_id);
         Ok(())
     }
+}
+
+fn workspace_review_approval_publish_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
 }
 
 fn pr_review_action_terminal_status(status: AgentWorkspacePrReviewActionStatus) -> bool {
@@ -1431,6 +1510,7 @@ mod tests {
 
         let mut second = candidate_workspace("linked-second");
         second.linked_ideation_session_id = Some(session_id.clone());
+        second.task_pipeline_session_id = Some(session_id.clone());
         repo.create_or_update(second.clone()).await.unwrap();
 
         let loaded = repo
@@ -1440,11 +1520,23 @@ mod tests {
             .expect("latest linked workspace should load");
         assert_eq!(loaded.conversation_id, second.conversation_id);
 
+        let task_pipeline = repo
+            .get_by_task_pipeline_session_id(&session_id)
+            .await
+            .unwrap()
+            .expect("durably attached Tasks workspace should load");
+        assert_eq!(task_pipeline.conversation_id, second.conversation_id);
+
         let missing = repo
             .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
             .await
             .unwrap();
         assert!(missing.is_none());
+        assert!(repo
+            .get_by_task_pipeline_session_id(&IdeationSessionId::from_string("missing-session"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -219,12 +219,8 @@ impl MockGithubService {
     /// Shorthand: report an authenticated gh session for the given host/account.
     #[allow(dead_code)]
     pub fn will_be_authenticated(&self, host: impl Into<String>, account: impl Into<String>) {
-        self.state().fetch_github_connection_status_result = Some(Ok(GithubConnectionStatus {
-            gh_installed: true,
-            authenticated: true,
-            host: Some(host.into()),
-            account: Some(account.into()),
-        }));
+        self.state().fetch_github_connection_status_result =
+            Some(Ok(GithubConnectionStatus::authenticated(host, account)));
     }
 
     /// Shorthand: configure any method to fail with the given message (Infrastructure error).

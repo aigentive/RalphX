@@ -331,6 +331,18 @@ async fn archive_clears_bindings_and_archives_in_one_transaction() {
             .await
             .expect("binding should persist");
     }
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO manual_role_defaults (scope_type, scope_id, role, value_json)
+             VALUES ('global', '', 'workspace_chat', json_object(
+                 'harness', 'codex',
+                 'serviceTier', 'provider_default',
+                 'personaId', ?1
+             ))",
+            [id.as_str()],
+        )
+        .expect("manual role persona default should persist");
+    });
 
     let archived = service
         .archive_persona(true, &id)
@@ -347,6 +359,14 @@ async fn archive_clears_bindings_and_archives_in_one_transaction() {
             .expect("conversation should exist");
         assert!(loaded.persona_id.is_none());
     }
+    db.with_connection(|conn| {
+        let remaining = conn
+            .query_row("SELECT COUNT(*) FROM manual_role_defaults", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("manual role default count");
+        assert_eq!(remaining, 0);
+    });
 
     let rollback_id = create_active(&service, "archive-rollback").await;
     let rollback_conversation = ChatConversation::new_ideation(IdeationSessionId::new());

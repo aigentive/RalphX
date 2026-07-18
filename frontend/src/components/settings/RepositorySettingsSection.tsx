@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { api, getGitDefaultBranch } from "@/lib/tauri";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 import type { MergeValidationMode } from "@/types/project";
 import { RepositoryEnvironmentSettings } from "./RepositoryEnvironmentSettings";
@@ -16,7 +17,6 @@ import {
 } from "./SettingsView.shared";
 import {
   useGitRemoteUrl,
-  useGhAuthStatus,
   useUpdateGithubPrEnabled,
 } from "@/hooks/useGithubSettings";
 
@@ -161,7 +161,7 @@ export function RepositorySettingsSection() {
   const { data: remoteUrl, isLoading: isLoadingRemote } = useGitRemoteUrl(
     project?.id ?? null
   );
-  const { data: isGhAuthed, isLoading: isLoadingAuth } = useGhAuthStatus();
+  const { data: ghStatus, isLoading: isLoadingAuth } = useGitHubConnectionStatus();
   const updatePrEnabled = useUpdateGithubPrEnabled();
 
   useEffect(() => {
@@ -285,6 +285,11 @@ export function RepositorySettingsSection() {
     pendingWorktreeDir ?? project.worktreeParentDirectory ?? "~/ralphx-worktrees";
 
   const isGithubRemote = isGithubRemoteUrl(remoteUrl);
+  const ghState = ghStatus?.state;
+  const ghNeedsCredentialRepair =
+    ghState === "unauthenticated" || ghState === "credential_rejected";
+  const ghTransientUnavailable =
+    ghState === "provider_unavailable" || ghState === "probe_failed";
   const isToggleDisabled = !isGithubRemote || updatePrEnabled.isPending;
   const isSaving = isUpdating || updatePrEnabled.isPending;
 
@@ -337,8 +342,10 @@ export function RepositorySettingsSection() {
         description={
           !isGithubRemote
             ? "Remote is not GitHub — PR mode unavailable"
-            : !isGhAuthed
+            : ghNeedsCredentialRepair
             ? "Enable to create draft PRs when plans execute (gh auth required for PR operations)"
+            : ghTransientUnavailable
+            ? "GitHub access could not be verified right now; PR operations will recheck before running"
             : "Create draft PRs when plans execute instead of merging directly"
         }
         checked={isGithubRemote && (project.githubPrEnabled ?? false)}
@@ -364,14 +371,29 @@ export function RepositorySettingsSection() {
         <SettingRow
           id="gh-auth-status"
           label="GitHub CLI"
-          description="gh auth status — required for PR operations"
+          description="Connection status required for PR operations"
         >
           {isLoadingAuth ? (
             <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
-          ) : isGhAuthed ? (
+          ) : ghState === "authenticated" ? (
             <div className="settings-status-badge settings-status-badge--ok">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Authenticated</span>
+            </div>
+          ) : ghState === "provider_unavailable" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Temporarily unavailable</span>
+            </div>
+          ) : ghState === "probe_failed" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Could not verify</span>
+            </div>
+          ) : ghState === "cli_unavailable" ? (
+            <div className="settings-status-badge">
+              <XCircle className="w-3.5 h-3.5" />
+              <span>gh unavailable</span>
             </div>
           ) : (
             <div className="settings-status-badge">

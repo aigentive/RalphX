@@ -234,6 +234,7 @@ impl RunnerTestContext {
         gate.replace(AgentCapabilities {
             team: false,
             workflows: true,
+            autopilot: false,
         });
         let runner = AgentWorkflowRunner::new(
             repository.clone(),

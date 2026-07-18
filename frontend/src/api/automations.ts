@@ -229,6 +229,30 @@ export const automationsApi = {
       transformAutomationScheduleResponse,
     ),
 
+  restart: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "restart_automation",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  retryJudge: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "retry_automation_judge",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  retryPlanJudge: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "retry_automation_plan_judge",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
   skipJudge: (
     input: AutomationRunScopedInput,
   ): Promise<AutomationScheduleResponse> =>

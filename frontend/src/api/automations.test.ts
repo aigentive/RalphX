@@ -224,6 +224,36 @@ describe("automationsApi", () => {
     });
   });
 
+  it("uses dedicated fresh-run restart and judge retry commands", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ scheduled: true, reason: null })
+      .mockResolvedValueOnce({ scheduled: true, reason: null })
+      .mockResolvedValueOnce({ scheduled: false, reason: "plan judge already running" });
+
+    await expect(automationsApi.restart("automation-1")).resolves.toEqual({
+      scheduled: true,
+      reason: null,
+    });
+    await expect(automationsApi.retryJudge("automation-1")).resolves.toEqual({
+      scheduled: true,
+      reason: null,
+    });
+    await expect(automationsApi.retryPlanJudge("automation-1")).resolves.toEqual({
+      scheduled: false,
+      reason: "plan judge already running",
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "restart_automation", {
+      input: { id: "automation-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "retry_automation_judge", {
+      input: { id: "automation-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "retry_automation_plan_judge", {
+      input: { id: "automation-1" },
+    });
+  });
+
   it("transforms automation detail runs", async () => {
     vi.mocked(invoke).mockResolvedValue({
       automation: automationResponse({

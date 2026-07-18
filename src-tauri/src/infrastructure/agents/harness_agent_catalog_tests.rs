@@ -137,6 +137,7 @@ const CROSS_HARNESS_WORKFLOW_AGENTS: &[(&str, &str, &str)] = &[
 const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
     ("ralphx-chat-task", "task_chat", "ralphx-chat-task"),
     ("ralphx-chat-project", "project_chat", "ralphx-chat-project"),
+    ("ralphx-task-manager", "task_manager", "ralphx-task-manager"),
 ];
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
@@ -247,6 +248,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
+    "ralphx-task-manager",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -338,6 +340,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-chat-task",
     "ralphx-chat-project",
+    "ralphx-task-manager",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -385,6 +388,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
+    ("ralphx-task-manager", "sonnet"),
     ("ralphx-review-chat", "sonnet"),
     ("ralphx-review-history", "sonnet"),
     ("ralphx-execution-orchestrator", "opus"),
@@ -436,6 +440,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ("ralphx-automation-setup", "readonly_tools", &[], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
+    ("ralphx-task-manager", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
     ("ralphx-review-history", "base_tools", &["Task"], false),
     (
