@@ -144,7 +144,9 @@ impl GhCliGithubService {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
-        let mut child = tokio::process::Command::new(resolve_gh_cli_path())
+        let mut command = tokio::process::Command::new(resolve_gh_cli_path());
+        apply_git_subprocess_env(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(working_dir)
             .stdout(Stdio::piped())

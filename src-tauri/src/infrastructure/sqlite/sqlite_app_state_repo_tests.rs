@@ -10,6 +10,19 @@ async fn test_get_default_app_state() {
     assert!(settings.active_project_id.is_none());
     assert_eq!(settings.execution_halt_mode, ExecutionHaltMode::Running);
     assert!(settings.last_seen_release_notes_version.is_none());
+    assert!(settings.remove_inherited_github_cli_tokens);
+}
+
+#[tokio::test]
+async fn github_cli_token_environment_preference_persists() {
+    let db = SqliteTestDb::new("sqlite-app-state-github-token-environment");
+    let repo = SqliteAppStateRepository::from_shared(db.shared_conn());
+
+    repo.set_remove_inherited_github_cli_tokens(false)
+        .await
+        .unwrap();
+
+    assert!(!repo.get().await.unwrap().remove_inherited_github_cli_tokens);
 }
 
 #[tokio::test]

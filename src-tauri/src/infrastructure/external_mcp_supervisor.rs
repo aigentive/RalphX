@@ -452,6 +452,8 @@ impl ExternalMcpSupervisor {
         if let Some(token) = &self.config.auth_token {
             cmd.env("EXTERNAL_MCP_AUTH_TOKEN", token);
         }
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+            .apply_to_tokio_command(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

@@ -111,6 +111,8 @@ impl GitRemoteAuthConfig {
 
 pub(crate) fn apply_git_subprocess_env(command: &mut Command) {
     command.envs(git_subprocess_env());
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_tokio_command(command);
 }
 
 pub(crate) fn git_subprocess_env() -> Vec<(String, String)> {
@@ -160,9 +162,10 @@ enum GhTokenProbe {
 }
 
 async fn probe_gh_auth_token() -> GhTokenProbe {
-    let mut child = match Command::new(resolve_gh_cli_path())
+    let mut command = Command::new(resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let mut child = match command
         .args(gh_auth_token_args())
-        .envs(git_subprocess_env())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -214,9 +217,10 @@ pub(crate) async fn probe_github_connection_status() -> GithubConnectionStatus {
 }
 
 async fn validate_github_credential() -> GithubConnectionStatus {
-    let child = match Command::new(resolve_gh_cli_path())
+    let mut command = Command::new(resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = match command
         .args(["api", "user", "--hostname", "github.com", "--jq", ".login"])
-        .envs(git_subprocess_env())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
