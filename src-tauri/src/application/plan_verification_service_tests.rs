@@ -58,6 +58,11 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
     assert!(metadata.contains("\"ralphx_action_kind\":\"verify_plan\""));
     assert!(metadata.contains(session.id.as_str()));
     assert!(metadata.contains("plan-current"));
+    assert_eq!(options[0].conversation_id_override, None);
+    assert_eq!(options[0].harness_override, None);
+    assert_eq!(options[0].model_override, None);
+    assert_eq!(options[0].logical_effort_override, None);
+    assert_eq!(options[0].service_tier_override, None);
 }
 
 #[tokio::test]
@@ -138,4 +143,31 @@ async fn concurrent_verification_requests_admit_exactly_one_turn() {
         1,
         "admission must be serialized per plan"
     );
+}
+
+#[tokio::test]
+async fn failed_verification_launch_releases_admission_without_writing_proof() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+    chat.set_available(false).await;
+
+    request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .expect_err("failed launch must remain an error");
+
+    assert!(state.plan_verification_admissions.is_empty());
+    let stored = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("load session")
+        .expect("session should exist");
+    assert_eq!(stored.verified_plan_artifact_id, None);
+    assert_eq!(stored.verified_plan_agent_run_id, None);
 }

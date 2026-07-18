@@ -269,6 +269,8 @@ struct BuildHarnessResumeCommandRequest<'a> {
     total_available: usize,
     effort_override: Option<&'a str>,
     model_override: Option<&'a str>,
+    continuation_runtime: Option<&'a super::continuation_runtime::ContinuationRuntime>,
+    service_tier_override: Option<&'a str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&'a str>,
 }
@@ -476,42 +478,54 @@ impl ResolvedChatHarnessCli {
         request: BuildHarnessResumeCommandRequest<'_>,
     ) -> Result<ProviderSpawnableCommand, String> {
         match self {
-            Self::Claude { cli_path } => Ok(ProviderSpawnableCommand {
-                spawnable: build_resume_command(
-                    &cli_path,
-                    request.plugin_dir,
-                    request.context_type,
-                    request.context_id,
-                    request.coordination_mode,
-                    request.message,
-                    request.agent_name_override,
-                    request.agent_profile,
+            Self::Claude { cli_path } => {
+                let continuation_effort = request
+                    .continuation_runtime
+                    .and_then(|runtime| runtime.logical_effort)
+                    .map(|effort| effort.to_legacy_claude_effort().to_string());
+                let effort_override = request.effort_override.or(continuation_effort.as_deref());
+                let model_override = request.model_override.or_else(|| {
                     request
-                        .persona
-                        .as_ref()
-                        .map(|persona| persona.block.as_str()),
-                    request.working_directory,
-                    request.session_id,
-                    request.project_id,
-                    request.filesystem_read_roots,
-                    request.parent_conversation_id.clone(),
-                    request.team_mode,
-                    request.chat_attachment_repo,
-                    request.artifact_repo,
-                    request.agent_lane_settings_repo,
-                    request.ideation_effort_settings_repo,
-                    request.ideation_model_settings_repo,
-                    request.ideation_session_repo,
-                    request.delegated_session_repo,
-                    request.task_repo,
-                    request.session_messages,
-                    request.total_available,
-                    request.effort_override,
-                    request.model_override,
-                    request.attachment_context_override,
-                )
-                .await?,
-            }),
+                        .continuation_runtime
+                        .and_then(super::continuation_runtime::ContinuationRuntime::effective_model)
+                });
+                Ok(ProviderSpawnableCommand {
+                    spawnable: build_resume_command(
+                        &cli_path,
+                        request.plugin_dir,
+                        request.context_type,
+                        request.context_id,
+                        request.coordination_mode,
+                        request.message,
+                        request.agent_name_override,
+                        request.agent_profile,
+                        request
+                            .persona
+                            .as_ref()
+                            .map(|persona| persona.block.as_str()),
+                        request.working_directory,
+                        request.session_id,
+                        request.project_id,
+                        request.filesystem_read_roots,
+                        request.parent_conversation_id.clone(),
+                        request.team_mode,
+                        request.chat_attachment_repo,
+                        request.artifact_repo,
+                        request.agent_lane_settings_repo,
+                        request.ideation_effort_settings_repo,
+                        request.ideation_model_settings_repo,
+                        request.ideation_session_repo,
+                        request.delegated_session_repo,
+                        request.task_repo,
+                        request.session_messages,
+                        request.total_available,
+                        effort_override,
+                        model_override,
+                        request.attachment_context_override,
+                    )
+                    .await?,
+                })
+            }
             Self::Codex {
                 cli_path,
                 capabilities,
@@ -524,7 +538,7 @@ impl ResolvedChatHarnessCli {
                     Arc::clone(&request.task_repo),
                 )
                 .await;
-                let resolved_spawn_settings = resolve_noninteractive_spawn_settings(
+                let mut resolved_spawn_settings = resolve_noninteractive_spawn_settings(
                     request.context_type,
                     entity_status.as_deref(),
                     request.agent_name_override,
@@ -534,6 +548,35 @@ impl ResolvedChatHarnessCli {
                     request.agent_lane_settings_repo.as_ref(),
                 )
                 .await;
+                if let Some(runtime) = request.continuation_runtime {
+                    runtime.apply_defaults(
+                        &mut resolved_spawn_settings,
+                        super::continuation_runtime::RuntimeOverridePresence {
+                            model: request.model_override.is_some(),
+                            logical_effort: request.effort_override.is_some(),
+                            service_tier: request.service_tier_override.is_some(),
+                            ..Default::default()
+                        },
+                    );
+                }
+                if let Some(effort) = request
+                    .effort_override
+                    .and_then(|value| value.parse::<crate::domain::agents::LogicalEffort>().ok())
+                {
+                    resolved_spawn_settings.configured_logical_effort = Some(effort);
+                    resolved_spawn_settings.logical_effort = Some(effort);
+                    resolved_spawn_settings.claude_effort =
+                        Some(effort.to_legacy_claude_effort().to_string());
+                }
+                if let Some(service_tier) = request.service_tier_override {
+                    let service_tier = super::normalize_service_tier_override(service_tier);
+                    resolved_spawn_settings.configured_service_tier = service_tier.clone();
+                    resolved_spawn_settings.service_tier = service_tier;
+                }
+                crate::application::agent_lane_resolution::validate_model_harness_compatibility(
+                    resolved_spawn_settings.effective_harness,
+                    &resolved_spawn_settings.model,
+                )?;
                 let current_conversation_id = (request.context_type == ChatContextType::Project)
                     .then_some(request.context_id);
 
@@ -3977,6 +4020,78 @@ pub async fn build_resume_command_for_harness(
     is_external_mcp: bool,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
+    build_resume_command_for_harness_with_continuation(
+        harness,
+        cli_path,
+        plugin_dir,
+        context_type,
+        context_id,
+        coordination_mode,
+        message,
+        persona,
+        agent_name_override,
+        agent_profile,
+        working_directory,
+        session_id,
+        project_id,
+        filesystem_read_roots,
+        parent_conversation_id,
+        team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        agent_lane_settings_repo,
+        ideation_effort_settings_repo,
+        ideation_model_settings_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        effort_override,
+        model_override,
+        None,
+        None,
+        is_external_mcp,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn build_resume_command_for_harness_with_continuation(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    context_type: ChatContextType,
+    context_id: &str,
+    coordination_mode: CoordinationMode,
+    message: &str,
+    persona: Option<ResolvedPersona>,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    working_directory: &Path,
+    session_id: &str,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    parent_conversation_id: Option<String>,
+    team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    continuation_runtime: Option<&super::continuation_runtime::ContinuationRuntime>,
+    service_tier_override: Option<&str>,
+    is_external_mcp: bool,
+    attachment_context_override: Option<&str>,
+) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_noninteractive_resume_command_from_resolved_cli(
         resolved_cli,
@@ -4007,6 +4122,8 @@ pub async fn build_resume_command_for_harness(
             total_available,
             effort_override,
             model_override,
+            continuation_runtime,
+            service_tier_override,
             is_external_mcp,
             attachment_context_override,
         },

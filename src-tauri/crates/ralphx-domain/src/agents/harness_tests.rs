@@ -160,6 +160,23 @@ fn test_generic_harness_lane_defaults_for_codex_primary() {
 }
 
 #[test]
+fn workspace_plan_defaults_are_provider_shaped() {
+    let codex = super::generic_harness_role_defaults(
+        AgentHarnessKind::Codex,
+        super::super::routing_role::RoutingRole::WorkspacePlan,
+    );
+    let claude = super::generic_harness_role_defaults(
+        AgentHarnessKind::Claude,
+        super::super::routing_role::RoutingRole::WorkspacePlan,
+    );
+
+    assert_eq!(codex.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(codex.effort, Some(LogicalEffort::XHigh));
+    assert_eq!(claude.model.as_deref(), Some("sonnet"));
+    assert_eq!(claude.effort, Some(LogicalEffort::Medium));
+}
+
+#[test]
 fn test_standard_agent_lane_defaults_use_expected_harnesses() {
     let defaults = standard_agent_lane_defaults();
 
