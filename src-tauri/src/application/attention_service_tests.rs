@@ -60,6 +60,79 @@ async fn notification_context_resolver_resolves_task_permission_before_fallback_
 }
 
 #[tokio::test]
+async fn notification_context_resolver_permission_target_validates_trusted_workspace() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-trusted-permission").await;
+    let task = Task::new(project.id.clone(), "Approve workspace command".to_string());
+    state.task_repo.create(task.clone()).await.unwrap();
+    let conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "ralphx/trusted-permission".to_string(),
+            "/tmp/ralphx-trusted-permission".to_string(),
+        ))
+        .await
+        .unwrap();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+    let conversation_id = conversation.id.to_string();
+
+    let trusted = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            Some(task.id.as_str()),
+            Some("task"),
+            Some(task.id.as_str()),
+            Some(&conversation_id),
+        )
+        .await
+        .unwrap();
+    let rejected = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            Some(task.id.as_str()),
+            Some("task"),
+            Some(task.id.as_str()),
+            Some("missing-workspace-conversation"),
+        )
+        .await
+        .unwrap();
+    let fallback = resolver
+        .resolve_permission_target_with_trusted_conversation(
+            Some(task.id.as_str()),
+            Some("task"),
+            Some(task.id.as_str()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(trusted.project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(
+        trusted.target.kind,
+        NotificationTargetKind::AgentConversation
+    );
+    assert_eq!(
+        trusted.target.conversation_id.as_deref(),
+        Some(conversation_id.as_str())
+    );
+    assert_eq!(rejected.project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(rejected.target, NotificationTarget::none());
+    assert_eq!(fallback.target.kind, NotificationTargetKind::Task);
+    assert_eq!(fallback.target.task_id.as_deref(), Some(task.id.as_str()));
+}
+
+#[tokio::test]
 async fn notification_context_resolver_returns_none_for_missing_and_unknown_contexts() {
     let state = AppState::new_test();
     let resolver = NotificationContextResolver::from_app_state(&state);
