@@ -122,7 +122,7 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         _enabled: bool,
     ) -> AppResult<AgentWorkspacePrReviewMonitor> {
         Ok(AgentWorkspacePrReviewMonitor::new(
-            conversation_id.clone(),
+            *conversation_id,
             ProjectId::from_string("project-fallback".to_string()),
             1,
             None,
@@ -134,7 +134,7 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         conversation_id: &ChatConversationId,
     ) -> AppResult<AgentWorkspacePrReviewMonitor> {
         Ok(AgentWorkspacePrReviewMonitor::new(
-            conversation_id.clone(),
+            *conversation_id,
             ProjectId::from_string("project-fallback".to_string()),
             1,
             None,

@@ -102,11 +102,25 @@ pub fn apply_to_std(cmd: &mut std::process::Command) {
             cmd.env(key, value);
         }
     }
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy().apply_to_std_command(cmd);
 }
 
 /// Decide whether a captured env key should land on the spawned child.
 fn should_forward(key: &str) -> bool {
+    should_forward_with_policy(
+        key,
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy(),
+    )
+}
+
+fn should_forward_with_policy(
+    key: &str,
+    policy: crate::infrastructure::subprocess_env_policy::ProviderCredentialEnvPolicy,
+) -> bool {
     if key.is_empty() {
+        return false;
+    }
+    if policy.blocks_env_key(key) {
         return false;
     }
     if MANAGED_KEYS.contains(&key) {
@@ -208,6 +222,14 @@ pub(crate) fn captured_path_from_map_for_test(env: &HashMap<String, String>) -> 
 #[cfg(test)]
 pub(crate) fn should_forward_for_test(key: &str) -> bool {
     should_forward(key)
+}
+
+#[cfg(test)]
+pub(crate) fn should_forward_with_github_token_removal_for_test(key: &str, enabled: bool) -> bool {
+    should_forward_with_policy(
+        key,
+        crate::infrastructure::subprocess_env_policy::ProviderCredentialEnvPolicy::github_cli_with_token_removal(enabled),
+    )
 }
 
 #[cfg(test)]

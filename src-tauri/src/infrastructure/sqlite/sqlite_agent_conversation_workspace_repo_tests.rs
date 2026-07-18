@@ -5,10 +5,10 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -855,6 +855,132 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
             .auto_merge_guard,
         Some(restoring_guard)
     );
+}
+
+#[tokio::test]
+async fn workspace_review_approval_cas_and_audit_event_commit_exactly_once() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-bypass");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-current".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-current".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(3);
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    let stale_snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-stale".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 3,
+    };
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &stale_snapshot, chrono::Utc::now(),)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-current".to_string(),
+        artifact_id,
+        artifact_version: 3,
+    };
+    let approved = repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .unwrap()
+        .expect("exact snapshot should apply");
+    assert_eq!(
+        approved.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+    assert_eq!(
+        approved.review_outcome,
+        AgentWorkspaceReviewOutcome::Blocking
+    );
+
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+    let events = repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].step, "workspace_review_approved_anyway");
+    assert!(events[0].summary.contains("diff-current"));
+    assert_eq!(
+        events[0].classification.as_deref(),
+        Some("workspace_review_approved_anyway")
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_approval_rejects_active_publish_status_without_audit_event() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("checking".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-bypass-publishing");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(8);
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-publishing".to_string(),
+        artifact_id,
+        artifact_version: 8,
+    };
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+    let stored = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should remain");
+    assert_eq!(
+        stored.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

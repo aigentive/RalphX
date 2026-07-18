@@ -660,6 +660,7 @@ const ChatConversationResponseSchema = z.object({
   effective_effort: z.string().nullable().optional(),
   service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
+  bound_agent_name: z.string().nullable().optional(),
   persona_id: z.string().nullable().optional(),
   builder_draft_id: z.string().nullable().optional(),
   last_run_persona_run_id: z.string().nullable().optional(),
@@ -746,6 +747,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveEffort: raw.effective_effort ?? null,
     serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
+    boundAgentName: raw.bound_agent_name ?? null,
     personaId: raw.persona_id ?? null,
     builderDraftId: raw.builder_draft_id ?? null,
     lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
@@ -1727,6 +1729,7 @@ export const chatApi = {
   getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
+  approveAgentWorkspaceReviewAnyway,
   listAgentConversationIssues,
   updateAgentConversationIssueStatus,
   convertAgentConversationIssueFollowup,
@@ -1911,7 +1914,7 @@ export interface AgentConversationWorkspace {
   updatedAt: string;
 }
 
-export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+export type WorkspaceOpenTargetKind = "editor" | "terminal" | "fileManager";
 
 export interface WorkspaceOpenTarget {
   id: string;
@@ -2178,6 +2181,11 @@ export interface AgentWorkspaceReviewMonitor {
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
+  reviewGateBypassedAt: string | null;
+  reviewGateBypassedTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewGateBypassedDiffFingerprint: string | null;
+  reviewGateBypassedArtifactId: string | null;
+  reviewGateBypassedArtifactVersion: number | null;
   reviewedHeadSha: string | null;
   reviewedDiffFingerprint: string | null;
   selectedSourceBaseRef: string | null;
@@ -2261,6 +2269,18 @@ export interface StartAgentWorkspaceReviewFixerResult {
   shouldShowTab: boolean;
   started: boolean;
   skippedReason: string | null;
+}
+
+export interface ApproveAgentWorkspaceReviewAnywayInput {
+  targetScope: AgentWorkspaceReviewTargetScope;
+  diffFingerprint: string;
+  artifactId: string;
+  artifactVersion: number;
+}
+
+export interface ApproveAgentWorkspaceReviewAnywayResult {
+  success: boolean;
+  monitor: AgentWorkspaceReviewMonitor;
 }
 
 export interface SubmitAgentWorkspacePrReviewActionResult {
@@ -2522,6 +2542,23 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
+  review_gate_bypassed_at: z.string().nullable().optional().default(null),
+  review_gate_bypassed_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  review_gate_bypassed_diff_fingerprint: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
+  review_gate_bypassed_artifact_id: z.string().nullable().optional().default(null),
+  review_gate_bypassed_artifact_version: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null),
   reviewed_head_sha: z.string().nullable(),
   reviewed_diff_fingerprint: z.string().nullable(),
   selected_source_base_ref: z.string().nullable(),
@@ -2613,6 +2650,10 @@ const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   started: z.boolean(),
   skipped_reason: z.string().nullable(),
 });
+const ApproveAgentWorkspaceReviewAnywayResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspaceReviewMonitorResponseSchema,
+});
 const SubmitAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema,
@@ -2632,7 +2673,7 @@ const SetAgentWorkspacePrReviewAutoApproveResponseSchema = z.object({
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
   label: z.string(),
-  kind: z.enum(["editor", "fileManager"]),
+  kind: z.enum(["editor", "terminal", "fileManager"]),
 });
 
 export const StartAgentConversationResponseSchema = z.object({
@@ -3126,6 +3167,12 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
+    reviewGateBypassedAt: raw.review_gate_bypassed_at,
+    reviewGateBypassedTargetScope: raw.review_gate_bypassed_target_scope,
+    reviewGateBypassedDiffFingerprint:
+      raw.review_gate_bypassed_diff_fingerprint,
+    reviewGateBypassedArtifactId: raw.review_gate_bypassed_artifact_id,
+    reviewGateBypassedArtifactVersion: raw.review_gate_bypassed_artifact_version,
     reviewedHeadSha: raw.reviewed_head_sha,
     reviewedDiffFingerprint: raw.reviewed_diff_fingerprint,
     selectedSourceBaseRef: raw.selected_source_base_ref,
@@ -3476,6 +3523,30 @@ export async function startAgentWorkspaceReviewFixer(
     },
   );
   return transformStartAgentWorkspaceReviewFixerResponse(raw);
+}
+
+export async function approveAgentWorkspaceReviewAnyway(
+  conversationId: string,
+  input: ApproveAgentWorkspaceReviewAnywayInput,
+): Promise<ApproveAgentWorkspaceReviewAnywayResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-approve-anyway`,
+    ApproveAgentWorkspaceReviewAnywayResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target_scope: input.targetScope,
+        diff_fingerprint: input.diffFingerprint,
+        artifact_id: input.artifactId,
+        artifact_version: input.artifactVersion,
+      }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+  };
 }
 
 const AgentConversationIssueOccurrenceResponseSchema = z.object({

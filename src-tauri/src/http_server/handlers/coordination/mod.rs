@@ -10,8 +10,8 @@ use crate::application::agent_lane_resolution::{
     resolve_manual_role_spawn_settings, routing_role_for_delegated_launch,
 };
 use crate::application::chat_service::{
-    events, resolve_working_directory, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    CachedStreamingTask, ChatService, SendMessageOptions,
+    chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
+    AgentTaskStartedPayload, CachedStreamingTask, ChatService, SendMessageOptions,
 };
 use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
@@ -161,6 +161,7 @@ async fn resolve_delegated_session_id(
         req.agent_name.clone(),
         harness,
     );
+    session.status = "pending".to_string();
     session.parent_turn_id = req.parent_turn_id.clone();
     session.parent_message_id = req.parent_message_id.clone();
     session.title = req.title.clone();
@@ -512,17 +513,127 @@ async fn resolve_nested_delegation_parent(
         })?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Caller delegated session not found"))?;
     let project = load_project_by_id(state, &session.project_id).await?;
-    let working_directory = validate_project_working_directory(&project)?;
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Delegation, caller_context_id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load caller delegated conversation: {error}"),
+            )
+        })?;
+    let stored_parent_conversation_id = delegated_conversation
+        .as_ref()
+        .and_then(|conversation| conversation.parent_conversation_id.clone());
+    if let (Some(supplied), Some(stored)) = (
+        parent_conversation_id.as_deref(),
+        stored_parent_conversation_id.as_deref(),
+    ) {
+        if supplied != stored {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "delegate_start parent_conversation_id does not match delegated session lineage",
+            ));
+        }
+    }
+    let parent_conversation_id = parent_conversation_id
+        .or(stored_parent_conversation_id)
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Nested delegate_start requires original parent conversation lineage",
+            )
+        })?;
+    let parent_conversation = load_parent_conversation(state, &parent_conversation_id).await?;
+    if parent_conversation.context_type == ChatContextType::Delegation {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Nested delegate_start parent_conversation_id must reference the original non-delegated parent conversation",
+        ));
+    }
+    let lineage_project_id = chat_service_context::resolve_project_id(
+        parent_conversation.context_type,
+        &parent_conversation.context_id,
+        Arc::clone(&state.app_state.task_repo),
+        Arc::clone(&state.app_state.ideation_session_repo),
+        Arc::clone(&state.app_state.delegated_session_repo),
+    )
+    .await
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Nested delegate parent conversation project could not be resolved",
+        )
+    })?;
+    if lineage_project_id != session.project_id.as_str() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Nested delegate parent conversation belongs to a different project",
+        ));
+    }
+    let working_directory = if parent_conversation.context_type == ChatContextType::Project {
+        resolve_project_parent_working_directory(state, &project, Some(&parent_conversation)).await?
+    } else {
+        let default_working_directory = validate_project_working_directory(&project)?;
+        resolve_working_directory(
+            parent_conversation.context_type,
+            &parent_conversation.context_id,
+            Arc::clone(&state.app_state.project_repo),
+            Arc::clone(&state.app_state.task_repo),
+            Arc::clone(&state.app_state.ideation_session_repo),
+            Arc::clone(&state.app_state.delegated_session_repo),
+            &default_working_directory,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::CONFLICT, error))?
+    };
 
     Ok(ResolvedDelegateParent {
         context_type: ChatContextType::Delegation,
         context_id: session.id.as_str().to_string(),
         project_id: project.id.as_str().to_string(),
         working_directory,
-        parent_conversation_id,
+        parent_conversation_id: Some(parent_conversation_id),
         inherited_harness: Some(session.harness),
         ideation_verification: false,
     })
+}
+
+async fn mark_delegated_launch_failed(
+    state: &HttpServerState,
+    delegated_session_id: &str,
+    error_message: &str,
+) -> Result<(), JsonError> {
+    state
+        .app_state
+        .delegated_session_repo
+        .update_status(
+            &DelegatedSessionId::from_string(delegated_session_id.to_string()),
+            "failed",
+            Some(error_message.to_string()),
+            Some(Utc::now()),
+        )
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "{error_message}; additionally failed to terminalize delegated session: {error}"
+                ),
+            )
+        })
+}
+
+fn json_error_detail(error: &JsonError) -> String {
+    error
+        .1
+        .0
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Delegated launch setup failed")
+        .to_string()
 }
 
 async fn resolve_delegate_parent(
@@ -1157,13 +1268,25 @@ pub(crate) async fn start_delegate_impl(
             )
         })?;
 
-    let delegated_conversation = ensure_delegated_conversation(
+    let delegated_conversation = match ensure_delegated_conversation(
         state,
         &delegated_session_id,
         parent.parent_conversation_id.as_deref(),
         req.title.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            mark_delegated_launch_failed(
+                state,
+                &delegated_session_id,
+                &json_error_detail(&error),
+            )
+            .await?;
+            return Err(error);
+        }
+    };
 
     let chat_service = state
         .app_state
@@ -1188,6 +1311,7 @@ pub(crate) async fn start_delegate_impl(
                 harness_override: Some(harness),
                 agent_name_override: Some(definition.name.clone()),
                 model_override: delegated_model.clone(),
+                working_directory_override: Some(parent.working_directory.clone()),
                 logical_effort_override: logical_effort.clone(),
                 approval_policy_override: approval_policy.clone(),
                 sandbox_mode_override: sandbox_mode.clone(),
@@ -1195,13 +1319,15 @@ pub(crate) async fn start_delegate_impl(
                 ..Default::default()
             },
         )
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to start delegated chat run: {error}"),
-            )
-        })?;
+        .await;
+    let send_result = match send_result {
+        Ok(result) => result,
+        Err(error) => {
+            let error_message = format!("Failed to start delegated chat run: {error}");
+            mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+        }
+    };
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let snapshot = state

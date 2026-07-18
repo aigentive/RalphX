@@ -1,12 +1,20 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Code2, FolderOpen, Loader2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Code2,
+  FolderOpen,
+  Loader2,
+  Terminal as TerminalIcon,
+} from "lucide-react";
 
-import type { WorkspaceOpenTarget } from "@/api/chat";
+import type { WorkspaceOpenTarget, WorkspaceOpenTargetKind } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -25,12 +33,30 @@ interface AgentsWorkspaceOpenControlProps {
   targets: readonly WorkspaceOpenTarget[];
   openingTargetId?: string | null;
   onOpenTarget: (targetId: string) => void;
+  builtInTerminal?: {
+    open: boolean;
+    unavailableReason: string | null;
+    onToggle: (() => void) | undefined;
+    onPreload: (() => void) | undefined;
+  };
+}
+
+function iconForTargetKind(kind: WorkspaceOpenTargetKind) {
+  switch (kind) {
+    case "terminal":
+      return TerminalIcon;
+    case "fileManager":
+      return FolderOpen;
+    case "editor":
+      return Code2;
+  }
 }
 
 export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenControl({
   targets,
   openingTargetId = null,
   onOpenTarget,
+  builtInTerminal,
 }: AgentsWorkspaceOpenControlProps) {
   const [preferredTargetId, setPreferredTargetId] = useState(
     readPreferredWorkspaceOpenTargetId,
@@ -72,9 +98,13 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
     writePreferredWorkspaceOpenTargetId(target.id);
     onOpenTarget(target.id);
   };
-  const PreferredIcon =
-    displayedTarget.kind === "fileManager" ? FolderOpen : Code2;
+  const PreferredIcon = iconForTargetKind(displayedTarget.kind);
   const isOpening = openingTargetId !== null;
+  const builtInTerminalDisabled =
+    !builtInTerminal?.onToggle || Boolean(builtInTerminal.unavailableReason);
+  const builtInTerminalPreload = builtInTerminalDisabled
+    ? undefined
+    : builtInTerminal?.onPreload;
 
   return (
     <div className="inline-flex shrink-0 items-center">
@@ -130,8 +160,36 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
           </TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end" className="min-w-[180px]">
+          {builtInTerminal ? (
+            <>
+              <DropdownMenuItem
+                disabled={builtInTerminalDisabled}
+                onClick={
+                  builtInTerminalDisabled ? undefined : builtInTerminal.onToggle
+                }
+                onPointerEnter={builtInTerminalPreload}
+                onFocus={builtInTerminalPreload}
+                aria-label={
+                  builtInTerminal.unavailableReason
+                    ? `Built-in Terminal unavailable: ${builtInTerminal.unavailableReason}`
+                    : "Built-in Terminal"
+                }
+                title={builtInTerminal.unavailableReason ?? undefined}
+              >
+                <TerminalIcon className="h-4 w-4" />
+                <span>Built-in Terminal</span>
+                {builtInTerminal.open ? (
+                  <Check
+                    className="ml-auto h-3.5 w-3.5"
+                    data-testid="agents-built-in-terminal-open-indicator"
+                  />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {targets.map((target) => {
-            const Icon = target.kind === "fileManager" ? FolderOpen : Code2;
+            const Icon = iconForTargetKind(target.kind);
             const selected = target.id === preferredTarget.id;
             return (
               <DropdownMenuItem

@@ -1157,7 +1157,13 @@ fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
     let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
 
     let mut cmd = tokio::process::Command::new("/usr/bin/env");
+    cmd.env("GITHUB_TOKEN", "stale-secret");
     configure_spawn(&mut cmd, None);
+
+    assert!(cmd
+        .as_std()
+        .get_envs()
+        .all(|(key, value)| { key != OsStr::new("GITHUB_TOKEN") || value.is_none() }));
 
     let path_value = cmd
         .as_std()

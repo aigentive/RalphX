@@ -493,9 +493,9 @@ fn build_queued_agent_run(
     run
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct QueuedAgentIdentity {
-    agent_name: Option<&'static str>,
+    agent_name: Option<String>,
     agent_profile: Option<&'static str>,
 }
 
@@ -517,9 +517,24 @@ fn queued_agent_identity_for_mode(
     };
 
     QueuedAgentIdentity {
-        agent_name: Some(super::agent_name_for_conversation_mode(mode)),
+        agent_name: Some(super::agent_name_for_conversation_mode(mode).to_string()),
         agent_profile: super::agent_profile_for_conversation_mode(mode),
     }
+}
+
+fn queued_agent_identity_for_conversation(
+    conversation: Option<&ChatConversation>,
+    mode: Option<AgentConversationWorkspaceMode>,
+) -> QueuedAgentIdentity {
+    if let Some(bound_agent_name) =
+        conversation.and_then(|conversation| conversation.bound_agent_name.as_deref())
+    {
+        return QueuedAgentIdentity {
+            agent_name: Some(bound_agent_name.to_string()),
+            agent_profile: None,
+        };
+    }
+    queued_agent_identity_for_mode(mode)
 }
 
 async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
@@ -600,7 +615,7 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
     QueuedProjectAgentContext {
-        identity: queued_agent_identity_for_mode(mode.clone()),
+        identity: queued_agent_identity_for_conversation(conversation.as_ref(), mode.clone()),
         workspace,
         effective_mode: mode,
         conversation,
@@ -651,7 +666,7 @@ async fn resolve_queue_resume_persona<R: Runtime>(
         persona_resolve_flags_for_conversation(
             feature_enabled,
             false,
-            agent_name_override_set,
+            agent_name_override_set || conversation.bound_agent_name.is_some(),
             context_type,
             &conversation,
             workspace_mode,
@@ -1188,7 +1203,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_run_id = %queued_run_id,
                 run_chain_id = run_chain_id.unwrap_or("none"),
                 parent_run_id = parent_run_id.unwrap_or("none"),
-                agent_name = queued_agent_context.identity.agent_name.unwrap_or("auto"),
+                agent_name = queued_agent_context.identity.agent_name.as_deref().unwrap_or("auto"),
                 agent_profile = queued_agent_context.identity.agent_profile.unwrap_or("none"),
                 "[QUEUE] Continuation run"
             );
@@ -1627,7 +1642,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
                 &runtime_content,
                 resolved_persona,
-                queued_agent_context.identity.agent_name,
+                queued_agent_context.identity.agent_name.as_deref(),
                 queued_agent_context.identity.agent_profile,
                 working_directory,
                 session_id,
@@ -2427,7 +2442,7 @@ mod tests {
 
         assert_eq!(
             identity.agent_name,
-            Some(agent_names::AGENT_ORCHESTRATOR_IDEATION)
+            Some(agent_names::AGENT_ORCHESTRATOR_IDEATION.to_string())
         );
         assert_eq!(identity.agent_profile, Some("plan"));
     }
