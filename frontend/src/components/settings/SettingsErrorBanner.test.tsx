@@ -2,19 +2,13 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { TooltipProvider } from "@/components/ui/tooltip";
-
 import { ErrorBanner } from "./SettingsView.shared";
 
 describe("Settings ErrorBanner", () => {
   it("announces errors and gives the dismiss icon an accessible tooltip", async () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
-    render(
-      <TooltipProvider delayDuration={0}>
-        <ErrorBanner error="Could not save" onDismiss={onDismiss} />
-      </TooltipProvider>,
-    );
+    render(<ErrorBanner error="Could not save" onDismiss={onDismiss} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent("Could not save");
     const dismiss = screen.getByRole("button", { name: "Dismiss error" });

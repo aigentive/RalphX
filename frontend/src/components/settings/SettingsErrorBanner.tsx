@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
@@ -24,24 +25,26 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
       />
       <p className="flex-1 text-sm text-[var(--status-error)]">{error}</p>
       {onDismiss && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Dismiss error"
-              onClick={onDismiss}
-              className="h-6 w-6 hover:bg-[var(--status-error-border)]"
-            >
-              <X
-                aria-hidden="true"
-                className="h-4 w-4 text-[var(--status-error)]"
-              />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Dismiss error</TooltipContent>
-        </Tooltip>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Dismiss error"
+                onClick={onDismiss}
+                className="h-6 w-6 hover:bg-[var(--status-error-border)]"
+              >
+                <X
+                  aria-hidden="true"
+                  className="h-4 w-4 text-[var(--status-error)]"
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Dismiss error</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       )}
     </div>
   );
