@@ -60,9 +60,7 @@ use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS,
-};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -82,11 +80,11 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -3898,18 +3896,6 @@ impl<R: Runtime> AppChatService<R> {
                 persona.is_some(),
             );
         let persona_for_metadata = persona.clone();
-        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
-            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
-        });
-        chat_service_context::await_required_external_mcp(
-            self.app_handle.as_ref(),
-            effective_harness,
-            &plugin_dir,
-            effective_agent_name,
-            agent_profile,
-        )
-        .await
-        .map_err(ChatServiceError::SpawnFailed)?;
         let build_plan_started = Instant::now();
         let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
             effective_harness,
@@ -3952,6 +3938,24 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
+            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
+        });
+        #[cfg(test)]
+        let should_await_external_mcp = self.app_handle.is_some();
+        #[cfg(not(test))]
+        let should_await_external_mcp = true;
+        if should_await_external_mcp {
+            chat_service_context::await_required_external_mcp(
+                self.app_handle.as_ref(),
+                effective_harness,
+                &plugin_dir,
+                effective_agent_name,
+                agent_profile,
+            )
+            .await
+            .map_err(ChatServiceError::SpawnFailed)?;
+        }
         let mcp_launch_policy = self
             .resolve_mcp_launch_policy(effective_harness, project_id, working_directory)
             .await?;
@@ -7540,12 +7544,12 @@ mod stale_registry_gate_tests {
 
 #[cfg(test)]
 mod coordination_mode_send_tests {
+    use super::SendMessageOptions;
     use crate::application::AppState;
     use crate::domain::entities::{
         ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
         TeamIntent,
     };
-    use super::SendMessageOptions;
 
     #[tokio::test]
     async fn explicit_team_intent_persists_coordination_mode_for_existing_conversation() {

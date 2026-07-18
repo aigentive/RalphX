@@ -358,8 +358,10 @@ pub async fn attempt_session_recovery<R: Runtime>(
         }
     };
     let mut provider_spawnable = provider_spawnable;
-    if let Some(handle) = app_handle.as_ref() {
-        let app_state = handle.state::<AppState>();
+    if let Some(app_state) = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+    {
         let policy = app_state
             .mcp_policy_service()
             .resolve_launch_policy(

@@ -78,8 +78,19 @@ pub async fn await_required_external_mcp<R: Runtime>(
     let handle = app_handle.ok_or_else(|| {
         "External MCP transport requires the managed application runtime".to_string()
     })?;
-    handle
-        .state::<crate::infrastructure::ExternalMcpHandle>()
+    let Some(external_mcp) = handle.try_state::<crate::infrastructure::ExternalMcpHandle>() else {
+        #[cfg(test)]
+        {
+            return Ok(());
+        }
+        #[cfg(not(test))]
+        {
+            return Err(
+                "External MCP transport is not managed by the application runtime".to_string(),
+            );
+        }
+    };
+    external_mcp
         .await_ready(std::time::Duration::from_secs(30))
         .await
 }

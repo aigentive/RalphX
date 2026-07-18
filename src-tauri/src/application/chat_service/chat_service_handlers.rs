@@ -258,8 +258,10 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     .await
     {
         Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
-            if let Some(handle) = app_handle {
-                let app_state = handle.state::<AppState>();
+            if let Some(app_state) = app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<AppState>())
+            {
                 let policy = app_state
                     .mcp_policy_service()
                     .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
