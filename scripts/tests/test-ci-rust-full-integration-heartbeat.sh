@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="${ROOT_DIR}/.github/workflows/ci.yml"
+RUST_RUNNER="${ROOT_DIR}/scripts/test-rust-fast.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -30,5 +31,11 @@ grep -Fq 'sleep 60' <<< "${integration_job}" \
   || fail "Rust Full Integration heartbeat interval is not bounded"
 grep -Fq 'trap cleanup EXIT' <<< "${integration_job}" \
   || fail "Rust Full Integration does not clean up its heartbeat"
+grep -Fq 'bash scripts/test-rust-fast.sh full-integration' <<< "${integration_job}" \
+  || fail "Rust Full Integration does not use the canonical Rust test runner"
+grep -Fq -- "--test 'suite_*'" "${RUST_RUNNER}" \
+  || fail "Rust full integration runner also compiles redundant unit-test targets"
+grep -Fq -- '--test plan_selector_performance' "${RUST_RUNNER}" \
+  || fail "Rust full integration runner omits the standalone performance target"
 
-echo "PASS: Rust Full Integration bounds compile resources and emits periodic progress"
+echo "PASS: Rust Full Integration bounds compile resources and selects integration targets"

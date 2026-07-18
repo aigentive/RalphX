@@ -93,7 +93,9 @@ full_integration_cmd() {
   cargo nextest run \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
-    --features test-utils
+    --features test-utils \
+    --test 'suite_*' \
+    --test plan_selector_performance
 }
 
 run_ipc() {
