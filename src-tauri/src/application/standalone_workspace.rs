@@ -165,13 +165,20 @@ pub fn create_workspace(app_data_dir: &Path, conversation_id: &str) -> AppResult
     require_under_root(&workspace_path, &canonical_root, "standalone workspace")?;
 
     // codeql[rust/path-injection]
-    if fs::symlink_metadata(&workspace_path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return Err(AppError::Validation(
-            "Standalone workspace path must not be a symlink".to_string(),
-        ));
+    match fs::symlink_metadata(&workspace_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(AppError::Validation(
+                "Standalone workspace path must not be a symlink".to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(filesystem_error(
+                "inspect the standalone workspace path",
+                error,
+            ));
+        }
     }
 
     // codeql[rust/path-injection]
@@ -257,13 +264,21 @@ fn write_manifest_if_missing(workspace_root: &Path, conversation_id: &str) -> Ap
         workspace_root,
         "standalone workspace manifest",
     )?;
-    if fs::symlink_metadata(&manifest_path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return Err(AppError::Validation(
-            "Standalone workspace manifest must not be a symlink".to_string(),
-        ));
+    // codeql[rust/path-injection]
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(AppError::Validation(
+                "Standalone workspace manifest must not be a symlink".to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(filesystem_error(
+                "inspect the standalone workspace manifest",
+                error,
+            ));
+        }
     }
     if manifest_path.is_file() {
         return Ok(());
@@ -318,7 +333,8 @@ pub async fn sweep_orphaned_standalone_workspaces(
             continue;
         }
 
-        let Some(conversation_id) = read_manifest_conversation_id(&entry_path) else {
+        let Some(conversation_id) = read_manifest_conversation_id(&entry_path, &canonical_root)
+        else {
             summary.skipped += 1;
             continue;
         };
@@ -355,26 +371,43 @@ pub async fn sweep_orphaned_standalone_workspaces(
 /// Symlinked entries are never trusted — the sweep must not follow them to decide what
 /// to delete or descend into their target.
 fn is_safe_sweep_candidate(entry_path: &Path, canonical_root: &Path) -> bool {
+    if require_under_root(
+        entry_path,
+        canonical_root,
+        "standalone workspace sweep entry",
+    )
+    .is_err()
+    {
+        return false;
+    }
+    // codeql[rust/path-injection]
     let Ok(metadata) = fs::symlink_metadata(entry_path) else {
         return false;
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return false;
     }
+    true
+}
+
+fn read_manifest_conversation_id(entry_path: &Path, canonical_root: &Path) -> Option<String> {
     require_under_root(
         entry_path,
         canonical_root,
         "standalone workspace sweep entry",
     )
-    .is_ok()
-}
-
-fn read_manifest_conversation_id(entry_path: &Path) -> Option<String> {
+    .ok()?;
     let manifest_path = entry_path.join(MANIFEST_FILE_NAME);
-    if fs::symlink_metadata(&manifest_path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(true)
-    {
+    require_under_root(&manifest_path, entry_path, "standalone workspace manifest").ok()?;
+    require_under_root(
+        &manifest_path,
+        canonical_root,
+        "standalone workspace manifest",
+    )
+    .ok()?;
+    // codeql[rust/path-injection]
+    let metadata = fs::symlink_metadata(&manifest_path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return None;
     }
     // codeql[rust/path-injection]
@@ -384,6 +417,11 @@ fn read_manifest_conversation_id(entry_path: &Path) -> Option<String> {
 }
 
 fn remove_workspace_entry(entry_path: &Path, canonical_root: &Path) -> AppResult<()> {
+    require_under_root(
+        entry_path,
+        canonical_root,
+        "standalone workspace sweep entry",
+    )?;
     // codeql[rust/path-injection]
     let canonical_entry = entry_path
         .canonicalize()

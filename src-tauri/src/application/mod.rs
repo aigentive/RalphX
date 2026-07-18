@@ -176,8 +176,10 @@ mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
-pub mod standalone_workspace;
 pub mod seeded_agent_conversation_abort;
+pub mod standalone_workspace;
+#[cfg(test)]
+mod standalone_workspace_path_safety_tests;
 #[cfg(test)]
 mod standalone_workspace_tests;
 pub mod startup_background;
