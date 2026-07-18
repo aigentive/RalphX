@@ -182,6 +182,66 @@ pub fn assert_session_mutable(session: &IdeationSession) -> AppResult<()> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ProposalMutationKind {
+    Create,
+    Update,
+    Delete,
+}
+
+impl ProposalMutationKind {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+fn proposal_verification_gate_enabled_sync(
+    conn: &rusqlite::Connection,
+    session: &IdeationSession,
+) -> AppResult<bool> {
+    let (base, external_override): (i64, Option<i64>) = conn.query_row(
+        "SELECT require_verification_for_proposals, ext_require_verification_for_proposals
+         FROM ideation_settings WHERE id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    Ok(match session.origin {
+        crate::domain::entities::SessionOrigin::External => external_override
+            .map(|value| value != 0)
+            .unwrap_or(base != 0),
+        _ => base != 0,
+    })
+}
+
+fn assert_proposal_verification_gate_allows_sync(
+    conn: &rusqlite::Connection,
+    session: &IdeationSession,
+    mutation: ProposalMutationKind,
+) -> AppResult<()> {
+    if !proposal_verification_gate_enabled_sync(conn, session)? {
+        return Ok(());
+    }
+
+    if matches!(
+        session.verification_status,
+        VerificationStatus::Verified
+            | VerificationStatus::ImportedVerified
+            | VerificationStatus::Skipped
+    ) {
+        return Ok(());
+    }
+
+    Err(AppError::Validation(format!(
+        "Cannot {} proposals until the plan verification gate passes",
+        mutation.verb()
+    )))
+}
+
 /// Emit a `dependency:added` event to the frontend.
 ///
 /// Guards with `if let Some(handle) = &state.app_handle` so tests and HTTP-only
@@ -235,6 +295,12 @@ pub async fn create_proposal_impl(
                     session.status
                 )));
             }
+            assert_proposal_verification_gate_allows_sync(
+                conn,
+                &session,
+                ProposalMutationKind::Create,
+            )?;
+
             // Set-once gating: validate or lock expected_proposal_count
             if let Some(provided_count) = expected_proposal_count {
                 match session.expected_proposal_count {
@@ -500,6 +566,12 @@ pub async fn update_proposal_impl(
                     || AppError::NotFound(format!("Session {} not found", proposal.session_id)),
                 )?;
             assert_session_mutable(&session)?;
+            assert_proposal_verification_gate_allows_sync(
+                conn,
+                &session,
+                ProposalMutationKind::Update,
+            )?;
+
             let is_ipc = matches!(options.source, UpdateSource::TauriIpc);
 
             // Apply updates; track user_modified per field when source is TauriIpc
@@ -803,6 +875,12 @@ pub async fn archive_proposal_impl(
             let session = SessionRepo::get_by_id_sync(conn, session_id.as_str())?
                 .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
             assert_session_mutable(&session)?;
+            assert_proposal_verification_gate_allows_sync(
+                conn,
+                &session,
+                ProposalMutationKind::Delete,
+            )?;
+
             // Archive proposal scoped to session (prevents cross-session deletions)
             let proposal_id_typed = TaskProposalId::from_string(pid.clone());
             conn.execute(
