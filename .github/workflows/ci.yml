@@ -382,7 +382,27 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Run full Rust integration suite
+        shell: bash
         run: |
+          set -euo pipefail
+
+          heartbeat() {
+            while true; do
+              printf '[rust-full-integration] %s still running\n' \
+                "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+              sleep 60
+            done
+          }
+
+          heartbeat &
+          heartbeat_pid=$!
+
+          cleanup() {
+            kill "${heartbeat_pid}" 2>/dev/null || true
+            wait "${heartbeat_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
           cargo nextest run \
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
