@@ -98,15 +98,12 @@ fn make_external_session(
 }
 
 // ============================================================================
-// C2: origin: External propagates through create_child_session(purpose: verification)
+// C2: model-native verification rejects legacy verification child creation
 // ============================================================================
 
-/// C2: Verify that a verification child session inherits `origin: External` from its parent.
-///
-/// The handler sets `origin: parent.origin` when creating the child. This test confirms
-/// the inheritance chain is intact for the verification code path.
+/// C2: External parents cannot create retired verification child sessions.
 #[tokio::test]
-async fn c2_external_origin_propagates_to_verification_child() {
+async fn c2_external_parent_rejects_verification_child() {
     let state = setup_sqlite_state().await;
 
     let project_id = ProjectId::from_string("proj-c2-test".to_string());
@@ -140,49 +137,25 @@ async fn c2_external_origin_propagates_to_verification_child() {
         blocker_fingerprint: None,
     };
 
-    let result = create_child_session(State(state.clone()), Json(req)).await;
-    assert!(
-        result.is_ok(),
-        "create_child_session must succeed for external parent, got: {:?}",
-        result.err()
-    );
-
-    let response = result.unwrap().0;
-    let child_session_id = IdeationSessionId::from_string(response.session_id.clone());
-
-    // Fetch child from DB and assert origin is External
-    let child = state
+    let error = create_child_session(State(state.clone()), Json(req))
+        .await
+        .expect_err("verification must remain in the active Plan conversation");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("active Plan conversation")));
+    assert!(state
         .app_state
         .ideation_session_repo
-        .get_by_id(&child_session_id)
+        .get_children(&parent_id)
         .await
         .unwrap()
-        .expect("Verification child session must exist in DB");
-
-    assert_eq!(
-        child.origin,
-        SessionOrigin::External,
-        "Verification child must inherit origin: External from parent (got: {:?})",
-        child.origin
-    );
-    assert_eq!(
-        child.session_purpose,
-        SessionPurpose::Verification,
-        "Child session_purpose must be Verification"
-    );
-    assert_eq!(
-        child.parent_session_id,
-        Some(parent_id),
-        "Child must reference parent via parent_session_id"
-    );
+        .is_empty());
 }
 
-/// C2b: Internal sessions produce Internal children (control case).
-///
-/// Ensures the inheritance works bidirectionally — Internal sessions don't
-/// accidentally produce External children.
+/// C2b: Internal parents enforce the same no-hidden-verification-child contract.
 #[tokio::test]
-async fn c2_internal_origin_produces_internal_verification_child() {
+async fn c2_internal_parent_rejects_verification_child() {
     let state = setup_sqlite_state().await;
 
     let project_id = ProjectId::from_string("proj-c2b-test".to_string());
@@ -215,29 +188,20 @@ async fn c2_internal_origin_produces_internal_verification_child() {
         blocker_fingerprint: None,
     };
 
-    let result = create_child_session(State(state.clone()), Json(req)).await;
-    assert!(
-        result.is_ok(),
-        "Handler must succeed, got: {:?}",
-        result.err()
-    );
-
-    let response = result.unwrap().0;
-    let child_session_id = IdeationSessionId::from_string(response.session_id);
-
-    let child = state
+    let error = create_child_session(State(state.clone()), Json(req))
+        .await
+        .expect_err("verification must remain in the active Plan conversation");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("active Plan conversation")));
+    assert!(state
         .app_state
         .ideation_session_repo
-        .get_by_id(&child_session_id)
+        .get_children(&parent_id)
         .await
         .unwrap()
-        .expect("Child must exist");
-
-    assert_eq!(
-        child.origin,
-        SessionOrigin::Internal,
-        "Internal parent must produce Internal verification child"
-    );
+        .is_empty());
 }
 
 // ============================================================================
@@ -589,12 +553,9 @@ async fn c5b_no_external_trigger_sets_internal_origin_for_general_child() {
     );
 }
 
-/// C5c: Verification child inherits parent origin regardless of is_external_trigger.
-///
-/// Verification children are system artifacts of the parent's verification loop;
-/// they always inherit parent.origin, not the trigger origin.
+/// C5c: Trigger-origin flags cannot bypass the no-hidden-verification-child contract.
 #[tokio::test]
-async fn c5c_verification_child_inherits_parent_origin_ignoring_is_external_trigger() {
+async fn c5c_verification_child_rejected_regardless_of_external_trigger_flag() {
     let state = setup_sqlite_state().await;
     let project_id = ProjectId::from_string("proj-c5c".to_string());
 
@@ -625,32 +586,20 @@ async fn c5c_verification_child_inherits_parent_origin_ignoring_is_external_trig
         blocker_fingerprint: None,
     };
 
-    let result = create_child_session(State(state.clone()), Json(req)).await;
-    assert!(
-        result.is_ok(),
-        "Handler must succeed, got: {:?}",
-        result.err()
-    );
-
-    let child_id = IdeationSessionId::from_string(result.unwrap().0.session_id);
-    let child = state
+    let error = create_child_session(State(state.clone()), Json(req))
+        .await
+        .expect_err("verification must remain in the active Plan conversation");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("active Plan conversation")));
+    assert!(state
         .app_state
         .ideation_session_repo
-        .get_by_id(&child_id)
+        .get_children(&parent_id)
         .await
         .unwrap()
-        .expect("Child must exist");
-
-    assert_eq!(
-        child.origin,
-        SessionOrigin::External,
-        "Verification child must inherit parent.origin=External even when is_external_trigger=false"
-    );
-    assert_eq!(
-        child.session_purpose,
-        SessionPurpose::Verification,
-        "Child must be Verification purpose"
-    );
+        .is_empty());
 }
 
 /// C5d: Backward compat — request without is_external_trigger field deserializes with default false.
