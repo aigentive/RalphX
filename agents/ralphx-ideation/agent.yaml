@@ -114,6 +114,7 @@ delegation:
     - ralphx-ideation-specialist-backend
     - ralphx-ideation-specialist-frontend
     - ralphx-ideation-specialist-infra
+    - ralphx-ideation-specialist-intent
     - ralphx-ideation-advocate
     - ralphx-ideation-critic
     - ralphx-general-explorer

@@ -1238,7 +1238,6 @@ pub(crate) async fn start_delegate_impl(
         )
     })?;
     let harness = resolved_spawn.effective_harness;
-    let delegated_model = req.model.clone();
     let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
     let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
     let (_caller_definition, definition) = resolve_delegation_policy(
@@ -1248,9 +1247,10 @@ pub(crate) async fn start_delegate_impl(
         &req.agent_name,
     )?;
     let delegated_session_id = resolve_delegated_session_id(state, &req, &parent, harness).await?;
-    let logical_effort = req.logical_effort.clone();
-    let approval_policy = req.approval_policy.clone();
-    let sandbox_mode = req.sandbox_mode.clone();
+    let delegated_model = Some(resolved_spawn.model.clone());
+    let logical_effort = resolved_spawn.logical_effort;
+    let approval_policy = resolved_spawn.approval_policy.clone();
+    let sandbox_mode = resolved_spawn.sandbox_mode.clone();
     state
         .app_state
         .delegated_session_repo
@@ -1312,7 +1312,7 @@ pub(crate) async fn start_delegate_impl(
                 agent_name_override: Some(definition.name.clone()),
                 model_override: delegated_model.clone(),
                 working_directory_override: Some(parent.working_directory.clone()),
-                logical_effort_override: logical_effort.clone(),
+                logical_effort_override: logical_effort,
                 approval_policy_override: approval_policy.clone(),
                 sandbox_mode_override: sandbox_mode.clone(),
                 is_external_mcp: true,

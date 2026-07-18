@@ -32,16 +32,16 @@ fn test_resolve_agent_ideation_accepted_returns_readonly() {
 }
 
 #[test]
-fn test_legacy_verification_purpose_uses_normal_ideation_agent() {
+fn test_verification_purpose_uses_plan_verifier_agent() {
     let agent = resolve_agent(&ChatContextType::Ideation, Some("verification"));
-    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
+    assert_eq!(agent, AGENT_PLAN_VERIFIER);
 }
 
 #[test]
-fn test_legacy_verification_purpose_does_not_override_team_mode() {
+fn test_verification_purpose_overrides_team_mode() {
     let agent =
         resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("verification"), true);
-    assert_eq!(agent, AGENT_IDEATION_TEAM_LEAD);
+    assert_eq!(agent, AGENT_PLAN_VERIFIER);
 }
 
 #[test]

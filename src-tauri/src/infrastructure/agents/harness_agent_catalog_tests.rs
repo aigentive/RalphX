@@ -2911,6 +2911,9 @@ fn canonical_agent_tree_is_schema_valid_and_loadable() {
     let promptless_metadata_only_agents = std::collections::BTreeSet::from([
         "ralphx-execution-team-member".to_string(),
         "ralphx-ideation-team-member".to_string(),
+        "ralphx-ideation-specialist-intent".to_string(),
+        "ralphx-plan-critic-completeness".to_string(),
+        "ralphx-plan-verifier".to_string(),
     ]);
 
     for agent_name in canonical_agent_names(&root) {

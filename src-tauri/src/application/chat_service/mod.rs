@@ -5993,9 +5993,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .await
             {
                 Ok(Some(project)) => Some(PathBuf::from(project.working_directory)),
-                Ok(None) => cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
-                    "Project not found while resolving {routing_role}: {project_id}"
-                ))),
+                Ok(None) => {
+                    tracing::warn!(
+                        project_id,
+                        routing_role = %routing_role,
+                        "Project row missing while resolving spawn defaults; continuing without project root"
+                    );
+                    None
+                }
                 Err(error) => {
                     cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
                 }

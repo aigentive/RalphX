@@ -291,13 +291,6 @@ pub(crate) async fn create_child_session_impl(
         ));
     }
 
-    if req.purpose.as_deref() == Some("verification") {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "Verification runs in the active Plan conversation and cannot be created as a child session",
-        ));
-    }
-
     let (resolved_team_mode, resolved_team_config_json) = if let Some(mode) = &req.team_mode {
         let config_json = req
             .team_config

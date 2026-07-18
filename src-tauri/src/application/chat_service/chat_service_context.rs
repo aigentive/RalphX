@@ -15,7 +15,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, Artifact, ArtifactContent, ArtifactId, ArtifactType,
     ChatAttachment, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
     ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode, IdeationSessionId, MessageRole,
-    ProjectId, TaskId,
+    ProjectId, SessionPurpose, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -3604,12 +3604,16 @@ pub async fn get_entity_status_for_resume(
                 None
             }
         }
-        // Ideation context: route from the session status. Legacy verification children
-        // no longer select a dedicated agent.
+        // Ideation context: verification sessions must keep verifier-specific
+        // launch settings; other sessions route from workflow status.
         ChatContextType::Ideation => {
             let session_id = IdeationSessionId::from_string(context_id);
             if let Ok(Some(session)) = ideation_session_repo.get_by_id(&session_id).await {
-                Some(session.status.to_string())
+                if session.session_purpose == SessionPurpose::Verification {
+                    Some(SessionPurpose::Verification.to_string())
+                } else {
+                    Some(session.status.to_string())
+                }
             } else {
                 None
             }

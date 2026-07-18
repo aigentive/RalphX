@@ -924,6 +924,47 @@ async fn maybe_register_unrelated_drift_issue(
         );
     }
 
+    if let (Some(source_task_id), Some(blocker_fingerprint)) = (
+        saved_issue.source_task_id.as_deref(),
+        saved_issue.blocker_fingerprint.as_deref(),
+    ) {
+        match state
+            .app_state
+            .agent_conversation_workspace_repo
+            .find_active_followup_by_blocker(
+                &origin_conversation.id,
+                source_task_id,
+                blocker_fingerprint,
+            )
+            .await
+        {
+            Ok(Some(workspace)) => {
+                if let Err(error) = state
+                    .app_state
+                    .agent_conversation_issue_repo
+                    .link_followup_conversation(&saved_issue.id, &workspace.conversation_id)
+                    .await
+                {
+                    tracing::warn!(
+                        task_id = %task.id.as_str(),
+                        issue_id = %saved_issue.id,
+                        error = %error,
+                        "Failed to link unrelated-drift issue to existing follow-up Agent conversation"
+                    );
+                }
+                return Some(workspace.conversation_id.as_str().to_string());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    task_id = %task.id.as_str(),
+                    error = %error,
+                    "Failed to inspect existing unrelated-drift follow-up Agent conversation"
+                );
+            }
+        }
+    }
+
     if !review_settings.auto_create_followup_agent_conversation {
         return None;
     }

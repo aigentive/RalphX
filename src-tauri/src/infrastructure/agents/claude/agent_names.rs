@@ -15,6 +15,7 @@ pub const PLUGIN_PREFIX: &str = "ralphx:";
 
 pub const SHORT_ORCHESTRATOR_IDEATION: &str = "ralphx-ideation";
 pub const SHORT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx-ideation-readonly";
+pub const SHORT_PLAN_VERIFIER: &str = "ralphx-plan-verifier";
 pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
 pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
 pub const SHORT_PERSONA_EXTRACTOR: &str = "ralphx-persona-extractor";
@@ -75,6 +76,9 @@ pub const AGENT_ORCHESTRATOR_IDEATION: &str = "ralphx:ralphx-ideation";
 
 /// Ideation orchestrator in read-only mode (session status = "accepted")
 pub const AGENT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx:ralphx-ideation-readonly";
+
+/// Ideation verification agent (session purpose = "verification")
+pub const AGENT_PLAN_VERIFIER: &str = "ralphx:ralphx-plan-verifier";
 
 /// Task-scoped chat (ChatContextType::Task)
 pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";

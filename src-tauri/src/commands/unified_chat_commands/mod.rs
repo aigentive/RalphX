@@ -7715,6 +7715,37 @@ pub struct AgentWorkspaceRepairRuntimeOverrides {
     pub logical_effort: Option<LogicalEffort>,
 }
 
+async fn agent_workspace_repair_runtime_overrides(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AgentWorkspaceRepairRuntimeOverrides {
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&workspace.conversation_id)
+        .await
+        .ok()
+        .flatten();
+    let latest_run = state
+        .agent_run_repo
+        .get_latest_for_conversation(&workspace.conversation_id)
+        .await
+        .ok()
+        .flatten();
+
+    AgentWorkspaceRepairRuntimeOverrides {
+        harness: conversation
+            .as_ref()
+            .and_then(|conversation| conversation.provider_session_ref())
+            .map(|session_ref| session_ref.harness)
+            .or_else(|| latest_run.as_ref().and_then(|run| run.harness)),
+        model: latest_run
+            .as_ref()
+            .and_then(|run| run.logical_model.clone())
+            .or_else(|| latest_run.as_ref().and_then(|run| run.effective_model_id.clone())),
+        logical_effort: latest_run.as_ref().and_then(|run| run.logical_effort),
+    }
+}
+
 #[doc(hidden)]
 pub async fn send_agent_workspace_publish_repair_message<S>(
     service: &S,
@@ -7970,7 +8001,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     )
     .await;
 
-    let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
+    let runtime_overrides = agent_workspace_repair_runtime_overrides(state, workspace).await;
     if should_defer_agent_workspace_repair_message(state, workspace).await {
         spawn_deferred_agent_workspace_repair_message(
             state,

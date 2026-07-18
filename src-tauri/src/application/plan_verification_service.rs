@@ -315,6 +315,17 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
     let Some(artifact_id) = session.plan_artifact_id.as_ref() else {
         return Ok(PlanVerificationRequestOutcome::NoPlan);
     };
+    if session.verification_in_progress {
+        return Ok(PlanVerificationRequestOutcome::AlreadyRunning);
+    }
+    if state
+        .ideation_session_repo
+        .get_verification_run_snapshot(session_id, session.verification_generation)
+        .await?
+        .is_some_and(|snapshot| snapshot.in_progress)
+    {
+        return Ok(PlanVerificationRequestOutcome::AlreadyRunning);
+    }
     if session.verified_plan_artifact_id.as_ref() == Some(artifact_id) {
         state.plan_verification_admissions.remove(&admission_key);
         return Ok(PlanVerificationRequestOutcome::AlreadyVerified);

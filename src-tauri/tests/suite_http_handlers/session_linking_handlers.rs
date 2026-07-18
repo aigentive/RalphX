@@ -1,8 +1,9 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, Json};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     ArtifactId, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
+    SessionPurpose,
 };
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{CreateChildSessionRequest, HttpServerState};
@@ -170,7 +171,7 @@ mod verification_init_tests {
         session
     }
     #[tokio::test]
-    async fn test_verification_child_creation_is_rejected() {
+    async fn test_verification_child_creation_preserves_compatibility_metadata() {
         let state = setup_sqlite_state().await;
         let parent = make_parent_session(Some(ArtifactId::new()));
         let parent_id = parent.id.clone();
@@ -182,7 +183,7 @@ mod verification_init_tests {
             .expect("create parent");
 
         let result = create_child_session(
-            State(state),
+            State(state.clone()),
             Json(CreateChildSessionRequest {
                 parent_session_id: parent_id.as_str().to_string(),
                 title: None,
@@ -202,11 +203,23 @@ mod verification_init_tests {
         )
         .await;
 
-        let (status, Json(body)) = result.expect_err("verification children must be retired");
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let response = result
+            .expect("verification child compatibility path should create a session")
+            .0;
+        let child_id = IdeationSessionId::from_string(response.session_id);
+        let child = state
+            .app_state
+            .ideation_session_repo
+            .get_by_id(&child_id)
+            .await
+            .expect("load child")
+            .expect("child exists");
+
+        assert_eq!(child.parent_session_id, Some(parent_id));
         assert_eq!(
-            body["error"],
-            "Verification runs in the active Plan conversation and cannot be created as a child session"
+            child.session_purpose,
+            SessionPurpose::Verification,
+            "compatibility verification children must retain their purpose metadata"
         );
     }
     fn saturate_ideation_capacity(state: &HttpServerState) {

@@ -540,6 +540,7 @@ fn manual_service_tier(tier: ManualServiceTier) -> Option<String> {
 fn ideation_lane_for_agent(agent_name: &str) -> Option<AgentLane> {
     let normalized = canonical_short_agent_name(agent_name);
     match normalized {
+        "ralphx-plan-verifier" | "plan-verifier" => Some(AgentLane::IdeationVerifier),
         "ralphx-ideation"
         | "ralphx-ideation-team-lead"
         | "ideation-team-member"

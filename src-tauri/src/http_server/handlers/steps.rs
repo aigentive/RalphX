@@ -11,7 +11,8 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::application::validation_service::TaskValidationService;
 use crate::domain::entities::{
-    ExecutionFailureSource, StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
+    EventType, ExecutionFailureSource, StepProgressSummary, Task, TaskId, TaskStep, TaskStepId,
+    TaskStepStatus,
 };
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
@@ -754,13 +755,13 @@ pub async fn execution_complete_http(
     // Close stdin via IPR — agent gets EOF and exits gracefully.
     // State transition happens in handle_stream_success when the process exits.
     let key = InteractiveProcessKey::new("task_execution", task_id_str.as_str());
-    if state
+    let had_interactive_process = state
         .app_state
         .interactive_process_registry
         .remove(&key)
         .await
-        .is_some()
-    {
+        .is_some();
+    if had_interactive_process {
         tracing::info!(
             "IPR entry removed for task {} — agent will receive EOF and exit",
             task_id_str
@@ -770,6 +771,30 @@ pub async fn execution_complete_http(
             "No IPR entry found for task {} — agent may have already exited",
             task_id_str
         );
+        let payload = serde_json::json!({
+            "task_id": task_id.as_str(),
+            "project_id": task.project_id.as_str(),
+            "agent_run_id": "execution_complete",
+            "outcome": "completed",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(error) = state
+            .app_state
+            .external_events_repo
+            .insert_event_once_for_attempt(
+                &EventType::TaskExecutionCompleted.to_string(),
+                task.project_id.as_str(),
+                "execution_complete",
+                &payload.to_string(),
+            )
+            .await
+        {
+            tracing::warn!(
+                task_id = %task_id_str,
+                error = %error,
+                "Failed to persist execution_complete external event without IPR"
+            );
+        }
     }
 
     Ok(Json(ExecutionCompleteResponse {
