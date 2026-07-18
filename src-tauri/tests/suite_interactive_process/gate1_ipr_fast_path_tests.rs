@@ -307,7 +307,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
         provider_session_id: "preserved-provider-session".to_string(),
     });
-    let conversation_id = conversation.id.clone();
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
