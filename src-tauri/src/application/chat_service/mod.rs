@@ -32,6 +32,7 @@ mod chat_service_send_background;
 mod chat_service_streaming;
 mod chat_service_types;
 mod continuation_runtime;
+mod conversation_launch_security;
 pub mod freshness_routing;
 mod streaming_state_cache;
 pub(crate) mod tool_result_preview;
@@ -868,26 +869,8 @@ pub fn is_persona_builder_conversation(agent_mode: Option<AgentConversationWorks
     agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
 }
 
-pub const STANDALONE_CODEX_UNSUPPORTED_ERROR: &str =
-    "Standalone conversations require the Claude harness";
 pub const PERSONA_BUILDER_FEATURE_DISABLED_ERROR: &str =
     "PersonaBuilder mode requires the agent_personas feature flag";
-
-#[doc(hidden)]
-pub fn validate_conversation_spawn_harness(
-    conversation: &ChatConversation,
-    effective_harness: AgentHarnessKind,
-) -> Result<(), ChatServiceError> {
-    if conversation.context_type == ChatContextType::Standalone
-        && effective_harness == AgentHarnessKind::Codex
-    {
-        return Err(ChatServiceError::SpawnFailed(
-            STANDALONE_CODEX_UNSUPPORTED_ERROR.to_string(),
-        ));
-    }
-
-    Ok(())
-}
 
 pub(super) fn validate_persona_builder_feature_for_conversation(
     feature_enabled: bool,
@@ -2097,6 +2080,34 @@ impl<R: Runtime> AppChatService<R> {
         Ok((conversation, created))
     }
 
+    async fn validate_conversation_override_identity_for_send(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id_override: Option<&ChatConversationId>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(conversation_id) = conversation_id_override else {
+            return Ok(());
+        };
+        let conversation = self
+            .conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+            .ok_or_else(|| {
+                ChatServiceError::ConversationNotFound(format!(
+                    "Conversation not found: {conversation_id}"
+                ))
+            })?;
+        let requested_conversation_id = conversation_id.as_str();
+        conversation_launch_security::validate_conversation_launch_identity(
+            &conversation,
+            &requested_conversation_id,
+            context_type,
+            context_id,
+        )
+        .map_err(ChatServiceError::InvalidInput)
+    }
     async fn persist_parented_agent_binding_for_send(
         &self,
         conversation: &mut ChatConversation,
@@ -4550,6 +4561,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.conversation_id_override.as_ref(),
         )
         .await?;
+        self.validate_conversation_override_identity_for_send(
+            context_type,
+            context_id,
+            options.conversation_id_override.as_ref(),
+        )
+        .await?;
         if runtime_context_id != context_id {
             tracing::info!(
                 %context_type,
@@ -4734,6 +4751,20 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         } else {
             None
         };
+        if let Some(conversation) = existing_conv.as_ref() {
+            let requested_conversation_id = options
+                .conversation_id_override
+                .as_ref()
+                .unwrap_or(&conversation.id);
+            let requested_conversation_id = requested_conversation_id.as_str();
+            conversation_launch_security::validate_conversation_launch_identity(
+                conversation,
+                requested_conversation_id.as_str(),
+                context_type,
+                context_id,
+            )
+            .map_err(ChatServiceError::InvalidInput)?;
+        }
         if has_ipr_entry && existing_conv.is_none() {
             // A registry entry without its conversation cannot safely resolve a persona or
             // attribute the turn. Drop it and let the normal fresh-spawn path own both.
@@ -6211,12 +6242,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
         }
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
-        if let Err(error) = validate_conversation_spawn_harness(
-            &conversation,
-            resolved_spawn_settings.effective_harness,
-        ) {
-            cleanup_and_err!(error);
-        }
+        conversation_launch_security::conversation_launch_security_class(
+            conversation.context_type,
+            conversation.agent_mode,
+        )
+        .apply_to_effective_spawn_settings(&mut resolved_spawn_settings);
         log_send_message_spawn_prep_phase(
             context_type,
             context_id,

@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct ProjectSetupInput {
     pub(super) project_id_opt: Option<ProjectId>,
+    pub(super) project: Option<crate::domain::entities::Project>,
     pub(super) source_persona_id: Option<PersonaId>,
     pub(super) composer_integration_references: Vec<ComposerIntegrationReference>,
     pub(super) should_create_workspace: bool,
@@ -37,6 +38,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
     ) -> Result<ProjectSetupOutput, String> {
         let ProjectSetupInput {
             project_id_opt,
+            project,
             source_persona_id,
             composer_integration_references,
             should_create_workspace,
@@ -53,19 +55,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             context_log_id,
         } = input;
 
-        let project_lookup_started = Instant::now();
-        let project = match project_id_opt.as_ref() {
-            Some(project_id) => Some(
-                self.deps
-                    .state
-                    .project_repo
-                    .get_by_id(project_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Project not found: {}", context_log_id))?,
-            ),
-            None => None,
-        };
         if let Some(source_persona_id) = source_persona_id.as_ref() {
             PersonaService::new(
                 self.deps.state.db.clone(),
@@ -80,13 +69,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .await
             .map_err(|error| error.to_string())?;
         }
-        log_start_agent_conversation_phase(
-            &context_log_id,
-            None,
-            "load_project",
-            project_lookup_started,
-        );
-
         // ClickUp ticket-start resolution requires a Project context; standalone
         // starts never look up or link a ticket.
         let validated_clickup_task = if let Some(lookup_key) =

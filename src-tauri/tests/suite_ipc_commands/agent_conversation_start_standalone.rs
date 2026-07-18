@@ -211,6 +211,130 @@ async fn start_agent_conversation_standalone_chat_mode_creates_self_keyed_conver
 }
 
 #[tokio::test]
+async fn standalone_global_codex_role_defaults_are_validated_and_launched() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    let fake_codex = FakeCodex::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_codex
+            .cli_path
+            .to_str()
+            .expect("fake Codex path should be UTF-8"),
+    );
+
+    let state = AppState::new_test();
+    for role in [RoutingRole::WorkspaceChat, RoutingRole::UtilityLightweight] {
+        state
+            .manual_role_default_repo
+            .upsert_global(role, &manual_role_default(AgentHarnessKind::Codex))
+            .await
+            .expect("global Codex role default should persist");
+    }
+
+    configure_provider_cli(
+        &state,
+        AgentHarnessKind::Claude,
+        "/definitely/missing/ralphx-test-claude",
+    )
+    .await;
+    configure_provider_cli(
+        &state,
+        AgentHarnessKind::Codex,
+        fake_codex.cli_path.to_string_lossy().into_owned(),
+    )
+    .await;
+
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    for mode in ["chat", "persona_builder"] {
+        let result = start_with_app(
+            &app,
+            standalone_start_input(
+                &format!("Start standalone {mode} from its global Codex role default"),
+                Some(mode),
+                None,
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("standalone {mode} must validate and launch its Codex role default: {error}")
+        });
+        let runs = app
+            .state::<AppState>()
+            .agent_run_repo
+            .get_by_conversation(&result.conversation.id)
+            .await
+            .expect("standalone role-default run lookup should succeed");
+        assert!(
+            runs.iter()
+                .any(|run| run.harness == Some(AgentHarnessKind::Codex)),
+            "standalone {mode} must persist the global Codex role default",
+        );
+    }
+    assert!(
+        fake_codex.was_invoked(),
+        "standalone global Codex role defaults must invoke Codex",
+    );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_standalone_chat_accepts_codex() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    set_standalone_conversations_override(Some(true));
+    let fake_codex = FakeCodex::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_codex
+            .cli_path
+            .to_str()
+            .expect("fake Codex path should be UTF-8"),
+    );
+    let state = AppState::new_test();
+    state
+        .manual_role_default_repo
+        .upsert_global(
+            RoutingRole::WorkspaceChat,
+            &manual_role_default(AgentHarnessKind::Claude),
+        )
+        .await
+        .expect("global Claude chat default should persist");
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    let mut input = standalone_start_input(
+        "Start a projectless Codex conversation",
+        Some("chat"),
+        None,
+        None,
+        None,
+    );
+    input.provider_harness = Some("codex".to_string());
+
+    let result = start_with_app(&app, input)
+        .await
+        .expect("standalone Codex start should be accepted");
+
+    assert_eq!(
+        result.conversation.context_type,
+        ChatContextType::Standalone
+    );
+    let runs = app
+        .state::<AppState>()
+        .agent_run_repo
+        .get_by_conversation(&result.conversation.id)
+        .await
+        .expect("standalone Codex start run lookup should succeed");
+    assert!(
+        runs.iter()
+            .any(|run| run.harness == Some(AgentHarnessKind::Codex)),
+        "start must preserve the explicit Codex harness selection"
+    );
+    assert!(
+        fake_codex.was_invoked(),
+        "Standalone Chat start must invoke Codex"
+    );
+}
+
+#[tokio::test]
 async fn start_agent_conversation_standalone_seeded_ownership_accepts_valid_self_keyed_draft() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));

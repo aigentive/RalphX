@@ -1094,6 +1094,7 @@ async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
         ralphx_lib::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = ProjectId::from_string("project-coordination-builder-guard".to_string());

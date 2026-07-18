@@ -1,6 +1,6 @@
 # Personas v2 — Scoped Personas, Builder-in-Agents-View, Folder Context, Versioned Persona Artifacts
 
-> Status: **CONVERGED rev 5 — three adversarial rounds complete (R1: 2× Fable + gpt-5.6-sol; R2: 2× Fable; R3 verification: 1× Fable + gpt-5.6-sol). Zero CRITICAL/HIGH/MEDIUM gaps open. Owner answered all open questions 2026-07-16 (§11), incl. the reference-not-copy revision for folder context. Not implemented.**
+> Status: **IMPLEMENTED — feature-complete on PR #779; final validation and review are in progress. The converged specification passed three adversarial rounds (R1: 2× Fable + gpt-5.6-sol; R2: 2× Fable; R3 verification: 1× Fable + gpt-5.6-sol). Owner answered all open questions 2026-07-16 (§11), including the reference-not-copy revision for folder context.**
 > Date: 2026-07-16
 > Scope basis: research + two adversarial rounds against `main` @ 88880f0c1; every file:line anchor code-verified by at least one reviewer.
 
@@ -141,7 +141,7 @@ Immutable forward chains; owner holds the tip pointer. Verified caveats: `materi
 8. `StartAgentConversationInput.project_id: Option<String>`; `None` requires flag + mode allowlist (`chat`, later `persona_builder`); **Team intent rejected** (typed); **`delegate_start` rejected for standalone callers** (typed) — the non-ideation caller branch trusts a model-supplied parent session and would otherwise be an unenforced escape hatch out of the workspace.
 9. Persona binding for standalone: out of scope v1 (resolver stays Project-gated; picker hidden in UI).
 
-**Honest enforcement statement for standalone Chat:** Chat mode maps to `ralphx-general-explorer`, which has **native** Read/Grep/Glob. D9's MCP-layer enforcement bounds only `fs_*`; native reads outside the workspace surface as **permission-bridge prompts** (user-approved), not silent denials. The *hard* "sees only attached context" guarantee applies to the extractor (native fs tools disallowed) — i.e., to persona builds. US-5's flow reflects this.
+**Honest enforcement statement for standalone Chat:** Chat mode maps to `ralphx-general-explorer`, and D9's MCP-layer enforcement bounds `fs_*`. Claude retains native Read/Grep/Glob but removes their preapproval, so out-of-root access crosses the permission-prompt boundary. Codex uses backend-owned `on-request`/`workspace-write`; because RalphX launches non-interactive `codex exec`, an action that requires fresh approval fails closed and surfaces the error instead of opening a prompt. The *hard* "sees only attached context" guarantee applies to the extractor, whose native filesystem surfaces are disabled — i.e., to persona builds. US-5's flow reflects these provider-specific boundaries.
 
 **Private workspace service (Phase 4a):** `standalone_workspace.rs`, generalized from `persona_ingest.rs` (hash-addressed root `app_data_dir/standalone_workspaces/conversation-<sha256[:12]>/`, symlink rejection, `require_under_root`, manifest, caps → config). **This service also serves project-context persona builds (D4)** — creation is keyed on "standalone context OR persona_builder mode," idempotent, triggered by `create_agent_conversation`/`start()`/attach-time materializer, whichever runs first. Lifecycle:
 - Archive does NOT delete the workspace; restore never hits the fail-closed error.
@@ -169,7 +169,7 @@ Both build kinds are ordinary `persona_builder`-mode conversations through the s
 | Attached files | copied into the workspace (bounded by composer caps; content NOT inlined in builder mode — path-referenced, read via `fs_*`) | same |
 | Attached folders | **live references** (D6) — never copied; agent reads on demand from the real location | same (isolation comes from enforced roots, not copying) |
 | Persona scope | that project — fixed at creation | Global — fixed |
-| Harness | Claude or Codex | **Claude-lane only** (typed rejection — `danger-full-access` Codex can't be bounded by MCP-layer enforcement) |
+| Harness | Claude or Codex | Claude or Codex; the Codex extractor retains its MCP-compatible launch policy while filesystem access remains bounded by enforced MCP roots |
 | Team intent | **rejected** (typed) for Persona mode in any context — team overlays on a builder conversation are undefined territory | rejected (standalone rule) |
 
 **Mode-rejection lift/keep table (the six sites, 2.1):**
@@ -251,7 +251,7 @@ Both build kinds are ordinary `persona_builder`-mode conversations through the s
 - Phase 0 sets the flag for existing builder conversations (roots = ingest root when live; **refine builds with no ingest store become deny-all on fs tools by design** — see D1 exception).
 - Delegated/child agents: `Delegation`-context conversations are unenforced by the rule above; the escape hatch is closed structurally — the extractor has no delegation rights (fail-closed allowlist), and standalone callers are rejected from `delegate_start` (D3.8).
 - Claude Task subagents share the parent CLI's MCP server ⇒ inherit enforcement correctly by construction (and the extractor has no Task tool).
-- Chat-mode standalone: MCP `fs_*` enforced; native read tools surface permission prompts for out-of-root paths (honest statement in D3).
+- Chat-mode standalone: MCP `fs_*` enforced; Claude native reads cross its permission-prompt boundary, while Codex runs `workspace-write`/`on-request` and fails closed when non-interactive execution would require fresh approval (honest statement in D3).
 
 ---
 
@@ -416,7 +416,7 @@ Settings▸Personas         Agents view                        Backend
      │                        │    conversation, registers ref) │
      │                        │ types goal, Send ──────────────▶ start():
      │                        │                                 │  ensure private ws
-     │                        │                                 │  spawn extractor (Claude lane)
+     │                        │                                 │  spawn extractor (selected Claude/Codex lane)
      │                        │                                 │   cwd=ws, roots=[ws, ~/notes],
      │                        │                                 │   ENFORCED (read live via fs_*)
      │                        │ ◀─ analysis summary ────────────┤
@@ -473,7 +473,8 @@ Settings▸Personas ▸ "Docs Writer (draft)" ▸ Edit
 Agents ▸ start composer ▸ "No project" ▸ Mode: Chat
   → attach file? → seeds standalone conversation, uploads against it
   → Send → Standalone conversation, private workspace as cwd;
-    MCP fs_* ENFORCED to [ws]; native Read outside ws → permission prompt
+    MCP fs_* ENFORCED to [ws]; Claude native reads cross the permission-prompt
+    boundary, while Codex approval-requiring actions fail closed non-interactively
   → sidebar "No project" group; composer assist disabled (v1)
   → app restart mid-run → recovered (chat_resumption enumerates Standalone)
 ```
@@ -521,7 +522,7 @@ Agents ▸ start composer ▸ "No project" ▸ Mode: Chat
 5. **`save_persona_draft`:** caller identity required (3-state fail-closed); binding-scoped writes; post-approval rejection. Trust boundary: unauthenticated loopback header (pre-existing posture, documented).
 6. **Standalone CWD fail-closed:** missing workspace ⇒ typed spawn error.
 7. **Persona resolver:** typed repo errors abort; scope check on every persona-returning branch incl. `Explicit`; suppression writes attribution.
-8. **Codex lane:** global builds Claude-only (typed rejection). Delegation: extractor has none; standalone callers rejected from `delegate_start`.
+8. **Codex lane:** Standalone Chat is supported with per-launch `on-request`/`workspace-write` containment; global PersonaBuilder is supported under the extractor's existing MCP compatibility contract (`never`/`danger-full-access`) plus enforced filesystem roots. Delegation: extractor has none.
 
 ---
 
@@ -594,7 +595,7 @@ Independently landable slices. Every phase: TDD, zero new warnings, dual clippy 
 |---|---|
 | 5.1 | Mode-rejection lifts per the lift/keep table; "Persona" in both mode lists + locked-menu fix (all options disabled for `automation`/`persona_builder`); standalone mode allowlist += `persona_builder`; Persona-mode Team rejection |
 | 5.2 | Start pipeline: `source_persona_id` → seeded bound draft at creation (seeding internals → `PersonaService`; `SavePersonaDraftInput` scope field); scope stamped from conversation; **refine scope lock** (deep link skips chooser; service rejects scope mismatch) |
-| 5.3 | Workspace for **every** builder conversation (idempotent, any context); attachment sync (start-time + attach-time; text-only, binary rejection at attach; content inlining suppressed in builder mode → workspace path references + `fs_read_file`); folder refs as live enforced roots for builders (no copying); builder read-root restructure per D9 (legacy fall-through, CWD-dedup bypass under enforcement); folder-ref "+ Add folder" un-hidden for builders; Codex-lane rejection for global builds |
+| 5.3 | Workspace for **every** builder conversation (idempotent, any context); attachment sync (start-time + attach-time; text-only, binary rejection at attach; content inlining suppressed in builder mode → workspace path references + `fs_read_file`); folder refs as live enforced roots for builders (no copying); builder read-root restructure per D9 (legacy fall-through, CWD-dedup bypass under enforcement); folder-ref "+ Add folder" un-hidden for builders; Codex global builds retain MCP-compatible launch policy plus enforced filesystem roots |
 | 5.4 | Settings deep link (scope chooser; `projectLocked` lifted into composer state; closeModal + setFocusedProject + clearSelection); "Refine with Agent" |
 | 5.5 | Extractor prompt rewrite (analyze → interview ≤3 → draft), both harness files; **unconditional ingest-gate retirement** (send call sites + queue `builder_context_error`) |
 | 5.6 | Tests: start-to-draft both scopes; enforced isolation (fs_* denial of non-attached paths; attached-folder reads succeed live); binary-attachment rejection at attach time + text-attachment workspace reachability + no-inline in builder mode; scope stamping; refine provenance + scope-lock rejection; redirect draft consumption + lock survives projects-query churn; attachment-sync idempotency; **queued follow-up on a standalone builder resumes with extractor identity/mode/draft/workspace intact**; legacy builder conversation still resumes with ingest+workspace roots |
@@ -628,11 +629,11 @@ Independently landable slices. Every phase: TDD, zero new warnings, dual clippy 
 - Scope change after creation; slug rename; multi-persona per conversation.
 - Persona binding/injection for Standalone or non-Project contexts.
 - Personas for teammates/pipeline agents; diff view between versions.
-- Filesystem enforcement for agents other than persona-builder/standalone; hard-sandboxing native tools for standalone Chat (permission prompts are the boundary).
+- Filesystem enforcement for agents other than persona-builder/standalone; changing provider/lane security defaults outside the Standalone Chat launch class.
 - Composer assist in standalone conversations.
 - Folder references in standalone **chat** (persona builds support them in any context); folder refs granting write/Bash.
 - Changing generic (non-builder) attachment inlining behavior.
-- Standalone for `edit/plan/ideation/review_pr/automation`; Codex lane for global builds; delegation from standalone conversations.
+- Standalone for `edit/plan/ideation/review_pr/automation`; delegation from standalone conversations.
 - Age-based workspace/ingest reclamation; reclamation UI.
 - Fixing the unauthenticated-loopback trust boundary (pre-existing posture).
 

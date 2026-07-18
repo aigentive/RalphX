@@ -474,21 +474,29 @@ mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
 mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
-mod v20260716170840_persona_project_scope;
-mod v20260716204027_conversation_folder_references;
-mod v20260717152713_persona_builder_result_binding;
-mod v20260717152714_persona_artifact_history;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
 #[cfg(test)]
 mod v20260716154318_manual_role_defaults_tests;
+mod v20260716170840_persona_project_scope;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
 mod v20260716202015_workspace_review_bypass_and_bound_agent;
 #[cfg(test)]
 mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716204027_conversation_folder_references;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260717152713_persona_builder_result_binding;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+mod v20260717152714_persona_artifact_history;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
 mod v20260717235338_github_cli_token_environment_setting;
 #[cfg(test)]
 mod v20260717235338_github_cli_token_environment_setting_tests;
@@ -501,14 +509,6 @@ mod v20260718162852_clear_detected_validation_commands_tests;
 mod v20260718182035_add_tasks_enabled_setting;
 #[cfg(test)]
 mod v20260718182035_add_tasks_enabled_setting_tests;
-#[cfg(test)]
-mod v20260716170840_persona_project_scope_tests;
-#[cfg(test)]
-mod v20260716204027_conversation_folder_references_tests;
-#[cfg(test)]
-mod v20260717152713_persona_builder_result_binding_tests;
-#[cfg(test)]
-mod v20260717152714_persona_artifact_history_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)

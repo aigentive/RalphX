@@ -35,6 +35,7 @@ import type {
   ForkAgentConversationResult,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
+import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
 import { artifactApi } from "@/api/artifact";
 import {
   automationsApi,
@@ -74,6 +75,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useConversationRoleDefault } from "@/hooks/useManualRoleDefaults";
 import {
   agentModelSupportsCodexUltra,
 } from "@/lib/agent-models";
@@ -97,6 +99,8 @@ import type {
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
 import {
   getAgentConversationStoreKey,
@@ -117,7 +121,7 @@ import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import {
-  buildConversationModeOptions,
+  buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -125,8 +129,10 @@ import {
   AGENT_PROVIDER_OPTIONS,
   agentEffortOptions,
   agentModelOptions,
+  defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
+import { agentConversationKeys } from "./useProjectAgentConversations";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import {
   buildAgentProviderAvailabilityOptions,
@@ -953,6 +959,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedWorkspaceReviewConversationId ?? selectedConversationId;
   const { registry: modelRegistry } = useAgentModels();
   const { data: featureFlags } = useFeatureFlags();
+  const roleDefaultQuery = useConversationRoleDefault(selectedConversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
   const artifactSelectionSnapshot = useArtifactSelectionStore(
@@ -987,6 +994,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isRunningAutomation, setIsRunningAutomation] = useState(false);
   const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
     useState<Record<string, boolean>>({});
+  const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
   const [
     shouldLoadWorkspaceBaseOptions,
     setShouldLoadWorkspaceBaseOptions,
@@ -1163,6 +1171,95 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     },
     [runtimeControlConversationId],
   );
+  const handleResetRoleDefault = useCallback(async () => {
+    if (chatFocus.type !== "workspace") {
+      return;
+    }
+    setIsResettingRoleDefault(true);
+    try {
+      const resolved = await manualRoleDefaultsApi.resetConversation({
+        conversationId: selectedConversationId,
+      });
+      const nextProvider =
+        resolved.value.provider === "claude" ||
+        resolved.value.provider === "codex"
+          ? resolved.value.provider
+          : null;
+      if (!nextProvider) {
+        throw new Error(
+          `Unsupported provider in ${resolved.role} default: ${resolved.value.provider}`,
+        );
+      }
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId:
+            resolved.value.model ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              supportedModelAliasesForProvider(providerOptions, nextProvider),
+            ),
+          ...(resolved.value.effort
+            ? { effort: resolved.value.effort as AgentRuntimeSelection["effort"] }
+            : {}),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, nextProvider),
+        supportedModelAliasesForProvider(providerOptions, nextProvider),
+      );
+      const refreshedRoleDefault = roleDefaultQuery.refetch().then((result) => {
+        if (result.isError || !result.data) {
+          throw result.error instanceof Error
+            ? result.error
+            : new Error("Failed to load the current role default");
+        }
+        return result.data;
+      });
+      await Promise.all([
+        activeProjectId
+          ? queryClient.invalidateQueries({
+              queryKey: agentConversationKeys.project(activeProjectId),
+            })
+          : Promise.resolve(),
+        invalidateConversationDataQueries(queryClient, selectedConversationId),
+        refreshedRoleDefault,
+      ]);
+      useAgentSessionStore
+        .getState()
+        .setRoleDefaultRuntimeForConversation(
+          selectedConversationId,
+          activeProjectId,
+          nextRuntime,
+        );
+      setCodexFastModeByConversationId((current) => {
+        const next = { ...current };
+        if (resolved.value.serviceTier === "provider_default") {
+          delete next[selectedConversationId];
+        } else {
+          next[selectedConversationId] =
+            resolved.value.serviceTier === "fast";
+        }
+        return next;
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to reset the current role default",
+      );
+    } finally {
+      setIsResettingRoleDefault(false);
+    }
+  }, [
+    activeProjectId,
+    chatFocus.type,
+    modelRegistry,
+    providerOptions,
+    queryClient,
+    roleDefaultQuery,
+    selectedConversationId,
+  ]);
   const workspaceProviderSupportedEfforts = useMemo(
     () =>
       supportedEffortsForProvider(
@@ -1723,10 +1820,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const automationConfigId =
     automationConfig?.id ?? activeConversation.automationId ?? null;
   const modeOptions = useMemo(() => {
-    return buildConversationModeOptions(activeConversation, activeWorkspace);
+    const eligibleOptions = buildAgentConversationModeOptions({
+      currentMode: activeConversationMode ?? "chat",
+      taskPipelineAvailable:
+        activeWorkspace?.taskPipelineAvailable ??
+        Boolean(activeWorkspace?.taskPipelineSessionId),
+      autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
+    });
+    if (!resolvedConversationModeLocked) {
+      return eligibleOptions;
+    }
+    const lockReason =
+      activeWorkspace?.modeSwitchLockReason ??
+      "Active ideation or execution state owns this workspace.";
+    return eligibleOptions.map((option) => ({
+      ...option,
+      disabled: true,
+      disabledReason: lockReason,
+    }));
   }, [
-    activeConversation,
-    activeWorkspace,
+    activeConversationMode,
+    resolvedConversationModeLocked,
+    activeWorkspace?.modeSwitchLockReason,
+    activeWorkspace?.taskPipelineAvailable,
+    activeWorkspace?.taskPipelineSessionId,
+    featureFlags.agentConversationAutopilot,
   ]);
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
@@ -2965,6 +3083,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       placeholder: "Current project",
                       disabled: true,
                     }}
+                    {...(chatFocus.type === "workspace"
+                      ? {
+                          runtimeDefault: {
+                            source: roleDefaultQuery.data?.source ?? null,
+                            isResetting: isResettingRoleDefault,
+                            disabled: isResettingRoleDefault,
+                            onReset: handleResetRoleDefault,
+                          },
+                        }
+                      : {})}
                     {...(() => {
                       if (usesWorkspaceRuntimeControls) {
                         return {

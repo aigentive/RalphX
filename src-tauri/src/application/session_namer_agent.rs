@@ -8,7 +8,8 @@ use crate::application::session_namer_prompt::build_session_namer_prompt;
 use crate::application::standalone_workspace;
 use crate::application::AppState;
 use crate::domain::agents::{
-    AgentConfig, AgentHarnessKind, AgentOutput, AgentRole, AgenticClient, DEFAULT_AGENT_HARNESS,
+    AgentConfig, AgentHarnessKind, AgentOutput, AgentRole, AgenticClient, RoutingRole,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
@@ -135,13 +136,39 @@ pub(crate) async fn build_session_namer_agent_spawn(
         resolved.standalone_conversation_id.as_deref(),
     )
     .await?;
+    let harness_override = match &target {
+        SessionNamerTarget::ConversationInitial {
+            requested_harness, ..
+        } => requested_harness.or(resolved.conversation_harness),
+        _ => None,
+    };
+    let mut runtime = state
+        .resolve_manual_role_background_agent_runtime(
+            resolved.project_id.as_deref(),
+            resolved
+                .project_id
+                .as_ref()
+                .map(|_| working_directory.as_path()),
+            RoutingRole::UtilityLightweight,
+            agent_names::AGENT_SESSION_NAMER,
+            "session namer",
+            harness_override,
+        )
+        .await?;
+    if let SessionNamerTarget::ConversationInitial {
+        service_tier_override: Some(service_tier_override),
+        ..
+    } = &target
+    {
+        runtime.service_tier = normalize_session_namer_service_tier_override(service_tier_override);
+    }
 
     let bootstrap = resolve_harness_agent_bootstrap(
-        resolved.runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
+        runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
         agent_names::AGENT_SESSION_NAMER,
         working_directory,
     );
-    let env = resolved.runtime.env_with_overrides(bootstrap.env);
+    let env = runtime.env_with_overrides(bootstrap.env);
 
     let config = AgentConfig {
         role: AgentRole::Custom(bootstrap.agent_role.clone()),
@@ -149,13 +176,13 @@ pub(crate) async fn build_session_namer_agent_spawn(
         working_directory: bootstrap.working_directory,
         plugin_dir: Some(bootstrap.plugin_dir),
         agent: Some(bootstrap.agent_name),
-        model: resolved.runtime.model,
-        harness: resolved.runtime.harness,
-        cli_path_override: resolved.runtime.cli_path_override,
-        logical_effort: resolved.runtime.logical_effort,
-        approval_policy: resolved.runtime.approval_policy,
-        sandbox_mode: resolved.runtime.sandbox_mode,
-        service_tier: resolved.runtime.service_tier,
+        model: runtime.model,
+        harness: runtime.harness,
+        cli_path_override: runtime.cli_path_override,
+        logical_effort: runtime.logical_effort,
+        approval_policy: runtime.approval_policy,
+        sandbox_mode: runtime.sandbox_mode,
+        service_tier: runtime.service_tier,
         max_tokens: None,
         timeout_secs: Some(60),
         env,
@@ -163,21 +190,19 @@ pub(crate) async fn build_session_namer_agent_spawn(
     };
 
     Ok(SessionNamerAgentSpawn {
-        client: resolved.client,
+        client: runtime.client,
         config,
         target_label,
         project_id: resolved.project_id,
-        harness_for_log: resolved.harness_for_log,
+        harness_for_log: runtime.harness,
         target,
         title_updater: SessionNamerTitleUpdater::from_state(state),
     })
 }
 
 struct ResolvedSessionNamerTarget {
-    client: Arc<dyn AgenticClient>,
-    runtime: super::app_state::ResolvedBackgroundAgentRuntime,
     project_id: Option<String>,
-    harness_for_log: Option<AgentHarnessKind>,
+    conversation_harness: Option<AgentHarnessKind>,
     review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     conversation_context: Option<String>,
     standalone_conversation_id: Option<String>,
@@ -192,26 +217,16 @@ async fn resolve_target_context(
         | SessionNamerTarget::AcceptedSession { session_id, .. } => {
             let session = load_session(state, session_id).await?;
             let project_id = Some(session.project_id.as_str().to_string());
-            let runtime = state
-                .resolve_session_namer_runtime_for_session(&session)
-                .await?;
-            let client = Arc::clone(&runtime.client);
-            let harness_for_log = runtime.harness;
             Ok(ResolvedSessionNamerTarget {
-                client,
-                runtime,
                 project_id,
-                harness_for_log,
+                conversation_harness: None,
                 review_pull_request: None,
                 conversation_context: None,
                 standalone_conversation_id: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
-            conversation_id,
-            requested_harness,
-            service_tier_override,
-            ..
+            conversation_id, ..
         } => {
             let conversation = state
                 .chat_conversation_repo
@@ -227,24 +242,9 @@ async fn resolve_target_context(
             let standalone_conversation_id = (conversation.context_type
                 == ChatContextType::Standalone)
                 .then(|| conversation.id.as_str());
-            let mut runtime = state
-                .resolve_session_namer_runtime_for_conversation_with_requested_harness(
-                    &conversation,
-                    project_id.as_deref(),
-                    *requested_harness,
-                )
-                .await?;
-            if let Some(service_tier_override) = service_tier_override.as_deref() {
-                runtime.service_tier =
-                    normalize_session_namer_service_tier_override(service_tier_override);
-            }
-            let client = Arc::clone(&runtime.client);
-            let harness_for_log = runtime.harness;
             Ok(ResolvedSessionNamerTarget {
-                client,
-                runtime,
                 project_id,
-                harness_for_log,
+                conversation_harness: conversation.provider_harness,
                 review_pull_request,
                 conversation_context,
                 standalone_conversation_id,

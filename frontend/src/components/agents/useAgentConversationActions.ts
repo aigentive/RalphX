@@ -350,7 +350,7 @@ export function useAgentConversationActions({
       const cleanupPendingConversationIds: string[] = [];
       const cleanupUnsafeConversationIds: string[] = [];
       const failureDetails: string[] = [];
-      const affectedProjectIds = new Set<string>();
+      const affectedProjectIds = new Set<string | null>();
 
       for (const target of targets) {
         const { conversation } = target;
@@ -392,7 +392,7 @@ export function useAgentConversationActions({
       }
       await Promise.all(
         Array.from(affectedProjectIds, (targetProjectId) =>
-          invalidateProjectConversations(targetProjectId)
+          invalidateConversationLists(targetProjectId)
         )
       );
 
@@ -439,7 +439,7 @@ export function useAgentConversationActions({
     },
     [
       clearAgentConversationSelection,
-      invalidateProjectConversations,
+      invalidateConversationLists,
       selectedConversationId,
     ]
   );

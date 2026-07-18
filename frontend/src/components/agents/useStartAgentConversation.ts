@@ -153,6 +153,7 @@ export function useStartAgentConversation({
       content,
       runtime,
       runtimeProviderContext,
+      useRoleDefault = false,
       mode,
       automationAuthoringMode,
       base,
@@ -171,6 +172,7 @@ export function useStartAgentConversation({
       content: string;
       runtime: AgentRuntimeSelection;
       runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
+      useRoleDefault?: boolean | undefined;
       mode: AgentConversationWorkspaceMode;
       automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
@@ -510,27 +512,31 @@ export function useStartAgentConversation({
           ...(targetProjectId ? { projectId: targetProjectId } : {}),
           content,
           ...(seededConversation ? { conversationId: seededConversation.id } : {}),
-          providerHarness: normalizedRuntime.provider,
-          modelId: normalizedRuntime.modelId,
-          logicalEffort: normalizedRuntime.effort,
-          ...(codexFastMode !== undefined
+          ...(!useRoleDefault
             ? {
-                codexFastMode:
-                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+                providerHarness: normalizedRuntime.provider,
+                modelId: normalizedRuntime.modelId,
+                logicalEffort: normalizedRuntime.effort,
+                ...(codexFastMode !== undefined
+                  ? {
+                      codexFastMode:
+                        normalizedRuntime.provider === "codex" ? codexFastMode : null,
+                    }
+                  : {}),
+                ...(!isStandalone && effectiveMode !== "persona_builder" && personaId
+                  ? { personaId }
+                  : {}),
+                ...(!isStandalone && effectiveMode !== "persona_builder" && capabilityIntent
+                  ? { capabilityIntent }
+                  : {}),
+                ...(!isStandalone && effectiveMode !== "persona_builder" && teamIntent
+                  ? { teamIntent }
+                  : {}),
               }
-            : {}),
-          ...(!isStandalone && effectiveMode !== "persona_builder" && personaId
-            ? { personaId }
             : {}),
           mode: effectiveMode,
           ...(effectiveMode === "persona_builder" && sourcePersonaId
             ? { sourcePersonaId }
-            : {}),
-          ...(!isStandalone && effectiveMode !== "persona_builder" && capabilityIntent
-            ? { capabilityIntent }
-            : {}),
-          ...(!isStandalone && effectiveMode !== "persona_builder" && teamIntent
-            ? { teamIntent }
             : {}),
           ...(effectiveProjectReferences?.length
             ? { composerProjectReferences: effectiveProjectReferences }
@@ -678,9 +684,11 @@ export function useStartAgentConversation({
               content,
               runtime: normalizedRuntime,
               runtimeProviderContext,
+              useRoleDefault,
               mode: effectiveMode,
               base,
               codexFastMode,
+              personaId,
               capabilityIntent,
               teamIntent,
               composerArtifactReferences,

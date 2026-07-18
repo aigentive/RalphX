@@ -5,10 +5,14 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
   buildConversationModeOptions,
+  buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { AgentConversation } from "./agentConversations";
-import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+import {
+  AGENT_START_MODE_OPTIONS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 
 function conversation(
   overrides: Partial<AgentConversation> = {},
@@ -92,6 +96,18 @@ describe("isConversationModeLocked", () => {
     expect(isConversationModeLocked(conversation(), workspace())).toBe(false);
   });
 
+  it("does not treat durable Tasks return context as an active ownership lock", () => {
+    expect(
+      isConversationModeLocked(
+        conversation({ agentMode: "tasks" }),
+        workspace({
+          mode: "tasks",
+          taskPipelineSessionId: "session-1",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("locks automation and persona builder conversations without workspace rows", () => {
     expect(
       isConversationModeLocked(conversation({ agentMode: "automation" }), null),
@@ -124,9 +140,6 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
       );
       expect(options).not.toHaveLength(0);
       expect(options.every((option) => option.disabled)).toBe(true);
-      expect(options.find((option) => option.id === "ideation")).toEqual(
-        expect.objectContaining({ disabled: true }),
-      );
     },
   );
 
@@ -134,5 +147,50 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     expect(AGENT_START_MODE_OPTIONS).toContainEqual(
       expect.objectContaining({ id: "persona_builder", label: "Persona" }),
     );
+  });
+
+  it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
+        (option) => option.id,
+      ),
+    ).not.toContain("tasks");
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
+        (option) => option.id,
+      ),
+    ).not.toContain("autopilot");
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: true }).map(
+        (option) => option.id,
+      ),
+    ).toContain("autopilot");
+  });
+
+  it("offers Tasks only for the current or durably attached pipeline", () => {
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).not.toContain("tasks");
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: true,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toContain("tasks");
+  });
+
+  it("keeps a disabled current Autopilot mode visible after opt-out", () => {
+    const autopilot = buildAgentConversationModeOptions({
+      currentMode: "autopilot",
+      taskPipelineAvailable: false,
+      autopilotEnabled: false,
+    }).find((option) => option.id === "autopilot");
+
+    expect(autopilot).toMatchObject({ disabled: true });
   });
 });

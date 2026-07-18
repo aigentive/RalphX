@@ -1,4 +1,6 @@
-use super::{ensure_enabled, PersonaService, SavePersonaDraftInput};
+use super::{
+    clear_manual_role_persona_defaults_sync, ensure_enabled, PersonaService, SavePersonaDraftInput,
+};
 use serde_json::{json, Map, Value};
 
 use crate::domain::entities::{
@@ -283,6 +285,7 @@ impl PersonaService {
             .run_transaction(move |conn| {
                 persona_set_status_sync(conn, &id_value, PersonaStatus::Archived)?;
                 clear_persona_bindings_sync(conn, &id_value)?;
+                clear_manual_role_persona_defaults_sync(conn, &id_value)?;
                 Ok(())
             })
             .await?;

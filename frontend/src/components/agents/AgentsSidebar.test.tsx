@@ -1906,7 +1906,11 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByRole("button", { name: "Select fallback" }));
 
     await waitFor(() =>
-      expect(projectConversationCalls.at(-1)).toEqual(
+      expect(
+        projectConversationCalls
+          .filter((call) => call.projectId === depthProject.id)
+          .at(-1)
+      ).toEqual(
         expect.objectContaining({
           projectId: depthProject.id,
           minimumRowCount: 16,
@@ -1914,6 +1918,88 @@ describe("AgentsSidebar", () => {
           priorityConversationIds: [selectedFallback.id],
         })
       )
+    );
+  });
+
+  it("skips the No project pseudo-group when selected fallback priority changes", async () => {
+    const user = userEvent.setup();
+    const realProject = project({ id: "project-fallback-real", name: "Real project" });
+    const selectedFallback = conversation({
+      id: "conversation-fallback-real",
+      title: "Real project fallback",
+      projectId: realProject.id,
+      contextId: realProject.id,
+    });
+    conversationsByProject.set(realProject.id, {
+      data: [selectedFallback],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("__no_project__", {
+      data: [conversation({ id: "standalone-fallback-decoy", projectId: null })],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    function StatefulSidebar() {
+      const [selectedConversation, setSelectedConversation] =
+        useState<AgentConversation | null>(null);
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setSelectedConversation(selectedFallback)}
+          >
+            Change fallback priority
+          </button>
+          <AgentsSidebar
+            projects={[realProject]}
+            focusedProjectId={realProject.id}
+            selectedConversationId={selectedConversation?.id ?? null}
+            pinnedConversation={selectedConversation}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulSidebar />);
+    projectConversationCalls.length = 0;
+    await user.click(
+      screen.getByRole("button", { name: "Change fallback priority" })
+    );
+
+    await waitFor(() =>
+      expect(projectConversationCalls).toContainEqual(
+        expect.objectContaining({
+          projectId: realProject.id,
+          priorityConversationIds: [selectedFallback.id],
+        })
+      )
+    );
+    expect(projectConversationCalls).not.toContainEqual(
+      expect.objectContaining({
+        projectId: "__no_project__",
+        priorityConversationIds: [selectedFallback.id],
+      })
     );
   });
 

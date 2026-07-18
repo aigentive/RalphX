@@ -162,6 +162,9 @@ describe("featureFlagsSchema", () => {
     expect(flags.agentPersonas).toBe(false);
     expect(flags.agentConversationTeam).toBe(false);
     expect(flags.agentConversationWorkflows).toBe(false);
+    expect(flags.composerFolderReferences).toBe(false);
+    expect(flags.standaloneConversations).toBe(false);
+    expect(flags.agentConversationAutopilot).toBe(false);
   });
 });
 
@@ -198,6 +201,7 @@ describe("useFeatureFlags", () => {
       agentConversationWorkflows: false,
       composerFolderReferences: false,
       standaloneConversations: false,
+      agentConversationAutopilot: false,
     });
   });
 
@@ -225,6 +229,7 @@ describe("useFeatureFlags", () => {
       agentConversationWorkflows: false,
       composerFolderReferences: false,
       standaloneConversations: false,
+      agentConversationAutopilot: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -258,6 +263,7 @@ describe("useFeatureFlags", () => {
       agentConversationWorkflows: false,
       composerFolderReferences: false,
       standaloneConversations: false,
+      agentConversationAutopilot: false,
     });
   });
 });
@@ -279,6 +285,24 @@ describe("useUpdateFeatureFlags", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
       input: { agentConversationTeam: true },
+    });
+  });
+
+  it("updates Autopilot independently", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      agentConversationAutopilot: true,
+    });
+
+    const { result } = renderHook(() => useUpdateFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate({ agentConversationAutopilot: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { agentConversationAutopilot: true },
     });
   });
 });

@@ -14,3 +14,24 @@ export const AGENT_START_MODE_OPTIONS: Array<{
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project.", requiresProject: false },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks.", requiresProject: true },
 ];
+
+const AUTOPILOT_OPTION = {
+  id: "autopilot" as const,
+  label: "Autopilot",
+  description: "Plan, create tasks, and start execution with minimal supervision.",
+  requiresProject: true,
+};
+
+export function buildAgentStartModeOptions({
+  autopilotEnabled,
+}: {
+  autopilotEnabled: boolean;
+}) {
+  return autopilotEnabled
+    ? [
+        ...AGENT_START_MODE_OPTIONS.slice(0, 3),
+        AUTOPILOT_OPTION,
+        ...AGENT_START_MODE_OPTIONS.slice(3),
+      ]
+    : AGENT_START_MODE_OPTIONS;
+}

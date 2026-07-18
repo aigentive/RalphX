@@ -1,5 +1,9 @@
 use super::chat_service_context::*;
 use super::chat_service_helpers::resolve_agent_with_team_mode;
+use super::conversation_launch_security::{
+    conversation_launch_security_class, validate_conversation_launch_identity,
+    ConversationLaunchSecurityClass,
+};
 use crate::application::harness_runtime_registry::{
     resolve_chat_harness_cli, standard_chat_harness_cli_resolvers,
 };
@@ -8,10 +12,11 @@ use crate::domain::entities::*;
 use crate::domain::repositories::*;
 use crate::infrastructure::agents::claude::{
     agent_names, build_spawnable_interactive_command_for_test, mcp_agent_type, SpawnableCommand,
+    CLAUDE_PROMPT_PERMISSION_MODE,
 };
 use crate::infrastructure::memory::{
     MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
-    MemoryIdeationSessionRepository, MemoryTaskRepository,
+    MemoryIdeationSessionRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -22,6 +27,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tempfile::TempDir;
 use tokio::process::Command;
+
+#[path = "chat_service_context_tests/claude_standalone_security.rs"]
+mod claude_standalone_security;
+#[path = "chat_service_context_tests/codex_standalone_security.rs"]
+mod codex_standalone_security;
+#[path = "chat_service_context_tests/launch_security.rs"]
+mod launch_security;
 
 struct EnvGuard {
     key: &'static str,
@@ -43,6 +55,301 @@ impl Drop for EnvGuard {
             None => std::env::remove_var(self.key),
         }
     }
+}
+
+/// Standalone conversations are self-keyed and projectless; CWD resolution
+/// without an app-owned data directory must fail closed with a typed error
+/// instead of silently defaulting, so callers (queue resume, delegate_start)
+/// never spawn a Standalone agent in the wrong directory.
+#[tokio::test]
+async fn resolve_working_directory_standalone_without_app_data_dir_fails_closed_not_default() {
+    let default_dir = PathBuf::from("/tmp/default-working-directory");
+    let result = resolve_working_directory(
+        ChatContextType::Standalone,
+        "standalone-conversation-id",
+        Arc::new(MemoryProjectRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        &default_dir,
+        None,
+    )
+    .await;
+
+    let error =
+        result.expect_err("standalone CWD resolution without app_data_dir must fail closed");
+    assert!(
+        !error.is_empty(),
+        "standalone CWD resolution must surface a typed error message"
+    );
+}
+
+/// With a real app-owned data directory, Standalone CWD resolution must resolve
+/// to the conversation's private workspace — never the generic default working
+/// directory (spec §8.6 fail-closed: Standalone never shares CWD with anything else).
+#[tokio::test]
+async fn resolve_working_directory_standalone_resolves_private_workspace_cwd() {
+    let app_data_dir = TempDir::new().expect("app data dir");
+    let default_dir = PathBuf::from("/tmp/default-working-directory");
+    let conversation_id = "standalone-conversation-with-workspace";
+    let expected = crate::application::standalone_workspace::create_workspace(
+        app_data_dir.path(),
+        conversation_id,
+    )
+    .expect("workspace creation must succeed before resolution");
+
+    let result = resolve_working_directory(
+        ChatContextType::Standalone,
+        conversation_id,
+        Arc::new(MemoryProjectRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        &default_dir,
+        Some(app_data_dir.path()),
+    )
+    .await
+    .expect("standalone CWD resolution must succeed with an app-owned data dir");
+
+    assert_ne!(
+        result, default_dir,
+        "standalone CWD must never fall back to the generic default working directory"
+    );
+    assert_eq!(result, expected);
+    assert!(result.is_dir());
+}
+
+/// A workspace-creation failure must surface as a typed error, never the default
+/// working directory (absence assertion on the fallback).
+#[tokio::test]
+async fn resolve_working_directory_standalone_workspace_creation_failure_is_typed_not_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let blocked_app_data_dir = temp.path().join("blocked-app-data");
+    fs::write(&blocked_app_data_dir, b"not a directory").expect("write blocking file");
+    let default_dir = PathBuf::from("/tmp/default-working-directory");
+
+    let result = resolve_working_directory(
+        ChatContextType::Standalone,
+        "standalone-blocked-workspace",
+        Arc::new(MemoryProjectRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        &default_dir,
+        Some(blocked_app_data_dir.as_path()),
+    )
+    .await;
+
+    let error = result.expect_err(
+        "standalone workspace creation failure must return a typed error, not Ok(default)",
+    );
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_working_directory_standalone_deleted_workspace_fails_without_recreating() {
+    let app_data_dir = TempDir::new().expect("app data dir");
+    let conversation_id = "standalone-conversation-with-deleted-workspace";
+    let workspace = crate::application::standalone_workspace::create_workspace(
+        app_data_dir.path(),
+        conversation_id,
+    )
+    .expect("workspace creation should succeed");
+    fs::remove_dir_all(&workspace).expect("fixture workspace should be removed");
+
+    let result = resolve_working_directory(
+        ChatContextType::Standalone,
+        conversation_id,
+        Arc::new(MemoryProjectRepository::new()),
+        Arc::new(MemoryTaskRepository::new()),
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        Arc::new(MemoryDelegatedSessionRepository::new()),
+        Path::new("/tmp/default-working-directory"),
+        Some(app_data_dir.path()),
+    )
+    .await;
+
+    assert!(result.is_err(), "deleted workspace must fail closed");
+    assert!(
+        !workspace.exists(),
+        "resolution must not recreate the workspace"
+    );
+}
+
+/// Standalone-context MCP read roots resolve to exactly the conversation's private
+/// workspace — no project directory, no live folder references (non-goal §633 for v1).
+#[tokio::test]
+async fn resolve_mcp_filesystem_read_roots_standalone_returns_workspace_root_only() {
+    let app_data_dir = TempDir::new().expect("app data dir");
+    let working_directory = PathBuf::from("/tmp/unused-standalone-working-directory");
+    let conversation_id = "standalone-read-root-conversation";
+    let expected_root = crate::application::standalone_workspace::create_workspace(
+        app_data_dir.path(),
+        conversation_id,
+    )
+    .expect("workspace creation must succeed before read-root resolution");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Standalone,
+        None,
+        Arc::new(MemoryProjectRepository::new()) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        None,
+        Some(conversation_id),
+        Some(app_data_dir.path()),
+    )
+    .await;
+
+    assert_eq!(
+        roots,
+        vec![expected_root],
+        "standalone read roots must be exactly [workspace root]"
+    );
+}
+
+/// Regression guard: Project-context read-root resolution (no PersonaBuilder mode)
+/// must keep resolving to the project working directory, unaffected by the new
+/// Standalone context arm.
+#[tokio::test]
+async fn resolve_mcp_filesystem_read_roots_project_context_regression_unchanged() {
+    let root = TempDir::new().expect("root");
+    let project_directory = root.path().join("project");
+    fs::create_dir_all(&project_directory).expect("create project dir");
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let project_id = ProjectId::from_string("read-root-regression-project".to_string());
+    let mut project = crate::domain::entities::Project::new(
+        "Read Root Regression".to_string(),
+        project_directory.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project_repo.create(project).await.expect("seed project");
+
+    let working_directory = root.path().join("agent-workspace");
+    fs::create_dir_all(&working_directory).expect("create working dir");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        None,
+        Some("project-conversation-id"),
+        Some(root.path().join("app-data").as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![project_directory]);
+}
+
+/// Regression guard: the mode arm keeps precedence over the context arm (D9.3) — a
+/// PersonaBuilder-mode conversation still resolves to its ingest root even though
+/// its context_type here is not Standalone.
+#[tokio::test]
+async fn resolve_mcp_filesystem_read_roots_persona_builder_mode_regression_unchanged() {
+    let root = TempDir::new().expect("root");
+    let app_data_dir = root.path().join("app-data");
+    let conversation_id = "persona-builder-read-root-regression";
+    let ingest_root = crate::application::persona_ingest::persona_ingest_conversation_path(
+        &crate::application::persona_ingest::persona_ingest_storage_path(&app_data_dir),
+        conversation_id,
+    );
+    fs::create_dir_all(&ingest_root).expect("create ingest root");
+    fs::write(ingest_root.join("content"), "approved ingest text").expect("seed ingest content");
+    let workspace =
+        crate::application::standalone_workspace::create_workspace(&app_data_dir, conversation_id)
+            .expect("create builder workspace");
+
+    let working_directory = root.path().join("agent-workspace");
+    fs::create_dir_all(&working_directory).expect("create working dir");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        None,
+        Arc::new(MemoryProjectRepository::new()) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some(conversation_id),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![ingest_root, workspace]);
+}
+
+#[test]
+fn build_mcp_runtime_context_enforces_filesystem_roots_for_standalone_context() {
+    let working_directory = PathBuf::from("/tmp/standalone-enforcement-check");
+    let context = build_mcp_runtime_context(
+        ChatContextType::Standalone,
+        "standalone-conversation-id",
+        None,
+        "standalone-conversation-id",
+        None,
+        &working_directory,
+        None,
+        None,
+        &[],
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        context.enforce_filesystem_roots,
+        "Standalone-context conversations must enforce filesystem containment \
+         even without PersonaBuilder mode"
+    );
+}
+
+/// Regression guard: Project-context conversations without PersonaBuilder mode
+/// must remain unenforced.
+#[test]
+fn build_mcp_runtime_context_project_without_persona_builder_mode_stays_unenforced() {
+    let working_directory = PathBuf::from("/tmp/project-enforcement-regression");
+    let context = build_mcp_runtime_context(
+        ChatContextType::Project,
+        "project-id",
+        None,
+        "project-conversation-id",
+        None,
+        &working_directory,
+        None,
+        Some("project-id"),
+        &[],
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        !context.enforce_filesystem_roots,
+        "Project-context conversations without PersonaBuilder mode must stay unenforced"
+    );
+}
+
+/// Regression guard: PersonaBuilder mode keeps enforcing regardless of context type.
+#[test]
+fn build_mcp_runtime_context_persona_builder_mode_regression_unchanged() {
+    let working_directory = PathBuf::from("/tmp/persona-builder-enforcement-regression");
+    let context = build_mcp_runtime_context(
+        ChatContextType::Project,
+        "project-id",
+        None,
+        "project-conversation-id",
+        None,
+        &working_directory,
+        None,
+        Some("project-id"),
+        &[],
+        None,
+        None,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+    );
+
+    assert!(
+        context.enforce_filesystem_roots,
+        "PersonaBuilder-mode conversations must remain enforced"
+    );
 }
 
 fn write_test_file(path: &Path, contents: &str) {

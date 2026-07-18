@@ -45,6 +45,69 @@ async fn standalone_persona_builder_uses_workspace_cwd_and_filesystem_enforcemen
 }
 
 #[tokio::test]
+async fn standalone_persona_builder_start_accepts_codex_and_persists_provider_mode() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    set_standalone_conversations_override(Some(true));
+    let fake_codex = FakeCodex::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_codex
+            .cli_path
+            .to_str()
+            .expect("fake Codex path should be UTF-8"),
+    );
+    let state = AppState::new_test();
+    state
+        .manual_role_default_repo
+        .upsert_global(
+            RoutingRole::UtilityLightweight,
+            &manual_role_default(AgentHarnessKind::Claude),
+        )
+        .await
+        .expect("global Claude utility default should persist");
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    let mut input = standalone_start_input(
+        "Build a global persona with Codex",
+        Some("persona_builder"),
+        None,
+        None,
+        None,
+    );
+    input.provider_harness = Some("codex".to_string());
+
+    let result = start_with_app(&app, input)
+        .await
+        .expect("standalone PersonaBuilder Codex start should be accepted");
+
+    let persisted = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&result.conversation.id)
+        .await
+        .expect("PersonaBuilder conversation lookup should succeed")
+        .expect("PersonaBuilder conversation should persist");
+    assert_eq!(
+        persisted.agent_mode,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+    );
+    let runs = app
+        .state::<AppState>()
+        .agent_run_repo
+        .get_by_conversation(&result.conversation.id)
+        .await
+        .expect("PersonaBuilder Codex run lookup should succeed");
+    assert!(
+        runs.iter()
+            .any(|run| run.harness == Some(AgentHarnessKind::Codex)),
+        "start must persist the explicit Codex provider on the builder run",
+    );
+    assert!(
+        fake_codex.was_invoked(),
+        "Standalone PersonaBuilder start must invoke Codex",
+    );
+}
+
+#[tokio::test]
 async fn standalone_builder_seed_with_folder_reference_starts_with_enforced_root() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
@@ -119,54 +182,4 @@ async fn standalone_builder_seed_with_folder_reference_starts_with_enforced_root
         captured.contains(folder_root.to_string_lossy().as_ref()),
         "registered folder reference must be present in enforced roots: {captured}"
     );
-}
-
-#[tokio::test]
-async fn standalone_chat_rejects_codex_while_project_chat_allows_codex() {
-    let _reset = PersonaFlagsOverrideReset;
-    set_agent_personas_override(Some(true));
-    set_standalone_conversations_override(Some(true));
-    ralphx_lib::testing::seed_available_harness_probes_for_test();
-    let temp = tempfile::tempdir().expect("tempdir should be created");
-    let db = SqliteTestDb::new("seeded-refine-standard-start");
-    let shared = db.shared_conn();
-    let mut state = AppState::new_test();
-    state.db = DbConnection::from_shared(Arc::clone(&shared));
-    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
-    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
-    let project = seed_project(&state, "project-chat-codex", temp.path(), temp.path()).await;
-    let execution_state = Arc::new(ExecutionState::new());
-    execution_state.pause();
-    let app = build_app(state, execution_state);
-
-    let mut standalone = standalone_start_input(
-        "Reject unsafe standalone lane",
-        Some("chat"),
-        None,
-        None,
-        None,
-    );
-    standalone.provider_harness = Some("codex".to_string());
-    let error = start_with_app(&app, standalone)
-        .await
-        .expect_err("standalone chat must reject Codex");
-    assert!(
-        error.contains("Claude harness"),
-        "unexpected error: {error}"
-    );
-
-    let mut project_input = service_start_input(
-        &project.id,
-        "Project Codex chat remains project bounded",
-        "chat",
-        None,
-        None,
-        None,
-        None,
-    );
-    project_input.provider_harness = Some("codex".to_string());
-    let started = start_with_app(&app, project_input)
-        .await
-        .expect("Project-context Codex chat remains allowed");
-    assert!(started.send_result.was_queued);
 }

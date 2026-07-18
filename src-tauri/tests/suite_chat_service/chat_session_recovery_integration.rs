@@ -23,8 +23,9 @@ use ralphx_lib::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, ChatMessageRepository, PersonaRepository,
 };
 use ralphx_lib::infrastructure::memory::{
-    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
-    MemoryChatMessageRepository, MemoryPersonaRepository,
+    MemoryAgentProviderSettingsRepository, MemoryArtifactRepository,
+    MemoryChatAttachmentRepository, MemoryChatConversationRepository, MemoryChatMessageRepository,
+    MemoryPersonaRepository,
 };
 use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
 
@@ -65,6 +66,16 @@ fn final_spawnable_command(
         }
     }
     rendered
+}
+
+fn captured_cli_arg_value<'a>(captured: &'a str, flag: &str) -> Option<&'a str> {
+    let mut arguments = captured.lines();
+    while let Some(argument) = arguments.next() {
+        if argument == flag {
+            return arguments.next();
+        }
+    }
+    None
 }
 
 async fn bound_project_persona() -> (ChatConversation, Arc<MemoryPersonaRepository>) {
@@ -451,7 +462,359 @@ async fn recovery_spawn_args_enforce_filesystem_for_builder_and_standalone_chat(
             captured.contains("--filesystem-enforced") && captured.contains("\"1\""),
             "{label} recovery must pass filesystem enforcement to MCP: {captured}"
         );
+        if label == "standalone-chat" {
+            const EXPECTED_CLAUDE_PROMPT_PERMISSION_MODE: &str = "default";
+            assert_eq!(
+                captured_cli_arg_value(&captured, "--permission-mode"),
+                Some(EXPECTED_CLAUDE_PROMPT_PERMISSION_MODE),
+                "restart recovery must use Claude's prompting permission mode"
+            );
+            assert!(
+                !captured.lines().any(|argument| matches!(
+                    argument,
+                    "--dangerously-skip-permissions" | "--allow-dangerously-skip-permissions"
+                )),
+                "restart recovery must not bypass Claude permissions: {captured}"
+            );
+            let native_tools = captured_cli_arg_value(&captured, "--tools")
+                .expect("restart recovery should retain native read tools");
+            let preapproved_tools = captured_cli_arg_value(&captured, "--allowedTools")
+                .expect("restart recovery should retain MCP preapprovals");
+            for native_read in ["Read", "Grep", "Glob"] {
+                assert!(
+                    native_tools.split(',').any(|tool| tool == native_read),
+                    "restart recovery should retain native {native_read}: {native_tools}"
+                );
+                assert!(
+                    !preapproved_tools.split(',').any(|tool| tool == native_read),
+                    "restart recovery must prompt for native {native_read}: {preapproved_tools}"
+                );
+            }
+            assert!(
+                preapproved_tools
+                    .split(',')
+                    .any(|tool| tool.contains("permission_request")),
+                "restart recovery must retain the permission bridge: {preapproved_tools}"
+            );
+        }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn standalone_codex_recovery_persists_replacement_session_and_stays_contained() {
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    let conversation_id = conversation.id;
+    let context_type = conversation.context_type;
+    let context_id = conversation.context_id.clone();
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("Codex recovery fixture");
+    let app_data_dir =
+        validate_absolute_non_root_path(&temp.path().join("app-data"), "Codex recovery app data")
+            .expect("safe Codex recovery app data");
+    let working_directory = ralphx_lib::application::standalone_workspace::create_workspace(
+        &app_data_dir,
+        &conversation_id.as_str(),
+    )
+    .expect("create Codex recovery private workspace");
+    let mut state = ralphx_lib::application::AppState::new_test();
+    state.app_paths = ralphx_lib::application::AppPaths::new(app_data_dir, None);
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("persist Codex recovery conversation");
+    let mut history = ChatMessage::user_in_project(
+        ProjectId::from_string("codex-recovery-history-project".to_string()),
+        "prior Codex recovery turn",
+    );
+    history.conversation_id = Some(conversation_id);
+    state
+        .chat_message_repo
+        .create(history)
+        .await
+        .expect("persist Codex recovery history");
+    let run = AgentRun::new(conversation_id);
+    let run_id = run.id.as_str();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("persist Codex recovery run");
+    let message_repo = Arc::clone(&state.chat_message_repo);
+    let conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("Codex recovery app");
+    let capture_path = validate_absolute_non_root_path(
+        &temp.path().join("standalone-codex-spawn.txt"),
+        "Codex recovery capture",
+    )
+    .expect("safe Codex recovery capture");
+    let cli_path =
+        validate_absolute_non_root_path(&temp.path().join("codex"), "Codex recovery CLI")
+            .expect("safe Codex recovery CLI");
+    std::fs::write(
+        &cli_path,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'codex-cli 0.116.0'
+  exit 0
+fi
+if [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands: exec mcp resume' 'Options: -c --config -m --model -s --sandbox --search --add-dir'
+  exit 0
+fi
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage: codex exec [OPTIONS] [PROMPT]' 'Options: -c --config -m --model -s --sandbox --add-dir --json -C --cd --skip-git-repo-check'
+  exit 0
+fi
+printf '%s\n' "$@" > '{}'
+printf '%s\n' '{{"type":"thread.started","thread_id":"recovered-standalone-codex"}}'
+printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"Recovered with Codex."}}}}'
+printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"cached_input_tokens":0,"output_tokens":4}}}}'
+"#,
+            capture_path.display(),
+        ),
+    )
+    .expect("write Codex recovery capture CLI");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("Codex recovery capture CLI metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions)
+        .expect("mark Codex recovery capture CLI executable");
+    let provider_settings = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
+
+    let replacement_session_id = attempt_session_recovery::<tauri::test::MockRuntime>(
+        &conversation_id,
+        &conversation,
+        AgentHarnessKind::Codex,
+        context_type,
+        &context_id,
+        "recover this standalone conversation with Codex",
+        &cli_path,
+        &repo_plugin_dir(),
+        &working_directory,
+        None,
+        false,
+        message_repo,
+        Arc::clone(&conversation_repo),
+        attachment_repo,
+        artifact_repo,
+        None,
+        None,
+        agent_run_repo,
+        &run_id,
+        Some(provider_settings),
+        false,
+        false,
+        "stale-codex-session",
+        Some(app.handle()),
+    )
+    .await
+    .expect("standalone Codex recovery should succeed");
+
+    assert_eq!(replacement_session_id, "recovered-standalone-codex");
+    let persisted = conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("Codex recovery conversation lookup should succeed")
+        .expect("Codex recovery conversation should remain persisted");
+    assert_eq!(
+        persisted.provider_session_ref(),
+        Some(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: replacement_session_id,
+        }),
+        "recovery must persist the replacement Codex thread identity",
+    );
+
+    let captured =
+        std::fs::read_to_string(&capture_path).expect("read Codex recovery spawn arguments");
+    assert_eq!(
+        captured.lines().next(),
+        Some("exec"),
+        "recovery must start a fresh Codex exec session: {captured}",
+    );
+    assert_eq!(
+        captured_cli_arg_value(&captured, "-s"),
+        Some("workspace-write"),
+        "standalone Codex recovery must use the contained workspace sandbox: {captured}",
+    );
+    let expected_working_directory = working_directory.to_string_lossy();
+    assert_eq!(
+        captured_cli_arg_value(&captured, "-C"),
+        Some(expected_working_directory.as_ref()),
+        "standalone Codex recovery must execute from its private workspace: {captured}",
+    );
+    assert!(
+        captured
+            .lines()
+            .any(|argument| argument == "approval_policy=\"on-request\""),
+        "standalone Codex recovery must retain provider-native approval policy: {captured}",
+    );
+    assert!(
+        captured.contains("--filesystem-enforced")
+            && captured.contains("\"1\"")
+            && captured.contains("--filesystem-read-root")
+            && captured.contains(expected_working_directory.as_ref()),
+        "standalone Codex recovery must retain MCP filesystem enforcement: {captured}",
+    );
+    assert!(
+        !captured.lines().any(|argument| {
+            matches!(
+                argument,
+                "resume"
+                    | "--resume"
+                    | "danger-full-access"
+                    | "approval_policy=\"never\""
+                    | "--permission-mode"
+                    | "--dangerously-skip-permissions"
+                    | "--allow-dangerously-skip-permissions"
+                    | "--allowedTools"
+                    | "--tools"
+            )
+        }),
+        "Codex recovery must not inherit stale-session or Claude-only flags: {captured}",
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_rejects_caller_context_downgrade_before_provider_side_effects() {
+    let conversation = ChatConversation::new_standalone();
+    let conversation_id = conversation.id;
+    let state = ralphx_lib::application::AppState::new_test();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("persist authoritative standalone conversation");
+    let temp = tempfile::tempdir().expect("recovery mismatch fixture");
+    let invocation_marker = validate_absolute_non_root_path(
+        &temp.path().join("provider-invoked"),
+        "recovery provider invocation marker",
+    )
+    .expect("recovery invocation marker should stay under the process-owned fixture root");
+    let cli_path =
+        validate_absolute_non_root_path(&temp.path().join("claude"), "recovery mismatch CLI")
+            .expect("recovery mismatch CLI should stay under the process-owned fixture root");
+    std::fs::write(
+        &cli_path,
+        format!("#!/bin/sh\n: > '{}'\n", invocation_marker.display()),
+    )
+    .expect("write recovery mismatch CLI");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("read recovery mismatch CLI metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions)
+        .expect("mark recovery mismatch CLI executable");
+
+    let result = attempt_session_recovery::<tauri::test::MockRuntime>(
+        &conversation_id,
+        &conversation,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        conversation.context_id.as_str(),
+        "must fail before recovery",
+        &cli_path,
+        &repo_plugin_dir(),
+        temp.path(),
+        None,
+        false,
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.artifact_repo),
+        None,
+        None,
+        Arc::clone(&state.agent_run_repo),
+        "recovery-mismatch-run",
+        None,
+        false,
+        false,
+        "stale-session",
+        None,
+    )
+    .await;
+
+    let error = result.expect_err("recovery must reject a relabeled Standalone conversation");
+    assert!(
+        error.to_string().contains("context type mismatch"),
+        "unexpected recovery mismatch error: {error}",
+    );
+    assert!(
+        !invocation_marker.exists(),
+        "identity mismatch must not invoke the recovery provider",
+    );
+    let persisted = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("conversation should remain persisted");
+    assert!(
+        persisted.provider_session_ref().is_none(),
+        "identity mismatch must not persist a replacement provider session",
+    );
+
+    let mismatched_conversation_id = ChatConversationId::new();
+    let id_result = attempt_session_recovery::<tauri::test::MockRuntime>(
+        &mismatched_conversation_id,
+        &conversation,
+        AgentHarnessKind::Claude,
+        conversation.context_type,
+        conversation.context_id.as_str(),
+        "must fail before recovery",
+        &cli_path,
+        &repo_plugin_dir(),
+        temp.path(),
+        None,
+        false,
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.artifact_repo),
+        None,
+        None,
+        Arc::clone(&state.agent_run_repo),
+        "recovery-conversation-id-mismatch-run",
+        None,
+        false,
+        false,
+        "stale-session",
+        None,
+    )
+    .await;
+
+    let id_error = id_result.expect_err("recovery must reject a mismatched conversation id");
+    assert!(
+        id_error.to_string().contains("conversation id mismatch"),
+        "unexpected recovery id mismatch error: {id_error}",
+    );
+    assert!(
+        !invocation_marker.exists(),
+        "conversation id mismatch must not invoke the recovery provider",
+    );
+    assert!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&mismatched_conversation_id)
+            .await
+            .expect("mismatched conversation lookup should succeed")
+            .is_none(),
+        "conversation id mismatch must not create or update another conversation",
+    );
 }
 
 #[cfg(unix)]

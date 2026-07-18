@@ -30,6 +30,9 @@ pub(super) use ralphx_lib::commands::unified_chat_commands::{
     create_agent_conversation, CreateAgentConversationInput,
 };
 pub(super) use ralphx_lib::commands::ExecutionState;
+pub(super) use ralphx_lib::domain::agents::{
+    AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole,
+};
 pub(super) use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType,
@@ -51,6 +54,8 @@ pub(super) use ralphx_lib::testing::SqliteTestDb;
 pub(super) use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
 pub(super) use tauri::test::{mock_builder, mock_context, noop_assets};
 pub(super) use tauri::Manager;
+
+pub(super) use super::support::fake_codex::FakeCodex;
 
 pub(super) fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -178,6 +183,39 @@ pub(super) fn standalone_start_input(
         composer_selection_snapshot: None,
         team_intent,
     }
+}
+
+pub(super) fn manual_role_default(harness: AgentHarnessKind) -> ManualRoleDefault {
+    ManualRoleDefault {
+        harness,
+        model: None,
+        effort: None,
+        service_tier: ManualServiceTier::ProviderDefault,
+        coordination_mode: None,
+        persona_id: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
+}
+
+pub(super) async fn configure_provider_cli(
+    state: &AppState,
+    harness: AgentHarnessKind,
+    cli_path: impl Into<String>,
+) {
+    let mut settings = state
+        .agent_provider_settings_repo
+        .get(harness)
+        .await
+        .expect("provider settings should load")
+        .expect("provider settings should exist");
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(cli_path.into());
+    state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("custom provider CLI should persist");
 }
 
 pub(super) struct StandaloneConversationsFlagOverrideReset;

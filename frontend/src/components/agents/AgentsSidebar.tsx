@@ -155,6 +155,8 @@ const AGENTS_SIDEBAR_ADAPTIVE_MAX_VISIBLE_SESSION_ROWS = 48;
 const AGENTS_SIDEBAR_ADAPTIVE_PAGE_OVERSCAN_ROWS = 2;
 const AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX = 46;
 const AGENTS_SIDEBAR_SCROLL_MEMORY_LIMIT = 120;
+const NO_PROJECT_GROUP_KEY = "__no_project__";
+const STANDALONE_AUTOMATION_GROUP_KEY = "__standalone__";
 
 type ArchiveConversationHandler = (
   conversation: AgentConversation,
@@ -935,6 +937,19 @@ export function AgentsSidebar({
     sidebarGroupBy,
     sidebarSelectedConversationIds,
   ]);
+  const fallbackPriorityProjectId = useMemo(() => {
+    const candidateProjectId = pinnedConversation?.projectId;
+    if (
+      !candidateProjectId ||
+      candidateProjectId === NO_PROJECT_GROUP_KEY ||
+      candidateProjectId === STANDALONE_AUTOMATION_GROUP_KEY
+    ) {
+      return null;
+    }
+    return projects.some((project) => project.id === candidateProjectId)
+      ? candidateProjectId
+      : null;
+  }, [pinnedConversation?.projectId, projects]);
   const selectedProjectFilterIds = useMemo(() => {
     if (showAllProjects) {
       return projects.map((project) => project.id);
@@ -1028,12 +1043,15 @@ export function AgentsSidebar({
   ]);
   const fillFilteredProjectSidebar = expandedProjectIdForFill !== null;
   const standaloneGroupQuery = useAgentSidebarProjectGroup({
-    projectId: "__no_project__",
+    projectId: NO_PROJECT_GROUP_KEY,
     archivedOnly: showArchived,
     search: normalizedSearch,
     publicationStates: selectedPublicationStates,
     pinnedConversationIds: pinnedConversationIdList,
-    priorityConversationIds: selectedPriorityConversationIds,
+    priorityConversationIds:
+      pinnedConversation?.projectId === null
+        ? selectedPriorityConversationIds
+        : [],
     enabled: sidebarGroupBy === "project",
   });
 
@@ -1285,7 +1303,11 @@ export function AgentsSidebar({
               onForkConversation={handleForkConversation}
               onTogglePinnedConversation={togglePinnedConversation}
               pinnedConversationIdList={pinnedConversationIdList}
-              priorityConversationIds={selectedPriorityConversationIds}
+              priorityConversationIds={
+                fallbackPriorityProjectId === project.id
+                  ? selectedPriorityConversationIds
+                  : []
+              }
               pinnedConversationIds={pinnedConversationIds}
               selectedPublicationStates={selectedPublicationStates}
               showArchived={showArchived}

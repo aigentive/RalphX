@@ -4,8 +4,8 @@ pub(super) use std::sync::{Arc, Mutex};
 pub(super) use ralphx_lib::application::app_paths::AppPaths;
 pub(super) use ralphx_lib::application::chat_service::{
     process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
-    validate_conversation_spawn_harness, AppChatService, ChatService, ChatServiceError,
-    SendMessageOptions, PERSONA_BUILDER_FEATURE_DISABLED_ERROR, STANDALONE_CODEX_UNSUPPORTED_ERROR,
+    AppChatService, ChatService, ChatServiceError, SendMessageOptions,
+    PERSONA_BUILDER_FEATURE_DISABLED_ERROR,
 };
 pub(super) use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
@@ -14,8 +14,8 @@ pub(super) use ralphx_lib::application::standalone_workspace::create_workspace;
 pub(super) use ralphx_lib::application::AppState;
 pub(super) use ralphx_lib::domain::agents::AgentHarnessKind;
 pub(super) use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRunId, ChatContextType, ChatConversation, Persona,
-    PersonaId, PersonaStatus, Project,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunId, ChatContextType, ChatConversation,
+    ChatConversationId, Persona, PersonaId, PersonaStatus, Project,
 };
 pub(super) use ralphx_lib::domain::repositories::ChatConversationRepository;
 pub(super) use ralphx_lib::infrastructure::agents::claude::{
@@ -25,6 +25,8 @@ pub(super) use ralphx_lib::infrastructure::agents::claude::{
 pub(super) use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 pub(super) use ralphx_lib::utils::path_safety::validate_absolute_non_root_path;
 pub(super) use tauri::{Listener, Manager};
+
+pub(super) use super::support::{fake_claude::FakeClaude, fake_codex::FakeCodex};
 
 pub(super) struct PersonaEnvReset {
     key: &'static str,
@@ -82,6 +84,23 @@ pub(super) fn persona_flag_override_chat_service(state: &AppState) -> AppChatSer
         Arc::clone(&state.running_agent_registry),
         Arc::clone(&state.memory_event_repo),
     )
+}
+
+pub(super) async fn seed_completed_continuation_runtime(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.complete();
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed completed continuation runtime");
 }
 
 #[cfg(unix)]

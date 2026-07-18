@@ -33,6 +33,7 @@ fn queued_agent_run_inherits_exact_continuation_runtime_attribution() {
         None,
         &codex_continuation_runtime(),
         &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.5"));
@@ -59,6 +60,7 @@ fn queued_agent_run_records_explicit_runtime_overrides() {
         None,
         &codex_continuation_runtime(),
         &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.6"));

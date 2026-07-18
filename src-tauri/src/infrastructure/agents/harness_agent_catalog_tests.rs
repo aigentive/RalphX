@@ -643,7 +643,6 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         "ask_user_question",
         "save_persona_draft",
         "get_persona_draft",
-        "TaskList",
     ];
     let ungranted_tools = [
         "delegate_start",
@@ -679,7 +678,7 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         for granted in granted_tools {
             assert!(
                 prompt.contains(granted),
-                "persona extractor {harness:?} prompt should name granted/inert tool {granted}"
+                "persona extractor {harness:?} prompt should name granted tool {granted}"
             );
         }
         for ungranted in ungranted_tools {
@@ -689,6 +688,25 @@ fn persona_extractor_prompts_mention_only_live_tools() {
             );
         }
     }
+
+    let claude_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-persona-extractor",
+        AgentPromptHarness::Claude,
+    )
+    .expect("persona extractor Claude prompt should exist");
+    assert!(
+        claude_prompt.contains("TaskList"),
+        "Claude prompt should document its inert CLI filler"
+    );
+
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-persona-extractor", AgentPromptHarness::Codex)
+            .expect("persona extractor Codex prompt should exist");
+    assert!(
+        !codex_prompt.contains("TaskList"),
+        "Codex prompt must not mention a Claude-only tool"
+    );
 }
 
 #[test]

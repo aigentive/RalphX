@@ -233,7 +233,7 @@ interface AgentSessionActions {
   ) => void;
   setRoleDefaultRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
@@ -747,7 +747,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
-          delete state.lastRuntimeByProjectId[projectId];
+          if (projectId) {
+            delete state.lastRuntimeByProjectId[projectId];
+          }
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,

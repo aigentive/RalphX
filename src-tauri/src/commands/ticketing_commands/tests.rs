@@ -4172,9 +4172,10 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Use the current role default".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: None,
         parent_conversation_id: None,
         title: None,

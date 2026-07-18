@@ -62,20 +62,20 @@ async fn resumed_builder_send_rejects_flag_off_and_flag_on_passes_the_gate() {
 async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
     async fn drain_with_flag(enabled: bool) -> Vec<String> {
         let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
-        let mut conversation =
-            ChatConversation::new_project(ralphx_lib::domain::entities::ProjectId::from_string(
-                format!("queued-builder-flag-{enabled}"),
-            ));
+        let project_id = ralphx_lib::domain::entities::ProjectId::from_string(format!(
+            "queued-builder-flag-{enabled}"
+        ));
+        let mut conversation = ChatConversation::new_project(project_id.clone());
         conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
         let conversation = conversation_repo.create(conversation).await.unwrap();
         let mut initial_state = AppState::new_test();
         initial_state.chat_conversation_repo = conversation_repo;
-        let context_id = conversation.id.as_str();
+        let queue_context_id = conversation.id.as_str();
         initial_state
             .message_queue
             .queue_with_runtime_overrides_and_project_references(
                 ChatContextType::Project,
-                &context_id,
+                &queue_context_id,
                 "queued builder resume".to_string(),
                 None,
                 None,
@@ -105,7 +105,7 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
             app.handle().clone(),
             ChatContextType::Project,
             AgentHarnessKind::Claude,
-            &context_id,
+            project_id.as_str(),
             conversation.id,
             "claude-session",
             std::path::Path::new("/definitely/missing/ralphx-test-cli"),
@@ -140,12 +140,12 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
     conversation_repo.fail_get_by_id(conversation.id).await;
     let mut initial_state = AppState::new_test();
     initial_state.chat_conversation_repo = conversation_repo;
-    let context_id = conversation.id.as_str();
+    let queue_context_id = conversation.id.as_str();
     initial_state
         .message_queue
         .queue_with_runtime_overrides_and_project_references(
             ChatContextType::Project,
-            &context_id,
+            &queue_context_id,
             "queued builder after repository failure".to_string(),
             None,
             None,
@@ -176,7 +176,7 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
         app.handle().clone(),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
-        &context_id,
+        project.id.as_str(),
         conversation.id,
         "claude-session",
         std::path::Path::new("/definitely/missing/ralphx-test-cli"),
@@ -247,17 +247,17 @@ printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error"
         ))
         .await
         .expect("persist queued builder project");
-    let mut conversation = ChatConversation::new_project(project.id);
+    let mut conversation = ChatConversation::new_project(project.id.clone());
     conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
     let conversation = initial_state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("persist queued builder conversation");
-    let context_id = conversation.id.as_str();
+    let queue_context_id = conversation.id.as_str();
     initial_state.message_queue.queue(
         ChatContextType::Project,
-        context_id.clone(),
+        queue_context_id.clone(),
         "drain queued builder with enforcement".to_string(),
     );
     let app = tauri::test::mock_builder()
@@ -269,7 +269,7 @@ printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error"
         app.handle().clone(),
         ChatContextType::Project,
         AgentHarnessKind::Claude,
-        &context_id,
+        project.id.as_str(),
         conversation.id,
         "queued-builder-old-session",
         &cli_path,

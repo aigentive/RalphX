@@ -5,6 +5,8 @@ pub(crate) fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode
         mode,
         AgentConversationWorkspaceMode::Edit
             | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Tasks
+            | AgentConversationWorkspaceMode::Autopilot
             | AgentConversationWorkspaceMode::Ideation
             | AgentConversationWorkspaceMode::ReviewPr
     )

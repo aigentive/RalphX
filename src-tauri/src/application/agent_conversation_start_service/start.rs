@@ -223,32 +223,27 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             || input.team_intent.is_some();
         let role_default = if has_explicit_composer_override {
             None
-        } else if let (Some(project_id), Some(project)) =
-            (input.project_id.as_deref(), project.as_ref())
-        {
+        } else {
             let role = crate::application::agent_lane_resolution::routing_role_for_chat_launch(
                 agent_name_for_workspace_mode(mode),
-                ChatContextType::Project,
+                context_type,
                 None,
                 Some(mode),
                 false,
             );
+            let project_root = project
+                .as_ref()
+                .map(|project| std::path::Path::new(&project.working_directory));
             Some(
                 self.deps
                     .state
                     .manual_role_default_service()
-                    .resolve(
-                        Some(project_id),
-                        Some(std::path::Path::new(&project.working_directory)),
-                        role,
-                    )
+                    .resolve(input.project_id.as_deref(), project_root, role)
                     .await
                     .map_err(|error| {
                         format!("Failed to resolve manual default for {role}: {error}")
                     })?,
             )
-        } else {
-            None
         };
         let role_value = role_default.as_ref().map(|resolved| &resolved.value);
         let harness_override = match input.provider_harness.as_deref() {
@@ -297,7 +292,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         }
 
         let validate_runtime_started = Instant::now();
-        let effective_harness =
+        let validated_harness =
             crate::application::validate_chat_runtime_for_context_with_override(
                 self.deps.state,
                 context_type,
@@ -306,25 +301,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 harness_override,
             )
             .await?;
-        let mut spawn_conversation = seeded_conversation.clone().unwrap_or_else(|| {
-            if context_type == ChatContextType::Standalone {
-                ChatConversation::new_standalone()
-            } else {
-                ChatConversation::new_project(
-                    project_id_opt
-                        .clone()
-                        .expect("Project starts resolve a project id before harness validation"),
-                )
-            }
-        });
-        spawn_conversation.agent_mode = Some(mode);
-        crate::application::chat_service::validate_conversation_spawn_harness(
-            &spawn_conversation,
-            effective_harness,
-        )
-        .map_err(|error| error.to_string())?;
         let requested_capability = requested_coordination_mode.unwrap_or_default();
-        let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let requested_harness = harness_override.unwrap_or(validated_harness);
         let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
             .then(|| {
                 crate::application::agent_capability_validation::codex_ultra_support_for_model(

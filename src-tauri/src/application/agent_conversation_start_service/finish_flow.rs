@@ -16,6 +16,10 @@ pub(super) struct FinishFlow {
     pub(super) project: Option<crate::domain::entities::Project>,
     pub(super) requested_coordination_mode: Option<CoordinationMode>,
     pub(super) harness_override: Option<AgentHarnessKind>,
+    pub(super) effective_model_override: Option<String>,
+    pub(super) effective_logical_effort: Option<LogicalEffort>,
+    pub(super) effective_service_tier_override: Option<String>,
+    pub(super) effective_team_intent: Option<TeamIntent>,
     pub(super) mode: AgentConversationWorkspaceMode,
     pub(super) composer_artifact_references: Vec<ComposerArtifactReference>,
 }
@@ -40,6 +44,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             project,
             requested_coordination_mode,
             harness_override,
+            effective_model_override,
+            effective_logical_effort,
+            effective_service_tier_override,
+            effective_team_intent,
             mode,
             composer_artifact_references,
         } = flow;
@@ -388,8 +396,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let runtime_override_prepare_started = Instant::now();
-        let model_override = input
-            .model_override
+        let model_override = effective_model_override
             .as_deref()
             .map(str::trim)
             .filter(|model| !model.is_empty())
@@ -409,13 +416,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             self.deps.state,
             harness_override,
             model_override,
-            input.logical_effort,
+            effective_logical_effort,
         )
         .await?;
-        let service_tier_override =
-            crate::application::chat_service::codex_fast_mode_service_tier_override(
-                input.codex_fast_mode,
-            );
+        let service_tier_override = effective_service_tier_override;
         log_start_agent_conversation_phase(
             &context_log_id,
             Some(&conversation.id),
@@ -452,7 +456,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
                     composer_artifact_references,
-                    team_intent: input.team_intent.clone(),
+                    composer_selection_snapshot: input.composer_selection_snapshot.clone(),
+                    team_intent: effective_team_intent,
                     ..Default::default()
                 },
             )

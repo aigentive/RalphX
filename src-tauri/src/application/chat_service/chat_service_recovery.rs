@@ -177,6 +177,15 @@ pub async fn attempt_session_recovery<R: Runtime>(
     app_handle: Option<&tauri::AppHandle<R>>,
 ) -> AppResult<String> {
     let recovery_start = std::time::Instant::now();
+    let requested_conversation_id = conversation_id.as_str();
+
+    super::conversation_launch_security::validate_conversation_launch_identity(
+        conversation,
+        requested_conversation_id.as_str(),
+        context_type,
+        context_id,
+    )
+    .map_err(AppError::Infrastructure)?;
 
     // Helper closure to log failure with duration
     let log_failure = |error: &AppError| {

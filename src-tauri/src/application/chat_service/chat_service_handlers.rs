@@ -2651,7 +2651,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             app_handle,
                             persona_feature_enabled,
                             conv,
-                            context_type,
+                            conv.context_type,
                             agent_name_override_set,
                         )
                         .await;
@@ -2689,8 +2689,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     recovery_harness,
                                     cli_path,
                                     plugin_dir,
-                                    context_type,
-                                    context_id,
+                                    conv.context_type,
+                                    conv.context_id.as_str(),
                                     conv.coordination_mode,
                                     &conversation_id.as_str(),
                                     conv.agent_mode,
@@ -2703,7 +2703,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     &new_session_id,
                                     resolved_project_id.as_deref(),
                                     &filesystem_read_roots,
-                                    if context_type == ChatContextType::Project {
+                                    if conv.context_type == ChatContextType::Project {
                                         Some(conversation_id.as_str())
                                     } else {
                                         None
@@ -2743,7 +2743,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             app_handle,
                             &retry_agent_provider_settings_repo,
                             recovery_harness,
-                            context_type,
+                            conv.context_type,
                             resolved_project_id.as_deref(),
                             working_directory,
                         );

@@ -1431,6 +1431,20 @@ fn build_codex_mcp_overrides_disables_apply_patch_for_persona_extractor() {
     )
     .expect("PersonaExtractor spawn args");
 
+    assert!(
+        spawn_args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "features.shell_tool=false"),
+        "Codex PersonaExtractor must disable the native shell; override keys: {:?}",
+        override_keys(&overrides)
+    );
+
+    assert!(
+        overrides.iter().any(|entry| entry
+            == "mcp_servers.ralphx.enabled_tools=[\"fs_read_file\",\"fs_list_dir\",\"fs_grep\",\"fs_glob\",\"ask_user_question\",\"save_persona_draft\",\"get_persona_draft\"]"),
+        "Codex PersonaExtractor must receive exactly its canonical MCP grants; overrides: {overrides:?}"
+    );
+
     for expected in [
         "features.apply_patch_freeform=false",
         "features.apply_patch_streaming_events=false",

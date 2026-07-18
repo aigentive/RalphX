@@ -1032,6 +1032,7 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
         None,
         None,
         false,
+        ClaudePermissionPolicy::InheritConfigured,
     );
     assert!(outcome.persona_injected);
     assert_eq!(outcome.persona_injection_skipped_reason, None);
@@ -1069,6 +1070,7 @@ fn fallback_prompt_without_persona_pins_none_metadata() {
         None,
         None,
         false,
+        ClaudePermissionPolicy::InheritConfigured,
     );
 
     assert!(

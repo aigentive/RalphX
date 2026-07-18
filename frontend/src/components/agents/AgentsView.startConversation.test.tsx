@@ -1907,6 +1907,7 @@ describe("AgentsView start conversation", () => {
         content: "Explore privately",
         conversationId: "standalone-1",
         mode: "chat",
+        providerHarness: "codex",
       }),
     );
     const startInput = startAgentConversationMock.mock.calls[0]?.[0];
@@ -1923,99 +1924,106 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("starts a Global persona builder with locked provenance, folders, and no project or Team intent", async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 0 } },
-    });
-    const builderConversation = conversation({
-      id: "builder-global-1",
-      contextType: "standalone",
-      contextId: "builder-global-1",
-      projectId: null,
-      agentMode: "persona_builder",
-    });
-    createConversationMock.mockResolvedValue(builderConversation);
-    startAgentConversationMock.mockResolvedValue({
-      conversation: builderConversation,
-      workspace: null,
-      sendResult: {
-        conversationId: "builder-global-1",
-        agentRunId: "run-builder-1",
-        isNewConversation: false,
-        wasQueued: false,
-        queuedAsPending: false,
-        queuedMessageId: null,
-      },
-    });
-    vi.mocked(invoke).mockImplementation(async (command) => {
-      if (command === "add_conversation_folder_reference") {
-        return {
-          id: "folder-ref-1",
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a Global persona builder with $provider, locked provenance, folders, and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-global-1",
+        contextType: "standalone",
+        contextId: "builder-global-1",
+        projectId: null,
+        agentMode: "persona_builder",
+      });
+      createConversationMock.mockResolvedValue(builderConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "builder-global-1",
+          agentRunId: "run-builder-1",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      vi.mocked(invoke).mockImplementation(async (command) => {
+        if (command === "add_conversation_folder_reference") {
+          return {
+            id: "folder-ref-1",
+            conversationId: "builder-global-1",
+            folderPath: "/context/docs",
+            displayName: "docs",
+            createdAt: "2026-07-17T00:00:00Z",
+          };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: null,
+        content: "Refine the review voice",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+        base: null,
+        files: [],
+        folders: [{ folderPath: "/context/docs", displayName: "docs" }],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith(
+        "standalone",
+        null,
+        undefined,
+        "persona_builder",
+      );
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
           conversationId: "builder-global-1",
           folderPath: "/context/docs",
           displayName: "docs",
-          createdAt: "2026-07-17T00:00:00Z",
-        };
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
-    const { result } = renderHook(
-      () =>
-        useStartAgentConversation({
-          handleAutoManagedTitle: vi.fn(),
-          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
-          queryClient,
-          selectConversation: vi.fn(),
-          setActiveConversation: useChatStore.getState().setActiveConversation,
-          setFocusedProject: vi.fn(),
-          setOptimisticConversationsById: vi.fn(),
-          setOptimisticSelectedConversationId: vi.fn(),
-          setOptimisticWorkspacesByConversationId: vi.fn(),
-          setRuntimeForConversation: vi.fn(),
+        },
+      });
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "builder-global-1",
+          mode: "persona_builder",
+          providerHarness: provider,
+          sourcePersonaId: "persona-reviewer",
         }),
-      { wrapper },
-    );
-
-    await result.current({
-      projectId: null,
-      content: "Refine the review voice",
-      runtime: { provider: "claude", modelId: "sonnet", effort: "medium" },
-      mode: "persona_builder",
-      sourcePersonaId: "persona-reviewer",
-      base: null,
-      files: [],
-      folders: [{ folderPath: "/context/docs", displayName: "docs" }],
-      capabilityIntent: { coordinationMode: "rx_native_team" },
-    });
-
-    expect(createConversationMock).toHaveBeenCalledWith(
-      "standalone",
-      null,
-      undefined,
-      "persona_builder",
-    );
-    expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
-      input: {
-        conversationId: "builder-global-1",
-        folderPath: "/context/docs",
-        displayName: "docs",
-      },
-    });
-    expect(startAgentConversationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationId: "builder-global-1",
-        mode: "persona_builder",
-        sourcePersonaId: "persona-reviewer",
-      }),
-    );
-    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
-    expect(startInput).not.toHaveProperty("projectId");
-    expect(startInput).not.toHaveProperty("capabilityIntent");
-    expect(startInput).not.toHaveProperty("teamIntent");
-  });
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+    },
+  );
 
   it("falls back to the default runtime when the remembered provider is no longer valid", async () => {
     mockAgentViewData();
