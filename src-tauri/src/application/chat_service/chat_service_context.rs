@@ -79,11 +79,11 @@ pub async fn await_required_external_mcp<R: Runtime>(
         "External MCP transport requires the managed application runtime".to_string()
     })?;
     let Some(external_mcp) = handle.try_state::<crate::infrastructure::ExternalMcpHandle>() else {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         {
             return Ok(());
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-utils")))]
         {
             return Err(
                 "External MCP transport is not managed by the application runtime".to_string(),

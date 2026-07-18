@@ -3941,9 +3941,9 @@ impl<R: Runtime> AppChatService<R> {
         let effective_agent_name = agent_name_override.unwrap_or_else(|| {
             resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
         });
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         let should_await_external_mcp = self.app_handle.is_some();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-utils")))]
         let should_await_external_mcp = true;
         if should_await_external_mcp {
             chat_service_context::await_required_external_mcp(
