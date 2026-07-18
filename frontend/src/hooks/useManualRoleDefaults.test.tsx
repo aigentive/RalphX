@@ -37,10 +37,16 @@ const value: ManualRoleDefault = {
   sandboxMode: "workspace-write",
 };
 
-function createHarness() {
+function createHarness(usePreviousData = false) {
   const client = new QueryClient({
     defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
+      queries: {
+        retry: false,
+        gcTime: 0,
+        ...(usePreviousData && {
+          placeholderData: (previousData: unknown) => previousData,
+        }),
+      },
       mutations: { retry: false },
     },
   });
@@ -95,7 +101,7 @@ describe("useManualRoleDefaults", () => {
       });
     });
 
-    act(() => result.current.clearDefault("workspace_project"));
+    act(() => void result.current.clearDefaultAsync("workspace_project"));
     await waitFor(() => {
       expect(manualRoleDefaultsApi.clear).toHaveBeenCalledWith({
         projectId: "project-1",
@@ -103,6 +109,109 @@ describe("useManualRoleDefaults", () => {
       });
       expect(invalidate).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("does not expose Project A catalog as placeholder data while Project B loads", async () => {
+    let resolveProjectB: ((value: { projectId: string; roles: [] }) => void) | undefined;
+    vi.mocked(manualRoleDefaultsApi.list).mockImplementation((projectId) => {
+      if (projectId === "project-a") {
+        return Promise.resolve({ projectId: "project-a", roles: [] });
+      }
+      return new Promise((resolve) => {
+        resolveProjectB = resolve;
+      });
+    });
+    const { wrapper } = createHarness(true);
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useManualRoleDefaults(projectId),
+      { initialProps: { projectId: "project-a" }, wrapper },
+    );
+
+    await waitFor(() => expect(result.current.catalog?.projectId).toBe("project-a"));
+    rerender({ projectId: "project-b" });
+
+    expect(result.current.catalog).toBeNull();
+    expect(result.current.isLoading).toBe(true);
+
+    act(() => resolveProjectB?.({ projectId: "project-b", roles: [] }));
+    await waitFor(() => expect(result.current.catalog?.projectId).toBe("project-b"));
+  });
+
+  it("keeps async clear pending through active-scope refetch", async () => {
+    let resolveRefetch: (() => void) | undefined;
+    vi.mocked(manualRoleDefaultsApi.list)
+      .mockResolvedValueOnce({ projectId: "project-1", roles: [] })
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveRefetch = () => resolve({ projectId: "project-1", roles: [] });
+        }),
+      );
+    const { wrapper } = createHarness();
+    const { result } = renderHook(() => useManualRoleDefaults("project-1"), { wrapper });
+    await waitFor(() => expect(result.current.catalog).not.toBeNull());
+
+    let settled = false;
+    act(() => {
+      void result.current.clearDefaultAsync("workspace_project").then(() => {
+        settled = true;
+      });
+    });
+    await waitFor(() => expect(manualRoleDefaultsApi.clear).toHaveBeenCalledOnce());
+    expect(result.current.isSaving).toBe(true);
+    expect(settled).toBe(false);
+
+    act(() => resolveRefetch?.());
+    await waitFor(() => expect(settled).toBe(true));
+    expect(result.current.isSaving).toBe(false);
+  });
+
+  it("exposes and dismisses update and clear failures without replacing catalog state", async () => {
+    vi.mocked(manualRoleDefaultsApi.update).mockRejectedValueOnce(new Error("Update failed"));
+    vi.mocked(manualRoleDefaultsApi.clear).mockRejectedValueOnce(new Error("Clear failed"));
+    const { wrapper } = createHarness();
+    const { result } = renderHook(() => useManualRoleDefaults("project-1"), { wrapper });
+    await waitFor(() => expect(result.current.catalog).not.toBeNull());
+
+    act(() => result.current.updateDefault("workspace_project", value));
+    await waitFor(() => expect(result.current.saveError).toHaveProperty("message", "Update failed"));
+    expect(result.current.catalog).toEqual({ projectId: "project-1", roles: [] });
+    act(() => result.current.dismissSaveError());
+    await waitFor(() => expect(result.current.saveError).toBeNull());
+
+    await expect(
+      result.current.clearDefaultAsync("workspace_project"),
+    ).rejects.toThrow("Clear failed");
+    await waitFor(() => expect(result.current.saveError).toHaveProperty("message", "Clear failed"));
+    expect(result.current.catalog).toEqual({ projectId: "project-1", roles: [] });
+  });
+
+  it("does not leak pending or failed mutations across project scopes", async () => {
+    let rejectProjectA: ((error: Error) => void) | undefined;
+    vi.mocked(manualRoleDefaultsApi.update).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => {
+        rejectProjectA = reject;
+      }),
+    );
+    const { wrapper } = createHarness();
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useManualRoleDefaults(projectId),
+      { initialProps: { projectId: "project-a" }, wrapper },
+    );
+    await waitFor(() => expect(result.current.catalog).not.toBeNull());
+
+    act(() => result.current.updateDefault("workspace_project", value));
+    await waitFor(() => expect(result.current.isSaving).toBe(true));
+
+    rerender({ projectId: "project-b" });
+    expect(result.current.isSaving).toBe(false);
+    expect(result.current.saveError).toBeNull();
+
+    act(() => rejectProjectA?.(new Error("Project A failed")));
+    await waitFor(() => expect(result.current.isSaving).toBe(false));
+    expect(result.current.saveError).toBeNull();
+
+    rerender({ projectId: "project-a" });
+    expect(result.current.saveError).toBeNull();
   });
 
   it("loads composer defaults and leaves conversation queries idle without an id", async () => {
