@@ -202,7 +202,7 @@ TaskCreate: { "subject": "Research frontend auth patterns", "description": "..."
    ```
    Create the plan artifact immediately after synthesis — do NOT ask the user for approval before calling `create_plan_artifact`.
 
-   Plans MUST include a `## Testing Strategy` section specifying: how affected tests will be identified per task (e.g., grep imports for JS/TS/Python, check `mod tests` blocks and `tests/` directory for Rust, examine test file naming conventions), that each task runs only affected tests, that a final regression task runs the full suite, and the fallback strategy when targeted identification yields no results.
+   Plans MUST include a `## Testing Strategy` section specifying that each task follows its target project's local instructions and identifies the narrowest tests/checks covering its changes; do not create a standalone broad regression task unless the project or user explicitly requires one.
 6. Link team artifacts to master plan via `related_artifact_id`
 
 **Debate synthesis:** Compare all TeamAnalysis artifacts; justify winning approach with evidence; document rejected approaches.
@@ -311,19 +311,11 @@ Before proposing, sanity-check the plan's `## Affected Files` section:
 
 3. Every proposal that adds a new pipeline stage, MCP tool, or agent type MUST include an acceptance criterion: "Event Coverage — Relevant checks in `.claude/rules/event-coverage-checklist.md` pass for this context. Success and failure exits emit required events, and any UI-visible state wiring stays consistent."
 
-4. When creating 2+ proposals in a session, auto-generate a final "Regression Testing" proposal:
-   - Category: `testing`
-   - Steps: instruct full suite execution across ALL modified paths from the entire session
-   - Before creating: call `list_session_proposals` to collect all prior proposal IDs, filter to `status: "active"` only (exclude archived/rejected)
-   - Set `depends_on` to all filtered active IDs
-   - Guard: if `list_session_proposals` returns empty, fails, or yields zero active proposals after filtering, skip regression proposal creation
-   - Acceptance criteria: "Full test suite passes with zero new failures introduced by this session's changes."
+4. **expected_proposal_count (required)** — Pass `expected_proposal_count` on every `create_task_proposal` call (total proposals you intend to create). First proposal locks the count; backend returns `ready_to_finalize: true` when count matches.
 
-5. **expected_proposal_count (required)** — Pass `expected_proposal_count` on every `create_task_proposal` call (total proposals you intend to create). First proposal locks the count; backend returns `ready_to_finalize: true` when count matches.
+5. **affected_paths (required for implementation-affecting proposals)** — For `setup`, `feature`, `fix`, `refactor`, `docs`, `test`, `performance`, `security`, `devops`, and `chore` proposals, include coarse `affected_paths` derived from the plan's `## Affected Files` and architecture. Use repo-relative file paths or directory prefixes that bound the likely implementation area without pretending to know every final file. Pure `research` / `design` proposals may omit `affected_paths` when no credible repo-change scope exists. In cross-project sessions, set `affected_paths` relative to the proposal's target project.
 
-6. **affected_paths (required for implementation-affecting proposals)** — For `setup`, `feature`, `fix`, `refactor`, `docs`, `test`, `performance`, `security`, `devops`, and `chore` proposals, include coarse `affected_paths` derived from the plan's `## Affected Files` and architecture. Use repo-relative file paths or directory prefixes that bound the likely implementation area without pretending to know every final file. Pure `research` / `design` proposals may omit `affected_paths` when no credible repo-change scope exists. In cross-project sessions, set `affected_paths` relative to the proposal's target project.
-
-7. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete (including regression proposal and all dependency updates), call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 6. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
+6. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete, call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 6. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
 
 **When creating a proposal** — use `depends_on` to set immediate dependencies at creation time:
 ```

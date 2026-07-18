@@ -33,12 +33,12 @@ Modes:
   lib-2         Run lib shard 2/2.
   lib           Run both lib shards sequentially against the shared target dir.
   lib-parallel  Run both lib shards in parallel with isolated target dirs.
-  pr            Reproduce PR Rust CI locally: layering + IPC + lib shards.
-  pr-parallel   Reproduce PR Rust CI locally with isolated per-lane target dirs.
+  pr            Run the fast Rust CI subset: layering + IPC + lib shards.
+  pr-parallel   Run the fast Rust CI subset with isolated per-lane target dirs.
   doc           Run doctests.
   full-integration
-                Run the push-only full Rust integration sweep.
-  main          Reproduce push-to-main Rust CI locally: PR stack + doctests + full integration.
+                Run the full Rust integration sweep.
+  main          Run the broad Rust CI aggregate: fast subset + doctests + full integration.
   help          Show this message.
 
 Notes:

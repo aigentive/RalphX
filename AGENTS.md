@@ -70,8 +70,9 @@ Primary project docs:
 - Rustfmt scope safety: never run `rustfmt` on `mod.rs` roots unless recursive formatting is intentional.
 - Rustfmt edition safety: prefer `rustfmt --edition 2021 <leaf-file.rs>` for surgical work; avoid plain `cargo fmt` unless broad formatting is intended.
 - Cargo during refactors: run one targeted Cargo job at a time.
-- Rust test runner split: use `cargo test` for selective filters/doctests and `cargo nextest run` for broad lib runs. Source: `.claude/rules/rust-test-execution.md`.
-- Worktree-safe Rust helper: use `scripts/test-rust-fast.sh {ipc|lib-1|lib-2|pr|main}` from the current checkout/worktree; `*-parallel` modes isolate `CARGO_TARGET_DIR` per lane and the script refuses cross-checkout drift.
+- Local validation boundary (NON-NEGOTIABLE): agents run only focused tests/checks for touched behavior; never fall back to broad lib/workspace suites, full integration, workspace doctests, dual clippy, llvm-cov, or `scripts/test-rust-fast.sh {pr|main}` unless the user explicitly requests it or a named CI failure must be reproduced. If no exact test exists, use the nearest module/suite/crate check or report no applicable local test. RalphX workspace CI/autofix owns broad validation and remediation.
+- Rust test runner split: use `cargo test` for focused lib filters and `cargo nextest run --test <suite> -E ...` for focused integration tests; broad runs are CI/manual-diagnostic only. Source: `.claude/rules/rust-test-execution.md`.
+- Worktree-safe Rust helper: `scripts/test-rust-fast.sh` is for explicit CI reproduction/manual diagnostics from the current checkout; it refuses cross-checkout drift.
 - Rust toolchain source of truth: `rust-toolchain.toml` is authoritative.
 - Rust PATH mismatch: if Cargo still uses Homebrew `rustc`, run through `rustup run` with `RUSTC=$(rustup which --toolchain 1.91.0 rustc)`; details in `.claude/rules/rust-test-execution.md`.
 - Rust std API stability (NON-NEGOTIABLE): do not ship unstable std APIs. Source: `.claude/rules/rust-stable-apis.md`.
@@ -81,7 +82,7 @@ Primary project docs:
 - Rust test stack: root-lib tests need `--features test-utils`; `cargo test` takes ONE name filter; suites run under `cargo nextest`; SQLite repos test on `SqliteTestDb`/`SqliteStateFixture`; scheduler/service tests use memory repos through production tick/entry paths. Source: `.claude/rules/rust-test-execution.md`.
 - Frontend tests: Vitest via `cd frontend && npm run test:run -- <files>`; assert user-visible behavior (Testing Library), not implementation internals; strict TS with no `any`; API layer follows the zod snake_case schema → camelCase transform pipeline (`.claude/rules/api-layer.md`).
 - Package build hygiene (NON-NEGOTIABLE): use each package's configured scripts (`frontend/`: `npm run ...`; `plugins/app/ralphx-mcp-server`: `npm run build` after any `src/` change — committing without rebuilding dist is a broken commit).
-- Zero-warning handoff: run both cargo clippy gates and `python3 scripts/check-layering.py` when Rust code, Cargo/build files, Rust tests/config, or Rust-affecting CI changes; otherwise run touched-surface lint/tests only. Rust test-only changes still require the Rust gates.
+- Current-scope handoff: fix warnings/failures caused by the change and report unrelated pre-existing failures without expanding scope; run `python3 scripts/check-layering.py` locally only for layer/import/module-boundary changes.
 
 ## Test Coverage Work
 

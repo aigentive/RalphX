@@ -60,8 +60,8 @@ chore: update dependencies
 
 ### Before Committing
 1. Review changes: `git diff`
-2. Run tests: `npm run test:run` / `cargo test`
-3. Run linting: `npm run lint`
+2. Follow the target project's local instructions and run only the focused validation required for the change
+3. Run scoped linting when the target project requires it
 4. Stage specific files: `git add <files>`
 
 ### Commit Checklist
@@ -96,11 +96,11 @@ git log --stat -3
 ### Never
 - Force push to main/master
 - Commit secrets or credentials
-- Commit without running tests
+- Commit without the target project's required focused validation
 - Use `git add -A` blindly
 
 ### Always
 - Review staged changes before commit
 - Write descriptive messages
 - Keep commits atomic
-- Run checks before committing
+- Run project-required focused checks before committing
