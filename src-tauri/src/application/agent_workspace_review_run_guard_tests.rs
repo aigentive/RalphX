@@ -1,6 +1,9 @@
 use crate::application::agent_workspace_review::{
-    classify_workspace_review_runtime_authority, ensure_workspace_review_run_is_active,
+    apply_workspace_review_runtime_authority, classify_workspace_review_runtime_authority,
+    ensure_workspace_review_run_is_active, AgentWorkspaceReviewContext,
+    AgentWorkspaceReviewGoalContext,
 };
+use crate::application::AppState;
 use crate::domain::entities::{
     AgentRun, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, ChatConversationId,
@@ -17,6 +20,21 @@ fn active_monitor() -> AgentWorkspaceReviewMonitor {
     monitor.current_diff_fingerprint = Some("diff-current".to_string());
     monitor.last_run_id = Some("run-current".to_string());
     monitor
+}
+
+fn runtime_context(monitor: AgentWorkspaceReviewMonitor) -> AgentWorkspaceReviewContext {
+    AgentWorkspaceReviewContext {
+        monitor,
+        target: None,
+        goal_context: AgentWorkspaceReviewGoalContext::default(),
+        is_current: false,
+        is_outdated: false,
+        review_artifact_is_current: false,
+        review_artifact_is_outdated: false,
+        can_mutate_review_state: true,
+        review_runtime_state: AgentWorkspaceReviewRuntimeState::ActiveOwned,
+        should_show_tab: true,
+    }
 }
 
 #[test]
@@ -133,5 +151,68 @@ fn runtime_authority_fails_closed_for_terminal_missing_malformed_and_stale_calle
     assert_eq!(
         terminal.review_runtime_state,
         AgentWorkspaceReviewRuntimeState::Terminal
+    );
+}
+
+#[tokio::test]
+async fn runtime_authority_application_uses_persisted_current_run_and_rejects_stale_monitor() {
+    let state = AppState::new_test();
+    let review_conversation_id = ChatConversationId::new();
+    let run = AgentRun::new(review_conversation_id);
+    let run_id = run.id.to_string();
+    let conversation_id = review_conversation_id.as_str();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("current review run should persist");
+    let mut monitor = active_monitor();
+    monitor.review_conversation_id = Some(review_conversation_id);
+    monitor.last_run_id = Some(run_id.clone());
+    let mut context = runtime_context(monitor);
+
+    apply_workspace_review_runtime_authority(
+        &state,
+        &mut context,
+        Some(&run_id),
+        Some(&conversation_id),
+    )
+    .await
+    .expect("runtime authority should resolve");
+    assert!(context.can_mutate_review_state);
+    assert_eq!(
+        context.review_runtime_state,
+        AgentWorkspaceReviewRuntimeState::ActiveOwned
+    );
+
+    context.monitor.last_run_id = Some(crate::domain::entities::AgentRunId::new().to_string());
+    apply_workspace_review_runtime_authority(
+        &state,
+        &mut context,
+        Some(&run_id),
+        Some(&conversation_id),
+    )
+    .await
+    .expect("stale runtime authority should fail closed without an error");
+    assert!(!context.can_mutate_review_state);
+    assert_eq!(
+        context.review_runtime_state,
+        AgentWorkspaceReviewRuntimeState::StaleRuntime
+    );
+}
+
+#[tokio::test]
+async fn runtime_authority_application_revokes_missing_runtime_identity() {
+    let state = AppState::new_test();
+    let mut context = runtime_context(active_monitor());
+
+    apply_workspace_review_runtime_authority(&state, &mut context, None, None)
+        .await
+        .expect("missing runtime identity should be a read-only response");
+
+    assert!(!context.can_mutate_review_state);
+    assert_eq!(
+        context.review_runtime_state,
+        AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity
     );
 }

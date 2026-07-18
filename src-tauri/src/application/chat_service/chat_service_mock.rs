@@ -47,6 +47,8 @@ pub struct MockChatService {
     delete_queued_message_calls: Mutex<Vec<(ChatContextType, String, String)>>,
     /// When set, the next delete_queued_message call returns an error.
     fail_next_delete_queued_message: Mutex<bool>,
+    /// When set, the next successful send reports a different conversation identity.
+    mismatch_next_send_result_identity: Mutex<bool>,
 }
 
 pub struct MockChatResponse {
@@ -71,6 +73,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
@@ -89,6 +92,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
@@ -113,6 +117,10 @@ impl MockChatService {
 
     pub async fn fail_next_delete_queued_message(&self) {
         *self.fail_next_delete_queued_message.lock().await = true;
+    }
+
+    pub async fn mismatch_next_send_result_identity(&self) {
+        *self.mismatch_next_send_result_identity.lock().await = true;
     }
 
     /// Set the agent running state for a specific context.
@@ -215,8 +223,16 @@ impl ChatService for MockChatService {
             agent_run.id = preallocated_agent_run_id;
         }
 
+        let mismatch_result_identity =
+            std::mem::take(&mut *self.mismatch_next_send_result_identity.lock().await);
+        let conversation_id = if mismatch_result_identity {
+            ChatConversationId::new().as_str().to_string()
+        } else {
+            conversation.id.as_str().to_string()
+        };
+
         Ok(SendResult {
-            conversation_id: conversation.id.as_str().to_string(),
+            conversation_id,
             agent_run_id: agent_run.id.as_str().to_string(),
             is_new_conversation: conversation.provider_session_ref().is_none(),
             ..Default::default()

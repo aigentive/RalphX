@@ -1597,6 +1597,58 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
 }
 
 #[tokio::test]
+async fn start_review_blocks_monitor_when_child_chat_breaks_reserved_identity() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+    let chat_service = MockChatService::new();
+    chat_service.mismatch_next_send_result_identity().await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+
+    let error = start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("review child chat must preserve its reserved identity");
+
+    assert!(error
+        .to_string()
+        .contains("reserved immediate-start authority"));
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("reserved monitor should persist");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.last_run_id,
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string())
+    );
+    assert!(monitor
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("reserved immediate-start authority")));
+}
+
+#[tokio::test]
 async fn start_review_blocks_monitor_without_sending_when_no_enabled_default_exists() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
