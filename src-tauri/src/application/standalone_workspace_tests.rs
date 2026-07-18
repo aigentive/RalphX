@@ -1,15 +1,17 @@
 use std::fs;
 use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tempfile::TempDir;
 
 use crate::application::standalone_workspace::{
-    create_workspace, resolve_workspace, standalone_workspaces_root,
-    sweep_orphaned_standalone_workspaces,
+    create_workspace, remove_workspace_if_present, resolve_workspace, standalone_workspace_path,
+    standalone_workspaces_root, sweep_orphaned_standalone_workspaces,
 };
 use crate::domain::entities::{ChatConversation, ProjectId};
 use crate::domain::repositories::ChatConversationRepository;
+use crate::error::AppError;
 use crate::infrastructure::memory::MemoryChatConversationRepository;
 
 fn new_conversation_id() -> String {
@@ -18,6 +20,16 @@ fn new_conversation_id() -> String {
     ))
     .id
     .as_str()
+}
+
+fn canonical_test_dir(path: &Path) -> PathBuf {
+    let validated = crate::utils::path_safety::validate_absolute_non_root_path(
+        path,
+        "standalone workspace test root",
+    )
+    .expect("validated absolute test root");
+    // codeql[rust/path-injection]
+    validated.canonicalize().expect("canonicalize test root")
 }
 
 #[test]
@@ -45,6 +57,22 @@ fn create_workspace_is_idempotent_and_returns_same_path_twice() {
         entries.len(),
         1,
         "two ensure_workspace calls for the same conversation must not create two directories"
+    );
+}
+
+#[test]
+fn create_workspace_creates_missing_process_owned_app_data_root() {
+    let app_data_parent = TempDir::new().expect("temp app data parent");
+    let app_data_dir = app_data_parent.path().join("new-app-data");
+    let conversation_id = new_conversation_id();
+
+    let workspace = create_workspace(&app_data_dir, &conversation_id)
+        .expect("create workspace under a missing app data root");
+    let canonical_app_data_dir = canonical_test_dir(&app_data_dir);
+
+    assert!(
+        workspace.starts_with(&canonical_app_data_dir),
+        "workspace must stay under the newly created process-owned app data root"
     );
 }
 
@@ -110,12 +138,7 @@ fn create_workspace_path_traversal_conversation_id_stays_contained() {
     let workspace = create_workspace(app_data_dir.path(), malicious_id)
         .expect("hashing makes the traversal payload inert");
 
-    let canonical_root = standalone_workspaces_root(
-        &app_data_dir
-            .path()
-            .canonicalize()
-            .expect("canonicalize app data dir"),
-    );
+    let canonical_root = standalone_workspaces_root(&canonical_test_dir(app_data_dir.path()));
     assert!(
         workspace.starts_with(&canonical_root),
         "workspace path must stay under the standalone workspaces root even for a \
@@ -126,6 +149,67 @@ fn create_workspace_path_traversal_conversation_id_stays_contained() {
             .components()
             .any(|component| component.as_os_str() == ".."),
         "resolved workspace path must not contain a literal .. component"
+    );
+}
+
+#[test]
+fn create_workspace_absolute_conversation_id_stays_contained() {
+    let app_data_dir = TempDir::new().expect("temp app data dir");
+    let absolute_id = "/tmp/absolute-conversation-id";
+
+    let workspace = create_workspace(app_data_dir.path(), absolute_id)
+        .expect("hashing makes an absolute conversation id inert");
+
+    let canonical_root = standalone_workspaces_root(&canonical_test_dir(app_data_dir.path()));
+    assert!(
+        workspace.starts_with(&canonical_root),
+        "an absolute conversation id must stay under the app-owned root"
+    );
+    assert!(
+        !workspace.to_string_lossy().contains(absolute_id),
+        "the absolute conversation id must not appear in the workspace path"
+    );
+}
+
+#[test]
+fn create_workspace_rejects_app_data_path_with_parent_components() {
+    let app_data_parent = TempDir::new().expect("temp app data parent");
+    let nested = app_data_parent.path().join("nested");
+    assert!(nested.starts_with(app_data_parent.path()));
+    // codeql[rust/path-injection]
+    fs::create_dir(&nested).expect("create nested app data segment");
+    let unsafe_app_data_dir = nested.join("..");
+
+    let result = create_workspace(&unsafe_app_data_dir, "conversation-id");
+
+    assert!(
+        result.is_err(),
+        "an app-data path with traversal components must be rejected, got: {result:?}"
+    );
+}
+
+#[test]
+fn create_workspace_rejects_symlinked_root_escape() {
+    let app_data_dir = TempDir::new().expect("temp app data dir");
+    let outside = TempDir::new().expect("outside target dir");
+    let root = standalone_workspaces_root(app_data_dir.path());
+    assert!(root.starts_with(app_data_dir.path()));
+    // codeql[rust/path-injection]
+    symlink(outside.path(), &root).expect("create symlinked workspaces root");
+    let conversation_id = "symlink-root-escape";
+
+    let result = create_workspace(app_data_dir.path(), conversation_id);
+
+    assert!(
+        result.is_err(),
+        "a symlinked workspaces root must be rejected, got: {result:?}"
+    );
+    let escaped_workspace = standalone_workspace_path(outside.path(), conversation_id);
+    assert!(escaped_workspace.starts_with(outside.path()));
+    // codeql[rust/path-injection]
+    assert!(
+        !escaped_workspace.exists(),
+        "workspace creation must not follow the root symlink outside app data"
     );
 }
 
@@ -141,6 +225,77 @@ fn create_workspace_returns_typed_error_when_root_segment_is_blocked_by_a_file()
         result.is_err(),
         "workspace creation must fail closed when the app-owned root cannot be created, \
          got: {result:?}"
+    );
+}
+
+#[test]
+fn remove_workspace_accepts_hash_inert_traversal_id() {
+    let app_data_dir = TempDir::new().expect("temp app data dir");
+    let conversation_id = "../../../conversation-to-remove";
+    let workspace = create_workspace(app_data_dir.path(), conversation_id)
+        .expect("create workspace for traversal-shaped id");
+
+    remove_workspace_if_present(app_data_dir.path(), conversation_id)
+        .expect("remove hash-derived workspace");
+
+    let canonical_app_data_dir = canonical_test_dir(app_data_dir.path());
+    assert!(workspace.starts_with(&canonical_app_data_dir));
+    // codeql[rust/path-injection]
+    assert!(
+        !workspace.exists(),
+        "the contained hash-derived workspace must be removed"
+    );
+}
+
+#[test]
+fn remove_workspace_missing_app_data_root_is_a_noop() {
+    let app_data_parent = TempDir::new().expect("temp app data parent");
+    let missing_app_data_dir = app_data_parent.path().join("missing-app-data");
+    remove_workspace_if_present(&missing_app_data_dir, "missing-conversation")
+        .expect("missing app-data removal must be a no-op");
+}
+
+#[test]
+fn resolve_workspace_missing_app_data_root_returns_typed_missing_error() {
+    let app_data_parent = TempDir::new().expect("temp app data parent");
+    let missing_app_data_dir = app_data_parent.path().join("missing-app-data");
+    let result = resolve_workspace(&missing_app_data_dir, "missing-conversation");
+    assert!(
+        matches!(result, Err(AppError::StandaloneWorkspaceMissing { .. })),
+        "missing app-data root must preserve the typed workspace-missing error, got: {result:?}"
+    );
+}
+
+#[test]
+fn remove_workspace_rejects_symlink_escape() {
+    let app_data_dir = TempDir::new().expect("temp app data dir");
+    let outside = TempDir::new().expect("outside target dir");
+    let conversation_id = "symlinked-workspace";
+    let workspace = create_workspace(app_data_dir.path(), conversation_id)
+        .expect("create workspace before replacing it with a symlink");
+    let canonical_root = standalone_workspaces_root(&canonical_test_dir(app_data_dir.path()));
+    assert!(workspace.starts_with(&canonical_root));
+    // codeql[rust/path-injection]
+    fs::remove_dir_all(&workspace).expect("remove original contained workspace");
+    assert!(workspace.starts_with(&canonical_root));
+    // codeql[rust/path-injection]
+    symlink(outside.path(), &workspace).expect("replace workspace with outside symlink");
+    let sentinel = outside.path().join("sentinel.txt");
+    assert!(sentinel.starts_with(outside.path()));
+    // codeql[rust/path-injection]
+    fs::write(&sentinel, b"must survive").expect("write outside sentinel");
+
+    let result = remove_workspace_if_present(app_data_dir.path(), conversation_id);
+
+    assert!(
+        result.is_err(),
+        "workspace removal must reject a symlink escape, got: {result:?}"
+    );
+    assert!(sentinel.starts_with(outside.path()));
+    // codeql[rust/path-injection]
+    assert!(
+        sentinel.is_file(),
+        "outside symlink target must remain intact"
     );
 }
 
@@ -264,6 +419,37 @@ async fn sweep_does_not_follow_or_delete_a_symlinked_entry() {
     assert!(
         sentinel_file.exists(),
         "the sweep must never delete content outside the standalone workspaces root through a symlink"
+    );
+}
+
+#[tokio::test]
+async fn sweep_does_not_follow_a_symlinked_workspaces_root() {
+    let app_data_dir = TempDir::new().expect("temp app data dir");
+    let outside_app_data_dir = TempDir::new().expect("outside app data dir");
+    let repo: Arc<dyn ChatConversationRepository> =
+        Arc::new(MemoryChatConversationRepository::new());
+    let orphan_conversation_id = new_conversation_id();
+    let outside_workspace = create_workspace(outside_app_data_dir.path(), &orphan_conversation_id)
+        .expect("create workspace outside the swept app data root");
+    let outside_root = standalone_workspaces_root(&canonical_test_dir(outside_app_data_dir.path()));
+    let symlinked_root = standalone_workspaces_root(app_data_dir.path());
+    assert!(symlinked_root.starts_with(app_data_dir.path()));
+    // codeql[rust/path-injection]
+    symlink(&outside_root, &symlinked_root).expect("symlink workspaces root outside app data");
+
+    let summary =
+        sweep_orphaned_standalone_workspaces(app_data_dir.path(), Arc::clone(&repo)).await;
+
+    assert_eq!(
+        summary,
+        Default::default(),
+        "a symlinked workspaces root must be skipped without inspecting its target"
+    );
+    assert!(outside_workspace.starts_with(&outside_root));
+    // codeql[rust/path-injection]
+    assert!(
+        outside_workspace.is_dir(),
+        "the sweep must not remove a workspace through a symlinked root"
     );
 }
 
