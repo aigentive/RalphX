@@ -49,6 +49,9 @@ pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod methodology_commands;
 pub mod manual_role_default_commands;
+pub mod mcp_policy_commands;
+#[cfg(test)]
+mod mcp_policy_commands_tests;
 pub mod metrics_commands;
 pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;

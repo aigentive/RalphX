@@ -172,6 +172,31 @@ fn repo_plugin_dir() -> PathBuf {
         .join("app")
 }
 
+#[tokio::test]
+async fn external_mcp_readiness_gate_rejects_missing_runtime_but_skips_internal_transport() {
+    let plugin_dir = repo_plugin_dir();
+    let external_error = await_required_external_mcp::<tauri::Wry>(
+        None,
+        AgentHarnessKind::Codex,
+        &plugin_dir,
+        agent_names::AGENT_CHAT_PROJECT,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(external_error.contains("managed application runtime"));
+
+    await_required_external_mcp::<tauri::Wry>(
+        None,
+        AgentHarnessKind::Codex,
+        &plugin_dir,
+        agent_names::AGENT_GENERAL_WORKER,
+        None,
+    )
+    .await
+    .expect("internal MCP transport must not require the external supervisor");
+}
+
 fn spawnable_env_value(spawnable: &SpawnableCommand, key: &str) -> Option<String> {
     spawnable
         .get_envs_for_test()

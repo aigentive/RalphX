@@ -12,6 +12,7 @@ pub mod agent_conversation_workspace_repository;
 mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
 pub mod manual_role_default_repository;
+pub mod mcp_policy_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;
 pub mod agent_provider_settings_repository;
@@ -82,6 +83,7 @@ pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssue
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use manual_role_default_repository::ManualRoleDefaultRepository;
+pub use mcp_policy_repository::McpPolicyRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;

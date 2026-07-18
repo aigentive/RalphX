@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use tauri::{Manager, Runtime};
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -59,6 +60,30 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
 
+pub async fn await_required_external_mcp<R: Runtime>(
+    app_handle: Option<&tauri::AppHandle<R>>,
+    provider: AgentHarnessKind,
+    plugin_dir: &Path,
+    agent_name: &str,
+    agent_profile: Option<&str>,
+) -> Result<(), String> {
+    if !crate::infrastructure::agents::agent_requires_external_mcp(
+        provider,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+    )? {
+        return Ok(());
+    }
+    let handle = app_handle.ok_or_else(|| {
+        "External MCP transport requires the managed application runtime".to_string()
+    })?;
+    handle
+        .state::<crate::infrastructure::ExternalMcpHandle>()
+        .await_ready(std::time::Duration::from_secs(30))
+        .await
+}
+
 /// Whether to inject `<session_history>` into the bootstrap prompt for this context.
 ///
 /// Ideation has always had it. Project and Task chat join the list because their
@@ -82,6 +107,18 @@ pub struct ProviderSpawnableCommand {
 impl ProviderSpawnableCommand {
     pub fn apply_provider_env(&mut self, provider_env: &HashMap<String, String>) {
         apply_provider_env_vars(&mut self.spawnable, provider_env);
+    }
+
+    pub fn apply_mcp_policy(
+        &mut self,
+        provider: AgentHarnessKind,
+        policy: &crate::domain::agents::McpLaunchPolicy,
+    ) {
+        crate::infrastructure::agents::apply_mcp_launch_policy(
+            &mut self.spawnable,
+            provider,
+            policy,
+        );
     }
 
     #[doc(hidden)]
@@ -333,6 +370,18 @@ impl ResolvedChatHarnessLaunch {
         match self {
             Self::Interactive { .. } => ResolvedChatHarnessLaunchMode::Interactive,
             Self::Background { .. } => ResolvedChatHarnessLaunchMode::Background,
+        }
+    }
+
+    pub fn apply_mcp_policy(
+        &mut self,
+        provider: AgentHarnessKind,
+        policy: &crate::domain::agents::McpLaunchPolicy,
+    ) {
+        match self {
+            Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
+                crate::infrastructure::agents::apply_mcp_launch_policy(spawnable, provider, policy);
+            }
         }
     }
 

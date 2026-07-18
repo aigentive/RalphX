@@ -1,5 +1,9 @@
 mod codex_cli_client;
+pub(crate) mod mcp_catalog;
 pub mod stream_processor;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,6 +35,7 @@ use crate::infrastructure::external_mcp_supervisor::{
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
 const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
+const REQUIRED_MCP_STARTUP_TIMEOUT_SECS: u64 = 30;
 const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
     "features.apply_patch_freeform=false",
     "features.apply_patch_streaming_events=false",
@@ -349,6 +354,10 @@ fn build_codex_internal_mcp_overrides(
             encode_codex_string_array(&mcp_args)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!(
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={REQUIRED_MCP_STARTUP_TIMEOUT_SECS}"
+        ),
     ];
 
     if let Some(tools) = enabled_tools {
@@ -393,6 +402,10 @@ fn build_codex_external_mcp_overrides(
             encode_codex_string_literal(TAURI_MCP_BYPASS_TOKEN_ENV)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!(
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={REQUIRED_MCP_STARTUP_TIMEOUT_SECS}"
+        ),
     ];
 
     if !codex_metadata.mcp_tools.is_empty() {

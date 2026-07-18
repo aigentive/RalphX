@@ -1632,6 +1632,34 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             };
             let persona_for_attribution = resolved_persona.clone();
 
+            let queue_agent_name = queued_agent_context
+                .identity
+                .agent_name
+                .as_deref()
+                .unwrap_or("ralphx-chat-project");
+            let readiness = chat_service_context::await_required_external_mcp(
+                app_handle.as_ref(),
+                harness,
+                plugin_dir,
+                queue_agent_name,
+                queued_agent_context.identity.agent_profile,
+            )
+            .await;
+            if let Err(error_string) = readiness {
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    &queued_run_id,
+                    &error_string,
+                )
+                .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id,
+                };
+            }
+
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
                 harness,
@@ -1737,6 +1765,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             };
             let mut provider_spawnable = provider_spawnable;
+            if let Some(handle) = app_handle.as_ref() {
+                let app_state = handle.state::<AppState>();
+                let policy = match app_state
+                    .mcp_policy_service()
+                    .resolve_launch_policy(harness, project_id, Some(working_directory))
+                    .await
+                {
+                    Ok(policy) => policy,
+                    Err(error) => {
+                        let error_string = format!("Failed to resolve MCP launch policy: {error}");
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                };
+                provider_spawnable.apply_mcp_policy(harness, &policy);
+            }
             provider_spawnable.apply_provider_env(&provider_env);
             let spawnable = provider_spawnable.spawnable;
 

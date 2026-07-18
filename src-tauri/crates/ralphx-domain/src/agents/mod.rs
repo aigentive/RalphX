@@ -7,6 +7,7 @@ pub mod agentic_client;
 pub mod capabilities;
 pub mod error;
 pub mod harness;
+pub mod mcp_policy;
 pub mod model_registry;
 pub mod provider_settings;
 pub mod routing_role;
@@ -36,6 +37,11 @@ pub use model_registry::{
     default_model_for_provider, lightweight_model_for_provider, plan_judge_model_for_provider,
     AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource,
 };
+pub use mcp_policy::{
+    validate_mcp_identifier, EffectiveMcpServerPolicy, McpLaunchPolicy, McpOverrideState,
+    McpPolicyOverride, McpPolicySource, McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
+    RALPHX_MCP_SERVER_IDS,
+};
 pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
 pub use routing_role::{
     ManualRoleDefault, ManualServiceTier, RoutingRole, RoutingRoleFamily, RoutingRoleMetadata,
@@ -52,3 +58,7 @@ mod dependency_tests;
 #[cfg(test)]
 #[path = "routing_role_tests.rs"]
 mod routing_role_tests;
+
+#[cfg(test)]
+#[path = "mcp_policy_tests.rs"]
+mod mcp_policy_tests;

@@ -71,6 +71,10 @@ vi.mock("./ExternalMcpSettingsPanel", () => ({
   ),
 }));
 
+vi.mock("./McpSettingsSection", () => ({
+  McpSettingsSection: () => <div data-testid="mcp-section">MCP</div>,
+}));
+
 vi.mock("./HarnessProvidersSection", () => ({
   HarnessProvidersSection: () => (
     <div data-testid="providers-section">Providers</div>
@@ -224,6 +228,21 @@ describe("SettingsDialog", () => {
     await expect(sectionModuleLoaders.agents()).resolves.toHaveProperty(
       "AgentsSettingsSection",
     );
+  });
+
+  it("registers MCP under Harness and preserves the External MCP deep link", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "mcp",
+      groupId: "harness",
+      label: "MCP",
+    });
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "external-mcp")).toBe(false);
+    await expect(sectionModuleLoaders.mcp()).resolves.toHaveProperty("McpSettingsSection");
+
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "external-mcp" };
+    render(<SettingsDialog {...defaultProps} />);
+    expect(await screen.findByTestId("mcp-section")).toBeInTheDocument();
   });
 
   describe("Section initialization via modalContext deep-link", () => {

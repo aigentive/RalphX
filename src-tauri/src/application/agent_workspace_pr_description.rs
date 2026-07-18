@@ -331,6 +331,7 @@ pub async fn draft_agent_workspace_pr_description(
             max_tokens: None,
             timeout_secs: Some(120),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {

@@ -9,8 +9,12 @@ pub mod effort_resolver;
 mod generated_plugin;
 pub mod model_labels;
 pub mod model_resolver;
+pub(crate) mod mcp_catalog;
 pub mod node_utils;
 mod stream_processor;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
 
 #[allow(unused_imports)]
 pub use agent_config::team_config::{
@@ -75,7 +79,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::domain::agents::{
     AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -621,7 +625,6 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     if enforce_spawn_guard {
         ensure_claude_spawn_allowed()?;
     }
-    sanitize_claude_user_state();
     let mut cmd = Command::new(cli_path);
 
     // Apply common environment hardening and debug flags for CLI spawns.
@@ -718,7 +721,6 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
 
     // If agent_type is provided, create a dynamic MCP config that passes it
     // to the MCP server via CLI args (since env vars don't propagate to MCP servers).
-    // Always enforce strict MCP isolation from user/global servers.
     // Hard error on invalid config — MCP is critical infra, fail loud.
     if let Some(agent) = agent_type {
         let temp_path = create_mcp_config_with_runtime_context_for_profile(
@@ -740,13 +742,12 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
         cmd.args([
             "--mcp-config",
             temp_path.to_str().unwrap_or(""),
-            "--strict-mcp-config",
         ]);
         tracing::debug!(
             path = %temp_path.display(),
             agent_type = agent,
             agent_profile = ?agent_profile,
-            "Dynamic MCP config written (strict)"
+            "Dynamic RalphX MCP config written alongside provider-native configuration"
         );
     }
 
@@ -813,118 +814,6 @@ fn append_runtime_profile_context(
         Some(context) => format!("{system_prompt}\n\n{context}"),
         None => system_prompt,
     }
-}
-
-/// Best-effort cleanup for `~/.claude.json` to avoid startup instability from
-/// corrupted or stale project metadata accumulated across many worktrees.
-///
-/// - If JSON is malformed, back it up and write an empty object.
-/// - If `projects` is present, remove stale MCP server overrides.
-pub fn sanitize_claude_user_state() {
-    let Some(home_dir) = dirs::home_dir() else {
-        return;
-    };
-    let path = home_dir.join(".claude.json");
-
-    // codeql[rust/path-injection]
-    if !path.exists() {
-        return;
-    }
-
-    // codeql[rust/path-injection]
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to read ~/.claude.json");
-            return;
-        }
-    };
-
-    let mut json: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Malformed ~/.claude.json; rotating and recreating");
-            let backup = home_dir.join(format!(
-                ".claude.json.corrupt-{}-{}",
-                std::process::id(),
-                uuid::Uuid::new_v4().simple()
-            ));
-            // codeql[rust/path-injection]
-            let _ = std::fs::rename(&path, &backup);
-            // codeql[rust/path-injection]
-            let _ = std::fs::write(&path, "{}");
-            return;
-        }
-    };
-
-    let Some(root) = json.as_object_mut() else {
-        return;
-    };
-    let (removed, remaining, mcp_overrides_cleared) = {
-        let Some(projects) = root.get_mut("projects").and_then(|v| v.as_object_mut()) else {
-            return;
-        };
-
-        // Remove per-project MCP overrides so agent runs don't inherit stale
-        // config from previously visited worktrees/repositories.
-        let mut cleared = 0usize;
-        for entry in projects.values_mut() {
-            let Some(project_obj) = entry.as_object_mut() else {
-                continue;
-            };
-            for key in [
-                "mcpServers",
-                "enabledMcpjsonServers",
-                "disabledMcpjsonServers",
-                "disabledMcpServers",
-                "mcpContextUris",
-            ] {
-                if project_obj.remove(key).is_some() {
-                    cleared += 1;
-                }
-            }
-        }
-
-        (0usize, projects.len(), cleared)
-    };
-
-    if removed == 0 && mcp_overrides_cleared == 0 {
-        return;
-    }
-
-    let serialized = match serde_json::to_string_pretty(&json) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to serialize sanitized ~/.claude.json");
-            return;
-        }
-    };
-
-    let temp = home_dir.join(format!(
-        ".claude.json.tmp-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
-
-    // codeql[rust/path-injection]
-    if let Err(e) = std::fs::write(&temp, serialized) {
-        warn!(path = %temp.display(), error = %e, "Failed to write temp ~/.claude.json");
-        return;
-    }
-    // codeql[rust/path-injection]
-    if let Err(e) = std::fs::rename(&temp, &path) {
-        warn!(from = %temp.display(), to = %path.display(), error = %e, "Failed to replace ~/.claude.json");
-        // codeql[rust/path-injection]
-        let _ = std::fs::remove_file(&temp);
-        return;
-    }
-
-    info!(
-        removed = removed,
-        remaining = remaining,
-        mcp_overrides_cleared = mcp_overrides_cleared,
-        "Sanitized ~/.claude.json project metadata"
-    );
 }
 
 /// Validate a generated MCP config JSON value for required fields.
@@ -2168,81 +2057,6 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
     ))
 }
 
-/// Register the configured MCP server with Claude Code CLI.
-/// This ensures the MCP server is available to Claude regardless of which project directory
-/// the user is working in. The server is registered with user scope.
-pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(), String> {
-    let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
-    let mcp_server_path_str = mcp_server_path.to_string_lossy().to_string();
-
-    // Build the JSON config for the MCP server
-    // IMPORTANT: Do NOT specify an "env" field here. The env field in MCP config
-    // REPLACES the parent environment entirely (Node.js spawn behavior). We need
-    // the MCP server to INHERIT RALPHX_AGENT_TYPE from Claude CLI's environment
-    // (set by Rust when spawning). The MCP server defaults to the production
-    // backend port when TAURI_API_URL is not specified.
-    let mcp_config = serde_json::json!({
-        "type": "stdio",
-        "command": "node",
-        "args": [
-            mcp_server_path_str,
-            "--trace-dir",
-            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir().to_string_lossy()
-        ]
-    });
-
-    let config_json = serde_json::to_string(&mcp_config)
-        .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
-    let mcp_server_name = claude_runtime_config().mcp_server_name.clone();
-
-    // First, try to remove existing registration (ignore errors)
-    let mut remove_cmd = std::process::Command::new(cli_path);
-    apply_common_spawn_env_to_std(&mut remove_cmd);
-    let remove_result = remove_cmd
-        .args(["mcp", "remove", &mcp_server_name, "-s", "user"])
-        .output();
-
-    match remove_result {
-        Ok(output) => {
-            if output.status.success() {
-                info!(server = %mcp_server_name, "Removed existing MCP registration");
-            }
-            // Ignore errors - server might not exist yet
-        }
-        Err(e) => {
-            warn!("Failed to run mcp remove (might be ok): {}", e);
-        }
-    }
-
-    // Register the MCP server with user scope
-    let mut add_cmd = std::process::Command::new(cli_path);
-    apply_common_spawn_env_to_std(&mut add_cmd);
-    let add_result = add_cmd
-        .args([
-            "mcp",
-            "add-json",
-            "-s",
-            "user",
-            &mcp_server_name,
-            &config_json,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run claude mcp add-json: {}", e))?;
-
-    if !add_result.status.success() {
-        let stderr = String::from_utf8_lossy(&add_result.stderr);
-        return Err(format!("Failed to register MCP server: {}", stderr));
-    }
-
-    info!(
-        server = %mcp_server_name,
-        path = %mcp_server_path.display(),
-        "Successfully registered MCP server"
-    );
-
-    Ok(())
-}
-
 /// Find the Claude CLI path (uses same approach as ClaudeCodeClient)
 pub fn find_claude_cli() -> Option<PathBuf> {
     crate::infrastructure::tool_paths::find_claude_cli_path()
@@ -2392,11 +2206,6 @@ mod tests {
             Self { key, original }
         }
 
-        fn unset(key: &'static str) -> Self {
-            let original = std::env::var_os(key);
-            std::env::remove_var(key);
-            Self { key, original }
-        }
     }
 
     impl Drop for EnvGuard {
@@ -2416,19 +2225,6 @@ mod tests {
     fn test_path_exists(path: impl AsRef<Path>) -> bool {
         checked_exists(path.as_ref(), "Claude plugin test fixture")
             .expect("inspect Claude plugin test fixture")
-    }
-
-    fn write_executable(path: &Path, contents: &str) {
-        std::fs::write(path, contents).expect("write executable");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(path)
-                .expect("executable metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions).expect("mark executable");
-        }
     }
 
     fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
@@ -2588,69 +2384,6 @@ mod tests {
         }
         assert!(
             path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin")
-        );
-    }
-
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test]
-    async fn register_mcp_server_ensures_resolved_node_for_env_shim() {
-        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
-            .lock()
-            .expect("env mutex");
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let empty_path = temp_dir.path().join("empty-path");
-        std::fs::create_dir_all(&empty_path).expect("create empty path");
-        let nvm_bin = temp_dir
-            .path()
-            .join(".nvm")
-            .join("versions")
-            .join("node")
-            .join("v22.16.0")
-            .join("bin");
-        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
-        let node_path = nvm_bin.join("node");
-        let claude_path = nvm_bin.join("claude");
-        let captured_add_json_path = temp_dir.path().join("captured-add-json.txt");
-        write_executable(
-            &node_path,
-            &format!(
-                r#"#!/bin/sh
-capture='{}'
-shift
-if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
-  exit 0
-elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
-  printf '%s' "$6" > "$capture"
-  exit 0
-else
-  printf 'unexpected args\n' >&2
-  exit 64
-fi
-"#,
-                captured_add_json_path.to_string_lossy()
-            ),
-        );
-        write_executable(&claude_path, "#!/usr/bin/env node\n");
-
-        let _home = EnvGuard::set_os("HOME", temp_dir.path());
-        let _path = EnvGuard::set_os("PATH", &empty_path);
-        let _nvm_bin = EnvGuard::unset("NVM_BIN");
-        let _volta_home = EnvGuard::unset("VOLTA_HOME");
-        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
-
-        register_mcp_server(&claude_path, temp_dir.path())
-            .await
-            .expect("Claude MCP registration should run npm shim with resolved node");
-
-        let captured_add_json =
-            std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
-        assert!(
-            captured_add_json.contains("--trace-dir"),
-            "registered MCP config should include trace-dir arg"
-        );
-        assert!(
-            captured_add_json.contains("mcp-proxy"),
-            "registered MCP config should point traces at MCP proxy log root"
         );
     }
 

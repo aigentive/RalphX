@@ -18,7 +18,7 @@ export type SettingsSectionId =
   | "linear"
   | "clickup"
   | "granola"
-  | "external-mcp"
+  | "mcp"
   | "accessibility"
   | "notifications";
 
@@ -53,6 +53,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "providers", groupId: "harness", label: "Providers" },
   { id: "models", groupId: "harness", label: "Models" },
   { id: "agents", groupId: "harness", label: "Agents" },
+  { id: "mcp", groupId: "harness", label: "MCP" },
   { id: "repository", groupId: "workspace", label: "Repository" },
   { id: "project-analysis", groupId: "workspace", label: "Setup & Validation" },
   { id: "execution", groupId: "general", label: "Execution" },
@@ -69,7 +70,6 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "clickup", groupId: "integrations", label: "ClickUp" },
   { id: "granola", groupId: "integrations", label: "Granola" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
-  { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
   { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];
@@ -84,6 +84,9 @@ export function isSettingsSectionId(value: unknown): value is SettingsSectionId 
 export function resolveSettingsSectionId(value: unknown): SettingsSectionId | null {
   if (value === "execution-harnesses" || value === "ideation-harnesses") {
     return "agents";
+  }
+  if (value === "external-mcp") {
+    return "mcp";
   }
   return isSettingsSectionId(value) ? value : null;
 }

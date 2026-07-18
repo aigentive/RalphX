@@ -489,6 +489,8 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -506,6 +508,8 @@ async fn recovery_retry_spawnable_gate_allows_non_execution_without_provider_rep
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -533,6 +537,8 @@ async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -566,6 +572,8 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -584,6 +592,8 @@ async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
@@ -605,6 +615,8 @@ async fn resolve_recovery_retry_spawnable_drops_build_errors() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(

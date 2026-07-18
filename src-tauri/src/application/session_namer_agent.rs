@@ -167,6 +167,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         max_tokens: None,
         timeout_secs: Some(60),
         env,
+        mcp_launch_policy: Default::default(),
     };
 
     Ok(SessionNamerAgentSpawn {

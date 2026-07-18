@@ -1,0 +1,170 @@
+use std::collections::BTreeMap;
+
+use chrono::Utc;
+
+use crate::domain::agents::{
+    AgentHarnessKind, McpOverrideState, McpPolicyOverride, McpPolicySource, McpServerKey,
+    NativeMcpServerSnapshot, NativeMcpState,
+};
+
+use super::mcp_policy_service::resolve_layers_for_test;
+
+fn native(state: NativeMcpState) -> NativeMcpServerSnapshot {
+    NativeMcpServerSnapshot {
+        key: McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap(),
+        native_scope: Some("user".to_string()),
+        native_state: state,
+        known_tools: vec!["create_issue".to_string(), "list_issues".to_string()],
+        diagnostic: None,
+    }
+}
+
+fn policy(
+    server_state: McpOverrideState,
+    tool: Option<(&str, McpOverrideState)>,
+) -> McpPolicyOverride {
+    let mut tool_states = BTreeMap::new();
+    if let Some((name, state)) = tool {
+        tool_states.insert(name.to_string(), state);
+    }
+    McpPolicyOverride {
+        project_id: None,
+        key: native(NativeMcpState::Enabled).key,
+        server_state,
+        tool_states,
+        updated_at: Utc::now(),
+    }
+}
+
+#[test]
+fn fields_resolve_independently_across_all_precedence_layers() {
+    let global_yaml = policy(McpOverrideState::Disabled, None);
+    let global_ui = policy(
+        McpOverrideState::Follow,
+        Some(("create_issue", McpOverrideState::Disabled)),
+    );
+    let project_yaml = policy(McpOverrideState::Enabled, None);
+    let project_ui = policy(
+        McpOverrideState::Follow,
+        Some(("list_issues", McpOverrideState::Disabled)),
+    );
+
+    let effective = resolve_layers_for_test(
+        native(NativeMcpState::Enabled),
+        Some(&global_yaml),
+        Some(&global_ui),
+        Some(&project_yaml),
+        Some(&project_ui),
+    );
+    assert!(effective.enabled);
+    assert_eq!(effective.server_source, McpPolicySource::ProjectYaml);
+    assert_eq!(
+        effective.disabled_tools,
+        vec!["create_issue".to_string(), "list_issues".to_string()]
+    );
+    assert_eq!(
+        effective.tool_sources.get("create_issue"),
+        Some(&McpPolicySource::GlobalUi)
+    );
+}
+
+#[test]
+fn ralphx_enabled_never_exceeds_native_trust_or_auth_state() {
+    let project_ui = policy(McpOverrideState::Enabled, None);
+    for state in [
+        NativeMcpState::Disabled,
+        NativeMcpState::PendingApproval,
+        NativeMcpState::AuthRequired,
+        NativeMcpState::Untrusted,
+        NativeMcpState::Unavailable,
+    ] {
+        let effective = resolve_layers_for_test(native(state), None, None, None, Some(&project_ui));
+        assert!(
+            !effective.enabled,
+            "native state {state:?} must remain an upper bound"
+        );
+    }
+}
+
+#[tokio::test]
+async fn required_internal_server_is_locked_and_cannot_accumulate_denies() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let mut internal = native(NativeMcpState::Unavailable);
+    internal.key = McpServerKey::new(AgentHarnessKind::Codex, "ralphx_internal").unwrap();
+    internal.native_scope = Some("ralphx".to_string());
+    let root = tempfile::tempdir().unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+    let effective = service.resolve(internal, None, None).await.unwrap();
+    assert!(effective.enabled);
+    assert!(effective.locked);
+    assert!(effective.disabled_tools.is_empty());
+}
+
+#[tokio::test]
+async fn provider_native_reserved_id_collision_fails_closed() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let mut collision = native(NativeMcpState::Enabled);
+    collision.key = McpServerKey::new(AgentHarnessKind::Claude, "ralphx").unwrap();
+    collision.native_scope = Some("user".to_string());
+    let root = tempfile::tempdir().unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+
+    let effective = service.resolve(collision, None, None).await.unwrap();
+    assert!(!effective.enabled);
+    assert!(effective.locked);
+    assert!(effective.native.diagnostic.is_some());
+}
+
+#[tokio::test]
+async fn launch_policy_merges_global_and_project_denies_for_one_provider() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = Arc::new(MemoryMcpPolicyRepository::new());
+    let github = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    let linear = McpServerKey::new(AgentHarnessKind::Claude, "linear").unwrap();
+    repo.set_server_state(None, &github, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_tool_state(
+        Some("project-1"),
+        &linear,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = repo;
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+
+    let policy = service
+        .resolve_launch_policy(
+            AgentHarnessKind::Claude,
+            Some("project-1"),
+            Some(root.path()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(policy.disabled_servers, vec!["github"]);
+    assert_eq!(
+        policy.disabled_tools.get("linear"),
+        Some(&vec!["delete_issue".to_string()])
+    );
+}

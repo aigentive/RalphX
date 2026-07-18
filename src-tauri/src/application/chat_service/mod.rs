@@ -1429,6 +1429,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     activity_event_repo: Arc<dyn ActivityEventRepository>,
     message_queue: Arc<MessageQueue>,
@@ -1527,6 +1528,7 @@ impl<R: Runtime> AppChatService<R> {
             granola_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
+            mcp_policy_service: None,
             ideation_session_repo,
             activity_event_repo,
             message_queue,
@@ -1862,6 +1864,29 @@ impl<R: Runtime> AppChatService<R> {
     ) -> Self {
         self.ideation_model_settings_repo = Some(repo);
         self
+    }
+
+    pub fn with_mcp_policy_service(
+        mut self,
+        service: crate::application::mcp_policy_service::McpPolicyService,
+    ) -> Self {
+        self.mcp_policy_service = Some(service);
+        self
+    }
+
+    async fn resolve_mcp_launch_policy(
+        &self,
+        provider: AgentHarnessKind,
+        project_id: Option<&str>,
+        working_directory: &Path,
+    ) -> Result<crate::domain::agents::McpLaunchPolicy, ChatServiceError> {
+        match self.mcp_policy_service.as_ref() {
+            Some(service) => service
+                .resolve_launch_policy(provider, project_id, Some(working_directory))
+                .await
+                .map_err(|error| ChatServiceError::SpawnFailed(error.to_string())),
+            None => Ok(Default::default()),
+        }
     }
 
     async fn enqueue_pending_send(
@@ -3873,6 +3898,18 @@ impl<R: Runtime> AppChatService<R> {
                 persona.is_some(),
             );
         let persona_for_metadata = persona.clone();
+        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
+            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
+        });
+        chat_service_context::await_required_external_mcp(
+            self.app_handle.as_ref(),
+            effective_harness,
+            &plugin_dir,
+            effective_agent_name,
+            agent_profile,
+        )
+        .await
+        .map_err(ChatServiceError::SpawnFailed)?;
         let build_plan_started = Instant::now();
         let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
             effective_harness,
@@ -3915,6 +3952,10 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        let mcp_launch_policy = self
+            .resolve_mcp_launch_policy(effective_harness, project_id, working_directory)
+            .await?;
+        launch_plan.apply_mcp_policy(effective_harness, &mcp_launch_policy);
         launch_plan.apply_provider_env(&provider_env);
         let persona_injected = launch_plan.persona_injected();
         let injection_would_be_skipped =

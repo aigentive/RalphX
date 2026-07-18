@@ -63,8 +63,8 @@ use crate::domain::repositories::{
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    ManualRoleDefaultRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, MethodologyRepository, NotificationRepository,
+    ManualRoleDefaultRepository, McpPolicyRepository, MemoryArchiveRepository,
+    MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
     NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
     PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
     ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
@@ -97,7 +97,7 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryManualRoleDefaultRepository,
-    MemoryMethodologyRepository, MemoryNotificationRepository,
+    MemoryMcpPolicyRepository, MemoryMethodologyRepository, MemoryNotificationRepository,
     MemoryNotificationSettingsRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
     MemoryPermissionRepository, MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
@@ -132,8 +132,8 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteManualRoleDefaultRepository,
-    SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository, SqliteMemoryEventRepository,
-    SqliteMethodologyRepository, SqliteNotificationRepository,
+    SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
+    SqliteMemoryEventRepository, SqliteMethodologyRepository, SqliteNotificationRepository,
     SqliteNotificationSettingsRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
     SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
     SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
@@ -251,6 +251,8 @@ pub struct AppState {
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
     /// Exact manual routing-role defaults at global and project scopes.
     pub manual_role_default_repo: Arc<dyn ManualRoleDefaultRepository>,
+    /// Provider-native MCP deny/override policy at global and project scopes.
+    pub mcp_policy_repo: Arc<dyn McpPolicyRepository>,
     /// Provider/model compatibility and custom model registry
     pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
     /// Global enabled/default provider settings
@@ -410,6 +412,15 @@ impl AppState {
         )
     }
 
+    pub(crate) fn mcp_policy_service(
+        &self,
+    ) -> crate::application::mcp_policy_service::McpPolicyService {
+        crate::application::mcp_policy_service::McpPolicyService::new(
+            Arc::clone(&self.mcp_policy_repo),
+            self.app_paths.global_mcp_policy_path(),
+        )
+    }
+
     pub fn agent_workflow_runner(
         &self,
     ) -> AppResult<crate::application::agent_workflow_runner::AgentWorkflowRunner> {
@@ -490,8 +501,32 @@ impl AppState {
         (Arc::new(NullEventSink), InternalEventBus::new())
     }
 
-    fn production_agent_clients() -> AgentClientBundle {
-        AgentClientBundle::standard_production_runtime_clients()
+    fn production_agent_clients(
+        mcp_policy_repo: Arc<dyn McpPolicyRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
+        global_mcp_policy_path: PathBuf,
+    ) -> AgentClientBundle {
+        let base = AgentClientBundle::standard_production_runtime_clients();
+        let policy_service = crate::application::mcp_policy_service::McpPolicyService::new(
+            mcp_policy_repo,
+            global_mcp_policy_path,
+        );
+        let wrap = |harness, client| {
+            Arc::new(
+                crate::application::mcp_policy_agent_client::McpPolicyAgentClient::new(
+                    harness,
+                    client,
+                    policy_service.clone(),
+                    Arc::clone(&project_repo),
+                ),
+            ) as Arc<dyn AgenticClient>
+        };
+        let default_client = wrap(base.default_harness, Arc::clone(&base.default_client));
+        let harness_clients = base
+            .iter_explicit_harness_clients()
+            .map(|(harness, client)| (harness, wrap(harness, client)))
+            .collect();
+        AgentClientBundle::from_parts(base.default_harness, default_client, harness_clients)
     }
 
     fn mock_agent_clients() -> AgentClientBundle {
@@ -1148,6 +1183,12 @@ impl AppState {
         // Create repositories that are used by services
         let task_repo: Arc<dyn TaskRepository> =
             Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn)));
+        let project_repo: Arc<dyn ProjectRepository> = Arc::new(
+            SqliteProjectRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let mcp_policy_repo: Arc<dyn McpPolicyRepository> = Arc::new(
+            SqliteMcpPolicyRepository::from_shared(Arc::clone(&shared_conn)),
+        );
         let task_proposal_repo: Arc<dyn TaskProposalRepository> = Arc::new(
             SqliteTaskProposalRepository::from_shared(Arc::clone(&shared_conn)),
         );
@@ -1171,9 +1212,7 @@ impl AppState {
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            project_repo: Arc::new(SqliteProjectRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            project_repo: Arc::clone(&project_repo),
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1219,7 +1258,11 @@ impl AppState {
             review_issue_repo: Arc::new(SqliteReviewIssueRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            agent_clients: Self::production_agent_clients(),
+            agent_clients: Self::production_agent_clients(
+                Arc::clone(&mcp_policy_repo),
+                Arc::clone(&project_repo),
+                app_paths.global_mcp_policy_path(),
+            ),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
             execution_settings_repo: Arc::new(SqliteExecutionSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1260,6 +1303,7 @@ impl AppState {
             manual_role_default_repo: Arc::new(SqliteManualRoleDefaultRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            mcp_policy_repo,
             agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1527,6 +1571,7 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
+            mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -1706,6 +1751,7 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
+            mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -1894,6 +1940,7 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
+            mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2067,6 +2114,7 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
+            mcp_policy_repo: Arc::new(MemoryMcpPolicyRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(

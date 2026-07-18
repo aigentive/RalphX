@@ -1220,6 +1220,12 @@ harnesses:
         "external MCP transport should use a streamable HTTP URL; override keys: {:?}",
         override_keys(&overrides)
     );
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx.required=true"));
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx.startup_timeout_sec=30"));
     assert!(
         overrides.iter().any(|entry| {
             entry == "mcp_servers.ralphx.bearer_token_env_var=\"RALPHX_TAURI_MCP_BYPASS_TOKEN\""
@@ -1432,6 +1438,12 @@ harnesses:
         "internal MCP sidecar should launch bundled stdio server; override keys: {:?}",
         override_keys(&overrides)
     );
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx_internal.required=true"));
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx_internal.startup_timeout_sec=30"));
     assert!(
         overrides.iter().any(|entry| {
             entry

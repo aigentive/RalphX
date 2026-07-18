@@ -278,6 +278,12 @@ macro_rules! register_tauri_commands {
             commands::manual_role_default_commands::clear_manual_role_default,
             commands::harness_provider_commands::get_agent_provider_settings,
             commands::harness_provider_commands::update_agent_provider_settings,
+            commands::mcp_policy_commands::get_mcp_catalog,
+            commands::mcp_policy_commands::refresh_mcp_catalog,
+            commands::mcp_policy_commands::update_mcp_server_override,
+            commands::mcp_policy_commands::clear_mcp_server_override,
+            commands::mcp_policy_commands::update_mcp_tool_override,
+            commands::mcp_policy_commands::clear_mcp_tool_override,
             commands::provider_cli_management_commands::get_managed_provider_cli_status,
             commands::provider_cli_management_commands::install_or_update_managed_provider_cli,
             commands::provider_cli_management_commands::auto_update_managed_provider_clis,
@@ -534,6 +540,7 @@ macro_rules! register_tauri_commands {
             commands::workspace_open_commands::open_agent_conversation_workspace_path,
             // External MCP config commands
             commands::external_mcp_commands::get_external_mcp_config,
+            commands::external_mcp_commands::get_external_mcp_readiness,
             commands::external_mcp_commands::update_external_mcp_config,
         ]
     };

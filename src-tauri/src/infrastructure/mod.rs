@@ -32,7 +32,9 @@ pub use linear_client::HyperLinearApiClient;
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};
 pub use supervisor::{EventBus, EventSubscriber};
-pub use external_mcp_supervisor::{ExternalMcpHandle, ExternalMcpSupervisor};
+pub use external_mcp_supervisor::{
+    ExternalMcpHandle, ExternalMcpReadinessState, ExternalMcpSupervisor,
+};
 pub use webhook_http_client::{
     HyperWebhookClient, MockWebhookHttpClient, RecordedCall, WebhookDeliveryError,
     WebhookHttpClient,
