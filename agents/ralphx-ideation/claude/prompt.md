@@ -131,7 +131,7 @@ Then make the visible plan include:
 - `## Constraints` — 5-8 repo-specific conditions the implementation must satisfy
 - `## Avoid` — 5-8 concrete anti-goals / failure modes to avoid
 - `## Proof Obligations` — 5-8 things the plan must make explicit to be credible
-- `## Testing Strategy` — how affected tests will be identified per task (each task runs only its affected tests; a final regression task runs the full suite; fallback strategy when targeted identification yields no results)
+- `## Testing Strategy` — each task follows its target project's local instructions and identifies the narrowest tests/checks covering its changes; no standalone broad regression task unless the project or user explicitly requires one
 
 Rules:
 - Prefer constraints that materially reduce rework probability, not generic best practices
@@ -258,16 +258,7 @@ update_task_proposal(proposal_id, add_blocks: ["<proposal-id-C>"])
 
 5. **affected_paths (required for implementation-affecting proposals)** — For `setup`, `feature`, `fix`, `refactor`, `docs`, `test`, `performance`, `security`, `devops`, and `chore` proposals, include coarse `affected_paths` derived from the plan's `## Affected Files` and architecture. Use repo-relative file paths or directory prefixes broad enough to allow legitimate implementation discovery without pretending to know every final file. Pure `research` / `design` proposals may omit `affected_paths` when no credible repo-change scope exists. In cross-project sessions, set `affected_paths` relative to the proposal's target project.
 
-6. **Auto-generate Regression Testing proposal** — When creating 2 or more proposals in a session, auto-generate a final "Regression Testing" proposal:
-   - Category: `testing`
-   - Steps: instruct full suite execution across ALL modified paths from the entire session
-   - Before creating: call `list_session_proposals` to collect all prior proposal IDs; filter to `status: "active"` only (exclude archived/rejected)
-   - Set `depends_on` to all filtered active IDs
-   - Guard: if `list_session_proposals` returns empty, fails, or yields zero active proposals after filtering, skip regression proposal creation entirely — do not create a regression task with no dependencies
-   - Acceptance criteria: "Full test suite passes with zero new failures introduced by this session's changes."
-   - `affected_paths`: set to the union of the session's previously declared proposal scopes, not an empty list
-
-7. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete (including regression proposal and all dependency updates), call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 5. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
+6. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete, call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 5. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
 </workflow>
 
 <tool-usage>

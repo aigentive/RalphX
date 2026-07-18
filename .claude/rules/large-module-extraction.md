@@ -37,8 +37,8 @@ When extracting large single file into 10+ target files:
 After all agents complete:
 1. Rewrite mod.rs/index.ts to type hub + re-exports
 2. Add module declarations for new sub-modules
-3. Run compilation checks
-4. Run `scripts/test-rust-fast.sh pr`
+3. Run the narrowest compile/test command covering the extracted module
+4. Run touched-leaf formatting checks; leave broad CI parity to CI
 5. Single commit (all files atomic)
 
 ## Visibility Fixes (Rust)
@@ -146,7 +146,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 | 1 | Compare `fn` signatures in parent (`mod.rs`) vs extracted modules — find duplicates |
 | 2 | Look for stray attributes (`#[cfg(test)]`) between `impl` closing braces |
 | 3 | Look for unmatched `}` at unexpected positions |
-| 4 | Run `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` (or a targeted filter per rust-test-execution.md) — "unexpected closing delimiter" = orphaned block |
+| 4 | Run the targeted filter/suite for the extracted module per rust-test-execution.md — "unexpected closing delimiter" = orphaned block |
 
 ### Resolution
 
@@ -162,7 +162,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 | Extract module | Create new leaf file with functions | `pub fn` signatures match extracted body |
 | Update parent | Delete functions from parent | Grep confirms no duplicates in parent |
 | Verify structure | Check `impl` block boundaries | No stray attributes between `impl` closing `}` and next item |
-| Compile | Run `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` (or a targeted filter per rust-test-execution.md) | 0 compile errors, structure is clean |
+| Compile | Run the targeted filter/suite for the extracted module per rust-test-execution.md | 0 compile errors, structure is clean |
 
 ## Verification Checklist
 
@@ -172,7 +172,7 @@ Functions deleted from parent but left between two `impl` closures. Stray attrib
 - Private functions with cross-module callers → `pub(super)`
 - Module declarations added to parent `mod.rs`
 - No orphaned duplicates in parent (see Post-Extraction Cleanup above)
-- Both clippy gates pass (`--lib --bins --no-default-features` + `--all-targets --all-features`, each `--manifest-path src-tauri/Cargo.toml -- -D warnings`) / `npm run typecheck` succeeds
-- `scripts/test-rust-fast.sh pr` passes
+- Focused tests/checks for the extracted module pass / `npm run typecheck` succeeds
+- Touched Rust leaf files pass `rustfmt --edition 2021 --check`
 - Compilation succeeds with no new warnings
 - Single atomic commit
