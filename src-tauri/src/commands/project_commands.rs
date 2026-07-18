@@ -22,8 +22,7 @@ use crate::domain::services::github_service::GithubConnectionState;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::infrastructure::git_auth::{
     apply_git_subprocess_env, check_gh_auth_token_available, git_remote_url_kind_label,
-    git_subprocess_env, inspect_origin_auth_config, probe_github_connection_status,
-    suggested_github_ssh_origin,
+    inspect_origin_auth_config, probe_github_connection_status, suggested_github_ssh_origin,
 };
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -927,16 +926,17 @@ async fn run_gh_command(args: &[&str]) -> Result<(), String> {
 }
 
 async fn run_gh_command_with_timeout(args: &[&str], deadline: Duration) -> Result<(), String> {
-    let child =
-        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
-            .args(args)
-            .envs(git_subprocess_env())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+    let mut command =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn gh: {}", e))?;
 
     let output = tokio::time::timeout(deadline, child.wait_with_output())
         .await
@@ -973,16 +973,17 @@ async fn run_gh_web_login_command(
     deadline: Duration,
     notification_service: Arc<NotificationService>,
 ) -> Result<(), String> {
-    let mut child =
-        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
-            .args(gh_web_login_args())
-            .envs(git_subprocess_env())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+    let mut command =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let mut child = command
+        .args(gh_web_login_args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn gh: {}", e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

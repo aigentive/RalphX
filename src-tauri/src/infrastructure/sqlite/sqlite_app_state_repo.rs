@@ -50,16 +50,20 @@ impl AppStateRepository for SqliteAppStateRepository {
         self.db
             .run(move |conn| {
                 let result = conn.query_row(
-                    "SELECT active_project_id, execution_halt_mode, last_seen_release_notes_version FROM app_state WHERE id = 1",
+                    "SELECT active_project_id, execution_halt_mode, last_seen_release_notes_version,
+                            remove_inherited_github_cli_tokens
+                     FROM app_state WHERE id = 1",
                     [],
                     |row| {
                         let active_project_id: Option<String> = row.get(0)?;
                         let execution_halt_mode: Option<String> = row.get(1)?;
                         let last_seen_release_notes_version: Option<String> = row.get(2)?;
+                        let remove_inherited_github_cli_tokens: bool = row.get(3)?;
                         Ok(AppSettings {
                             active_project_id: active_project_id.map(ProjectId::from_string),
                             execution_halt_mode: parse_halt_mode(execution_halt_mode),
                             last_seen_release_notes_version,
+                            remove_inherited_github_cli_tokens,
                         })
                     },
                 );
@@ -121,6 +125,25 @@ impl AppStateRepository for SqliteAppStateRepository {
                 conn.execute(
                     "UPDATE app_state SET last_seen_release_notes_version = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now') WHERE id = 1",
                     rusqlite::params![version],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
+
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE app_state
+                     SET remove_inherited_github_cli_tokens = ?1,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+                     WHERE id = 1",
+                    [enabled],
                 )?;
                 Ok(())
             })

@@ -17,4 +17,8 @@ pub trait AppStateRepository: Send + Sync {
         &self,
         version: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>>;
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
