@@ -154,6 +154,8 @@ Each proposal should be:
 - prioritized
 - bounded enough to execute safely
 
+Testing steps defer to the target project's local instructions and select the narrowest relevant checks. Do not manufacture a standalone broad regression proposal unless the project or user explicitly requires one.
+
 Run `analyze_session_dependencies` before finalizing proposal sequencing when multiple proposals exist.
 
 ## Phase 6: Finalize

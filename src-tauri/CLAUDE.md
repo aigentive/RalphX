@@ -106,9 +106,9 @@ New pattern → add one-liner here. Pattern name + rule only.
 | PreMergeCleanup | Kill agents + kill_worktree_processes BEFORE git worktree ops (TOCTOU race prevention) |
 | MergeDeadline | `attempt_programmatic_merge` wraps cleanup + strategy in bounded deadline (`attempt_merge_deadline_secs`) |
 | No Inline Timeout Consts | All durations → `runtime_config` + `config/ralphx.yaml`, never Rust `const` |
-| Rust test runner split | Use targeted `cargo test` for pinpoint Rust validation and doctests; use `cargo nextest run` for broad Rust lib runs; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
+| Rust test runner split | Local agents use targeted `cargo test` filters and targeted `cargo nextest --test ... -E ...`; broad Rust runs are CI/manual-diagnostic only; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
 | Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
-| Worktree-safe Rust helper | `scripts/test-rust-fast.sh` mirrors PR/`main` Rust CI locally; PR includes the layering ratchet, `main` adds workspace doctests + full integration, and `*-parallel` modes isolate `src-tauri/target/rust-fast/*` per lane |
+| Worktree-safe Rust helper | `scripts/test-rust-fast.sh` bundles selected CI lanes for explicit manual diagnosis; ordinary agent handoff never runs its broad `pr`/`main` modes |
 | Layering ratchet | `python3 scripts/check-layering.py` blocks new tracked backend layering violations; intentional baseline changes require reviewing `scripts/baselines/layering.json` |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |
@@ -145,30 +145,21 @@ New pattern → add one-liner here. Pattern name + rule only.
 
 ## Code Quality
 Keep work inside the requested feature/refactor/polish scope. File limits + migration rules: `.claude/rules/code-quality-standards.md`.
-**500 lines max** (refactor@400). Zero warnings policy — see root CLAUDE.md #8. Public API → doc `/// # Errors` section.
+**500 lines max** (refactor@400). Focused local validation policy — see root CLAUDE.md #8. Public API → doc `/// # Errors` section.
 
 ## Database
 `ralphx.db` (dev) | Migrations: `infrastructure/sqlite/migrations/` | System: `.claude/rules/code-quality-standards.md`
 New migration: `python3 scripts/new_sqlite_migration.py <description>` → `vYYYYMMDDHHMMSS_description.rs` + matching `*_tests.rs`, then register in `MIGRATIONS`, bump `SCHEMA_VERSION`, and run `python3 scripts/validate_sqlite_migrations.py` | Use `IF NOT EXISTS` | `helpers::add_column_if_not_exists()`
 
 ## Commands
-❌ `cargo check` (hangs) | ❌ full broad `cargo test` | ❌ `--nocapture`
+Local agents: focused commands only; ❌ `cargo check` (hangs) | ❌ broad/full suites | ❌ `--nocapture`
 ```bash
-cargo build                                                              # build
-scripts/test-rust-fast.sh pr                                             # local PR Rust CI parity
-scripts/test-rust-fast.sh main                                           # local push/main Rust CI parity
-scripts/test-rust-fast.sh pr-parallel                                    # local wall-clock optimized PR Rust CI parity
-scripts/test-rust-fast.sh layering                                       # local layering ratchet
-scripts/test-rust-fast.sh full-integration                               # local push-only full Rust integration sweep
-scripts/bench-rust-build.sh --label before                               # Rust build-cost benchmark for profile/linker/crate-type changes
-python3 scripts/check-layering.py                                        # layering ratchet
 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
 cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'  # targeted integration suites
-cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils  # broad root lib run during PR 0.x decoupling
-cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+python3 scripts/check-layering.py                                        # only for layer/import/module-boundary changes
+rustfmt --edition 2021 --check <touched-leaf.rs>                         # touched leaves only
 ```
-Selective Rust test commands + suite mapping + SQLite test fixture rules → `.claude/rules/rust-test-execution.md`
+CI/manual reproduction commands + suite mapping + SQLite test fixture rules → `.claude/rules/rust-test-execution.md`
 
 ## Real Integration Tests
 Pattern: `tempfile::TempDir` + git CLI → `Memory*Repository` → `TaskServices::new_mock()` | `MockChatService` → `TransitionHandler` → assert state + git.

@@ -101,7 +101,7 @@ NO purple gradients | NO Inter font | Warm orange #ff6b35
 Keep work inside the requested feature/refactor/polish scope; file limits, migration rules, and quality targets live in `../../.claude/rules/code-quality-standards.md`.
 
 ### Zero Warnings Policy (NON-NEGOTIABLE)
-Fix ALL lint warnings and test failures before completing work — including pre-existing ones. ❌ "It's pre-existing" is not an excuse. Run `npm run lint` and `npm run typecheck` and fix everything.
+Fix lint/typecheck/test failures caused by the current change; report unrelated pre-existing failures without expanding scope. Run `npm run lint` and `npm run typecheck` when the changed frontend surface requires them.
 
 ### File Size Limits
 **See:** `../../.claude/rules/code-quality-standards.md` (single source of truth)
