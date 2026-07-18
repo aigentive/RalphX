@@ -94,12 +94,10 @@ coverage:
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
-          # Provider-native MCP policy command/launch adapters wrap Tauri State,
-          # provider catalog probes, project lookup, and agent-client spawn
-          # delegation. Deterministic policy merge/repo behavior is covered in
-          # sidecar service/repo/client tests.
+          # Provider-native MCP policy commands wrap Tauri State, provider
+          # catalog subprocess probes, and project lookup. Deterministic policy
+          # merge/repo/client behavior is covered in focused sidecar tests.
           - "!src-tauri/src/commands/mcp_policy_commands.rs"
-          - "!src-tauri/src/application/mcp_policy_agent_client.rs"
           # External MCP supervisor process-management branches require real
           # subprocess spawning and OS signal behavior; extracted helpers carry
           # deterministic unit coverage.
@@ -219,10 +217,9 @@ ignore:
   - "src-tauri/src/infrastructure/memory/memory_branch_update_repo.rs"
   - "src-tauri/src/infrastructure/sqlite/sqlite_branch_update_repo/repository.rs"
   - "src-tauri/crates/ralphx-domain/src/entities/branch_update.rs"
-  # Provider-native MCP policy adapter/process surfaces; deterministic policy
-  # behavior is covered in service/repo/client sidecar tests.
+  # Provider-native MCP command/process surfaces; deterministic policy behavior
+  # is covered in service/repo/client sidecar tests.
   - "src-tauri/src/commands/mcp_policy_commands.rs"
-  - "src-tauri/src/application/mcp_policy_agent_client.rs"
   - "src-tauri/src/infrastructure/external_mcp_supervisor.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"

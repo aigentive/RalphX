@@ -1,6 +1,10 @@
+pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
 pub(crate) mod mcp_catalog;
 pub mod stream_processor;
+
+#[cfg(test)]
+mod app_server_mcp_catalog_tests;
 
 #[cfg(test)]
 mod mcp_catalog_tests;
@@ -35,7 +39,6 @@ use crate::infrastructure::external_mcp_supervisor::{
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
 const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
-const REQUIRED_MCP_STARTUP_TIMEOUT_SECS: u64 = 30;
 const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
     "features.apply_patch_freeform=false",
     "features.apply_patch_streaming_events=false",
@@ -302,6 +305,7 @@ fn build_codex_internal_mcp_overrides(
     runtime_context: Option<&CodexMcpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
+    let startup_timeout_secs = external_mcp_config().startup_timeout_secs;
     let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
 
     let node_command = node_utils::find_node_binary()
@@ -355,9 +359,7 @@ fn build_codex_internal_mcp_overrides(
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
         format!("mcp_servers.{mcp_server_name}.required=true"),
-        format!(
-            "mcp_servers.{mcp_server_name}.startup_timeout_sec={REQUIRED_MCP_STARTUP_TIMEOUT_SECS}"
-        ),
+        format!("mcp_servers.{mcp_server_name}.startup_timeout_sec={startup_timeout_secs}"),
     ];
 
     if let Some(tools) = enabled_tools {
@@ -404,7 +406,8 @@ fn build_codex_external_mcp_overrides(
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
         format!("mcp_servers.{mcp_server_name}.required=true"),
         format!(
-            "mcp_servers.{mcp_server_name}.startup_timeout_sec={REQUIRED_MCP_STARTUP_TIMEOUT_SECS}"
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={}",
+            cfg.startup_timeout_secs
         ),
     ];
 

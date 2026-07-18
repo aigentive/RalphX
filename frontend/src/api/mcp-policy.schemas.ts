@@ -50,6 +50,7 @@ export const RawMcpCatalogSchema = z.object({
   probed_at: z.string(),
   probe_stale: z.boolean(),
   provider_diagnostics: z.record(z.string(), z.string()),
+  policy_diagnostics: z.array(z.string()),
   servers: z.array(RawMcpServerSchema),
 });
 

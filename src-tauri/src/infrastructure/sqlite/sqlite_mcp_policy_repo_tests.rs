@@ -184,3 +184,35 @@ async fn clear_server_is_scope_specific() {
         McpOverrideState::Disabled
     );
 }
+
+#[tokio::test]
+async fn clearing_server_state_preserves_independent_tool_overrides() {
+    let db = SqliteTestDb::new("mcp-policy-clear-server-preserves-tools");
+    let repo = SqliteMcpPolicyRepository::from_shared(db.shared_conn());
+    let key = McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap();
+
+    repo.set_server_state(Some("project-1"), &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_tool_state(
+        Some("project-1"),
+        &key,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+
+    assert!(repo.clear_server(Some("project-1"), &key).await.unwrap());
+    let policy = repo
+        .get_for_project("project-1", &key)
+        .await
+        .unwrap()
+        .expect("tool-only policy remains");
+    assert_eq!(policy.server_state, McpOverrideState::Follow);
+    assert_eq!(
+        policy.tool_states.get("delete_issue"),
+        Some(&McpOverrideState::Disabled)
+    );
+    assert!(!repo.clear_server(Some("project-1"), &key).await.unwrap());
+}

@@ -419,6 +419,7 @@ impl AppState {
             Arc::clone(&self.mcp_policy_repo),
             self.app_paths.global_mcp_policy_path(),
         )
+        .with_provider_settings_repo(Arc::clone(&self.agent_provider_settings_repo))
     }
 
     pub fn agent_workflow_runner(
@@ -504,13 +505,15 @@ impl AppState {
     fn production_agent_clients(
         mcp_policy_repo: Arc<dyn McpPolicyRepository>,
         project_repo: Arc<dyn ProjectRepository>,
+        provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
         global_mcp_policy_path: PathBuf,
     ) -> AgentClientBundle {
         let base = AgentClientBundle::standard_production_runtime_clients();
         let policy_service = crate::application::mcp_policy_service::McpPolicyService::new(
             mcp_policy_repo,
             global_mcp_policy_path,
-        );
+        )
+        .with_provider_settings_repo(provider_settings_repo);
         let wrap = |harness, client| {
             Arc::new(
                 crate::application::mcp_policy_agent_client::McpPolicyAgentClient::new(
@@ -1199,6 +1202,9 @@ impl AppState {
         let mcp_policy_repo: Arc<dyn McpPolicyRepository> = Arc::new(
             SqliteMcpPolicyRepository::from_shared(Arc::clone(&shared_conn)),
         );
+        let agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository> = Arc::new(
+            SqliteAgentProviderSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+        );
         let task_proposal_repo: Arc<dyn TaskProposalRepository> = Arc::new(
             SqliteTaskProposalRepository::from_shared(Arc::clone(&shared_conn)),
         );
@@ -1271,6 +1277,7 @@ impl AppState {
             agent_clients: Self::production_agent_clients(
                 Arc::clone(&mcp_policy_repo),
                 Arc::clone(&project_repo),
+                Arc::clone(&agent_provider_settings_repo),
                 app_paths.global_mcp_policy_path(),
             ),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
@@ -1317,9 +1324,7 @@ impl AppState {
             agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
-            agent_provider_settings_repo: Arc::new(
-                SqliteAgentProviderSettingsRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            agent_provider_settings_repo,
             session_link_repo: Arc::new(SqliteSessionLinkRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),

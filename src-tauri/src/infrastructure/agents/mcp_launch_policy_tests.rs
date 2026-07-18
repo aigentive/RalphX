@@ -32,10 +32,13 @@ fn applies_claude_denies_without_suppressing_native_config_sources() {
 fn applies_codex_dotted_overrides_only_for_denies() {
     let mut command = command();
     let policy = McpLaunchPolicy {
-        disabled_servers: vec!["github".to_string()],
-        disabled_tools: [("linear".to_string(), vec!["delete_issue".to_string()])]
-            .into_iter()
-            .collect(),
+        disabled_servers: vec!["github.enterprise".to_string()],
+        disabled_tools: [(
+            "linear.internal".to_string(),
+            vec!["delete_issue".to_string()],
+        )]
+        .into_iter()
+        .collect(),
     };
 
     apply_mcp_launch_policy(&mut command, AgentHarnessKind::Codex, &policy);
@@ -44,9 +47,9 @@ fn applies_codex_dotted_overrides_only_for_denies() {
         command.get_args_for_test(),
         vec![
             "-c",
-            "mcp_servers.github.enabled=false",
+            "mcp_servers.\"github.enterprise\".enabled=false",
             "-c",
-            "mcp_servers.linear.disabled_tools=[\"delete_issue\"]",
+            "mcp_servers.\"linear.internal\".disabled_tools=[\"delete_issue\"]",
         ]
     );
 }

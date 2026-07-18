@@ -40,6 +40,7 @@ export interface McpCatalog {
   probedAt: string;
   probeStale: boolean;
   providerDiagnostics: Record<string, string>;
+  policyDiagnostics: string[];
   servers: McpServer[];
 }
 

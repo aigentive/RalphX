@@ -1765,34 +1765,45 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             };
             let mut provider_spawnable = provider_spawnable;
-            if let Some(app_state) = app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<AppState>())
-            {
-                let policy = match app_state
-                    .mcp_policy_service()
-                    .resolve_launch_policy(harness, project_id, Some(working_directory))
-                    .await
-                {
-                    Ok(policy) => policy,
-                    Err(error) => {
-                        let error_string = format!("Failed to resolve MCP launch policy: {error}");
-                        fail_queued_agent_run(
-                            agent_run_repo,
-                            running_agent_registry,
-                            &queue_registry_key,
-                            &queued_run_id,
-                            &error_string,
-                        )
-                        .await;
-                        return QueueProcessingOutcome {
-                            total_processed,
-                            last_run_id,
-                        };
-                    }
+            let Some(handle) = app_handle.as_ref() else {
+                let error_string = "MCP launch policy service is unavailable";
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    &queued_run_id,
+                    error_string,
+                )
+                .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id,
                 };
-                provider_spawnable.apply_mcp_policy(harness, &policy);
-            }
+            };
+            let app_state = handle.state::<AppState>();
+            let policy = match app_state
+                .mcp_policy_service()
+                .resolve_launch_policy(harness, project_id, Some(working_directory))
+                .await
+            {
+                Ok(policy) => policy,
+                Err(error) => {
+                    let error_string = format!("Failed to resolve MCP launch policy: {error}");
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &error_string,
+                    )
+                    .await;
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                }
+            };
+            provider_spawnable.apply_mcp_policy(harness, &policy);
             provider_spawnable.apply_provider_env(&provider_env);
             let spawnable = provider_spawnable.spawnable;
 

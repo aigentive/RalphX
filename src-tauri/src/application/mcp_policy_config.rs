@@ -11,6 +11,8 @@ use crate::domain::agents::{
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
+const MAX_POLICY_DIAGNOSTICS: usize = 20;
+
 #[derive(Debug, Default)]
 pub struct McpPolicyConfigSnapshot {
     pub policies: HashMap<McpServerKey, McpPolicyOverride>,
@@ -120,7 +122,7 @@ fn parse_mcp_policy(
     for (provider, provider_policy) in raw.mcp.providers {
         for (server_id, server) in provider_policy.servers {
             if let Err(error) = validate_mcp_identifier("server", &server_id) {
-                snapshot.diagnostics.push(error);
+                push_diagnostic(&mut snapshot.diagnostics, error);
                 continue;
             }
             let mut tool_states = BTreeMap::new();
@@ -129,7 +131,7 @@ fn parse_mcp_policy(
                     Ok(()) => {
                         tool_states.insert(tool_name, state);
                     }
-                    Err(error) => snapshot.diagnostics.push(error),
+                    Err(error) => push_diagnostic(&mut snapshot.diagnostics, error),
                 }
             }
             let key = McpServerKey::new(provider, server_id).map_err(AppError::Validation)?;
@@ -144,9 +146,15 @@ fn parse_mcp_policy(
                 Ok(()) => {
                     snapshot.policies.insert(key, policy);
                 }
-                Err(error) => snapshot.diagnostics.push(error),
+                Err(error) => push_diagnostic(&mut snapshot.diagnostics, error),
             }
         }
     }
     Ok(snapshot)
+}
+
+fn push_diagnostic(diagnostics: &mut Vec<String>, diagnostic: String) {
+    if diagnostics.len() < MAX_POLICY_DIAGNOSTICS {
+        diagnostics.push(diagnostic);
+    }
 }

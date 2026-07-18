@@ -17,6 +17,8 @@ mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
 mod chat_service_merge;
+#[cfg(test)]
+mod mcp_policy_launch_seam_tests;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
@@ -1473,6 +1475,21 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         Arc<verification_child_process_registry::VerificationChildProcessRegistry>,
 }
 
+async fn resolve_mcp_launch_policy_with_service(
+    service: Option<&crate::application::mcp_policy_service::McpPolicyService>,
+    provider: AgentHarnessKind,
+    project_id: Option<&str>,
+    working_directory: &Path,
+) -> Result<crate::domain::agents::McpLaunchPolicy, ChatServiceError> {
+    let service = service.ok_or_else(|| {
+        ChatServiceError::SpawnFailed("MCP launch policy service is unavailable".to_string())
+    })?;
+    service
+        .resolve_launch_policy(provider, project_id, Some(working_directory))
+        .await
+        .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))
+}
+
 #[derive(Debug)]
 struct ResolvedProviderLaunchSettings {
     cli_path: PathBuf,
@@ -1878,13 +1895,13 @@ impl<R: Runtime> AppChatService<R> {
         project_id: Option<&str>,
         working_directory: &Path,
     ) -> Result<crate::domain::agents::McpLaunchPolicy, ChatServiceError> {
-        match self.mcp_policy_service.as_ref() {
-            Some(service) => service
-                .resolve_launch_policy(provider, project_id, Some(working_directory))
-                .await
-                .map_err(|error| ChatServiceError::SpawnFailed(error.to_string())),
-            None => Ok(Default::default()),
-        }
+        resolve_mcp_launch_policy_with_service(
+            self.mcp_policy_service.as_ref(),
+            provider,
+            project_id,
+            working_directory,
+        )
+        .await
     }
 
     async fn enqueue_pending_send(

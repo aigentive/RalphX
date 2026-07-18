@@ -8,6 +8,7 @@ export function transformMcpCatalog(raw: RawMcpCatalog): McpCatalog {
     probedAt: raw.probed_at,
     probeStale: raw.probe_stale,
     providerDiagnostics: raw.provider_diagnostics,
+    policyDiagnostics: raw.policy_diagnostics,
     servers: raw.servers.map((server) => ({
       provider: server.provider,
       serverId: server.server_id,

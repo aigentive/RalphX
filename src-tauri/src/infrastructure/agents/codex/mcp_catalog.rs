@@ -10,14 +10,18 @@ use crate::domain::agents::{
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub(crate) fn discover_native_mcp_servers(
-    home_dir: &Path,
+    codex_root: &Path,
     project_root: Option<&Path>,
 ) -> Result<Vec<NativeMcpServerSnapshot>, String> {
-    let home_dir = validate_absolute_non_root_path(home_dir, "Codex home root")
+    let codex_root = validate_absolute_non_root_path(codex_root, "Codex config root")
         .map_err(|error| error.to_string())?;
-    let codex_root = home_dir.join(".codex");
     let user_config_path = codex_root.join("config.toml");
-    let user_config = read_fixed_toml(&codex_root, &user_config_path, Path::new("config.toml"))?;
+    let user_config = read_fixed_toml(
+        &codex_root,
+        &codex_root,
+        &user_config_path,
+        Path::new("config.toml"),
+    )?;
     let mut servers = BTreeMap::<String, NativeMcpServerSnapshot>::new();
     if let Some(config) = user_config.as_ref() {
         insert_server_table(&mut servers, config, "user", true)?;
@@ -38,6 +42,7 @@ pub(crate) fn discover_native_mcp_servers(
         let project_config_root = project_root.join(".codex");
         let project_config_path = project_config_root.join("config.toml");
         if let Some(config) = read_fixed_toml(
+            &project_root,
             &project_config_root,
             &project_config_path,
             Path::new("config.toml"),
@@ -49,6 +54,7 @@ pub(crate) fn discover_native_mcp_servers(
 }
 
 fn read_fixed_toml(
+    containment_root: &Path,
     owned_root: &Path,
     path: &Path,
     expected_relative: &Path,
@@ -63,9 +69,9 @@ fn read_fixed_toml(
     if !path.exists() {
         return Ok(None);
     }
-    let canonical_root = owned_root
+    let canonical_root = containment_root
         .canonicalize()
-        .map_err(|error| format!("Resolve Codex config root: {error}"))?;
+        .map_err(|error| format!("Resolve Codex config containment root: {error}"))?;
     let canonical_path = path
         .canonicalize()
         .map_err(|error| format!("Resolve Codex config: {error}"))?;

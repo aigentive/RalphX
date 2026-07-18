@@ -249,7 +249,7 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     working_directory: &Path,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
 ) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
-    match recovery_retry_provider_decision(
+    let provider_env = match recovery_retry_provider_decision(
         app_handle,
         agent_provider_settings_repo,
         recovery_harness,
@@ -257,26 +257,22 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     )
     .await
     {
-        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
-            if let Some(app_state) = app_handle
-                .as_ref()
-                .and_then(|handle| handle.try_state::<AppState>())
-            {
-                let policy = app_state
-                    .mcp_policy_service()
-                    .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
-                    .await
-                    .ok()?;
-                provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
-            }
-            provider_spawnable.apply_provider_env(&provider_env);
-            Some(provider_spawnable.spawnable)
-        }
-        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
-            Some(provider_spawnable.spawnable)
-        }
-        Err(_) => None,
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => Some(provider_env),
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
+        Err(_) => return None,
+    };
+    let handle = app_handle.as_ref()?;
+    let app_state = handle.state::<AppState>();
+    let policy = app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
+        .await
+        .ok()?;
+    provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
+    if let Some(provider_env) = provider_env.as_ref() {
+        provider_spawnable.apply_provider_env(provider_env);
     }
+    Some(provider_spawnable.spawnable)
 }
 
 #[derive(Clone, Copy)]

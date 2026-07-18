@@ -25,7 +25,7 @@ use crate::domain::repositories::{
 };
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::{
-    mcp_agent_type, ContentBlockItem, SpawnableCommand, ToolCall,
+    external_mcp_config, mcp_agent_type, ContentBlockItem, SpawnableCommand, ToolCall,
 };
 use crate::infrastructure::agents::codex::{
     compose_codex_prompt_for_profile_with_outcome, CodexPromptComposition,
@@ -91,7 +91,9 @@ pub async fn await_required_external_mcp<R: Runtime>(
         }
     };
     external_mcp
-        .await_ready(std::time::Duration::from_secs(30))
+        .await_ready(std::time::Duration::from_secs(
+            external_mcp_config().startup_timeout_secs,
+        ))
         .await
 }
 

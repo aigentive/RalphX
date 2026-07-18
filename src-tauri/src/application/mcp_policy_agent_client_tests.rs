@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
 
 use crate::domain::agents::{
@@ -59,7 +59,7 @@ impl AgenticClient for CapturingClient {
         _handle: &AgentHandle,
         _prompt: &str,
     ) -> AgentResult<AgentResponse> {
-        Ok(AgentResponse::default())
+        Ok(AgentResponse::new("response"))
     }
 
     fn stream_response(
@@ -67,7 +67,9 @@ impl AgenticClient for CapturingClient {
         _handle: &AgentHandle,
         _prompt: &str,
     ) -> Pin<Box<dyn Stream<Item = AgentResult<ResponseChunk>> + Send>> {
-        Box::pin(futures::stream::empty())
+        Box::pin(futures::stream::iter([Ok(ResponseChunk::final_chunk(
+            "streamed",
+        ))]))
     }
 
     fn capabilities(&self) -> &ClientCapabilities {
@@ -157,4 +159,38 @@ async fn spawn_agent_prefers_explicit_project_id_env_over_directory_lookup() {
         captured.mcp_launch_policy.disabled_servers,
         vec!["github".to_string()]
     );
+}
+
+#[tokio::test]
+async fn delegates_non_spawn_client_operations_without_changing_results() {
+    let root = tempfile::tempdir().unwrap();
+    let policy_repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let project_repo: Arc<dyn ProjectRepository> = Arc::new(MemoryProjectRepository::new());
+    let service = McpPolicyService::new(policy_repo, root.path().join("mcp.yaml"));
+    let inner = Arc::new(CapturingClient::new());
+    let client = McpPolicyAgentClient::new(
+        AgentHarnessKind::Claude,
+        inner.clone(),
+        service,
+        project_repo,
+    );
+    let handle = AgentHandle::mock(AgentConfig::worker("run").role);
+
+    client.stop_agent(&handle).await.unwrap();
+    assert_eq!(
+        client.wait_for_completion(&handle).await.unwrap().content,
+        "completed"
+    );
+    assert_eq!(
+        client.send_prompt(&handle, "prompt").await.unwrap().content,
+        "response"
+    );
+    let chunks = client
+        .stream_response(&handle, "prompt")
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].as_ref().unwrap().content, "streamed");
+    assert!(std::ptr::eq(client.capabilities(), inner.capabilities()));
+    assert!(client.is_available().await.unwrap());
 }

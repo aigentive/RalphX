@@ -39,13 +39,17 @@ impl McpLaunchPolicy {
         let mut overrides = self
             .disabled_servers
             .iter()
-            .map(|server| format!("mcp_servers.{server}.enabled=false"))
+            .map(|server| {
+                let server = serde_json::to_string(server).expect("MCP server names serialize");
+                format!("mcp_servers.{server}.enabled=false")
+            })
             .collect::<Vec<_>>();
         overrides.extend(
             self.disabled_tools
                 .iter()
                 .filter(|(_, tools)| !tools.is_empty())
                 .map(|(server, tools)| {
+                    let server = serde_json::to_string(server).expect("MCP server names serialize");
                     let tools = serde_json::to_string(tools).expect("MCP tool names serialize");
                     format!("mcp_servers.{server}.disabled_tools={tools}")
                 }),

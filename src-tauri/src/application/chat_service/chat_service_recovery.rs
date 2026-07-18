@@ -358,23 +358,22 @@ pub async fn attempt_session_recovery<R: Runtime>(
         }
     };
     let mut provider_spawnable = provider_spawnable;
-    if let Some(app_state) = app_handle
-        .as_ref()
-        .and_then(|handle| handle.try_state::<AppState>())
-    {
-        let policy = app_state
-            .mcp_policy_service()
-            .resolve_launch_policy(
-                harness,
-                _resolved_project_id.as_deref(),
-                Some(working_directory),
-            )
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("Failed to resolve MCP launch policy: {error}"))
-            })?;
-        provider_spawnable.apply_mcp_policy(harness, &policy);
-    }
+    let handle = app_handle.ok_or_else(|| {
+        AppError::Infrastructure("MCP launch policy service is unavailable".to_string())
+    })?;
+    let app_state = handle.state::<AppState>();
+    let policy = app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(
+            harness,
+            _resolved_project_id.as_deref(),
+            Some(working_directory),
+        )
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("Failed to resolve MCP launch policy: {error}"))
+        })?;
+    provider_spawnable.apply_mcp_policy(harness, &policy);
     let persona_injected = provider_spawnable.spawnable.persona_injected();
     let persona_injection_skipped_reason = provider_spawnable
         .spawnable

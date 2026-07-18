@@ -21,6 +21,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 100,
+            startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
             node_path: None,

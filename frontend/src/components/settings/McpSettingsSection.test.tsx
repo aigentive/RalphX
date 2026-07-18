@@ -35,6 +35,7 @@ const testState = vi.hoisted(() => ({
   refreshProvider: vi.fn().mockResolvedValue(undefined),
   hookCalls: [] as Array<[string | null, string | null, boolean]>,
   activeProject: null as { id: string; name: string } | null,
+  modalContext: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
@@ -78,8 +79,13 @@ vi.mock("@/stores/projectStore", () => ({
 }));
 
 vi.mock("@/stores/uiStore", () => ({
-  useUiStore: (selector: (state: { openModal: typeof testState.openModal }) => unknown) =>
-    selector({ openModal: testState.openModal }),
+  useUiStore: (selector: (state: {
+    openModal: typeof testState.openModal;
+    modalContext: Record<string, unknown> | undefined;
+  }) => unknown) => selector({
+    openModal: testState.openModal,
+    modalContext: testState.modalContext,
+  }),
 }));
 
 vi.mock("./SettingsDialog.performance", () => ({
@@ -123,6 +129,7 @@ describe("McpSettingsSection", () => {
     testState.catalog = undefined;
     testState.hookCalls = [];
     testState.activeProject = null;
+    testState.modalContext = undefined;
     vi.clearAllMocks();
   });
 
@@ -149,6 +156,11 @@ describe("McpSettingsSection", () => {
     ];
     testState.defaultProvider = "codex";
     testState.catalog = {
+      eligibleProviders: ["claude", "codex"],
+      eligibleDefaultProvider: "codex",
+      providerDiagnostics: {},
+      policyDiagnostics: [],
+      probeStale: false,
       servers: [
         server("claude", "filesystem"),
         server("codex", "github"),
@@ -181,6 +193,13 @@ describe("McpSettingsSection", () => {
     testState.providers = [provider("claude", true, true)];
     testState.defaultProvider = "claude";
     testState.catalog = {
+      eligibleProviders: ["claude"],
+      eligibleDefaultProvider: "claude",
+      providerDiagnostics: {
+        claude: "Structured catalog is unavailable; showing limited metadata.",
+      },
+      policyDiagnostics: ["Project MCP policy: invalid tool identifier"],
+      probeStale: true,
       servers: [
         {
           ...server("claude", "notion"),
@@ -214,16 +233,11 @@ describe("McpSettingsSection", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Claude MCP catalog" }));
     expect(testState.refreshProvider).toHaveBeenCalledWith("claude");
 
-    const toolSelect = screen.getByRole("combobox", { name: "notion delete_page policy" });
-    toolSelect.focus();
-    await user.keyboard("{Enter}{ArrowDown}{ArrowDown}{Enter}");
-    expect(testState.updateTool).toHaveBeenCalledWith({
-      projectId: "project-1",
-      provider: "claude",
-      serverId: "notion",
-      toolName: "delete_page",
-      state: "disabled",
-    });
+    expect(screen.getByText("Tool controls are unavailable while this server is disabled.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "notion delete_page policy" })).toBeDisabled();
+    expect(screen.getByText("Structured catalog is unavailable; showing limited metadata.")).toBeInTheDocument();
+    expect(screen.getByText("Project MCP policy: invalid tool identifier")).toBeInTheDocument();
+    expect(screen.getByText(/readiness result is stale/i)).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "Exact MCP server ID" }), "linear");
     await user.click(screen.getByRole("button", { name: "Add deny" }));
@@ -247,5 +261,39 @@ describe("McpSettingsSection", () => {
       toolName: "post_message",
       state: "disabled",
     });
+  });
+
+  it("uses backend catalog eligibility and default after bootstrap", async () => {
+    testState.providers = [
+      provider("claude", true, true),
+      provider("codex", true, true),
+    ];
+    testState.defaultProvider = "codex";
+    testState.catalog = {
+      eligibleProviders: ["claude"],
+      eligibleDefaultProvider: "claude",
+      providerDiagnostics: {},
+      policyDiagnostics: [],
+      probeStale: false,
+      servers: [server("claude", "filesystem"), server("codex", "github")],
+    };
+
+    render(<McpSettingsSection />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "MCP provider" })).toHaveTextContent("Claude"),
+    );
+    expect(screen.getByText("filesystem")).toBeInTheDocument();
+    expect(screen.queryByText("github")).not.toBeInTheDocument();
+  });
+
+  it("focuses the external bridge for the legacy deep link", async () => {
+    testState.modalContext = { section: "external-mcp" };
+
+    render(<McpSettingsSection />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("RalphX external bridge")).toHaveFocus(),
+    );
   });
 });

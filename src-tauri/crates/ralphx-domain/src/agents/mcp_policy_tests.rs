@@ -15,21 +15,27 @@ fn identifiers_reject_path_and_shell_shaped_values() {
 #[test]
 fn launch_policy_renders_provider_specific_deny_controls() {
     let policy = McpLaunchPolicy {
-        disabled_servers: vec!["github".to_string()],
-        disabled_tools: [("linear".to_string(), vec!["delete_issue".to_string()])]
-            .into_iter()
-            .collect(),
+        disabled_servers: vec!["github.enterprise".to_string()],
+        disabled_tools: [(
+            "linear.internal".to_string(),
+            vec!["delete_issue".to_string()],
+        )]
+        .into_iter()
+        .collect(),
     };
 
     assert_eq!(
         policy.claude_disallowed_tools(),
-        vec!["mcp__github__*", "mcp__linear__delete_issue"]
+        vec![
+            "mcp__github.enterprise__*",
+            "mcp__linear.internal__delete_issue",
+        ]
     );
     assert_eq!(
         policy.codex_config_overrides(),
         vec![
-            "mcp_servers.github.enabled=false",
-            "mcp_servers.linear.disabled_tools=[\"delete_issue\"]",
+            "mcp_servers.\"github.enterprise\".enabled=false",
+            "mcp_servers.\"linear.internal\".disabled_tools=[\"delete_issue\"]",
         ]
     );
 }

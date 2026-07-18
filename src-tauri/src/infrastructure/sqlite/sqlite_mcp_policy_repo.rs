@@ -282,14 +282,25 @@ impl McpPolicyRepository for SqliteMcpPolicyRepository {
         boxed(
             self.db
                 .run(move |conn| {
-                    let (scope_type, scope_id) = scope(project_id.as_deref());
-                    conn.execute(
-                        "DELETE FROM mcp_policy_overrides
-                         WHERE scope_type = ?1 AND scope_id = ?2 AND provider = ?3 AND server_id = ?4",
-                        rusqlite::params![scope_type, scope_id, key.provider.to_string(), key.server_id],
-                    )
-                    .map(|count| count > 0)
-                    .map_err(database_error)
+                    let Some(mut policy) = fetch_optional(conn, project_id.as_deref(), &key)? else {
+                        return Ok(false);
+                    };
+                    if policy.server_state == McpOverrideState::Follow {
+                        return Ok(false);
+                    }
+                    policy.server_state = McpOverrideState::Follow;
+                    if policy.tool_states.is_empty() {
+                        let (scope_type, scope_id) = scope(project_id.as_deref());
+                        conn.execute(
+                            "DELETE FROM mcp_policy_overrides
+                             WHERE scope_type = ?1 AND scope_id = ?2 AND provider = ?3 AND server_id = ?4",
+                            rusqlite::params![scope_type, scope_id, key.provider.to_string(), key.server_id],
+                        )
+                        .map_err(database_error)?;
+                    } else {
+                        upsert(conn, &policy)?;
+                    }
+                    Ok(true)
                 })
                 .await,
         )

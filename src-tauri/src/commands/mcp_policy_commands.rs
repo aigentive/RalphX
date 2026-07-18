@@ -14,6 +14,11 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::ProjectId;
 
+pub(crate) struct ProviderCatalogDiscovery {
+    pub(crate) servers: Vec<NativeMcpServerSnapshot>,
+    pub(crate) diagnostic: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct McpCatalogResponse {
     pub eligible_providers: Vec<String>,
@@ -21,6 +26,7 @@ pub struct McpCatalogResponse {
     pub probed_at: String,
     pub probe_stale: bool,
     pub provider_diagnostics: BTreeMap<String, String>,
+    pub policy_diagnostics: Vec<String>,
     pub servers: Vec<McpServerResponse>,
 }
 
@@ -150,33 +156,29 @@ async fn project_root(
     Ok(Some(PathBuf::from(project.working_directory)))
 }
 
-pub(crate) fn policy_server_ids(
+pub(crate) fn policy_server_ids<'a>(
     provider: AgentHarnessKind,
-    global: &[McpPolicyOverride],
-    project: &[McpPolicyOverride],
+    policies: impl IntoIterator<Item = &'a McpPolicyOverride>,
 ) -> BTreeSet<String> {
     RALPHX_MCP_SERVER_IDS
         .into_iter()
         .map(str::to_string)
         .chain(
-            global
-                .iter()
-                .chain(project.iter())
+            policies
+                .into_iter()
                 .filter(|row| row.key.provider == provider)
                 .map(|row| row.key.server_id.clone()),
         )
         .collect()
 }
 
-pub(crate) fn known_policy_tools(
+pub(crate) fn known_policy_tools<'a>(
     provider: AgentHarnessKind,
     server_id: &str,
-    global: &[McpPolicyOverride],
-    project: &[McpPolicyOverride],
+    policies: impl IntoIterator<Item = &'a McpPolicyOverride>,
 ) -> Vec<String> {
-    global
-        .iter()
-        .chain(project.iter())
+    policies
+        .into_iter()
         .filter(|row| row.key.provider == provider && row.key.server_id == server_id)
         .flat_map(|row| row.tool_states.keys().cloned())
         .collect::<BTreeSet<_>>()
@@ -269,26 +271,62 @@ async fn build_catalog(
         .filter(|provider| provider_filter.is_none_or(|filter| filter == *provider))
         .collect::<Vec<_>>();
     let service = state.mcp_policy_service();
+    let (global_yaml, project_yaml) = service
+        .load_policy_configs(project_id, project_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let policy_diagnostics = global_yaml
+        .diagnostics
+        .iter()
+        .map(|diagnostic| format!("Global MCP policy: {diagnostic}"))
+        .chain(
+            project_yaml
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("Project MCP policy: {diagnostic}")),
+        )
+        .collect::<Vec<_>>();
     let mut servers = Vec::new();
     let mut provider_diagnostics = BTreeMap::new();
     for provider in providers {
-        let discovered = discover_provider_catalog(provider, project_root.as_deref());
+        let discovered =
+            discover_provider_catalog(state, &service, provider, project_root.as_deref()).await;
         let mut native_by_id = match discovered {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|row| (row.key.server_id.clone(), row))
-                .collect::<BTreeMap<_, _>>(),
+            Ok(discovery) => {
+                if let Some(diagnostic) = discovery.diagnostic {
+                    provider_diagnostics.insert(provider.to_string(), diagnostic);
+                }
+                discovery
+                    .servers
+                    .into_iter()
+                    .map(|row| (row.key.server_id.clone(), row))
+                    .collect::<BTreeMap<_, _>>()
+            }
             Err(error) => {
                 provider_diagnostics.insert(provider.to_string(), error);
                 BTreeMap::new()
             }
         };
-        let server_ids = policy_server_ids(provider, &global, &project)
-            .into_iter()
-            .chain(native_by_id.keys().cloned())
-            .collect::<BTreeSet<_>>();
+        let server_ids = policy_server_ids(
+            provider,
+            global
+                .iter()
+                .chain(project.iter())
+                .chain(global_yaml.policies.values())
+                .chain(project_yaml.policies.values()),
+        )
+        .into_iter()
+        .chain(native_by_id.keys().cloned())
+        .collect::<BTreeSet<_>>();
         for server_id in server_ids {
-            let known_policy_tools = known_policy_tools(provider, &server_id, &global, &project);
+            let known_policy_tools = known_policy_tools(
+                provider,
+                &server_id,
+                global
+                    .iter()
+                    .chain(project.iter())
+                    .chain(global_yaml.policies.values())
+                    .chain(project_yaml.policies.values()),
+            );
             let snapshot = match native_by_id.remove(&server_id) {
                 Some(mut native) => {
                     native.known_tools.extend(known_policy_tools);
@@ -337,30 +375,120 @@ async fn build_catalog(
         probed_at: eligibility.probed_at.to_rfc3339(),
         probe_stale: false,
         provider_diagnostics,
+        policy_diagnostics,
         servers,
     })
 }
 
-fn discover_provider_catalog(
+async fn discover_provider_catalog(
+    state: &AppState,
+    service: &crate::application::mcp_policy_service::McpPolicyService,
     provider: AgentHarnessKind,
     project_root: Option<&std::path::Path>,
-) -> Result<Vec<NativeMcpServerSnapshot>, String> {
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| "Provider home directory is unavailable".to_string())?;
+) -> Result<ProviderCatalogDiscovery, String> {
+    let (provider_config_root, provider_env) = service
+        .provider_native_context(provider)
+        .await
+        .map_err(|error| error.to_string())?;
     match provider {
-        AgentHarnessKind::Claude => {
-            crate::infrastructure::agents::claude::mcp_catalog::discover_native_mcp_servers(
-                &home_dir,
-                project_root,
-            )
-        }
+        AgentHarnessKind::Claude => Ok(ProviderCatalogDiscovery {
+            servers:
+                crate::infrastructure::agents::claude::mcp_catalog::discover_native_mcp_servers(
+                    &provider_config_root,
+                    project_root,
+                )?,
+            diagnostic: None,
+        }),
         AgentHarnessKind::Codex => {
-            crate::infrastructure::agents::codex::mcp_catalog::discover_native_mcp_servers(
-                &home_dir,
-                project_root,
-            )
+            let fallback =
+                crate::infrastructure::agents::codex::mcp_catalog::discover_native_mcp_servers(
+                    &provider_config_root,
+                    project_root,
+                )?;
+            let structured = match resolve_codex_catalog_cli_path(state).await {
+                Ok(cli_path) => crate::infrastructure::agents::codex::app_server_mcp_catalog::discover_native_mcp_servers_via_app_server(
+                    &cli_path,
+                    &provider_config_root,
+                    project_root,
+                    &provider_env,
+                )
+                .await,
+                Err(error) => Err(error),
+            };
+            Ok(select_codex_catalog(fallback, structured))
         }
     }
+}
+
+pub(crate) fn select_codex_catalog(
+    fallback: Vec<NativeMcpServerSnapshot>,
+    structured: Result<Vec<NativeMcpServerSnapshot>, String>,
+) -> ProviderCatalogDiscovery {
+    match structured {
+        Ok(structured) => ProviderCatalogDiscovery {
+            servers: merge_codex_catalogs(fallback, structured),
+            diagnostic: None,
+        },
+        Err(_) => ProviderCatalogDiscovery {
+            servers: fallback,
+            diagnostic: Some(
+                "Structured Codex MCP status is unavailable for this installed version; RalphX is showing limited redacted metadata from fixed native config paths."
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+async fn resolve_codex_catalog_cli_path(state: &AppState) -> Result<PathBuf, String> {
+    let settings = state
+        .agent_provider_settings_repo
+        .get(AgentHarnessKind::Codex)
+        .await
+        .map_err(|error| format!("provider_settings_failed: {error}"))?
+        .ok_or_else(|| "provider_not_ready: Codex settings are unavailable".to_string())?;
+    if let Some(path) = crate::application::managed_provider_cli::checked_provider_cli_launch_path(
+        &settings,
+        "Codex MCP catalog",
+    ) {
+        return path;
+    }
+    tokio::task::spawn_blocking(|| crate::infrastructure::agents::codex::resolve_codex_cli())
+        .await
+        .map_err(|_| "Codex MCP catalog CLI resolution failed".to_string())?
+        .map(|resolved| resolved.path)
+}
+
+fn merge_codex_catalogs(
+    fallback: Vec<NativeMcpServerSnapshot>,
+    structured: Vec<NativeMcpServerSnapshot>,
+) -> Vec<NativeMcpServerSnapshot> {
+    let mut servers = structured
+        .into_iter()
+        .map(|row| (row.key.server_id.clone(), row))
+        .collect::<BTreeMap<_, _>>();
+    for fallback_row in fallback {
+        match servers.get_mut(&fallback_row.key.server_id) {
+            Some(structured_row) => {
+                structured_row
+                    .known_tools
+                    .extend(fallback_row.known_tools.iter().cloned());
+                structured_row.known_tools.sort();
+                structured_row.known_tools.dedup();
+                if structured_row.native_scope.is_none() {
+                    structured_row.native_scope = fallback_row.native_scope.clone();
+                }
+                if fallback_row.native_state == NativeMcpState::Untrusted {
+                    structured_row.native_state = NativeMcpState::Untrusted;
+                    structured_row.diagnostic = fallback_row.diagnostic.clone();
+                    structured_row.native_scope = fallback_row.native_scope.clone();
+                }
+            }
+            None => {
+                servers.insert(fallback_row.key.server_id.clone(), fallback_row);
+            }
+        }
+    }
+    servers.into_values().collect()
 }
 
 #[tauri::command]
@@ -397,6 +525,13 @@ async fn ensure_mutation_ready(state: &AppState, provider: AgentHarnessKind) -> 
         .map_err(|error| error.to_string())
 }
 
+pub(crate) async fn ensure_project_scope_exists(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    project_root(state, project_id).await.map(|_| ())
+}
+
 #[tauri::command]
 pub async fn update_mcp_server_override(
     input: McpServerOverrideInput,
@@ -404,6 +539,7 @@ pub async fn update_mcp_server_override(
 ) -> Result<McpMutationResponse, String> {
     let project_id = scope_project_id(input.project_id.as_deref())?;
     let provider = parse_provider(&input.provider)?;
+    ensure_project_scope_exists(&state, project_id).await?;
     ensure_mutation_ready(&state, provider).await?;
     let key = mutable_key(provider, input.server_id)?;
     state
@@ -421,6 +557,7 @@ pub async fn clear_mcp_server_override(
 ) -> Result<McpMutationResponse, String> {
     let project_id = scope_project_id(input.project_id.as_deref())?;
     let provider = parse_provider(&input.provider)?;
+    ensure_project_scope_exists(&state, project_id).await?;
     ensure_mutation_ready(&state, provider).await?;
     let key = mutable_key(provider, input.server_id)?;
     let changed = state
@@ -438,6 +575,7 @@ pub async fn update_mcp_tool_override(
 ) -> Result<McpMutationResponse, String> {
     let project_id = scope_project_id(input.project_id.as_deref())?;
     let provider = parse_provider(&input.provider)?;
+    ensure_project_scope_exists(&state, project_id).await?;
     ensure_mutation_ready(&state, provider).await?;
     let key = mutable_key(provider, input.server_id)?;
     state
@@ -455,6 +593,7 @@ pub async fn clear_mcp_tool_override(
 ) -> Result<McpMutationResponse, String> {
     let project_id = scope_project_id(input.project_id.as_deref())?;
     let provider = parse_provider(&input.provider)?;
+    ensure_project_scope_exists(&state, project_id).await?;
     ensure_mutation_ready(&state, provider).await?;
     let key = mutable_key(provider, input.server_id)?;
     let changed = state

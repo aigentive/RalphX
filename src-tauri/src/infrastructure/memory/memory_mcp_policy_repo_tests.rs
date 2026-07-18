@@ -48,3 +48,34 @@ async fn required_server_disables_fail_without_writing() {
         .is_err());
     assert!(repo.get_global(&key).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn clearing_server_state_preserves_independent_tool_overrides() {
+    let repo = MemoryMcpPolicyRepository::new();
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+
+    repo.set_server_state(Some("project-1"), &key, McpOverrideState::Disabled)
+        .await
+        .unwrap();
+    repo.set_tool_state(
+        Some("project-1"),
+        &key,
+        "delete_issue",
+        McpOverrideState::Disabled,
+    )
+    .await
+    .unwrap();
+
+    assert!(repo.clear_server(Some("project-1"), &key).await.unwrap());
+    let policy = repo
+        .get_for_project("project-1", &key)
+        .await
+        .unwrap()
+        .expect("tool-only policy remains");
+    assert_eq!(policy.server_state, McpOverrideState::Follow);
+    assert_eq!(
+        policy.tool_states.get("delete_issue"),
+        Some(&McpOverrideState::Disabled)
+    );
+    assert!(!repo.clear_server(Some("project-1"), &key).await.unwrap());
+}

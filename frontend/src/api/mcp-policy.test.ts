@@ -11,6 +11,7 @@ describe("MCP policy API contract", () => {
       probed_at: "2026-07-18T00:00:00Z",
       probe_stale: false,
       provider_diagnostics: {},
+      policy_diagnostics: ["Project MCP policy: invalid server identifier"],
       servers: [
         {
           provider: "codex",
@@ -41,6 +42,7 @@ describe("MCP policy API contract", () => {
     expect(raw.servers[0]).not.toHaveProperty("env");
     expect(transformMcpCatalog(raw)).toMatchObject({
       eligibleDefaultProvider: "codex",
+      policyDiagnostics: ["Project MCP policy: invalid server identifier"],
       servers: [
         {
           serverId: "github",

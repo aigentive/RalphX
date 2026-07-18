@@ -7,7 +7,55 @@ use crate::domain::agents::{
     NativeMcpServerSnapshot, NativeMcpState,
 };
 
-use super::mcp_policy_service::resolve_layers_for_test;
+use super::mcp_policy_service::{
+    resolve_layers_for_test, resolve_provider_native_config_root_for_test,
+};
+
+#[test]
+fn codex_config_root_matches_effective_child_environment() {
+    use std::collections::HashMap;
+
+    let default_home = std::path::Path::new("/Users/example");
+    let shell_env = HashMap::from([(
+        "CODEX_HOME".to_string(),
+        "/Users/example/.codex-shell".to_string(),
+    )]);
+    let provider_env = HashMap::from([(
+        "CODEX_HOME".to_string(),
+        "/Users/example/.codex-custom".to_string(),
+    )]);
+
+    assert_eq!(
+        resolve_provider_native_config_root_for_test(
+            AgentHarnessKind::Codex,
+            default_home,
+            &shell_env,
+            &provider_env,
+        )
+        .unwrap(),
+        std::path::PathBuf::from("/Users/example/.codex-custom")
+    );
+    assert_eq!(
+        resolve_provider_native_config_root_for_test(
+            AgentHarnessKind::Codex,
+            default_home,
+            &shell_env,
+            &HashMap::new(),
+        )
+        .unwrap(),
+        std::path::PathBuf::from("/Users/example/.codex-shell")
+    );
+    assert_eq!(
+        resolve_provider_native_config_root_for_test(
+            AgentHarnessKind::Codex,
+            default_home,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap(),
+        default_home.join(".codex")
+    );
+}
 
 fn native(state: NativeMcpState) -> NativeMcpServerSnapshot {
     NativeMcpServerSnapshot {
@@ -180,6 +228,56 @@ async fn service_mutators_delegate_to_repository_by_scope() {
         .unwrap());
     assert!(service.clear_server(Some("project-1"), &key).await.unwrap());
     assert!(!service.clear_server(Some("project-1"), &key).await.unwrap());
+}
+
+#[tokio::test]
+async fn update_follow_is_rejected_without_persisting_a_row() {
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo.clone(),
+        root.path().join("mcp.yaml"),
+    );
+    let key = McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap();
+
+    let error = service
+        .set_server_state(None, &key, McpOverrideState::Follow)
+        .await
+        .expect_err("Follow uses the clear endpoint");
+
+    assert!(error.to_string().contains("clear"));
+    assert!(repo.get_global(&key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn launch_policy_rejects_yaml_with_invalid_policy_identifiers() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("mcp.yaml"),
+        "mcp:\n  providers:\n    codex:\n      servers:\n        'bad server':\n          state: disabled\n",
+    )
+    .unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service =
+        super::mcp_policy_service::McpPolicyService::new(repo, root.path().join("mcp.yaml"));
+
+    let error = service
+        .resolve_launch_policy(AgentHarnessKind::Codex, None, None)
+        .await
+        .expect_err("invalid YAML diagnostics must fail launch closed");
+
+    assert!(error.to_string().to_lowercase().contains("invalid"));
 }
 
 #[tokio::test]

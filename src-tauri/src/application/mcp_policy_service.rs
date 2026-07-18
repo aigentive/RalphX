@@ -6,7 +6,7 @@ use crate::domain::agents::{
     AgentHarnessKind, EffectiveMcpServerPolicy, McpLaunchPolicy, McpOverrideState,
     McpPolicyOverride, McpPolicySource, McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
 };
-use crate::domain::repositories::McpPolicyRepository;
+use crate::domain::repositories::{AgentProviderSettingsRepository, McpPolicyRepository};
 use crate::error::{AppError, AppResult};
 
 use super::mcp_policy_config::{load_mcp_policy_file, McpPolicyConfigSnapshot};
@@ -15,6 +15,7 @@ use super::mcp_policy_config::{load_mcp_policy_file, McpPolicyConfigSnapshot};
 pub struct McpPolicyService {
     repo: Arc<dyn McpPolicyRepository>,
     global_policy_path: PathBuf,
+    provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
 }
 
 impl McpPolicyService {
@@ -22,7 +23,68 @@ impl McpPolicyService {
         Self {
             repo,
             global_policy_path,
+            provider_settings_repo: None,
         }
+    }
+
+    pub fn with_provider_settings_repo(
+        mut self,
+        provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.provider_settings_repo = Some(provider_settings_repo);
+        self
+    }
+
+    fn default_provider_home(&self) -> AppResult<&Path> {
+        let policy_root = self.global_policy_path.parent().ok_or_else(|| {
+            AppError::Infrastructure("Global MCP policy has no owned root".to_string())
+        })?;
+        if policy_root
+            .file_name()
+            .is_some_and(|name| name == ".ralphx")
+        {
+            policy_root.parent().ok_or_else(|| {
+                AppError::Infrastructure("Global MCP policy has no provider home".to_string())
+            })
+        } else {
+            Ok(policy_root)
+        }
+    }
+
+    pub(crate) async fn provider_native_config_root(
+        &self,
+        provider: AgentHarnessKind,
+    ) -> AppResult<PathBuf> {
+        self.provider_native_context(provider)
+            .await
+            .map(|(root, _)| root)
+    }
+
+    pub(crate) async fn provider_native_context(
+        &self,
+        provider: AgentHarnessKind,
+    ) -> AppResult<(PathBuf, HashMap<String, String>)> {
+        let provider_env =
+            crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+                self.provider_settings_repo.as_ref(),
+                provider,
+            )
+            .await
+            .map_err(AppError::Infrastructure)?;
+        let shell_env = self
+            .provider_settings_repo
+            .is_some()
+            .then(crate::infrastructure::login_shell_env::captured)
+            .unwrap_or_default();
+        let root = resolve_provider_native_config_root(
+            provider,
+            self.default_provider_home()?,
+            &shell_env,
+            &provider_env,
+        )?;
+        let mut effective_env = shell_env.as_ref().clone();
+        effective_env.extend(provider_env);
+        Ok((root, effective_env))
     }
 
     pub async fn resolve(
@@ -65,13 +127,7 @@ impl McpPolicyService {
             });
         }
 
-        let global_yaml = self.load_global_yaml()?;
-        let project_yaml = match project_root {
-            Some(root) => {
-                load_mcp_policy_file(root, &root.join(".ralphx").join("mcp.yaml"), project_id)?
-            }
-            None => McpPolicyConfigSnapshot::default(),
-        };
+        let (global_yaml, project_yaml) = self.load_policy_configs(project_id, project_root)?;
         let global_ui = self
             .repo
             .get_global(&native.key)
@@ -103,34 +159,18 @@ impl McpPolicyService {
         project_id: Option<&str>,
         project_root: Option<&Path>,
     ) -> AppResult<McpLaunchPolicy> {
-        let policy_root = self.global_policy_path.parent().ok_or_else(|| {
-            AppError::Infrastructure("Global MCP policy has no owned root".to_string())
-        })?;
-        let provider_home = if policy_root
-            .file_name()
-            .is_some_and(|name| name == ".ralphx")
-        {
-            policy_root.parent().ok_or_else(|| {
-                AppError::Infrastructure("Global MCP policy has no provider home".to_string())
-            })?
-        } else {
-            policy_root
-        };
+        let provider_config_root = self.provider_native_config_root(provider).await?;
         crate::infrastructure::agents::ensure_no_reserved_native_mcp_collision_at(
             provider,
-            provider_home,
+            &provider_config_root,
             project_root,
         )
         .map_err(|error| {
             AppError::Infrastructure(format!("MCP launch preflight failed: {error}"))
         })?;
-        let global_yaml = self.load_global_yaml()?;
-        let project_yaml = match project_root {
-            Some(root) => {
-                load_mcp_policy_file(root, &root.join(".ralphx").join("mcp.yaml"), project_id)?
-            }
-            None => McpPolicyConfigSnapshot::default(),
-        };
+        let (global_yaml, project_yaml) = self.load_policy_configs(project_id, project_root)?;
+        ensure_valid_policy_config("global", &global_yaml)?;
+        ensure_valid_policy_config("project", &project_yaml)?;
         let global_ui = self
             .repo
             .list_global()
@@ -197,12 +237,28 @@ impl McpPolicyService {
         load_mcp_policy_file(root, &self.global_policy_path, None)
     }
 
+    pub(crate) fn load_policy_configs(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&Path>,
+    ) -> AppResult<(McpPolicyConfigSnapshot, McpPolicyConfigSnapshot)> {
+        let global = self.load_global_yaml()?;
+        let project = match project_root {
+            Some(root) => {
+                load_mcp_policy_file(root, &root.join(".ralphx").join("mcp.yaml"), project_id)?
+            }
+            None => McpPolicyConfigSnapshot::default(),
+        };
+        Ok((global, project))
+    }
+
     pub async fn set_server_state(
         &self,
         project_id: Option<&str>,
         key: &McpServerKey,
         state: McpOverrideState,
     ) -> AppResult<McpPolicyOverride> {
+        reject_follow_update(state)?;
         self.repo
             .set_server_state(project_id, key, state)
             .await
@@ -216,6 +272,7 @@ impl McpPolicyService {
         tool_name: &str,
         state: McpOverrideState,
     ) -> AppResult<McpPolicyOverride> {
+        reject_follow_update(state)?;
         self.repo
             .set_tool_state(project_id, key, tool_name, state)
             .await
@@ -246,8 +303,47 @@ impl McpPolicyService {
     }
 }
 
+fn resolve_provider_native_config_root(
+    provider: AgentHarnessKind,
+    default_home: &Path,
+    shell_env: &HashMap<String, String>,
+    provider_env: &HashMap<String, String>,
+) -> AppResult<PathBuf> {
+    let root = match provider {
+        AgentHarnessKind::Claude => default_home.to_path_buf(),
+        AgentHarnessKind::Codex => provider_env
+            .get("CODEX_HOME")
+            .or_else(|| shell_env.get("CODEX_HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_home.join(".codex")),
+    };
+    crate::utils::path_safety::validate_absolute_non_root_path(
+        &root,
+        &format!("{provider} native MCP config root"),
+    )
+}
+
 fn repository_error(error: impl std::fmt::Display) -> AppError {
     AppError::Infrastructure(format!("MCP policy repository failed: {error}"))
+}
+
+fn reject_follow_update(state: McpOverrideState) -> AppResult<()> {
+    if state == McpOverrideState::Follow {
+        return Err(AppError::Validation(
+            "Follow must use the matching clear MCP policy operation".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_valid_policy_config(scope: &str, snapshot: &McpPolicyConfigSnapshot) -> AppResult<()> {
+    if snapshot.diagnostics.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "Invalid {scope} MCP policy: {}",
+        snapshot.diagnostics.join("; ")
+    )))
 }
 
 fn policy_for<'a>(
@@ -350,4 +446,14 @@ pub(crate) fn resolve_layers_for_test(
         project_ui,
         None,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_provider_native_config_root_for_test(
+    provider: AgentHarnessKind,
+    default_home: &Path,
+    shell_env: &HashMap<String, String>,
+    provider_env: &HashMap<String, String>,
+) -> AppResult<PathBuf> {
+    resolve_provider_native_config_root(provider, default_home, shell_env, provider_env)
 }

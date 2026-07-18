@@ -15,10 +15,12 @@ Server identity is `(provider, server_id)`. Server and tool fields resolve indep
 
 Overrides are `follow`, `enabled`, or `disabled`. `enabled` removes a lower RalphX deny but cannot activate a native disabled, absent, unapproved, unauthenticated, or untrusted server. Policies remain stored while a provider is disabled or unavailable.
 
+Invalid YAML is diagnostic and blocks launch rather than being treated as an empty policy. Clearing a server override returns that field to `follow` without deleting independent tool overrides.
+
 ## Launch Enforcement
 
 - Claude receives the generated required RalphX `--mcp-config` without `--strict-mcp-config`; server/tool denies become `--disallowedTools` MCP patterns.
-- Codex keeps native config layers; denies become dotted `mcp_servers.<id>` overrides. RalphX servers are `enabled=true`, `required=true`, and use an explicit startup timeout.
+- Codex keeps native config layers; denies quote arbitrary server-ID key segments such as `mcp_servers."<id>"`. RalphX servers are `enabled=true`, `required=true`, and use `external_mcp.startup_timeout_secs` for startup/readiness.
 - A provider-native server using reserved ID `ralphx` or `ralphx_internal` fails launch preflight instead of being overwritten.
 - Every standard, interactive, queued-resume, recovery, utility, and teammate spawn resolves policy immediately before launch.
 - Agents using the external RalphX transport wait for supervisor `Ready`; Disabled, Degraded, Failed, and timeout states fail closed.
@@ -27,4 +29,4 @@ Overrides are `follow`, `enabled`, or `disabled`. `enabled` removes a lower Ralp
 
 Harness → MCP is available only for providers whose persisted setting is enabled and whose refreshed runtime probe is available. It provides global/project server and tool overrides, exact-name denies when tool discovery is limited, redacted provider diagnostics, and the existing global RalphX external bridge controls. Native provider configuration remains the place to add servers, authenticate, approve project MCP files, or establish trust.
 
-Catalog and mutation commands recheck provider readiness. Catalog payloads contain only provider/server/tool identifiers, status, policy provenance, and bounded diagnostics.
+Catalog and mutation commands recheck provider readiness. Codex catalog discovery uses the effective provider `CODEX_HOME` and structured app-server `config/read` plus paginated `mcpServerStatus/list`; unsupported versions fall back to fixed native config paths with a visible diagnostic. Catalog payloads contain only provider/server/tool identifiers, status, policy provenance, and bounded diagnostics.

@@ -130,12 +130,19 @@ impl McpPolicyRepository for MemoryMcpPolicyRepository {
         project_id: Option<&str>,
         key: &McpServerKey,
     ) -> McpPolicyRepositoryResult<bool> {
-        Ok(self
-            .rows
-            .write()
-            .await
-            .remove(&(project_id.map(str::to_string), key.clone()))
-            .is_some())
+        let map_key = (project_id.map(str::to_string), key.clone());
+        let mut rows = self.rows.write().await;
+        let Some(row) = rows.get_mut(&map_key) else {
+            return Ok(false);
+        };
+        if row.server_state == McpOverrideState::Follow {
+            return Ok(false);
+        }
+        row.server_state = McpOverrideState::Follow;
+        if row.tool_states.is_empty() {
+            rows.remove(&map_key);
+        }
+        Ok(true)
     }
 
     async fn clear_tool(

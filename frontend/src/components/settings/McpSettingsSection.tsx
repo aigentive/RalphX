@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LockKeyhole, Network, Plus, RefreshCw, ServerCog } from "lucide-react";
 import { toast } from "sonner";
 
@@ -136,6 +136,11 @@ function ServerPolicyCard({
       )}
       {server.knownTools.length > 0 && (
         <div className="mt-4 divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
+          {!server.effectiveEnabled && (
+            <p className="py-2.5 text-xs text-[var(--text-muted)]">
+              Tool controls are unavailable while this server is disabled.
+            </p>
+          )}
           {server.knownTools.map((tool) => (
             <div key={tool.toolName} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
               <div>
@@ -146,7 +151,7 @@ function ServerPolicyCard({
               </div>
               <PolicySelect
                 value={tool.configuredState}
-                disabled={disabled || server.locked}
+                disabled={disabled || server.locked || !server.effectiveEnabled}
                 label={`${server.serverId} ${tool.toolName} policy`}
                 onChange={(state) => void onToolChange(tool.toolName, state)}
               />
@@ -161,6 +166,8 @@ function ServerPolicyCard({
 export function McpSettingsSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const openModal = useUiStore((state) => state.openModal);
+  const modalContext = useUiStore((state) => state.modalContext);
+  const bridgeRef = useRef<HTMLDivElement>(null);
   const [scope, setScope] = useState<Scope>("global");
   const [ready, setReady] = useState(false);
   const [provider, setProvider] = useState<Harness | null>(null);
@@ -174,34 +181,51 @@ export function McpSettingsSection() {
 
   const providerState = useHarnessProviders({ refreshRuntime: true, enabled: ready });
   const { refetchProviders } = providerState;
-  const eligibleProviders = useMemo(
+  const bootstrapEligibleProviders = useMemo(
     () => providerState.providers.filter((row) => row.enabled && row.available),
     [providerState.providers],
   );
   useEffect(() => {
-    if (eligibleProviders.length === 0) {
+    if (bootstrapEligibleProviders.length === 0) {
       setProvider(null);
       return;
     }
-    if (provider && eligibleProviders.some((row) => row.provider === provider)) return;
-    const preferred = eligibleProviders.find(
+    if (provider && bootstrapEligibleProviders.some((row) => row.provider === provider)) return;
+    const preferred = bootstrapEligibleProviders.find(
       (row) => row.provider === providerState.settings.defaultProvider,
     );
-    const fallback = preferred ?? eligibleProviders[0];
+    const fallback = preferred ?? bootstrapEligibleProviders[0];
     if (fallback) setProvider(fallback.provider);
-  }, [eligibleProviders, provider, providerState.settings.defaultProvider]);
+  }, [bootstrapEligibleProviders, provider, providerState.settings.defaultProvider]);
 
   const projectId = scope === "project" ? activeProject?.id ?? null : null;
   const policy = useMcpPolicy(
     projectId,
     provider,
-    ready && eligibleProviders.length > 0,
+    ready && bootstrapEligibleProviders.length > 0,
   );
+  const eligibleProviders = policy.catalog?.eligibleProviders ??
+    bootstrapEligibleProviders.map((row) => row.provider);
+  useEffect(() => {
+    if (!policy.catalog) return;
+    if (provider && eligibleProviders.includes(provider)) return;
+    const preferred = policy.catalog.eligibleDefaultProvider;
+    setProvider(
+      preferred && eligibleProviders.includes(preferred)
+        ? preferred
+        : eligibleProviders[0] ?? null,
+    );
+  }, [eligibleProviders, policy.catalog, provider]);
   useEffect(() => {
     if (policy.error) {
       void refetchProviders();
     }
   }, [policy.error, refetchProviders]);
+  useEffect(() => {
+    if (!ready || modalContext?.["section"] !== "external-mcp") return;
+    bridgeRef.current?.focus();
+    bridgeRef.current?.scrollIntoView({ block: "start" });
+  }, [modalContext, ready]);
   const servers = useMemo(
     () => policy.catalog?.servers.filter((server) => server.provider === provider) ?? [],
     [policy.catalog?.servers, provider],
@@ -238,9 +262,9 @@ export function McpSettingsSection() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {eligibleProviders.map((row) => (
-                      <SelectItem key={row.provider} value={row.provider}>
-                        {providerLabel(row.provider)}
+                    {eligibleProviders.map((providerName) => (
+                      <SelectItem key={providerName} value={providerName}>
+                        {providerLabel(providerName)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -268,6 +292,21 @@ export function McpSettingsSection() {
           {providerState.isError && (
             <ErrorBanner error="Provider readiness could not be loaded." onDismiss={() => undefined} />
           )}
+          {policy.catalog?.probeStale && (
+            <p role="status" className="text-xs text-[var(--status-warning)]">
+              Provider readiness result is stale. Refresh before relying on this catalog.
+            </p>
+          )}
+          {Object.entries(policy.catalog?.providerDiagnostics ?? {}).map(([providerName, diagnostic]) => (
+            <p key={providerName} role="status" className="rounded-md border border-[var(--status-warning-border)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--status-warning)]">
+              {diagnostic}
+            </p>
+          ))}
+          {(policy.catalog?.policyDiagnostics ?? []).map((diagnostic) => (
+            <p key={diagnostic} role="alert" className="rounded-md border border-[var(--status-warning-border)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--status-warning)]">
+              {diagnostic}
+            </p>
+          ))}
           {ready && !providerState.isLoading && eligibleProviders.length === 0 && (
             <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-center">
               <ServerCog className="mx-auto h-6 w-6 text-[var(--text-muted)]" />
@@ -340,7 +379,9 @@ export function McpSettingsSection() {
         </div>
       </SectionCard>
 
-      <ExternalMcpSettingsPanel />
+      <div ref={bridgeRef} tabIndex={-1} aria-label="RalphX external bridge">
+        <ExternalMcpSettingsPanel />
+      </div>
     </div>
   );
 }

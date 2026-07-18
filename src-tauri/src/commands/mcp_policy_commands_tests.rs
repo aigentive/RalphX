@@ -4,10 +4,11 @@ use crate::domain::agents::{
 };
 
 use super::mcp_policy_commands::{
-    known_policy_tools, mutable_key, policy_server_ids,
-    response_contains_sensitive_definition_fields, to_server_response,
+    ensure_project_scope_exists, known_policy_tools, mutable_key, policy_server_ids,
+    response_contains_sensitive_definition_fields, select_codex_catalog, to_server_response,
     to_server_response_with_scope_for_test,
 };
+use crate::application::AppState;
 
 fn policy(provider: AgentHarnessKind, server_id: &str, tools: &[&str]) -> McpPolicyOverride {
     McpPolicyOverride {
@@ -110,13 +111,20 @@ fn policy_catalog_includes_required_and_policy_only_servers_with_sorted_tools() 
         &["delete_issue", "archive_issue"],
     )];
 
-    let server_ids = policy_server_ids(AgentHarnessKind::Claude, &global, &project);
+    let server_ids = policy_server_ids(
+        AgentHarnessKind::Claude,
+        global.iter().chain(project.iter()),
+    );
     assert!(server_ids.contains("ralphx"));
     assert!(server_ids.contains("ralphx_internal"));
     assert!(server_ids.contains("github"));
     assert!(server_ids.contains("linear"));
     assert_eq!(
-        known_policy_tools(AgentHarnessKind::Claude, "linear", &global, &project),
+        known_policy_tools(
+            AgentHarnessKind::Claude,
+            "linear",
+            global.iter().chain(project.iter()),
+        ),
         vec!["archive_issue".to_string(), "delete_issue".to_string()]
     );
 }
@@ -129,4 +137,38 @@ fn locked_internal_servers_are_rejected_before_repository_mutation() {
 
     let valid = mutable_key(AgentHarnessKind::Codex, "github".to_string()).unwrap();
     assert_eq!(valid.server_id, "github");
+}
+
+#[tokio::test]
+async fn project_scoped_mutations_reject_unknown_projects_before_writes() {
+    let state = AppState::new_test();
+
+    let error = ensure_project_scope_exists(&state, Some("missing-project"))
+        .await
+        .expect_err("unknown project scope must fail closed");
+
+    assert!(error.contains("project_not_found"));
+}
+
+#[test]
+fn codex_catalog_keeps_fixed_path_fallback_when_structured_probe_fails() {
+    let fallback = NativeMcpServerSnapshot {
+        key: McpServerKey::new(AgentHarnessKind::Codex, "github").unwrap(),
+        native_scope: Some("user".to_string()),
+        native_state: NativeMcpState::Enabled,
+        known_tools: vec!["search".to_string()],
+        diagnostic: None,
+    };
+
+    let discovery = select_codex_catalog(
+        vec![fallback],
+        Err("Codex CLI resolution failed".to_string()),
+    );
+
+    assert_eq!(discovery.servers.len(), 1);
+    assert_eq!(discovery.servers[0].key.server_id, "github");
+    assert!(discovery
+        .diagnostic
+        .as_deref()
+        .is_some_and(|message| message.contains("limited redacted metadata")));
 }

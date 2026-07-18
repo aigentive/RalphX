@@ -6,16 +6,18 @@ use super::claude::SpawnableCommand;
 
 pub(crate) fn ensure_no_reserved_native_mcp_collision_at(
     provider: AgentHarnessKind,
-    home_dir: &Path,
+    provider_config_root: &Path,
     project_root: Option<&Path>,
 ) -> Result<(), String> {
     let servers = match provider {
-        AgentHarnessKind::Claude => {
-            super::claude::mcp_catalog::discover_native_mcp_servers(home_dir, project_root)?
-        }
-        AgentHarnessKind::Codex => {
-            super::codex::mcp_catalog::discover_native_mcp_servers(home_dir, project_root)?
-        }
+        AgentHarnessKind::Claude => super::claude::mcp_catalog::discover_native_mcp_servers(
+            provider_config_root,
+            project_root,
+        )?,
+        AgentHarnessKind::Codex => super::codex::mcp_catalog::discover_native_mcp_servers(
+            provider_config_root,
+            project_root,
+        )?,
     };
     if let Some(collision) = servers
         .into_iter()
