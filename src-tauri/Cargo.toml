@@ -106,7 +106,7 @@ security-framework = "3.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "suite_agent_workspace"
