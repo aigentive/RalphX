@@ -485,6 +485,9 @@ mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260717235338_github_cli_token_environment_setting;
+#[cfg(test)]
+mod v20260717235338_github_cli_token_environment_setting_tests;
 mod v20260718014631_mcp_policy_overrides;
 #[cfg(test)]
 mod v20260718014631_mcp_policy_overrides_tests;
@@ -1601,6 +1604,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716210000,
         name: "supervised_native_task_pipeline",
         migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260717235338,
+        name: "github_cli_token_environment_setting",
+        migrate: v20260717235338_github_cli_token_environment_setting::migrate,
     },
     Migration {
         version: 20260718014631,

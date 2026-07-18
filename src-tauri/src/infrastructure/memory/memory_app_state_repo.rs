@@ -72,6 +72,15 @@ impl AppStateRepository for MemoryAppStateRepository {
         settings.last_seen_release_notes_version = version.map(str::to_string);
         Ok(())
     }
+
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = self.settings.write().await;
+        settings.remove_inherited_github_cli_tokens = enabled;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

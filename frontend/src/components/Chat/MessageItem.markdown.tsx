@@ -15,6 +15,7 @@ import {
   Copy,
   FolderOpen,
   Loader2,
+  Terminal as TerminalIcon,
 } from "lucide-react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { logger } from "@/lib/logger";
@@ -281,7 +282,12 @@ function WorkspaceMarkdownFileLink({
         </Tooltip>
         <DropdownMenuContent align="start" className="min-w-[180px]">
           {fileLinkContext.targets.map((target) => {
-            const Icon = target.kind === "fileManager" ? FolderOpen : Code2;
+            const Icon =
+              target.kind === "fileManager"
+                ? FolderOpen
+                : target.kind === "terminal"
+                  ? TerminalIcon
+                  : Code2;
             const selected = target.id === preferredTarget.id;
             const label =
               target.kind === "fileManager"

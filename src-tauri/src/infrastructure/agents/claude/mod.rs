@@ -1283,7 +1283,9 @@ impl std::fmt::Debug for SpawnableCommand {
 }
 
 impl SpawnableCommand {
-    pub(crate) fn new(cmd: Command, stdin_prompt: Option<String>) -> Self {
+    pub(crate) fn new(mut cmd: Command, stdin_prompt: Option<String>) -> Self {
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+            .apply_to_tokio_command(&mut cmd);
         Self {
             cmd,
             stdin_prompt,
@@ -1325,7 +1327,11 @@ impl SpawnableCommand {
 
     /// Set an environment variable on the underlying command.
     pub fn env(&mut self, key: &str, val: &str) -> &mut Self {
-        self.cmd.env(key, val);
+        if crate::infrastructure::subprocess_env_policy::is_github_cli_token_env_var(key) {
+            self.cmd.env_remove(key);
+        } else {
+            self.cmd.env(key, val);
+        }
         self
     }
 

@@ -8,6 +8,7 @@ import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 import type { MergeValidationMode } from "@/types/project";
+import { RepositoryEnvironmentSettings } from "./RepositoryEnvironmentSettings";
 import {
   SectionCard,
   SelectSettingRow,
@@ -323,6 +324,7 @@ export function RepositorySettingsSection() {
         onChange={handleWorktreeDirChange}
         onBlur={handleWorktreeDirBlur}
       />
+      <RepositoryEnvironmentSettings />
 
       <SubsectionLabel>Merge Behavior</SubsectionLabel>
       <SelectSettingRow
