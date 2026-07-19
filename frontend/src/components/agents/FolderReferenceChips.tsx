@@ -32,31 +32,37 @@ export function FolderReferenceChips<T extends FolderReferenceChipLike>({
   return (
     <div className="flex flex-wrap gap-2 pb-3" data-testid={testId}>
       {references.map((reference) => (
-        <Tooltip key={reference.id}>
-          <TooltipTrigger asChild>
-            <div className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs" style={{ borderColor: "var(--border-subtle)", color: "var(--text-primary)" }}>
-              <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{reference.displayName}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5"
-                    aria-label={`Remove folder ${reference.displayName}`}
-                    disabled={removingId === reference.id}
-                    onClick={() => onRemove(reference)}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Remove folder</TooltipContent>
-              </Tooltip>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>{reference.folderPath}</TooltipContent>
-        </Tooltip>
+        <div
+          key={reference.id}
+          className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
+          style={{ borderColor: "var(--border-subtle)", color: "var(--text-primary)" }}
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="flex items-center gap-1">
+                <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{reference.displayName}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{reference.folderPath}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5"
+                aria-label={`Remove folder ${reference.displayName}`}
+                disabled={removingId === reference.id}
+                onClick={() => onRemove(reference)}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Remove folder</TooltipContent>
+          </Tooltip>
+        </div>
       ))}
     </div>
   );

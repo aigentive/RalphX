@@ -337,10 +337,7 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByText("draft-notes")).toBeInTheDocument();
     const remove = screen.getByRole("button", { name: "Remove folder draft-notes" });
     await user.hover(remove);
-    // Hovering the ✕ opens both the inner "Remove folder" tooltip and the
-    // outer full-path tooltip (the ✕ sits inside the outer trigger's region).
-    const tooltips = await screen.findAllByRole("tooltip");
-    expect(tooltips.some((tooltip) => tooltip.textContent === "Remove folder")).toBe(true);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Remove folder");
 
     await user.click(remove);
     expect(onRemoveFolder).toHaveBeenCalledWith("draft-1");
