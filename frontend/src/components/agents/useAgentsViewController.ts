@@ -123,13 +123,16 @@ type AgentConversationLifecyclePayload = {
 
 type WorkspaceReviewPublishPromotionState = Pick<
   AgentWorkspaceReviewContext,
-  "monitor" | "isCurrent" | "isOutdated"
+  "monitor" | "reviewArtifactIsCurrent" | "reviewArtifactIsOutdated"
 >;
 
 function hasCurrentPassedWorkspaceReview(
   context: WorkspaceReviewPublishPromotionState | null,
 ): boolean {
-  if (!context?.isCurrent || context.isOutdated) {
+  if (
+    !context?.reviewArtifactIsCurrent ||
+    context.reviewArtifactIsOutdated
+  ) {
     return false;
   }
   const gateStatus = context.monitor.reviewGateStatus ?? null;

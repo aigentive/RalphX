@@ -29,9 +29,10 @@
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
-        AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-        ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
-        Project, ProjectId, TaskId,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
+        ProjectId, TaskId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
@@ -129,6 +130,10 @@
                         goal_context: AgentWorkspaceReviewGoalContext::default(),
                         is_current: false,
                         is_outdated: false,
+                        review_artifact_is_current: false,
+                        review_artifact_is_outdated: false,
+                        can_mutate_review_state: false,
+                        review_runtime_state: AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity,
                         should_show_tab: true,
                     },
                     started: true,

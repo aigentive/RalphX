@@ -85,12 +85,20 @@ function reviewMonitor(
 function reviewContext(
   overrides: Partial<AgentWorkspaceReviewContext> = {},
 ): AgentWorkspaceReviewContext {
+  const reviewArtifactIsCurrent =
+    overrides.reviewArtifactIsCurrent ?? overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated =
+    overrides.reviewArtifactIsOutdated ?? overrides.isOutdated ?? true;
   return {
     success: true,
     workspace: conversationWorkspaceFixture(),
     events: [],
     target: reviewTarget,
     monitor: reviewMonitor(),
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
     isCurrent: false,
     isOutdated: true,
     shouldShowTab: true,
@@ -124,10 +132,18 @@ it("distinguishes a blocking review authorized by a human bypass", () => {
 function reviewStartResult(
   overrides: Partial<StartAgentWorkspaceReviewResult> = {},
 ): StartAgentWorkspaceReviewResult {
+  const reviewArtifactIsCurrent =
+    overrides.reviewArtifactIsCurrent ?? overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated =
+    overrides.reviewArtifactIsOutdated ?? overrides.isOutdated ?? true;
   return {
     success: true,
     target: reviewTarget,
     monitor: reviewMonitor(),
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
     isCurrent: false,
     isOutdated: true,
     shouldShowTab: true,
@@ -262,7 +278,7 @@ describe("AgentReviewPanel", () => {
     expect(screen.getByRole("button", { name: "Update review" })).toBeEnabled();
     expect(screen.getByText("Review is outdated")).toBeInTheDocument();
     expect(
-      screen.getByText(/Outdated for current changes\./),
+      screen.getByText(/Previous Review covers earlier changes\./),
     ).toBeInTheDocument();
   });
 

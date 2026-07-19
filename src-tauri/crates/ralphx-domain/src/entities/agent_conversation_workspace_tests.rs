@@ -2,8 +2,8 @@ use super::{
     AgentConversationWorkspaceMode, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
-    ProjectId,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
+    ArtifactId, ChatConversationId, ProjectId,
 };
 use chrono::Utc;
 use std::str::FromStr;
@@ -22,6 +22,31 @@ fn workspace_modes_round_trip_tasks_autopilot_and_legacy_ideation() {
                 .expect("mode should deserialize"),
             mode
         );
+    }
+}
+
+#[test]
+fn workspace_review_runtime_states_use_stable_response_values() {
+    for (state, value) in [
+        (
+            AgentWorkspaceReviewRuntimeState::ActiveOwned,
+            "active_owned",
+        ),
+        (AgentWorkspaceReviewRuntimeState::Terminal, "terminal"),
+        (
+            AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity,
+            "missing_runtime_identity",
+        ),
+        (
+            AgentWorkspaceReviewRuntimeState::MalformedRuntimeIdentity,
+            "malformed_runtime_identity",
+        ),
+        (
+            AgentWorkspaceReviewRuntimeState::StaleRuntime,
+            "stale_runtime",
+        ),
+    ] {
+        assert_eq!(state.to_string(), value);
     }
 }
 

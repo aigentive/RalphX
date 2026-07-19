@@ -3,6 +3,7 @@
  *
  * These are intentionally separate from task-pipeline workflow tools.
  */
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
 export const AGENT_WORKSPACE_TOOLS = [
     {
         name: "get_agent_workspace_publish_status",
@@ -105,7 +106,7 @@ export const AGENT_WORKSPACE_TOOLS = [
     },
     {
         name: "get_workspace_review_context",
-        description: "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
+        description: "Read the current general workspace Review context, including the selected review target, compact review packet, prior Review artifact freshness, and backend-derived runtime mutation authority. Artifact freshness does not determine whether an active owned run may refresh it. " +
             "Call this first when running as the workspace Review artifact writer.",
         inputSchema: {
             type: "object",
@@ -572,7 +573,12 @@ export async function callGetPrReviewContextTool(callTauriGet, args, runtimeCont
 }
 export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_context", args, runtimeContext);
-    return callTauriGet(`agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`);
+    const path = `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+    const headers = buildRuntimeIdentityTransportHeaders({
+        agentRunId: runtimeContext?.agentRunId,
+        conversationId: runtimeContext?.conversationId,
+    });
+    return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("write_workspace_review_artifact", args, runtimeContext);

@@ -394,6 +394,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically records a reviewer launch failure only while the exact reserved launch still
+    /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_target_scope: crate::entities::AgentWorkspaceReviewTargetScope,
+        _expected_diff_fingerprint: &str,
+        _expected_review_conversation_id: &ChatConversationId,
+        _expected_run_id: &str,
+        _error: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn approve_workspace_review_anyway(
         &self,
         _conversation_id: &ChatConversationId,

@@ -116,6 +116,29 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+/// Response-only classification of whether the current runtime owns Review mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewRuntimeState {
+    ActiveOwned,
+    Terminal,
+    MissingRuntimeIdentity,
+    MalformedRuntimeIdentity,
+    StaleRuntime,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewRuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActiveOwned => write!(f, "active_owned"),
+            Self::Terminal => write!(f, "terminal"),
+            Self::MissingRuntimeIdentity => write!(f, "missing_runtime_identity"),
+            Self::MalformedRuntimeIdentity => write!(f, "malformed_runtime_identity"),
+            Self::StaleRuntime => write!(f, "stale_runtime"),
+        }
+    }
+}
+
 impl std::fmt::Display for AgentWorkspaceReviewMonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
