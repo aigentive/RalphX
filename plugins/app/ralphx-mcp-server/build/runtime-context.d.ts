@@ -8,5 +8,6 @@ export declare function buildRuntimeIdentityTransportHeaders(context: {
     agentRunId?: string | undefined;
     conversationId?: string | undefined;
 }): Record<string, string> | undefined;
+export declare function buildRuntimeTransportHeaders(context: RuntimeContext): Record<string, string> | undefined;
 export {};
 //# sourceMappingURL=runtime-context.d.ts.map

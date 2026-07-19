@@ -35,6 +35,7 @@ use crate::application::agent_workspace_review_auto_merge::{
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
 };
+use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -2402,6 +2403,25 @@ pub async fn propose_agent_workspace_pr_review_action(
         .create_or_update_pr_review_action(action)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let recent_actions = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_pr_review_actions(&conversation_id, 100)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    for superseded in recent_actions
+        .iter()
+        .filter(|candidate| candidate.status == AgentWorkspacePrReviewActionStatus::Superseded)
+    {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&pr_review_notification_key(
+                conversation_id.as_str(),
+                &superseded.id,
+            ))
+            .await;
+    }
     let mut auto_submission_failed = false;
     if monitor.can_auto_approve(&action) {
         match submit_agent_workspace_pr_review_action(
@@ -2471,9 +2491,9 @@ pub async fn propose_agent_workspace_pr_review_action(
                     automation_id: None,
                     run_id: None,
                 },
-                dedupe_key: Some(format!(
-                    "pr-review:{}:awaiting_user:{}",
-                    monitor.conversation_id, action.id
+                dedupe_key: Some(pr_review_notification_key(
+                    monitor.conversation_id.as_str(),
+                    &action.id,
                 )),
             })
             .await;
@@ -2701,9 +2721,9 @@ pub async fn submit_agent_workspace_pr_review_action(
                         automation_id: None,
                         run_id: None,
                     },
-                    dedupe_key: Some(format!(
-                        "pr-review:{}:awaiting_user:{}",
-                        retry_monitor.conversation_id, action.id
+                    dedupe_key: Some(pr_review_notification_key(
+                        retry_monitor.conversation_id.as_str(),
+                        &action.id,
                     )),
                 })
                 .await;
@@ -2759,6 +2779,14 @@ pub async fn submit_agent_workspace_pr_review_action(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    state
+        .app_state
+        .notification_service()
+        .resolve_workflow_notification(&pr_review_notification_key(
+            conversation_id.as_str(),
+            &action.id,
+        ))
+        .await;
 
     Ok(Json(SubmitAgentWorkspacePrReviewActionResponse {
         success: true,
@@ -2846,6 +2874,14 @@ pub async fn skip_agent_workspace_pr_review_action(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    state
+        .app_state
+        .notification_service()
+        .resolve_workflow_notification(&pr_review_notification_key(
+            conversation_id.as_str(),
+            &action.id,
+        ))
+        .await;
 
     Ok(Json(SkipAgentWorkspacePrReviewActionResponse {
         success: true,

@@ -563,6 +563,13 @@ export interface TeamPlanRequestedPayload {
   context_id: string;
 }
 
+export interface TeamPlanResolvedPayload {
+  plan_id: string;
+  context_type: string;
+  context_id: string;
+  resolution: "approved" | "rejected" | "expired" | "superseded";
+}
+
 export interface TeamPlanAutoApprovedPayload {
   plan_id: string;
   context_type: string;

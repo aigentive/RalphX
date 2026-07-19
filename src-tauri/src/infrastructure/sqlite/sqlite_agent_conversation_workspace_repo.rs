@@ -1923,11 +1923,23 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         conversation_id: &ChatConversationId,
         pr_number: i64,
         head_sha: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<String>> {
         let conversation_id = conversation_id.as_str().to_string();
         let head_sha = head_sha.to_string();
         self.db
             .run(move |conn| {
+                let superseded_ids = {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM agent_workspace_pr_review_actions
+                         WHERE conversation_id = ?1 AND pr_number = ?2 AND head_sha != ?3
+                           AND status = 'pending'",
+                    )?;
+                    let rows = stmt.query_map(
+                        rusqlite::params![conversation_id, pr_number, head_sha],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    rows.collect::<Result<Vec<_>, _>>()?
+                };
                 conn.execute(
                     "UPDATE agent_workspace_pr_review_actions
                      SET status = 'superseded', resolved_at = ?4, updated_at = ?4
@@ -1940,7 +1952,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         Utc::now().to_rfc3339()
                     ],
                 )?;
-                Ok(())
+                Ok(superseded_ids)
             })
             .await
     }

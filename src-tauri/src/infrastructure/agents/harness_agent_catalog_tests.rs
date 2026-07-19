@@ -2821,7 +2821,7 @@ fn task_execution_agent_rule_documents_post_change_validation_policy() {
         .expect("read task execution agent rule");
 
     assert!(
-        rule_doc.contains("Execution agents do not run full baseline task validation by default"),
+        rule_doc.contains("Execution agents do not run baseline validation by default"),
         "task execution rule should state the default post-change validation policy"
     );
     assert!(

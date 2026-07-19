@@ -7,15 +7,19 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::*;
-use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::interactive_notification_producer::{
+    permission_notification_key, InteractiveNotificationProducer,
+};
 use crate::application::permission_state::PendingPermissionInfo;
 use crate::application::{
     NotificationContextResolver, PermissionDecision, PERMISSION_REQUEST_TTL,
     PERMISSION_RESOLVED_EVENT,
 };
+use crate::domain::entities::NotificationTargetKind;
 
 pub async fn request_permission(
     State(state): State<HttpServerState>,
+    headers: axum::http::HeaderMap,
     Json(input): Json<PermissionRequestInput>,
 ) -> Json<PermissionRequestResponse> {
     let request_id = input
@@ -43,10 +47,15 @@ pub async fn request_permission(
 
     let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
     match notification_context
-        .resolve_permission_target(info.task_id.as_deref(), info.context_id.as_deref())
+        .resolve_permission_target_with_trusted_conversation(
+            info.task_id.as_deref(),
+            info.context_type.as_deref(),
+            info.context_id.as_deref(),
+            trusted_conversation_id(&headers),
+        )
         .await
     {
-        Ok(resolved) => {
+        Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
             state
                 .app_state
                 .notification_service()
@@ -54,6 +63,9 @@ pub async fn request_permission(
                     &info, resolved,
                 ))
                 .await;
+        }
+        Ok(_) => {
+            tracing::warn!(request_id = %request_id, "Skipped permission notification without a navigable target")
         }
         Err(error) => {
             tracing::warn!(error = %error, request_id = %request_id, "Failed to resolve permission notification context");
@@ -96,7 +108,14 @@ pub(crate) async fn expire_permission_and_emit(
     request_id: &str,
     code: StatusCode,
 ) -> Result<Json<PermissionDecision>, StatusCode> {
-    state.app_state.permission_state.remove(request_id).await;
+    let removed = state.app_state.permission_state.remove(request_id).await;
+    if removed {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&permission_notification_key(request_id))
+            .await;
+    }
     crate::http_server::emit_http_event(
         state,
         "permission:expired",
@@ -184,6 +203,11 @@ pub async fn resolve_permission(
         .await;
 
     if resolved {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&permission_notification_key(&input.request_id))
+            .await;
         crate::http_server::emit_http_event(
             &state,
             PERMISSION_RESOLVED_EVENT,

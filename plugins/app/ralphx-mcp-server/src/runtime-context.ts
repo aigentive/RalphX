@@ -115,7 +115,9 @@ export function hydrateRalphxRuntimeEnvFromCli(
 export function buildArtifactMutationTransportHeaders(
   context: RuntimeContext
 ): Record<string, string> | undefined {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...(buildRuntimeTransportHeaders(context) ?? {}),
+  };
   if (context.contextType === "ideation" && context.contextId) {
     headers["X-RalphX-Caller-Session-Id"] = context.contextId;
   }
@@ -131,4 +133,13 @@ export function buildRuntimeIdentityTransportHeaders(
     "x-ralphx-agent-run-id": context.agentRunId,
     "x-ralphx-conversation-id": context.conversationId,
   };
+}
+
+export function buildRuntimeTransportHeaders(
+  context: RuntimeContext
+): Record<string, string> | undefined {
+  const conversationId = context.conversationId?.trim();
+  return conversationId
+    ? { "x-ralphx-conversation-id": conversationId }
+    : undefined;
 }

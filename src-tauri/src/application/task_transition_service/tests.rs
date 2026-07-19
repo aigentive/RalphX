@@ -450,6 +450,14 @@ impl NotificationRepository for FailingNotificationRepository {
         Err(AppError::Database("injected notification failure".into()))
     }
 
+    async fn mark_read_by_dedupe_key(
+        &self,
+        _dedupe_key: &str,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
     async fn mark_all_read(
         &self,
         _project_id: Option<&str>,

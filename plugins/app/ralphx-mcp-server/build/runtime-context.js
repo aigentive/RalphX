@@ -68,7 +68,9 @@ export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
     return context;
 }
 export function buildArtifactMutationTransportHeaders(context) {
-    const headers = {};
+    const headers = {
+        ...(buildRuntimeTransportHeaders(context) ?? {}),
+    };
     if (context.contextType === "ideation" && context.contextId) {
         headers["X-RalphX-Caller-Session-Id"] = context.contextId;
     }
@@ -82,5 +84,11 @@ export function buildRuntimeIdentityTransportHeaders(context) {
         "x-ralphx-agent-run-id": context.agentRunId,
         "x-ralphx-conversation-id": context.conversationId,
     };
+}
+export function buildRuntimeTransportHeaders(context) {
+    const conversationId = context.conversationId?.trim();
+    return conversationId
+        ? { "x-ralphx-conversation-id": conversationId }
+        : undefined;
 }
 //# sourceMappingURL=runtime-context.js.map

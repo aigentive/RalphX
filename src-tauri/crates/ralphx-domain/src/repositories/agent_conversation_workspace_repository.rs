@@ -365,8 +365,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _head_sha: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
     }
 
     async fn mark_pr_review_first_action_resolved(

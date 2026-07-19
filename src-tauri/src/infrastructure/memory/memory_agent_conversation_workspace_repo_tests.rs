@@ -532,9 +532,11 @@ async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_termi
     .await
     .expect("mark submitted");
 
-    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 703, "current-head")
+    let superseded_ids = repo
+        .supersede_pending_pr_review_actions_except_head(&conversation_id, 703, "current-head")
         .await
         .expect("supersede old pending actions");
+    assert_eq!(superseded_ids, vec![stale.id.clone()]);
 
     let stale = repo
         .get_pr_review_action(&stale.id)

@@ -32,6 +32,12 @@ pub trait NotificationRepository: Send + Sync {
     async fn unread_count(&self, project_id: Option<&str>) -> AppResult<u64>;
     /// Marks a row read once and returns the changed row, if any.
     async fn mark_read(&self, id: &str, read_at: DateTime<Utc>) -> AppResult<Option<Notification>>;
+    /// Marks the exact workflow-correlated row read once and returns the changed row, if any.
+    async fn mark_read_by_dedupe_key(
+        &self,
+        dedupe_key: &str,
+        read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>>;
     /// Marks every unread row read and returns the number changed.
     async fn mark_all_read(
         &self,

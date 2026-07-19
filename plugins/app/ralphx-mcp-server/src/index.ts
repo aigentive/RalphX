@@ -358,7 +358,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "permission_request") {
     try {
       const result = await handlePermissionRequest(
-        args as Parameters<typeof handlePermissionRequest>[0]
+        args as Parameters<typeof handlePermissionRequest>[0],
+        runtimeContext
       );
       safeTrace("tool.success", {
         name,
@@ -493,7 +494,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         args as unknown as RequestTeamPlanArgs,
         RALPHX_CONTEXT_TYPE ?? "ideation",
         RALPHX_CONTEXT_ID ?? "",
-        leadSessionId
+        leadSessionId,
+        runtimeContext
       );
       safeTrace("tool.success", {
         name,

@@ -195,6 +195,9 @@ export function useAgentsViewController({
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
+  const setVisibleAgentScope = useAgentSessionStore(
+    (state) => state.setVisibleAgentScope,
+  );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
@@ -288,6 +291,27 @@ export function useAgentsViewController({
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+  useEffect(() => {
+    if (!selectedConversationId) {
+      setVisibleAgentScope(null);
+      return;
+    }
+    setVisibleAgentScope({
+      workspaceConversationId: selectedConversationId,
+      ...((chatFocus.type === "workspace" || chatFocus.type === "workspace_review") && {
+        visibleConversationId:
+          chatFocus.type === "workspace_review"
+            ? chatFocus.conversationId
+            : selectedConversationId,
+      }),
+      ...(chatFocus.type === "automation_run" && {
+        visibleConversationId: chatFocus.conversationId,
+        automationRunId: chatFocus.runId,
+        automationConversationId: chatFocus.conversationId,
+      }),
+    });
+    return () => setVisibleAgentScope(null);
+  }, [chatFocus, selectedConversationId, setVisibleAgentScope]);
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);

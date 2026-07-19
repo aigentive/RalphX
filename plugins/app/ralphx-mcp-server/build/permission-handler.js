@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { safeError } from "./redact.js";
 import { buildTauriApiUrl } from "./tauri-client.js";
+import { buildRuntimeTransportHeaders, } from "./runtime-context.js";
 import { isWithin, normalizePathLike, } from "./path-policy.js";
 const SAFE_READONLY_BASH_COMMANDS = new Set([
     "ls",
@@ -248,7 +249,7 @@ function normalizePermissionArgs(args) {
  * @param args - Tool call details from Claude CLI (shape may vary)
  * @returns MCP tool result with decision (behavior + updatedInput / message)
  */
-export async function handlePermissionRequest(args) {
+export async function handlePermissionRequest(args, runtimeContext = {}) {
     const { tool_name, tool_input, context } = normalizePermissionArgs(args);
     const normalizedToolInput = normalizePermissionToolInput(tool_name, tool_input);
     if (!tool_name) {
@@ -303,7 +304,10 @@ export async function handlePermissionRequest(args) {
             body.context_id = contextId;
         const registerResponse = await fetch(buildTauriApiUrl("permission/request"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+            },
             body: JSON.stringify(body),
         });
         if (!registerResponse.ok) {

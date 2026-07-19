@@ -401,6 +401,24 @@ impl NotificationService {
         }
         Ok(())
     }
+    /// Best-effort settlement after workflow authority commits.
+    pub async fn resolve_workflow_notification(&self, dedupe_key: &str) {
+        match self
+            .repo
+            .mark_read_by_dedupe_key(dedupe_key, Utc::now())
+            .await
+        {
+            Ok(Some(notification)) => {
+                if let Err(error) = self.emitter.emit_updated(Some(&notification)) {
+                    tracing::warn!(error = %error, notification_id = %notification.id, dedupe_key, "Failed to emit workflow notification settlement");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(error = %error, dedupe_key, "Failed to settle workflow notification")
+            }
+        }
+    }
     pub async fn mark_all_read(&self, project_id: Option<&str>) -> AppResult<()> {
         match self.repo.mark_all_read(project_id, Utc::now()).await {
             Ok(changed) if changed > 0 => {

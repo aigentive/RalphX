@@ -272,7 +272,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Special handling for permission_request tool (always allowed, not scoped by agent type)
     if (name === "permission_request") {
         try {
-            const result = await handlePermissionRequest(args);
+            const result = await handlePermissionRequest(args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -402,7 +402,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
         try {
-            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId);
+            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),

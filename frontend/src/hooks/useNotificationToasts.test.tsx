@@ -72,7 +72,10 @@ describe("useNotificationToasts", () => {
     preferences.ready = true;
     preferences.mutedProjectIds = [];
     useUiStore.setState({ notificationsPanelOpen: false });
-    useAgentSessionStore.setState({ selectedConversationId: null });
+    useAgentSessionStore.setState({
+      selectedConversationId: null,
+      visibleAgentScope: null,
+    });
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
     vi.mocked(performNotificationPrimaryAction).mockResolvedValue(true);
@@ -215,7 +218,10 @@ describe("useNotificationToasts", () => {
     fireEvent.click(view.getByRole("button", { name: "Dismiss" }));
 
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: null,
+      });
       settleAction?.(true);
     });
 
@@ -256,13 +262,43 @@ describe("useNotificationToasts", () => {
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
 
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "conversation-1",
+        },
+      });
     });
 
     await waitFor(() => {
       expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
       expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
     });
+  });
+
+  it("acknowledges an Agent-targeted permission when its dialog opens", async () => {
+    const permissionNotification = {
+      ...agentConversationNotification,
+      id: "permission-notification-1",
+      category: "permission_request" as const,
+      dedupeKey: "perm:permission-1",
+      title: "Permission needed",
+    };
+    subscribers.get("notification:created")?.(permissionNotification);
+    const view = renderToastContent();
+
+    fireEvent.click(view.getByRole("button", { name: "Respond" }));
+
+    await waitFor(() => {
+      expect(performNotificationPrimaryAction).toHaveBeenCalledWith(
+        permissionNotification,
+        expect.any(QueryClient),
+      );
+      expect(toastDismiss).toHaveBeenCalledWith(permissionNotification.id);
+      expect(notificationsApi.markRead).toHaveBeenCalledWith(permissionNotification.id);
+    });
+    expect(useAgentSessionStore.getState().visibleAgentScope).toBeNull();
   });
 
   it("acknowledges and dismisses only the toast for the conversation the user visits", async () => {
@@ -277,7 +313,13 @@ describe("useNotificationToasts", () => {
     });
 
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-2" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-2",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-2",
+          visibleConversationId: "conversation-2",
+        },
+      });
     });
     await Promise.resolve();
 
@@ -289,13 +331,36 @@ describe("useNotificationToasts", () => {
 
   it("acknowledges an Agent notification that arrives while its conversation is already selected", () => {
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "conversation-1",
+        },
+      });
     });
 
     subscribers.get("notification:created")?.(agentConversationNotification);
 
     expect(toastWarning).not.toHaveBeenCalled();
     expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+  });
+
+  it("does not suppress a workspace toast while a different child conversation is rendered", () => {
+    act(() => {
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "verification-conversation",
+        },
+      });
+    });
+
+    subscribers.get("notification:created")?.(agentConversationNotification);
+
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
   it("keeps an Agent conversation toast unread when its CTA cannot navigate", async () => {
@@ -335,43 +400,34 @@ describe("useNotificationToasts", () => {
     expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
-  it("keeps a plan-review toast unread until the linked conversation and Plan surface are observed", async () => {
+  it("suppresses a plan-review toast whenever the exact Agent workspace is visible", () => {
     useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
       isOpen: true,
       activeTab: "tasks",
       taskMode: "kanban",
       hiddenTabs: ["plan"],
     });
-    subscribers.get("notification:created")?.(planReviewNotification);
-    const view = renderToastContent();
-
-    fireEvent.click(view.getByRole("button", { name: "Review plan" }));
-    await waitFor(() => expect(performNotificationPrimaryAction).toHaveBeenCalled());
-
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
-    });
-    expect(toastDismiss).not.toHaveBeenCalled();
-    expect(notificationsApi.markRead).not.toHaveBeenCalled();
-
-    act(() => {
-      useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
-        isOpen: true,
-        activeTab: "plan",
-        taskMode: "kanban",
-        hiddenTabs: [],
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "conversation-1",
+        },
       });
     });
+    subscribers.get("notification:created")?.(planReviewNotification);
 
-    await waitFor(() => {
-      expect(toastDismiss).toHaveBeenCalledWith(planReviewNotification.id);
-      expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
-    });
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
   });
 
   it("keeps a plan notification for the already-selected conversation visible until its CTA is clicked", async () => {
     act(() => {
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: null,
+      });
       useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
         isOpen: true,
         activeTab: "tasks",
@@ -385,6 +441,10 @@ describe("useNotificationToasts", () => {
         activeTab: "plan",
         taskMode: "graph",
         hiddenTabs: [],
+      });
+      useAgentSessionStore.getState().setVisibleAgentScope({
+        workspaceConversationId: "conversation-1",
+        visibleConversationId: "conversation-1",
       });
       return true;
     });
@@ -406,6 +466,59 @@ describe("useNotificationToasts", () => {
       expect(notificationsApi.markRead).toHaveBeenCalledWith(planReviewNotification.id);
     });
     expect(toastDismiss).toHaveBeenCalledWith(planReviewNotification.id);
+  });
+
+  it("suppresses only the exact focused automation run", () => {
+    act(() => {
+      useAgentSessionStore.setState({
+        visibleAgentScope: {
+          workspaceConversationId: "setup-conversation-1",
+          visibleConversationId: "run-conversation-1",
+          automationRunId: "run-1",
+          automationConversationId: "run-conversation-1",
+        },
+      });
+    });
+    const automationNotification = {
+      ...agentConversationNotification,
+      id: "automation-plan-1",
+      category: "automation_plan_approval" as const,
+      target: {
+        kind: "automation_run" as const,
+        projectId: "project-1",
+        setupConversationId: "setup-conversation-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+      },
+    };
+
+    subscribers.get("notification:created")?.(automationNotification);
+    subscribers.get("notification:created")?.({
+      ...automationNotification,
+      id: "automation-plan-2",
+      target: { ...automationNotification.target, runId: "run-2" },
+    });
+
+    expect(notificationsApi.markRead).toHaveBeenCalledWith("automation-plan-1");
+    expect(notificationsApi.markRead).not.toHaveBeenCalledWith("automation-plan-2");
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses only the live toast named by a durable notification update", () => {
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    subscribers.get("notification:created")?.({
+      ...agentConversationNotification,
+      id: "agent-notification-2",
+    });
+
+    subscribers.get("notification:updated")?.({
+      ...agentConversationNotification,
+      readAt: "2026-07-10T10:01:00Z",
+    });
+
+    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(toastDismiss).not.toHaveBeenCalledWith("agent-notification-2");
   });
 
   it("dismisses active notification toasts when the drawer opens", () => {
@@ -433,7 +546,13 @@ describe("useNotificationToasts", () => {
 
     act(() => {
       useUiStore.setState({ notificationsPanelOpen: true });
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "conversation-1",
+        },
+      });
       settleAction?.(true);
     });
 
@@ -471,7 +590,13 @@ describe("useNotificationToasts", () => {
 
     act(() => {
       useUiStore.setState({ notificationsPanelOpen: true });
-      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-1",
+        visibleAgentScope: {
+          workspaceConversationId: "conversation-1",
+          visibleConversationId: "conversation-1",
+        },
+      });
     });
 
     await Promise.resolve();
