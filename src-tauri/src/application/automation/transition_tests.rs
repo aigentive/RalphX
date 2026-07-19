@@ -777,6 +777,64 @@ async fn transition_service_clears_plan_pending_instructions_on_retry_start() {
 }
 
 #[tokio::test]
+async fn leaving_awaiting_plan_approval_resolves_only_that_run_notification() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (notification_service, notification_repo) = notification_service_with_repo();
+    let service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        emitter,
+        notification_service,
+    );
+    automation_repo
+        .create(automation("automation-1", AutomationStatus::Active))
+        .await
+        .unwrap();
+    let run = run(
+        "run-plan",
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    assert!(service
+        .transition_run_status(
+            &run.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::AwaitingPlanApproval,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_run_status_clearing_plan_pending_instructions(
+            &run.id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationRunStatus::Running,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let rows = notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    let plan_notification = rows
+        .iter()
+        .find(|row| row.dedupe_key.as_deref() == Some("run:run-plan:plan_approval"))
+        .expect("plan approval notification");
+    assert!(plan_notification.read_at.is_some());
+}
+
+#[tokio::test]
 async fn transition_service_validates_judge_lifecycle_before_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(

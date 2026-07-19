@@ -5,10 +5,11 @@ use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTrans
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::application::NotificationService;
 use crate::application::automation::pause_recovery::{
     is_actionable_paused_reason, paused_reason_label,
 };
+use crate::application::interactive_notification_producer::automation_plan_notification_key;
+use crate::application::NotificationService;
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
     judge_is_transition_allowed, plan_judge_is_transition_allowed, Automation, AutomationId,
@@ -219,9 +220,10 @@ impl AutomationTransitionService {
         run: &AutomationRun,
         detail: &str,
     ) {
-        let pr_label = run
-            .pr_number
-            .map_or_else(|| "the run PR".to_string(), |number| format!("PR #{number}"));
+        let pr_label = run.pr_number.map_or_else(
+            || "the run PR".to_string(),
+            |number| format!("PR #{number}"),
+        );
         self.notification_service
             .record(NewNotification {
                 project_id: Some(automation.project_id.to_string()),
@@ -233,10 +235,7 @@ impl AutomationTransitionService {
                     automation.name
                 )),
                 target: automation_target(automation, Some(run)),
-                dedupe_key: Some(format!(
-                    "run:{}:auto_merge_enable_failed",
-                    run.id
-                )),
+                dedupe_key: Some(format!("run:{}:auto_merge_enable_failed", run.id)),
             })
             .await;
     }
@@ -267,6 +266,18 @@ impl AutomationTransitionService {
         let notification = run_status_notification(&automation, &run, to, error_code);
         if let Some(notification) = notification {
             self.notification_service.record(notification).await;
+        }
+    }
+
+    async fn resolve_departed_run_notification(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+    ) {
+        if from == AutomationRunStatus::AwaitingPlanApproval {
+            self.notification_service
+                .resolve_workflow_notification(&automation_plan_notification_key(id.as_str()))
+                .await;
         }
     }
 
@@ -328,6 +339,7 @@ impl AutomationTransitionService {
             .compare_and_swap_status(id, from, to, error_code, error_detail)
             .await?;
         if changed {
+            self.resolve_departed_run_notification(id, from).await;
             self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
@@ -359,6 +371,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
+            self.resolve_departed_run_notification(id, from).await;
             self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
@@ -392,6 +405,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
+            self.resolve_departed_run_notification(id, from).await;
             self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
@@ -423,6 +437,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
+            self.resolve_departed_run_notification(id, from).await;
             self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
@@ -560,7 +575,7 @@ fn run_status_notification(
                 "Run #{} of “{}” is waiting on plan approval",
                 run.run_index, automation.name
             ),
-            format!("run:{}:plan_approval", run.id),
+            automation_plan_notification_key(run.id.as_str()),
         ),
         AutomationRunStatus::AgentFailed => {
             let error_code = error_code

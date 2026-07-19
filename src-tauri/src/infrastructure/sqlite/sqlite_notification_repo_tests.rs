@@ -46,6 +46,34 @@ async fn sqlite_notification_repo_dedupes_and_prunes_with_shared_fixture() {
 }
 
 #[tokio::test]
+async fn sqlite_notification_repo_marks_only_the_exact_dedupe_key_once() {
+    let db = SqliteTestDb::new("sqlite-notification-exact-key");
+    let repo = SqliteNotificationRepository::from_shared(db.shared_conn());
+    let now = Utc::now();
+    let target = notification("question:target", now);
+    let unrelated = notification("question:other", now);
+    repo.create_with_dedupe(target.clone()).await.unwrap();
+    repo.create_with_dedupe(unrelated.clone()).await.unwrap();
+
+    let changed = repo
+        .mark_read_by_dedupe_key("question:target", now)
+        .await
+        .unwrap()
+        .expect("exact key should settle");
+
+    assert_eq!(changed.id, target.id);
+    assert!(repo
+        .mark_read_by_dedupe_key("question:target", now)
+        .await
+        .unwrap()
+        .is_none());
+    let rows = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(rows
+        .iter()
+        .any(|row| row.id == unrelated.id && row.read_at.is_none()));
+}
+
+#[tokio::test]
 async fn sqlite_notification_repo_excludes_archived_conversation_targets_from_history_and_reads() {
     let db = SqliteTestDb::new("sqlite-notification-archive-filter");
     let repo = SqliteNotificationRepository::from_shared(db.shared_conn());

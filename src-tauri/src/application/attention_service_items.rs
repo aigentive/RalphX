@@ -1,7 +1,7 @@
 use crate::application::automation::pause_recovery;
 use crate::domain::entities::{
-    AttentionItem, Automation, AutomationRun, ChatConversation, InternalStatus,
-    NotificationCategory, NotificationTarget, NotificationTargetKind, ProjectId, Task,
+    AttentionItem, Automation, AutomationRun, InternalStatus, NotificationCategory,
+    NotificationTarget, NotificationTargetKind, ProjectId, Task,
 };
 use crate::domain::state_machine::Blocker;
 
@@ -118,27 +118,6 @@ pub(super) fn automation_paused_item(automation: &Automation) -> AttentionItem {
             automation_id: Some(automation.id.to_string()),
             run_id: None,
         },
-    }
-}
-
-pub(super) fn conversation_target(
-    conversation: Option<&ChatConversation>,
-    project_id: Option<String>,
-) -> NotificationTarget {
-    let Some(conversation) = conversation else {
-        return NotificationTarget::none();
-    };
-    NotificationTarget {
-        kind: NotificationTargetKind::AgentConversation,
-        project_id,
-        task_id: None,
-        conversation_id: Some(conversation.id.to_string()),
-        setup_conversation_id: None,
-        automation_id: conversation.automation_id.as_ref().map(ToString::to_string),
-        run_id: conversation
-            .automation_run_id
-            .as_ref()
-            .map(ToString::to_string),
     }
 }
 

@@ -202,6 +202,73 @@ pub(super) fn resolve_artifact_mutation_authority(
     })
 }
 
+pub(super) async fn reconcile_plan_notifications(
+    state: &HttpServerState,
+    prior_artifact_id: Option<&str>,
+    current_artifact: &Artifact,
+    sessions: &[IdeationSession],
+) {
+    let resolver =
+        crate::application::NotificationContextResolver::from_app_state(&state.app_state);
+    for session in sessions
+        .iter()
+        .filter(|session| session.session_flow == IdeationSessionFlow::Planning)
+    {
+        if let Some(prior_artifact_id) = prior_artifact_id {
+            state
+                .app_state
+                .notification_service()
+                .resolve_workflow_notification(
+                    &crate::application::interactive_notification_producer::plan_notification_key(
+                        session.id.as_str(),
+                        prior_artifact_id,
+                    ),
+                )
+                .await;
+        }
+        let excluded = match resolver.session_is_automation_owned(session).await {
+            Ok(true) => true,
+            Ok(false) => match resolver.session_has_implementation_task(session).await {
+                Ok(has_task) => has_task,
+                Err(error) => {
+                    tracing::warn!(error = %error, session_id = %session.id, "Failed to check implementation ownership for plan notification");
+                    true
+                }
+            },
+            Err(error) => {
+                tracing::warn!(error = %error, session_id = %session.id, "Failed to check automation ownership for plan notification");
+                true
+            }
+        };
+        if excluded {
+            continue;
+        }
+        match resolver.resolve_ideation_session_target(session).await {
+            Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
+                state
+                    .app_state
+                    .notification_service()
+                    .record(
+                        crate::application::interactive_notification_producer::InteractiveNotificationProducer::plan_approval(
+                            session.project_id.to_string(),
+                            session.id.as_str(),
+                            current_artifact.id.as_str(),
+                            session.title.as_deref(),
+                            resolved.target,
+                        ),
+                    )
+                    .await;
+            }
+            Ok(_) => {
+                tracing::warn!(session_id = %session.id, "Skipped plan notification without a navigable target")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, session_id = %session.id, "Failed to resolve plan notification target")
+            }
+        }
+    }
+}
+
 #[doc(hidden)]
 pub async fn check_verification_freeze(
     owning_sessions: &[IdeationSession],
