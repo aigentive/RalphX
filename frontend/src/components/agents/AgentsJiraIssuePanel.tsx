@@ -39,6 +39,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
+
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
 import { buildTicketSelectionContent } from "./artifact-selection/ticketSelectionContent";
@@ -596,7 +598,16 @@ function JiraIssueDetails({
   );
 
   return (
-    <div className="space-y-4">
+    <ArtifactSelectableRegion
+      className="space-y-4"
+      source={{
+        sourceKind: "jira",
+        sourceId: issue.issueId ?? issue.issueKey,
+        sourceLabel: `Jira ${issue.issueKey}`,
+        ...(issue.title ? { title: issue.title } : {}),
+        ...(issue.issueUrl ? { url: issue.issueUrl } : {}),
+      }}
+    >
       {issue.refreshStatus === "error" && issue.refreshError && (
         <PanelNotice title="Refresh failed" detail={issue.refreshError} tone="warning" />
       )}
@@ -679,7 +690,7 @@ function JiraIssueDetails({
           </div>
         </section>
       )}
-    </div>
+    </ArtifactSelectableRegion>
   );
 }
 

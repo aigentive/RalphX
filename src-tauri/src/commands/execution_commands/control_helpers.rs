@@ -52,6 +52,7 @@ pub(super) fn queued_message_to_send_options(
         composer_project_references: message.composer_project_references.clone(),
         composer_integration_references: message.composer_integration_references.clone(),
         composer_artifact_references: message.composer_artifact_references.clone(),
+        composer_excerpt_references: message.composer_excerpt_references.clone(),
         attachment_ids: message.attachment_ids.clone(),
         ..Default::default()
     }

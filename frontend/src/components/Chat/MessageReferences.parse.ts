@@ -1,5 +1,6 @@
 import type {
   ComposerArtifactReference,
+  ComposerExcerptReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
   ComposerSelectionSnapshot,
@@ -10,6 +11,7 @@ export interface MessageComposerReferences {
   integrationReferences: ComposerIntegrationReference[];
   artifactReferences: ComposerArtifactReference[];
   selectionSnapshot?: ComposerSelectionSnapshot;
+  excerptReferences?: ComposerExcerptReference[];
 }
 
 export function serializeComposerReferencesMetadata({
@@ -17,11 +19,13 @@ export function serializeComposerReferencesMetadata({
   integrationReferences,
   artifactReferences,
   selectionSnapshot,
+  excerptReferences,
 }: {
   projectReferences?: ComposerProjectReference[] | null | undefined;
   integrationReferences?: ComposerIntegrationReference[] | null | undefined;
   artifactReferences?: ComposerArtifactReference[] | null | undefined;
   selectionSnapshot?: ComposerSelectionSnapshot | null | undefined;
+  excerptReferences?: ComposerExcerptReference[] | null | undefined;
 }): string | null {
   const normalizedProjectReferences = parseProjectReferences(projectReferences);
   const normalizedIntegrationReferences = parseIntegrationReferences(
@@ -30,12 +34,14 @@ export function serializeComposerReferencesMetadata({
   const normalizedArtifactReferences =
     parseArtifactReferences(artifactReferences);
   const normalizedSelectionSnapshot = parseSelectionSnapshot(selectionSnapshot);
+  const normalizedExcerptReferences = parseExcerptReferences(excerptReferences);
 
   if (
     normalizedProjectReferences.length === 0 &&
     normalizedIntegrationReferences.length === 0 &&
     normalizedArtifactReferences.length === 0 &&
-    !normalizedSelectionSnapshot
+    !normalizedSelectionSnapshot &&
+    normalizedExcerptReferences.length === 0
   ) {
     return null;
   }
@@ -52,6 +58,9 @@ export function serializeComposerReferencesMetadata({
       : {}),
     ...(normalizedSelectionSnapshot
       ? { composer_selection_snapshot: normalizedSelectionSnapshot }
+      : {}),
+    ...(normalizedExcerptReferences.length > 0
+      ? { composer_excerpt_references: normalizedExcerptReferences }
       : {}),
   });
 }
@@ -77,12 +86,16 @@ export function parseComposerReferencesFromMetadata(
   const selectionSnapshot = parseSelectionSnapshot(
     metadata.composer_selection_snapshot ?? metadata.composerSelectionSnapshot,
   );
+  const excerptReferences = parseExcerptReferences(
+    metadata.composer_excerpt_references ?? metadata.composerExcerptReferences,
+  );
 
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
     artifactReferences.length === 0 &&
-    !selectionSnapshot
+    !selectionSnapshot &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -92,7 +105,80 @@ export function parseComposerReferencesFromMetadata(
     integrationReferences,
     artifactReferences,
     ...(selectionSnapshot ? { selectionSnapshot } : {}),
+    ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
   };
+}
+
+const EXCERPT_SOURCE_KINDS = new Set([
+  "plan",
+  "review",
+  "issue",
+  "task",
+  "automation_spec",
+  "pull_request",
+  "workspace_diff",
+  "jira",
+  "linear",
+  "granola",
+]);
+
+function parseExcerptReferences(raw: unknown): ComposerExcerptReference[] {
+  if (!Array.isArray(raw)) return [];
+  const references: ComposerExcerptReference[] = [];
+  let aggregateBytes = 0;
+  for (const item of raw) {
+    if (references.length >= 8) break;
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const sourceKind = record.sourceKind ?? record.source_kind;
+    const sourceId = record.sourceId ?? record.source_id;
+    const sourceLabel = record.sourceLabel ?? record.source_label;
+    if (
+      typeof sourceKind !== "string" ||
+      !EXCERPT_SOURCE_KINDS.has(sourceKind) ||
+      typeof sourceId !== "string" ||
+      !sourceId.trim() ||
+      typeof sourceLabel !== "string" ||
+      !sourceLabel.trim() ||
+      typeof record.excerpt !== "string" ||
+      !record.excerpt.trim()
+    ) {
+      continue;
+    }
+    const excerptBytes = new TextEncoder().encode(record.excerpt).byteLength;
+    if (excerptBytes > 16 * 1024 || aggregateBytes + excerptBytes > 64 * 1024) {
+      continue;
+    }
+    const optionalString = (camel: string, snake: string) => {
+      const value = record[camel] ?? record[snake];
+      return typeof value === "string" && value.trim() ? value : undefined;
+    };
+    const title = optionalString("title", "title");
+    const artifactId = optionalString("artifactId", "artifact_id");
+    const sessionId = optionalString("sessionId", "session_id");
+    const url = optionalString("url", "url");
+    const filePath = optionalString("filePath", "file_path");
+    const revision = optionalString("revision", "revision");
+    const locator = optionalString("locator", "locator");
+    references.push({
+      sourceKind: sourceKind as ComposerExcerptReference["sourceKind"],
+      sourceId,
+      sourceLabel,
+      excerpt: record.excerpt,
+      ...(title ? { title } : {}),
+      ...(artifactId ? { artifactId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(typeof record.version === "number" && Number.isFinite(record.version)
+        ? { version: record.version }
+        : {}),
+      ...(url ? { url } : {}),
+      ...(filePath ? { filePath } : {}),
+      ...(revision ? { revision } : {}),
+      ...(locator ? { locator } : {}),
+    });
+    aggregateBytes += excerptBytes;
+  }
+  return references;
 }
 
 function parseSelectionSnapshot(raw: unknown): ComposerSelectionSnapshot | null {

@@ -52,8 +52,8 @@ pub use verification_state::{
 };
 // Unified message queue - keyed by (context_type, context_id)
 pub use message_queue::{
-    ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
-    ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
+    ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
+    ComposerProjectReference, ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
 pub use pr_publish_service::{
