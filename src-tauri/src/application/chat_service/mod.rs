@@ -1178,9 +1178,21 @@ pub(crate) fn team_intent_for_persisted_coordination_mode(
 // ChatService trait
 // ============================================================================
 
+/// Controls whether a send may enter any durable or in-memory defer path.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SendQueuePolicy {
+    #[default]
+    AllowQueue,
+    RequireImmediateStart,
+}
+
 /// Options for customizing message sending behavior.
 #[derive(Debug, Default, Clone)]
 pub struct SendMessageOptions {
+    /// Backend-owned run identity reserved before an orchestrated child launch.
+    pub preallocated_agent_run_id: Option<AgentRunId>,
+    /// Queue/defer behavior for this send. Reserved workflow attempts require an immediate start.
+    pub queue_policy: SendQueuePolicy,
     /// Backend-owned semantic role for orchestrated launches whose parent context
     /// cannot be reconstructed from the delegated conversation alone.
     pub routing_role_override: Option<RoutingRole>,
@@ -4438,6 +4450,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // paused/stopped. Fresh idle ideation prompts must be durable because
         // the in-memory queue is not replayed after an app restart.
         if claude_launches_paused(context_type, self.execution_state.as_ref()) {
+            if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                return Err(ChatServiceError::SpawnFailed(
+                    "immediate start required, but agent launches are paused".to_string(),
+                ));
+            }
             let (conversation, is_new_conversation) = self
                 .get_or_create_conversation_for_send(context_type, context_id, &options)
                 .await?;
@@ -4706,6 +4723,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 )
                 .await?
             {
+                if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                    return Err(ChatServiceError::SpawnFailed(
+                        "immediate start required, but another provider run is active".to_string(),
+                    ));
+                }
                 let mut queued_options = options.clone();
                 queued_options.force_new_provider_session = true;
                 let queued = self
@@ -4745,6 +4767,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 )
                 .await?
             {
+                if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                    return Err(ChatServiceError::SpawnFailed(
+                        "immediate start required, but another persona run is active".to_string(),
+                    ));
+                }
                 let queued = self
                     .enqueue_pending_send(
                         context_type,
@@ -4793,6 +4820,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             && !force_new_provider_session
             && !persona_switch_requires_process_invalidation
         {
+            if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                return Err(ChatServiceError::SpawnFailed(
+                    "immediate start required, but an interactive process is active".to_string(),
+                ));
+            }
             tracing::info!(
                 %context_type,
                 context_id,
@@ -5172,6 +5204,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         //     If an agent is already registered for this context, queue the message.
         //     Create the AgentRun early so its ID can be stored in the slot for ownership tracking.
         let mut agent_run = AgentRun::new(conversation.id);
+        if let Some(preallocated_agent_run_id) = options.preallocated_agent_run_id {
+            agent_run.id = preallocated_agent_run_id;
+        }
         agent_run.apply_action_metadata_json(options.metadata.as_deref());
         let agent_run_id = agent_run.id.as_str().to_string();
         let run_chain_id = agent_run.run_chain_id.clone();
@@ -5284,6 +5319,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 existing_run_id = %existing.agent_run_id,
                 "[GATE_TRACE] Gate 2 blocked — agent already running, queuing message"
             );
+            if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                return Err(ChatServiceError::SpawnFailed(
+                    "immediate start required, but another agent run is active".to_string(),
+                ));
+            }
             let queued = self
                 .enqueue_pending_send(
                     context_type,
@@ -5482,6 +5522,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             )
                         };
 
+                        if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                            cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));
+                        }
+
                         if options.caller_context == SendCallerContext::UserInitiated {
                             // Try to persist the user's message as pending_initial_prompt so
                             // the drain service can launch the session when capacity frees up.
@@ -5650,6 +5694,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             exec.global_max_concurrent()
                         )
                     };
+
+                    if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                        cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));
+                    }
 
                     if options.caller_context == SendCallerContext::DrainService {
                         cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));

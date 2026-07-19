@@ -62,7 +62,11 @@ const LazyPlanDisplay = lazy(() =>
 
 type ReviewDisplayContext = Pick<
   AgentWorkspaceReviewContext,
-  "target" | "monitor" | "isCurrent" | "isOutdated" | "shouldShowTab"
+  | "target"
+  | "monitor"
+  | "reviewArtifactIsCurrent"
+  | "reviewArtifactIsOutdated"
+  | "shouldShowTab"
 >;
 
 type ReviewAction = {
@@ -155,8 +159,8 @@ function canFixBlockingReview(
   if (
     !context?.target ||
     isRunning ||
-    !context.isCurrent ||
-    context.isOutdated
+    !context.reviewArtifactIsCurrent ||
+    context.reviewArtifactIsOutdated
   ) {
     return false;
   }
@@ -176,8 +180,8 @@ function canApproveBlockingReview(
     context?.target &&
       !isRunning &&
       !isFixerActive &&
-      context.isCurrent &&
-      !context.isOutdated &&
+      context.reviewArtifactIsCurrent &&
+      !context.reviewArtifactIsOutdated &&
       context.monitor.status === "ready" &&
       context.monitor.reviewOutcome === "blocking" &&
       context.monitor.reviewGateStatus === "blocking" &&
@@ -208,9 +212,9 @@ function reviewActionForState({
     return { label: "Retry review", kind: "review", force: true };
   if (!hasArtifact)
     return { label: "Run review", kind: "review", force: false };
-  if (context.isOutdated)
+  if (context.reviewArtifactIsOutdated)
     return { label: "Update review", kind: "review", force: true };
-  if (context.isCurrent)
+  if (context.reviewArtifactIsCurrent)
     return { label: "Run again", kind: "review", force: true };
   return { label: "Run review", kind: "review", force: true };
 }
@@ -296,7 +300,7 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
-  if (context?.isOutdated) {
+  if (context?.reviewArtifactIsOutdated) {
     return {
       label: "Review is outdated",
       detail:
@@ -499,8 +503,8 @@ export function AgentReviewPanel({
     const shouldPromotePublish =
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
-      Boolean(displayContext?.isCurrent) &&
-      !displayContext?.isOutdated &&
+      Boolean(displayContext?.reviewArtifactIsCurrent) &&
+      !displayContext?.reviewArtifactIsOutdated &&
       hasWorkspaceReviewPublishAuthorization(displayContext);
     if (shouldPromotePublish) {
       return (
@@ -898,7 +902,7 @@ export function AgentReviewPanel({
 
       <ConfirmationDialog {...confirmationDialogProps} />
 
-      {reviewArtifact && displayContext?.isOutdated && (
+      {reviewArtifact && displayContext?.reviewArtifactIsOutdated && (
         <div
           className="mb-4 rounded-md px-3 py-2 text-xs"
           style={{
@@ -909,8 +913,8 @@ export function AgentReviewPanel({
             color: "var(--text-secondary)",
           }}
         >
-          Outdated for current changes. The Review below is still available for
-          reference.
+          Previous Review covers earlier changes. Run Review to refresh it. The
+          Review below remains available for reference.
         </div>
       )}
 

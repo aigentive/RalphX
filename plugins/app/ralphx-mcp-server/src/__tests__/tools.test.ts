@@ -1610,12 +1610,22 @@ describe('agent workspace publish tool transport', () => {
       callGetWorkspaceReviewContextTool(
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          conversationId: 'review-conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true',
+      {
+        headers: {
+          'x-ralphx-agent-run-id': 'run-from-runtime',
+          'x-ralphx-conversation-id': 'review-conversation-from-runtime',
+        },
+      }
     );
   });
 
