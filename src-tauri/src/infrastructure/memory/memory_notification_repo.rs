@@ -100,6 +100,20 @@ impl NotificationRepository for MemoryNotificationRepository {
                 row.clone()
             }))
     }
+    async fn mark_read_by_dedupe_key(
+        &self,
+        dedupe_key: &str,
+        read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        let mut rows = self.notifications.write().await;
+        Ok(rows
+            .iter_mut()
+            .find(|row| row.dedupe_key.as_deref() == Some(dedupe_key) && row.read_at.is_none())
+            .map(|row| {
+                row.read_at = Some(read_at);
+                row.clone()
+            }))
+    }
     async fn mark_all_read(
         &self,
         project_id: Option<&str>,

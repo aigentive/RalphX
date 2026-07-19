@@ -1,5 +1,7 @@
 use super::*;
-use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::interactive_notification_producer::{
+    team_plan_notification_key, InteractiveNotificationProducer,
+};
 use crate::application::NotificationContextResolver;
 
 // ============================================================================
@@ -16,6 +18,7 @@ use crate::application::NotificationContextResolver;
 /// to long-poll for the user's decision.
 pub async fn request_team_plan_register(
     State(state): State<HttpServerState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RequestTeamPlanRequest>,
 ) -> Result<Json<TeamPlanRegisterResponse>, (StatusCode, String)> {
     ensure_team_mode_supported_for_context(&state, &req.context_type, &req.context_id).await?;
@@ -82,7 +85,7 @@ pub async fn request_team_plan_register(
         })
         .collect();
 
-    state
+    let removed_plans = state
         .team_tracker
         .store_pending_plan(PendingTeamPlan {
             plan_id: plan_id.clone(),
@@ -95,6 +98,13 @@ pub async fn request_team_plan_register(
             lead_session_id: req.lead_session_id.clone(),
         })
         .await;
+    for removed in removed_plans {
+        let resolution = match removed.reason {
+            PendingTeamPlanRemovalReason::Superseded => "superseded",
+            PendingTeamPlanRemovalReason::GarbageCollected => "expired",
+        };
+        resolve_team_plan_notification(&state, &removed.plan, resolution).await;
+    }
 
     // Register watch channel AFTER storing (before emitting to avoid race)
     state.team_tracker.register_plan_channel(&plan_id).await;
@@ -144,7 +154,13 @@ pub async fn request_team_plan_register(
             }
         }
     } else {
-        record_team_plan_requested_notification(&state, &plan_id, &req).await;
+        record_team_plan_requested_notification(
+            &state,
+            &plan_id,
+            &req,
+            trusted_conversation_id(&headers),
+        )
+        .await;
 
         // Manual flow: emit team:plan_requested for frontend approval dialog
         crate::http_server::emit_http_event(
@@ -176,13 +192,18 @@ async fn record_team_plan_requested_notification(
     state: &HttpServerState,
     plan_id: &str,
     request: &RequestTeamPlanRequest,
+    trusted_conversation: Option<&str>,
 ) {
     let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
     match notification_context
-        .resolve_context_target(&request.context_type, &request.context_id)
+        .resolve_context_target_with_trusted_conversation(
+            &request.context_type,
+            &request.context_id,
+            trusted_conversation,
+        )
         .await
     {
-        Ok(resolved) => {
+        Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
             state
                 .app_state
                 .notification_service()
@@ -193,10 +214,36 @@ async fn record_team_plan_requested_notification(
                 ))
                 .await;
         }
+        Ok(_) => tracing::warn!(
+            plan_id,
+            "Skipped team plan notification without a navigable target"
+        ),
         Err(error) => {
             tracing::warn!(error = %error, plan_id, "Failed to resolve team plan notification context");
         }
     }
+}
+
+async fn resolve_team_plan_notification(
+    state: &HttpServerState,
+    plan: &PendingTeamPlan,
+    resolution: &str,
+) {
+    state
+        .app_state
+        .notification_service()
+        .resolve_workflow_notification(&team_plan_notification_key(&plan.plan_id))
+        .await;
+    crate::http_server::emit_http_event(
+        state,
+        "team:plan_resolved",
+        serde_json::json!({
+            "plan_id": plan.plan_id,
+            "context_type": plan.context_type,
+            "context_id": plan.context_id,
+            "resolution": resolution,
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -246,44 +293,58 @@ pub async fn await_team_plan(
             break decision;
         }
 
-        // Check timeout
-        if start.elapsed() >= timeout {
-            state.team_tracker.remove_plan_channel(&plan_id).await;
+        if start.elapsed() < timeout {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            match tokio::time::timeout(remaining, rx.changed()).await {
+                Ok(Ok(())) => continue,
+                Ok(Err(_)) => {
+                    return Ok(Json(RequestTeamPlanResponse {
+                        success: false,
+                        plan_id,
+                        team_name: None,
+                        teammates_spawned: vec![],
+                        message: "Plan was superseded by a newer plan for this context".to_string(),
+                    }));
+                }
+                Err(_) => {}
+            }
+        }
+
+        if let Some(plan) = state.team_tracker.expire_pending_plan(&plan_id).await {
+            resolve_team_plan_notification(&state, &plan, "expired").await;
             return Ok(Json(RequestTeamPlanResponse {
                 success: false,
                 plan_id,
                 team_name: None,
                 teammates_spawned: vec![],
-                message: "Team plan timed out waiting for user approval (14 min). Plan is still pending — user can still approve in the UI.".to_string(),
+                message: "Team plan timed out waiting for user approval (14 min).".to_string(),
             }));
         }
 
-        // Wait for change signal with remaining timeout
-        let remaining = timeout.saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, rx.changed()).await {
-            Ok(Ok(())) => continue,
-            Ok(Err(_)) => {
-                // Channel closed (superseded by a newer plan for this context)
-                return Ok(Json(RequestTeamPlanResponse {
-                    success: false,
-                    plan_id,
-                    team_name: None,
-                    teammates_spawned: vec![],
-                    message: "Plan was superseded by a newer plan for this context".to_string(),
-                }));
-            }
-            Err(_) => {
-                // Tokio timeout — remove channel, keep plan alive for UI
-                state.team_tracker.remove_plan_channel(&plan_id).await;
-                return Ok(Json(RequestTeamPlanResponse {
-                    success: false,
-                    plan_id,
-                    team_name: None,
-                    teammates_spawned: vec![],
-                    message: "Team plan timed out waiting for user approval (14 min). Plan is still pending — user can still approve in the UI.".to_string(),
-                }));
+        // Approval or rejection already claimed the plan. Preserve its channel
+        // and wait for that terminal decision instead of orphaning in-flight work.
+        if state.team_tracker.plan_channel_exists(&plan_id).await {
+            match rx.changed().await {
+                Ok(()) => continue,
+                Err(_) => {
+                    return Ok(Json(RequestTeamPlanResponse {
+                        success: false,
+                        plan_id,
+                        team_name: None,
+                        teammates_spawned: vec![],
+                        message: "Plan approval ended before producing a decision".to_string(),
+                    }));
+                }
             }
         }
+
+        return Ok(Json(RequestTeamPlanResponse {
+            success: false,
+            plan_id,
+            team_name: None,
+            teammates_spawned: vec![],
+            message: "Team plan timed out waiting for user approval (14 min).".to_string(),
+        }));
     };
 
     // Cleanup channel
@@ -391,7 +452,9 @@ pub async fn approve_team_plan(
             )
         })?;
 
+    let resolved_plan = plan.clone();
     let result = execute_team_spawn(&state, plan, &req.plan_id).await?;
+    resolve_team_plan_notification(&state, &resolved_plan, "approved").await;
     Ok(Json(ApproveTeamPlanResponse {
         success: result.spawned_count > 0,
         team_name: result.team_name,
@@ -407,7 +470,16 @@ pub async fn reject_team_plan(
     info!(plan_id = %req.plan_id, "Team plan rejected by user");
 
     // Remove the pending plan
-    state.team_tracker.take_pending_plan(&req.plan_id).await;
+    let plan = state
+        .team_tracker
+        .take_pending_plan(&req.plan_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("No pending plan found with id '{}'", req.plan_id),
+            )
+        })?;
 
     // Signal the blocking handler with rejection
     state
@@ -422,6 +494,8 @@ pub async fn reject_team_plan(
             },
         )
         .await;
+
+    resolve_team_plan_notification(&state, &plan, "rejected").await;
 
     Ok(StatusCode::OK)
 }

@@ -34,7 +34,34 @@ function makeTeammate(overrides: Partial<TeammateState> = {}): TeammateState {
 describe("teamStore", () => {
   beforeEach(() => {
     // Reset store to initial state
-    useTeamStore.setState({ activeTeams: {} });
+    useTeamStore.setState({ activeTeams: {}, pendingPlans: {} });
+  });
+
+  describe("clearPendingPlanIfMatches", () => {
+    const plan = {
+      planId: "plan-current",
+      process: "implement",
+      teammates: [],
+      originContextType: "task_execution",
+      originContextId: "abc",
+      createdAt: 1,
+    };
+
+    it("clears the matching pending plan", () => {
+      useTeamStore.getState().setPendingPlan(CONTEXT_KEY, plan);
+
+      useTeamStore.getState().clearPendingPlanIfMatches(CONTEXT_KEY, plan.planId);
+
+      expect(useTeamStore.getState().pendingPlans[CONTEXT_KEY]).toBeUndefined();
+    });
+
+    it("preserves a replacement when a stale resolution arrives", () => {
+      useTeamStore.getState().setPendingPlan(CONTEXT_KEY, plan);
+
+      useTeamStore.getState().clearPendingPlanIfMatches(CONTEXT_KEY, "plan-old");
+
+      expect(useTeamStore.getState().pendingPlans[CONTEXT_KEY]?.planId).toBe("plan-current");
+    });
   });
 
   // ── createTeam ──────────────────────────────────────────────────

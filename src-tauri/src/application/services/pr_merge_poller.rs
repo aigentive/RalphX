@@ -17,12 +17,13 @@ use crate::application::agent_conversation_workspace::agent_name_for_workspace_m
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
+use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
-use crate::application::TaskTransitionService;
+use crate::application::{NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -117,6 +118,9 @@ pub struct PrPollerRegistry {
 
     /// Plan branch repository for reading/updating branch metadata.
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
+
+    /// Shared best-effort notification settlement for direct workspace pollers.
+    notification_service: Arc<std::sync::RwLock<Option<Arc<NotificationService>>>>,
 }
 
 impl PrPollerRegistry {
@@ -139,6 +143,13 @@ impl PrPollerRegistry {
             rate_limit: Arc::new(std::sync::Mutex::new(RateLimitState::default())),
             github_service,
             plan_branch_repo,
+            notification_service: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    pub fn set_notification_service(&self, service: Arc<NotificationService>) {
+        if let Ok(mut current) = self.notification_service.write() {
+            *current = Some(service);
         }
     }
 
@@ -178,6 +189,11 @@ impl PrPollerRegistry {
         let active = Arc::clone(&self.workspace_active);
         let stopping = Arc::clone(&self.workspace_stopping);
         let semaphore = Arc::clone(&self.semaphore);
+        let notification_service = self
+            .notification_service
+            .read()
+            .ok()
+            .and_then(|service| service.clone());
         let conversation_id_for_spawn = conversation_id.clone();
 
         let handle = tokio::spawn(async move {
@@ -193,6 +209,7 @@ impl PrPollerRegistry {
                 workspace_repo,
                 agent_run_repo,
                 chat_service,
+                notification_service,
             )
             .await;
         });
@@ -849,6 +866,7 @@ async fn agent_workspace_poll_loop(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
 ) {
     let interval = Duration::from_secs(60);
     let mut first_poll = true;
@@ -1067,7 +1085,7 @@ async fn agent_workspace_poll_loop(
                     }
                 }
 
-                match route_agent_workspace_pr_review_monitor_if_needed(
+                match route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
                     Arc::clone(&github),
                     &working_dir,
                     pr_number,
@@ -1075,6 +1093,7 @@ async fn agent_workspace_poll_loop(
                     Arc::clone(&workspace_repo),
                     Arc::clone(&agent_run_repo),
                     Arc::clone(&chat_service),
+                    notification_service.clone(),
                 )
                 .await
                 {
@@ -2321,6 +2340,7 @@ async fn agent_workspace_pr_fixer_send_options(
     })
 }
 
+#[cfg(test)]
 async fn route_agent_workspace_pr_review_monitor_if_needed(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -2329,6 +2349,29 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
+        github,
+        working_dir,
+        pr_number,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+        None,
+    )
+    .await
+}
+
+async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -2406,9 +2449,19 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
         return Ok(false);
     }
 
-    workspace_repo
+    let superseded_action_ids = workspace_repo
         .supersede_pending_pr_review_actions_except_head(conversation_id, pr_number, &head_sha)
         .await?;
+    if let Some(notification_service) = notification_service {
+        for action_id in superseded_action_ids {
+            notification_service
+                .resolve_workflow_notification(&pr_review_notification_key(
+                    conversation_id.as_str(),
+                    &action_id,
+                ))
+                .await;
+        }
+    }
 
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
     monitor.last_seen_head_sha = Some(head_sha.clone());

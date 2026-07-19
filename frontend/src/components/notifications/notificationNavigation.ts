@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { automationsApi } from "@/api/automations";
+import { permissionApi } from "@/api/permission";
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
@@ -26,12 +27,19 @@ const AUTOMATION_SIDEBAR_QUERY_KEY = [
   "automation",
 ] as const;
 
-function permissionRequestId(id: string): string {
-  return id.replace(/^(?:permission|perm):/, "");
+function permissionRequestId(item: NotificationNavigationItem): string | null {
+  if (item.dedupeKey?.startsWith("perm:")) {
+    return item.dedupeKey.slice("perm:".length) || null;
+  }
+  if (item.id.startsWith("permission:")) {
+    return item.id.slice("permission:".length) || null;
+  }
+  return null;
 }
 
 export interface NotificationNavigationItem {
   id: string;
+  dedupeKey?: string | undefined;
   category: NotificationCategory;
   target: NotificationTarget;
 }
@@ -72,8 +80,19 @@ export async function navigateNotification(
   options: NotificationNavigationOptions = {},
 ): Promise<boolean> {
   if (item.category === "permission_request") {
+    const requestId = permissionRequestId(item);
+    if (!requestId) return false;
+    let pending;
+    try {
+      pending = await permissionApi.getPendingPermissions();
+    } catch {
+      return false;
+    }
+    if (!pending.some((request) => request.request_id === requestId)) {
+      return true;
+    }
     window.dispatchEvent(new CustomEvent("ralphx:open-permission-dialog", {
-      detail: { requestId: permissionRequestId(item.id) },
+      detail: { requestId },
     }));
     options.onClose?.();
     return true;
@@ -104,7 +123,7 @@ export async function navigateNotification(
   }
   if (target.kind === "agent_conversation") {
     if (target.projectId && target.conversationId) {
-      if (item.category === "plan_approval" || item.category === "team_plan_approval") {
+      if (item.category === "plan_approval") {
         navigateToAgentPlan(target.projectId, target.conversationId);
       } else {
         navigateToAgentConversation(target.projectId, target.conversationId);
@@ -126,7 +145,7 @@ export async function navigateNotification(
     target.runId &&
     target.conversationId
   ) {
-    void requestAutomationRunOpen(queryClient, {
+    const result = await requestAutomationRunOpen(queryClient, {
       projectId: target.projectId,
       automationId: target.automationId,
       runId: target.runId,
@@ -140,8 +159,10 @@ export async function navigateNotification(
         ],
       }),
     });
-    options.onClose?.();
-    return true;
+    if (result.applied) {
+      options.onClose?.();
+    }
+    return result.applied;
   } else if (target.kind === "automation_run" && target.automationId) {
     options.onOpenAutomationDetail?.(target.automationId);
     options.onClose?.();

@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use crate::application::AppState;
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, IdeationSession, IdeationSessionId,
-    NotificationTarget, NotificationTargetKind, ProjectId, TaskId,
+    AgentConversationWorkspaceStatus, ChatContextType, ChatConversation, ChatConversationId,
+    IdeationSession, IdeationSessionId, NotificationTarget, NotificationTargetKind, ProjectId,
+    TaskId,
 };
 use crate::domain::repositories::{
-    ChatConversationRepository, IdeationSessionRepository, ProjectRepository, TaskRepository,
+    AgentConversationWorkspaceRepository, ChatConversationRepository, IdeationSessionRepository,
+    ProjectRepository, TaskRepository,
 };
 use crate::error::AppResult;
 
@@ -28,6 +30,7 @@ pub struct NotificationContextResolver {
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    agent_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
 }
 
 impl NotificationContextResolver {
@@ -37,7 +40,33 @@ impl NotificationContextResolver {
             ideation_session_repo: Arc::clone(&state.ideation_session_repo),
             chat_conversation_repo: Arc::clone(&state.chat_conversation_repo),
             project_repo: Arc::clone(&state.project_repo),
+            agent_workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
         }
+    }
+
+    pub async fn resolve_permission_target_with_trusted_conversation(
+        &self,
+        task_id: Option<&str>,
+        context_type: Option<&str>,
+        context_id: Option<&str>,
+        trusted_conversation_id: Option<&str>,
+    ) -> AppResult<ResolvedNotificationTarget> {
+        if let Some(conversation_id) = trusted_conversation_id {
+            let expected_project_id = self
+                .expected_project_id(task_id, context_type, context_id)
+                .await?;
+            if let Some(resolved) = self
+                .resolve_trusted_agent_conversation_target(
+                    conversation_id,
+                    expected_project_id.as_deref(),
+                )
+                .await?
+            {
+                return Ok(resolved);
+            }
+            return Ok(unresolved_target(expected_project_id));
+        }
+        self.resolve_permission_target(task_id, context_id).await
     }
 
     pub async fn resolve_permission_target(
@@ -119,6 +148,26 @@ impl NotificationContextResolver {
         &self,
         session: &IdeationSession,
     ) -> AppResult<ResolvedNotificationTarget> {
+        if let Some(workspace) = self
+            .agent_workspace_repo
+            .get_by_linked_ideation_session_id(&session.id)
+            .await?
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Active
+                    && workspace.project_id == session.project_id
+            })
+        {
+            let workspace_conversation_id = workspace.conversation_id.to_string();
+            if let Some(resolved) = self
+                .resolve_trusted_agent_conversation_target(
+                    &workspace_conversation_id,
+                    Some(session.project_id.as_str()),
+                )
+                .await?
+            {
+                return Ok(resolved);
+            }
+        }
         let conversation = self
             .chat_conversation_repo
             .get_by_context(ChatContextType::Ideation, session.id.as_str())
@@ -167,6 +216,30 @@ impl NotificationContextResolver {
                 context_kind: None,
             }),
         }
+    }
+
+    pub async fn resolve_context_target_with_trusted_conversation(
+        &self,
+        context_type: &str,
+        context_id: &str,
+        trusted_conversation_id: Option<&str>,
+    ) -> AppResult<ResolvedNotificationTarget> {
+        if let Some(conversation_id) = trusted_conversation_id {
+            let expected_project_id = self
+                .expected_project_id(None, Some(context_type), Some(context_id))
+                .await?;
+            if let Some(resolved) = self
+                .resolve_trusted_agent_conversation_target(
+                    conversation_id,
+                    expected_project_id.as_deref(),
+                )
+                .await?
+            {
+                return Ok(resolved);
+            }
+            return Ok(unresolved_target(expected_project_id));
+        }
+        self.resolve_context_target(context_type, context_id).await
     }
 
     pub async fn session_is_automation_owned(&self, session: &IdeationSession) -> AppResult<bool> {
@@ -255,6 +328,89 @@ impl NotificationContextResolver {
                 None
             }
         }
+    }
+
+    async fn resolve_trusted_agent_conversation_target(
+        &self,
+        conversation_id: &str,
+        expected_project_id: Option<&str>,
+    ) -> AppResult<Option<ResolvedNotificationTarget>> {
+        let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+        let Some(workspace) = self
+            .agent_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if workspace.status != AgentConversationWorkspaceStatus::Active
+            || expected_project_id
+                .is_some_and(|project_id| workspace.project_id.as_str() != project_id)
+        {
+            return Ok(None);
+        }
+        let Some(conversation) = self
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if conversation.archived_at.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.resolve_conversation_target(&conversation_id).await?,
+        ))
+    }
+
+    async fn expected_project_id(
+        &self,
+        task_id: Option<&str>,
+        context_type: Option<&str>,
+        context_id: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        if let Some(task_id) = task_id {
+            return Ok(self
+                .task_repo
+                .get_by_id(&TaskId::from_string(task_id.to_string()))
+                .await?
+                .map(|task| task.project_id.to_string()));
+        }
+        let (Some(context_type), Some(context_id)) = (context_type, context_id) else {
+            return Ok(None);
+        };
+        let Ok(context_type) = context_type.parse::<ChatContextType>() else {
+            return Ok(None);
+        };
+        match context_type {
+            ChatContextType::Project => Ok(Some(context_id.to_string())),
+            ChatContextType::Ideation => Ok(self
+                .ideation_session_repo
+                .get_by_id(&IdeationSessionId::from_string(context_id.to_string()))
+                .await?
+                .map(|session| session.project_id.to_string())),
+            ChatContextType::Task
+            | ChatContextType::TaskExecution
+            | ChatContextType::Review
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => Ok(self
+                .task_repo
+                .get_by_id(&TaskId::from_string(context_id.to_string()))
+                .await?
+                .map(|task| task.project_id.to_string())),
+            ChatContextType::Delegation => Ok(None),
+        }
+    }
+}
+
+fn unresolved_target(project_id: Option<String>) -> ResolvedNotificationTarget {
+    ResolvedNotificationTarget {
+        project_id,
+        target: NotificationTarget::none(),
+        context_label: None,
+        project_name: None,
+        context_kind: None,
     }
 }
 
