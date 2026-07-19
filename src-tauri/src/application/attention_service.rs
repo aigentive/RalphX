@@ -4,7 +4,7 @@ use crate::application::services::pr_auto_merge_status::AUTO_MERGE_ENABLE_WARNIN
 use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
 use crate::domain::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspacePrReviewMonitorStatus, AttentionItem,
-    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId, InternalStatus,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, InternalStatus,
     NotificationCategory, NotificationTarget, NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{
@@ -308,27 +308,10 @@ impl AttentionService {
             {
                 continue;
             }
-            let agent_conversation = match self
-                .agent_workspace_repo
-                .get_by_linked_ideation_session_id(&session.id)
-                .await?
-            {
-                Some(workspace) => {
-                    self.chat_conversation_repo
-                        .get_by_id(&workspace.conversation_id)
-                        .await?
-                }
-                None => None,
-            };
-            let conversation = match agent_conversation {
-                Some(conversation) => Some(conversation),
-                None => self
-                    .chat_conversation_repo
-                    .get_by_context(ChatContextType::Ideation, session.id.as_str())
-                    .await?
-                    .into_iter()
-                    .max_by_key(|conversation| conversation.updated_at),
-            };
+            let resolved = self
+                .notification_context
+                .resolve_ideation_session_target(&session)
+                .await?;
             items.push(AttentionItem {
                 id: format!("plan:{}:approval", session.id),
                 category: NotificationCategory::PlanApproval,
@@ -339,7 +322,7 @@ impl AttentionService {
                 detail: Some("Review the workspace plan before implementation begins".to_string()),
                 project_id: Some(project_id.to_string()),
                 created_at: Some(session.updated_at.to_rfc3339()),
-                target: conversation_target(conversation.as_ref(), Some(project_id.to_string())),
+                target: resolved.target,
             });
         }
         Ok(())

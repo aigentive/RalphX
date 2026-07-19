@@ -89,3 +89,11 @@ pub(crate) fn format_interactive_stdin_message(
     let stdin_prompt = build_initial_prompt(context_type, context_id, message, &[], 0);
     format_stream_json_input(&stdin_prompt)
 }
+
+pub(crate) fn trusted_conversation_id(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get("x-ralphx-conversation-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}

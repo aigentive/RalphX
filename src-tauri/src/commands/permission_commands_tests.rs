@@ -1,6 +1,9 @@
 use super::*;
 use crate::application::AppState;
 use crate::application::PERMISSION_RESOLVED_EVENT;
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+};
 use ralphx_events::RecordingEventSink;
 use std::sync::Arc;
 use tauri::Manager;
@@ -91,6 +94,20 @@ async fn get_pending_permissions_command_returns_registered_requests() {
 #[tokio::test]
 async fn resolve_permission_request_command_emits_resolved_events_for_allow_and_deny() {
     let (app, event_sink) = permission_command_app_with_event_sink();
+    for request_id in ["permission-allow", "permission-deny"] {
+        app.state::<AppState>()
+            .notification_service()
+            .record(NewNotification {
+                project_id: None,
+                category: NotificationCategory::PermissionRequest,
+                severity: NotificationSeverity::ActionRequired,
+                title: "Permission required".to_string(),
+                body: None,
+                target: NotificationTarget::none(),
+                dedupe_key: Some(permission_notification_key(request_id)),
+            })
+            .await;
+    }
     app.state::<AppState>()
         .permission_state
         .register(pending_permission("permission-allow"))
@@ -141,6 +158,17 @@ async fn resolve_permission_request_command_emits_resolved_events_for_allow_and_
             },
         ]
     );
+    let notifications = app
+        .state::<AppState>()
+        .notification_repo
+        .list(None, None, 10)
+        .await
+        .expect("notifications should load")
+        .notifications;
+    assert_eq!(notifications.len(), 2);
+    assert!(notifications
+        .iter()
+        .all(|notification| notification.read_at.is_some()));
 }
 
 #[tokio::test]

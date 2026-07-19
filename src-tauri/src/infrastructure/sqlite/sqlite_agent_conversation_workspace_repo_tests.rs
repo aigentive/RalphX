@@ -1980,9 +1980,11 @@ async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_termi
     .await
     .unwrap();
 
-    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 267, "current-head")
+    let superseded_ids = repo
+        .supersede_pending_pr_review_actions_except_head(&conversation_id, 267, "current-head")
         .await
         .unwrap();
+    assert_eq!(superseded_ids, vec![stale.id.clone()]);
 
     let stale = repo
         .get_pr_review_action(&stale.id)

@@ -576,4 +576,33 @@ describe("useTeamEvents", () => {
     // getPendingPlans was called at least twice (mount with A + re-render back to A)
     expect(mockGetPendingPlans).toHaveBeenCalledWith("session-a");
   });
+
+  it("clears only the pending plan named by team:plan_resolved", () => {
+    renderHook(() => useTeamEvents(CONTEXT_KEY));
+    const currentPlan = {
+      planId: "plan-current",
+      process: "implement",
+      teammates: [],
+      originContextType: CONTEXT_TYPE,
+      originContextId: CONTEXT_ID,
+      createdAt: 1,
+    };
+    useTeamStore.getState().setPendingPlan(CONTEXT_KEY, currentPlan);
+
+    act(() => {
+      fireEvent("team:plan_resolved", makePayload({
+        plan_id: "plan-old",
+        resolution: "superseded",
+      }));
+    });
+    expect(useTeamStore.getState().pendingPlans[CONTEXT_KEY]?.planId).toBe("plan-current");
+
+    act(() => {
+      fireEvent("team:plan_resolved", makePayload({
+        plan_id: "plan-current",
+        resolution: "approved",
+      }));
+    });
+    expect(useTeamStore.getState().pendingPlans[CONTEXT_KEY]).toBeUndefined();
+  });
 });

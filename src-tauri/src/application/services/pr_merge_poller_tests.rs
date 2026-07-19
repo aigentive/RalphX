@@ -24,6 +24,8 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
+use crate::application::interactive_notification_producer::pr_review_notification_key;
+use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::{
@@ -35,9 +37,12 @@ use crate::domain::entities::{
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     ArtifactId, ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
+    IdeationSessionId, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, PlanBranch, PlanBranchId, Project, TaskId,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, NotificationRepository,
+};
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
     PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrStatus, PrSyncState,
@@ -46,7 +51,7 @@ use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryNotificationRepository, MemoryPlanBranchRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -2216,11 +2221,31 @@ async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
         .create_or_update_pr_review_action(stale_action.clone())
         .await
         .expect("stale action should persist");
+    let notification_repo: Arc<dyn NotificationRepository> =
+        Arc::new(MemoryNotificationRepository::new());
+    let notification_service = Arc::new(NotificationService::new(
+        Arc::clone(&notification_repo),
+        Arc::new(NoopNotificationEventEmitter),
+    ));
+    notification_service
+        .record(NewNotification {
+            project_id: Some(workspace.project_id.to_string()),
+            category: NotificationCategory::PrReviewAction,
+            severity: NotificationSeverity::ActionRequired,
+            title: "PR review needs a decision".into(),
+            body: None,
+            target: NotificationTarget::none(),
+            dedupe_key: Some(pr_review_notification_key(
+                conversation_id.as_str(),
+                &stale_action.id,
+            )),
+        })
+        .await;
 
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
     let chat = Arc::new(MockChatService::new());
-    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
         github.clone() as Arc<dyn GithubServiceTrait>,
         worktree.path(),
         101,
@@ -2228,6 +2253,7 @@ async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
         Arc::clone(&workspace_repo),
         Arc::new(MemoryAgentRunRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        Some(notification_service),
     )
     .await
     .expect("awaiting-user route should dispatch a new-head re-review");
@@ -2243,6 +2269,12 @@ async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
         stale_action.status,
         AgentWorkspacePrReviewActionStatus::Superseded
     );
+    let notifications = notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("notification lookup should succeed")
+        .notifications;
+    assert!(notifications[0].read_at.is_some());
 }
 
 #[tokio::test]
