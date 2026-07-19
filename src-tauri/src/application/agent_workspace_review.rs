@@ -658,22 +658,22 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         });
     }
 
-    let conversation = state
+    if state
         .chat_conversation_repo
         .get_by_id(&workspace.conversation_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
+        .is_none()
+    {
+        return Err(AppError::NotFound("Conversation not found".to_string()));
+    }
+
     let latest_run = state
         .agent_run_repo
         .get_latest_for_conversation(&workspace.conversation_id)
         .await?;
     let message = build_review_request_message(workspace, &target, &goal_context);
     let runtime = match state
-        .resolve_workspace_reviewer_runtime_for_project(
-            &conversation,
-            latest_run.as_ref(),
-            workspace.project_id.as_str(),
-        )
+        .resolve_workspace_reviewer_runtime_for_project(workspace.project_id.as_str())
         .await
     {
         Ok(runtime) => runtime,

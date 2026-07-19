@@ -16,6 +16,7 @@ const SOURCE_LABELS: Record<string, string> = {
   global_ui: "Global UI",
   global_yaml: "Global YAML",
   legacy_lane: "Legacy lane",
+  legacy_workspace_review: "Legacy Workspace Review",
   provider_default: "Provider default",
 };
 

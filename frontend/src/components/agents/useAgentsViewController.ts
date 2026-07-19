@@ -14,6 +14,7 @@ import { requestAutomationRunOpen } from "@/components/automations/automationRun
 import { getAutomationConversationTabPolicy } from "@/components/automations/automationConversationTabPolicy";
 import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
 import {
@@ -53,7 +54,10 @@ import { useAgentsTerminalDocks } from "./useAgentsTerminalDocks";
 import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeForPersistence } from "./agentOptions";
-import { runtimeFromConversation } from "./agentConversationRuntime";
+import {
+  runtimeFromConversation,
+  runtimeFromManualRoleDefault,
+} from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -461,8 +465,29 @@ export function useAgentsViewController({
   }, []);
   const focusedWorkspaceReviewRuntimeConversationId =
     chatFocus.type === "workspace_review" ? chatFocus.conversationId : null;
+  const focusedWorkspaceReviewConversation = useMemo(
+    () =>
+      focusedWorkspaceReviewRuntimeConversationId
+        ? focusedConversations.data?.find(
+            (conversation) =>
+              conversation.id === focusedWorkspaceReviewRuntimeConversationId,
+          ) ?? null
+        : null,
+    [focusedConversations.data, focusedWorkspaceReviewRuntimeConversationId],
+  );
   const activeRuntimeConversationId =
     focusedWorkspaceReviewRuntimeConversationId ?? selectedConversationId;
+  const reviewerRoleDefaults = useManualRoleDefaults(activeProjectId);
+  const workspaceReviewerRuntime = useMemo(
+    () =>
+      runtimeFromManualRoleDefault(
+        reviewerRoleDefaults.catalog?.roles.find(
+          (entry) => entry.role === "workspace_reviewer",
+        )?.effective ?? null,
+        modelRegistry,
+      ),
+    [modelRegistry, reviewerRoleDefaults.catalog],
+  );
   const {
     activeConversationMode,
     activeConversationModeLocked,
@@ -474,12 +499,14 @@ export function useAgentsViewController({
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
+    focusedWorkspaceReviewConversation,
     focusedWorkspaceReviewConversationId:
       focusedWorkspaceReviewRuntimeConversationId,
     modelRegistry,
     optimisticWorkspacesByConversationId,
     runtimeByConversationId,
     selectedConversationId,
+    workspaceReviewerRuntime,
   });
   const activeProjectBaseBranch = useMemo(
     () => projects.find((project) => project.id === activeProjectId)?.baseBranch ?? null,
@@ -1430,9 +1457,6 @@ export function useAgentsViewController({
     projects,
     queryClient,
     runtimeConversationId: activeRuntimeConversationId,
-    runtimeDefaultPolicy: focusedWorkspaceReviewRuntimeConversationId
-      ? "workspace_review_utility"
-      : "provider_default",
     runtimeByConversationId,
     selectedConversationId,
     setRuntimeForConversation,

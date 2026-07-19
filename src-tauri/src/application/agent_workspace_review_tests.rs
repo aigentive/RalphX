@@ -1703,6 +1703,42 @@ async fn start_review_blocks_monitor_without_sending_when_no_enabled_default_exi
 }
 
 #[tokio::test]
+async fn start_review_rejects_missing_parent_conversation_before_creating_a_child() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = Arc::new(AppState::new_test());
+    let chat_service = MockChatService::new();
+    chat_service.set_available(false).await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+
+    let error = start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("a missing parent conversation must fail before child launch");
+
+    assert!(error.to_string().contains("Conversation not found"));
+    assert!(chat_service.get_sent_options().await.is_empty());
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed");
+    assert!(monitor.is_none());
+}
+
+#[tokio::test]
 async fn start_review_uses_the_workspace_reviewer_role_default() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
@@ -1775,6 +1811,71 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
+    );
+}
+
+#[tokio::test]
+async fn start_review_passes_the_provider_default_reviewer_model_to_the_child_chat() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(default_client)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_client);
+    let provider_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some("gpt-5.6-terra".to_string());
+    codex.effort = Some(LogicalEffort::XHigh);
+    provider_repo.upsert(&codex).await.unwrap();
+    state.agent_provider_settings_repo = provider_repo;
+    let state = Arc::new(state);
+    let chat_service = MockChatService::new();
+    chat_service.set_available(false).await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(workspace.mode);
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("owner conversation should persist");
+
+    start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("review child chat send should fail after options are recorded");
+
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(
+        sent_options[0].model_override.as_deref(),
+        Some("gpt-5.6-terra")
+    );
+    assert_eq!(
+        sent_options[0].logical_effort_override,
+        Some(LogicalEffort::XHigh)
     );
 }
 
