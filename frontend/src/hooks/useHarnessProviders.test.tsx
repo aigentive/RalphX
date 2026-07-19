@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { harnessProvidersApi } from "@/api/harness-providers";
+import { manualRoleDefaultKeys } from "@/hooks/useManualRoleDefaults";
 
 import { harnessProviderKeys, useHarnessProviders } from "./useHarnessProviders";
 
@@ -119,6 +120,9 @@ describe("useHarnessProviders", () => {
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agent", "harness"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: manualRoleDefaultKeys.all,
     });
   });
 });

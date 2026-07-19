@@ -68,7 +68,7 @@ export default function WorkspaceReviewSection() {
         <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
       }
       title="Workspace Review"
-      description="Configure Workspace Review publish gating and inherited-provider runtime defaults."
+      description="Configure publish gating and legacy runtime fallbacks. The Reviewer role in Agents is authoritative."
     >
       {reviewSettings && (
         <>
@@ -111,7 +111,7 @@ export default function WorkspaceReviewSection() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <span>
               Enable and validate at least one provider before configuring
-              Workspace Review defaults.
+              legacy Workspace Review fallbacks.
             </span>
             <button
               type="button"

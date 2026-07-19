@@ -1,4 +1,6 @@
 import type { AgentConversationWorkspace } from "@/api/chat";
+import type { ManualRoleDefault } from "@/api/manual-role-defaults.types";
+import type { AgentModelRegistry } from "@/lib/agent-models";
 import type {
   AgentEffort,
   AgentProvider,
@@ -6,7 +8,11 @@ import type {
 } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
-import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
+import {
+  DEFAULT_AGENT_RUNTIME,
+  defaultEffortForModel,
+  defaultModelForProvider,
+} from "./agentOptions";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 
 const AGENT_EFFORTS = new Set<AgentEffort>([
@@ -17,11 +23,6 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "max",
   "ultra",
 ]);
-
-const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
-  claude: "haiku",
-  codex: "gpt-5.4-mini",
-};
 
 export function getAgentTerminalUnavailableReason(
   conversation: AgentConversation | null,
@@ -93,27 +94,36 @@ export function runtimeFromConversation(
   return null;
 }
 
-export function workspaceReviewUtilityRuntimeForProvider(
-  provider: AgentProvider
-): AgentRuntimeSelection {
+export function runtimeFromManualRoleDefault(
+  roleDefault: ManualRoleDefault | null,
+  modelRegistry: AgentModelRegistry,
+): AgentRuntimeSelection | null {
+  if (
+    !roleDefault ||
+    (roleDefault.provider !== "claude" && roleDefault.provider !== "codex")
+  ) {
+    return null;
+  }
+  const provider: AgentProvider = roleDefault.provider;
+  const modelId =
+    roleDefault.model?.trim() || defaultModelForProvider(provider, modelRegistry);
+  const effort = roleDefault.effort?.trim();
+
   return {
     provider,
-    modelId: WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER[provider],
-    effort: "medium",
+    modelId,
+    effort: AGENT_EFFORTS.has(effort as AgentEffort)
+      ? (effort as AgentEffort)
+      : defaultEffortForModel(provider, modelId, modelRegistry),
   };
 }
 
 export function runtimeForWorkspaceReviewFocus(
   workspaceRuntime: AgentRuntimeSelection | null,
-  reviewRuntime: AgentRuntimeSelection | null
+  reviewRuntime: AgentRuntimeSelection | null,
+  reviewerRoleRuntime: AgentRuntimeSelection | null,
 ): AgentRuntimeSelection | null {
-  if (reviewRuntime) {
-    return reviewRuntime;
-  }
-  if (!workspaceRuntime) {
-    return null;
-  }
-  return workspaceReviewUtilityRuntimeForProvider(workspaceRuntime.provider);
+  return reviewRuntime ?? reviewerRoleRuntime ?? workspaceRuntime;
 }
 
 function effortFromConversation(

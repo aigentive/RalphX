@@ -5,6 +5,7 @@ import {
   type AgentProvidersSettingsResponse,
   type UpdateAgentProviderSettingsInput,
 } from "@/api/harness-providers";
+import { manualRoleDefaultKeys } from "@/hooks/useManualRoleDefaults";
 
 export const harnessProviderKeys = {
   all: ["agent", "providers"] as const,
@@ -44,6 +45,7 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["provider-cli-management"] }),
         queryClient.invalidateQueries({ queryKey: ["agent", "harness"] }),
+        queryClient.invalidateQueries({ queryKey: manualRoleDefaultKeys.all }),
       ]);
     },
   });
