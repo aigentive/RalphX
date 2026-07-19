@@ -56,6 +56,13 @@ impl NotificationRepository for FailingNotificationRepository {
     ) -> AppResult<Option<Notification>> {
         Err(AppError::Database("injected failure".into()))
     }
+    async fn mark_read_by_dedupe_key(
+        &self,
+        _dedupe_key: &str,
+        _read_at: chrono::DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected failure".into()))
+    }
     async fn mark_all_read(
         &self,
         _project_id: Option<&str>,
@@ -200,6 +207,35 @@ async fn record_deduplicates_and_emits_only_the_inserted_row() {
         1
     );
     assert_eq!(emitter.0.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn workflow_resolution_emits_once_and_isolates_unrelated_rows() {
+    let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
+    let emitter = Arc::new(RecordingUpdateEmitter::default());
+    let service = NotificationService::new(Arc::clone(&repo), emitter.clone());
+    service
+        .record(new_notification(Some("question:target")))
+        .await;
+    service
+        .record(new_notification(Some("question:other")))
+        .await;
+
+    service
+        .resolve_workflow_notification("question:target")
+        .await;
+    service
+        .resolve_workflow_notification("question:target")
+        .await;
+
+    assert_eq!(emitter.0.lock().unwrap().len(), 1);
+    let rows = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("question:target") && row.read_at.is_some()));
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("question:other") && row.read_at.is_none()));
 }
 
 #[tokio::test]

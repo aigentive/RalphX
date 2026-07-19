@@ -7,6 +7,33 @@ use crate::domain::entities::{
 
 const QUESTION_BODY_LIMIT: usize = 240;
 
+pub fn permission_notification_key(request_id: &str) -> String {
+    format!("perm:{request_id}")
+}
+
+pub fn question_notification_key(request_id: &str) -> String {
+    format!("question:{request_id}")
+}
+
+pub fn plan_notification_key(session_id: &str, artifact_id: &str) -> String {
+    format!("plan:{session_id}:{artifact_id}")
+}
+
+pub fn team_plan_notification_key(plan_id: &str) -> String {
+    format!("team-plan:{plan_id}")
+}
+
+pub fn pr_review_notification_key(conversation_id: impl AsRef<str>, action_id: &str) -> String {
+    format!(
+        "pr-review:{}:awaiting_user:{action_id}",
+        conversation_id.as_ref()
+    )
+}
+
+pub fn automation_plan_notification_key(run_id: &str) -> String {
+    format!("run:{run_id}:plan_approval")
+}
+
 /// Builds the consistent user-facing copy for interactive notification producers.
 pub struct InteractiveNotificationProducer;
 
@@ -59,7 +86,7 @@ impl InteractiveNotificationProducer {
                 PERMISSION_REQUEST_TTL.as_secs() / 60,
             )),
             target: resolved.target,
-            dedupe_key: Some(format!("perm:{}", request.request_id)),
+            dedupe_key: Some(permission_notification_key(&request.request_id)),
         }
     }
 
@@ -76,7 +103,7 @@ impl InteractiveNotificationProducer {
             title: "Agent has a question".to_string(),
             body: Some(body),
             target: resolved.target,
-            dedupe_key: Some(format!("question:{request_id}")),
+            dedupe_key: Some(question_notification_key(request_id)),
         }
     }
 
@@ -95,7 +122,7 @@ impl InteractiveNotificationProducer {
             title: "Plan approval needed".to_string(),
             body: Some(format!("“{subject}” is ready for review")),
             target,
-            dedupe_key: Some(format!("plan:{session_id}:{artifact_id}")),
+            dedupe_key: Some(plan_notification_key(session_id, artifact_id)),
         }
     }
 
@@ -111,7 +138,7 @@ impl InteractiveNotificationProducer {
             title: "Team plan approval needed".to_string(),
             body: Some(format!("{process} team plan is awaiting approval")),
             target: resolved.target,
-            dedupe_key: Some(format!("team-plan:{plan_id}")),
+            dedupe_key: Some(team_plan_notification_key(plan_id)),
         }
     }
 }

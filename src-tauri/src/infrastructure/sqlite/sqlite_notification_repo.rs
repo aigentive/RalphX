@@ -266,6 +266,47 @@ impl NotificationRepository for SqliteNotificationRepository {
             .await
     }
 
+    async fn mark_read_by_dedupe_key(
+        &self,
+        dedupe_key: &str,
+        read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        let dedupe_key = dedupe_key.to_owned();
+        self.db
+            .run(move |conn| {
+                if conn.execute(
+                    "UPDATE notifications SET read_at = ?1 WHERE dedupe_key = ?2 AND read_at IS NULL",
+                    params![read_at.to_rfc3339(), dedupe_key],
+                )? == 0
+                {
+                    return Ok(None);
+                }
+                let raw = conn.query_row(
+                    &format!(
+                        "SELECT {} FROM notifications WHERE dedupe_key = ?1",
+                        Self::select_columns()
+                    ),
+                    [dedupe_key],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                            row.get(9)?,
+                        ))
+                    },
+                )?;
+                Self::parse_row(raw).map(Some)
+            })
+            .await
+    }
+
     async fn mark_all_read(
         &self,
         project_id: Option<&str>,

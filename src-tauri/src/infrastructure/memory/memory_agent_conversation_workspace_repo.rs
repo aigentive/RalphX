@@ -815,20 +815,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         conversation_id: &ChatConversationId,
         pr_number: i64,
         head_sha: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<String>> {
         let mut actions = self.pr_review_actions.write().await;
+        let mut superseded_ids = Vec::new();
         for action in actions.values_mut() {
             if action.conversation_id == *conversation_id
                 && action.pr_number == pr_number
                 && action.head_sha != head_sha
                 && action.status == AgentWorkspacePrReviewActionStatus::Pending
             {
+                superseded_ids.push(action.id.clone());
                 action.status = AgentWorkspacePrReviewActionStatus::Superseded;
                 action.resolved_at = Some(Utc::now());
                 action.updated_at = Utc::now();
             }
         }
-        Ok(())
+        Ok(superseded_ids)
     }
 
     async fn mark_pr_review_first_action_resolved(

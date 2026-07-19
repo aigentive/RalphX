@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::application::interactive_notification_producer::permission_notification_key;
 use crate::application::{PendingPermissionInfo, PermissionDecision, PERMISSION_RESOLVED_EVENT};
 use crate::AppState;
 
@@ -50,6 +51,10 @@ pub async fn resolve_permission_request(
         .await;
 
     if resolved {
+        state
+            .notification_service()
+            .resolve_workflow_notification(&permission_notification_key(&args.request_id))
+            .await;
         state.events.emit(
             PERMISSION_RESOLVED_EVENT,
             serde_json::json!({ "request_id": &args.request_id }),
