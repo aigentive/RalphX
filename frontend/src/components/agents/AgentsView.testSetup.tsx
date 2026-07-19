@@ -2042,7 +2042,15 @@ export function setupAgentsViewTest() {
     latestChildSessionId: null,
   });
   mockHarnessProviders();
-  archiveConversationMock.mockResolvedValue(undefined);
+  archiveConversationMock.mockResolvedValue({
+    conversation: conversation(),
+    cleanup: {
+      runtimeShutdownSucceeded: true,
+      cleanupClaim: "claimed",
+      localCleanup: "cleaned",
+      message: null,
+    },
+  });
   restoreConversationMock.mockResolvedValue(undefined);
   getAgentRunningStatesMock.mockResolvedValue({});
   getAgentConversationRuntimeIndexMock.mockResolvedValue({

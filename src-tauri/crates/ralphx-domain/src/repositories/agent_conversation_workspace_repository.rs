@@ -12,6 +12,13 @@ use crate::entities::{
 };
 use crate::error::AppResult;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspaceLocalCleanupClaim {
+    Claimed,
+    AlreadyInProgress,
+    AlreadyCleaned,
+}
+
 #[async_trait]
 pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn create_or_update(
@@ -122,6 +129,30 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _checked_at: DateTime<Utc>,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        _stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        self.mark_local_cleanup_status(conversation_id, "cleaning", claimed_at)
+            .await?;
+        Ok(AgentWorkspaceLocalCleanupClaim::Claimed)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let _ = claimed_at;
+        self.mark_local_cleanup_status(conversation_id, status, checked_at)
+            .await?;
+        Ok(true)
     }
 
     async fn get_local_cleanup_status(

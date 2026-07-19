@@ -486,6 +486,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     tracing::info!("Scheduling terminal agent workspace local cleanup...");
     {
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let cleanup_plan_branch_repo = Arc::clone(&plan_branch_repo);
         let project_repo = Arc::clone(&project_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -494,6 +495,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
                 crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                     agent_conversation_workspace_repo,
+                    cleanup_plan_branch_repo,
                     project_repo,
                     github_service,
                     blocked_git_project_ids,
@@ -532,16 +534,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
-                crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
-                    project_repo,
-                    agent_conversation_workspace_repo,
-                    orphan_worktree_cleanup_marker_repo,
-                    blocked_git_project_ids,
-                    running_agent_registry,
-                )
-                .await;
-            })
+            crate::application::orphan_worktree_cleanup::run_periodic_orphan_agent_worktree_cleanup(
+                project_repo,
+                agent_conversation_workspace_repo,
+                orphan_worktree_cleanup_marker_repo,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
             .await;
         });
     }
@@ -577,6 +576,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                plan_branch_repo: Arc::clone(&plan_branch_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);

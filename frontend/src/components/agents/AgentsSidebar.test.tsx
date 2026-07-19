@@ -2496,7 +2496,7 @@ describe("AgentsSidebar", () => {
     );
   });
 
-  it("selects eligible rows for bulk archive and blocks open pull-request rows", async () => {
+  it("bulk archives open pull-request rows while leaving remote pull requests open", async () => {
     const user = userEvent.setup();
     const eligibleConversation = conversation({
       id: "conversation-bulk-eligible",
@@ -2522,12 +2522,16 @@ describe("AgentsSidebar", () => {
     let settleArchive: ((result: {
       archivedConversationIds: string[];
       failedConversationIds: string[];
+      cleanupPendingConversationIds: string[];
+      cleanupUnsafeConversationIds: string[];
     }) => void) | undefined;
     const onBulkArchiveConversations = vi.fn(
       () =>
         new Promise<{
           archivedConversationIds: string[];
           failedConversationIds: string[];
+          cleanupPendingConversationIds: string[];
+          cleanupUnsafeConversationIds: string[];
         }>((resolve) => {
           settleArchive = resolve;
         })
@@ -2543,14 +2547,12 @@ describe("AgentsSidebar", () => {
       name: "Select Open PR session for bulk archive",
     });
     expect(eligibleCheckbox).not.toBeChecked();
-    expect(blockedCheckbox).toBeDisabled();
-    expect(blockedCheckbox).toHaveAccessibleDescription(
-      "Archive individually to manage the pull request"
-    );
+    expect(blockedCheckbox).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "Archive selected" })).toBeDisabled();
 
     await user.click(eligibleCheckbox);
-    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await user.click(blockedCheckbox);
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Archive selected" })).toBeEnabled();
 
     const blockedRow = screen.getByTestId(`agents-session-${blockedConversation.id}`);
@@ -2560,6 +2562,8 @@ describe("AgentsSidebar", () => {
 
     await user.click(screen.getByRole("button", { name: "Archive selected" }));
     expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+    expect(screen.getByText(/Remote pull requests remain open/)).toBeVisible();
+    expect(screen.getByText(/including uncommitted changes/)).toBeVisible();
     expect(onBulkArchiveConversations).not.toHaveBeenCalled();
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -2572,12 +2576,18 @@ describe("AgentsSidebar", () => {
         conversation: eligibleConversation,
         workspace: expect.objectContaining({ conversationId: eligibleConversation.id }),
       },
+      {
+        conversation: blockedConversation,
+        workspace: expect.objectContaining({ conversationId: blockedConversation.id }),
+      },
     ]);
     expect(screen.getByRole("button", { name: "Archiving selected..." })).toBeDisabled();
 
     settleArchive?.({
-      archivedConversationIds: [eligibleConversation.id],
+      archivedConversationIds: [eligibleConversation.id, blockedConversation.id],
       failedConversationIds: [],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
     });
     await waitFor(() =>
       expect(screen.queryByText("Archive selected sessions?")).not.toBeInTheDocument()
@@ -2607,6 +2617,8 @@ describe("AgentsSidebar", () => {
     const onBulkArchiveConversations = vi.fn().mockResolvedValue({
       archivedConversationIds: [archivedConversation.id],
       failedConversationIds: [failedConversation.id],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
     });
 
     renderSidebar([project()], { onBulkArchiveConversations });
@@ -2686,7 +2698,7 @@ describe("AgentsSidebar", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("prunes a selected row when refreshed workspace data makes it bulk-ineligible", async () => {
+  it("keeps a selected row eligible when refreshed workspace data reports an open PR", async () => {
     const user = userEvent.setup();
     const selectedConversation = conversation({
       id: "conversation-bulk-open-pr-refresh",
@@ -2719,12 +2731,12 @@ describe("AgentsSidebar", () => {
     ]);
     useAgentSessionStore.getState().setProjectSort("az");
 
-    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
     expect(
       screen.getByRole("checkbox", {
         name: "Select PR changed session for bulk archive",
       })
-    ).toBeDisabled();
+    ).not.toBeDisabled();
   });
 
   it("uses a soft wrapper border for sidebar search focus", async () => {
@@ -3281,6 +3293,9 @@ describe("AgentsSidebar", () => {
     expect(onArchiveConversation).not.toHaveBeenCalled();
     expect(
       screen.getByText("Archiving leaves this pull request open unless you choose to close it.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/including uncommitted changes and ignored build or test artifacts/)
     ).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Close pull request" })).not.toBeChecked();
 

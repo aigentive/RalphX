@@ -39,6 +39,8 @@ pub struct MockChatService {
     running_agents: Mutex<HashMap<String, bool>>,
     /// Records each (context_type, context_id) pair passed to stop_agent.
     stop_agent_calls: Mutex<Vec<(ChatContextType, String)>>,
+    /// Number of upcoming stop_agent calls that should fail.
+    stop_agent_failures_remaining: Mutex<u32>,
     /// Records each message string passed to send_message (for content assertions in tests).
     sent_messages: Mutex<Vec<String>>,
     /// Records the send options passed to send_message for replay/resume assertions.
@@ -69,6 +71,7 @@ impl MockChatService {
             already_running_after: Mutex::new(None),
             running_agents: Mutex::new(HashMap::new()),
             stop_agent_calls: Mutex::new(Vec::new()),
+            stop_agent_failures_remaining: Mutex::new(0),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
@@ -88,6 +91,7 @@ impl MockChatService {
             already_running_after: Mutex::new(None),
             running_agents: Mutex::new(HashMap::new()),
             stop_agent_calls: Mutex::new(Vec::new()),
+            stop_agent_failures_remaining: Mutex::new(0),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
@@ -99,6 +103,10 @@ impl MockChatService {
     /// Returns a snapshot of all (context_type, context_id) pairs passed to stop_agent.
     pub async fn get_stop_agent_calls(&self) -> Vec<(ChatContextType, String)> {
         self.stop_agent_calls.lock().await.clone()
+    }
+
+    pub async fn fail_next_stop_agent_calls(&self, count: u32) {
+        *self.stop_agent_failures_remaining.lock().await = count;
     }
 
     /// Returns a snapshot of all message strings passed to send_message.
@@ -423,6 +431,13 @@ impl ChatService for MockChatService {
             .lock()
             .await
             .push((context_type, context_id.to_string()));
+        let mut failures_remaining = self.stop_agent_failures_remaining.lock().await;
+        if *failures_remaining > 0 {
+            *failures_remaining -= 1;
+            return Err(ChatServiceError::RepositoryError(
+                "mock stop_agent failure".to_string(),
+            ));
+        }
         Ok(false)
     }
 

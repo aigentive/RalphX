@@ -268,7 +268,7 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
 
     cleanup_terminal_plan_branch_local_artifacts_on_startup(
-        plan_branch_repo,
+        Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&project_repo),
         None,
         Arc::new(HashSet::new()),
@@ -277,6 +277,7 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
+        plan_branch_repo,
         project_repo,
         None,
         Arc::new(HashSet::new()),
@@ -316,6 +317,7 @@ async fn startup_terminal_workspace_cleanup_continues_when_workspace_load_fails(
 
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
+        Arc::new(MemoryPlanBranchRepository::new()),
         project_repo,
         None,
         Arc::new(HashSet::new()),
@@ -792,6 +794,7 @@ async fn startup_terminal_workspace_cleanup_records_safety_skip_reports() {
 
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
+        Arc::new(MemoryPlanBranchRepository::new()),
         project_repo,
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(HashSet::new()),
