@@ -108,6 +108,51 @@ async fn tasks_policy_allows_only_active_attached_pipeline_while_off() {
 }
 
 #[tokio::test]
+async fn tasks_policy_rejects_a_pipeline_session_without_an_active_workspace() {
+    let state = AppState::new_test();
+    let session = IdeationSession::new(ProjectId::from_string("project-1".to_string()));
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+    disable_tasks(&state).await;
+
+    let error = TasksFeaturePolicy::from_state(&state)
+        .authorize_session(Some(&session.id))
+        .await
+        .expect_err("an unattached pipeline session must not be entitled");
+
+    assert!(error.to_string().starts_with(TASKS_DISABLED_ERROR_CODE));
+}
+
+#[tokio::test]
+async fn tasks_policy_rejects_a_workspace_attached_to_a_different_project() {
+    let state = AppState::new_test();
+    let session = attached_pipeline(&state).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_task_pipeline_session_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.project_id = ProjectId::from_string("other-project".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    disable_tasks(&state).await;
+
+    let error = TasksFeaturePolicy::from_state(&state)
+        .authorize_session(Some(&session.id))
+        .await
+        .expect_err("a mismatched workspace project must not be entitled");
+
+    assert!(error.to_string().starts_with(TASKS_DISABLED_ERROR_CODE));
+}
+
+#[tokio::test]
 async fn disabled_policy_rejects_progress_transition_without_changing_task_state() {
     let state = AppState::new_test();
     let project = Project::new("Tasks policy test".to_string(), "/tmp".to_string());

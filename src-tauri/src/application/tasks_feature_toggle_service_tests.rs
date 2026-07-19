@@ -209,3 +209,25 @@ async fn enabling_tasks_persists_the_setting_without_an_app_handle() {
             .tasks_enabled
     );
 }
+
+#[tokio::test]
+async fn enabling_tasks_when_already_enabled_keeps_the_setting_enabled() {
+    let state = AppState::new_test();
+    let enabled = IdeationSettings {
+        tasks_enabled: true,
+        ..Default::default()
+    };
+    state
+        .ideation_settings_repo
+        .update_settings(&enabled)
+        .await
+        .unwrap();
+
+    let updated = state
+        .build_tasks_feature_toggle_service_for_test()
+        .update_settings(enabled)
+        .await
+        .expect("an already enabled Tasks setting must stay enabled");
+
+    assert!(updated.tasks_enabled);
+}
