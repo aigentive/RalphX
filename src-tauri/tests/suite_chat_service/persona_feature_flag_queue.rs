@@ -91,6 +91,7 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
                 Vec::new(),
                 None,
                 Vec::new(),
+                Vec::new(),
             );
         let app = tauri::test::mock_builder()
             .manage(initial_state)
@@ -160,6 +161,7 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
         );
     let app = tauri::test::mock_builder()

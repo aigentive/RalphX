@@ -219,6 +219,7 @@ async fn standalone_chat_queue_accepts_codex_override() {
             Vec::new(),
             None,
             Vec::new(),
+            Vec::new(),
         );
     seed_completed_continuation_runtime(
         &initial_state,
@@ -325,6 +326,7 @@ async fn standalone_chat_queue_accepts_claude_override() {
             Vec::new(),
             None,
             Vec::new(),
+            Vec::new(),
         );
     seed_completed_continuation_runtime(
         &initial_state,
@@ -417,6 +419,7 @@ async fn standalone_chat_queue_rejects_caller_context_downgrade_without_spawning
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
         );
     let app = tauri::test::mock_builder()
