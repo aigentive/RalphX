@@ -938,6 +938,11 @@ pub enum ChatServiceError {
     InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    SpawnValidation {
+        harness: crate::domain::agents::AgentHarnessKind,
+        model: String,
+        reason: String,
+    },
     CommunicationFailed(String),
     ParseError(String),
     ContextNotFound(String),
@@ -953,6 +958,14 @@ impl std::fmt::Display for ChatServiceError {
             Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::SpawnValidation {
+                harness,
+                model,
+                reason,
+            } => write!(
+                f,
+                "Invalid agent runtime (harness={harness}, model={model}): {reason}"
+            ),
             Self::CommunicationFailed(msg) => write!(f, "Communication failed: {}", msg),
             Self::ParseError(msg) => write!(f, "Parse error: {}", msg),
             Self::ContextNotFound(msg) => write!(f, "Context not found: {}", msg),

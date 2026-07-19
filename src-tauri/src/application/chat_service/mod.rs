@@ -28,10 +28,16 @@ mod chat_service_selection_snapshot;
 mod chat_service_send_background;
 mod chat_service_streaming;
 mod chat_service_types;
+mod continuation_runtime;
 pub mod freshness_routing;
 mod streaming_state_cache;
 pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
+
+#[cfg(test)]
+mod continuation_runtime_tests;
+#[cfg(test)]
+mod chat_service_runtime_continuity_tests;
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
@@ -4630,6 +4636,23 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 None,
             );
         }
+        if has_ipr_entry && !provider_switch_requires_fresh_session {
+            if let Some(requested_model) = options.model_override.as_deref() {
+                let continuation_runtime = match existing_conv.as_ref() {
+                    Some(conversation) => continuation_runtime::resolve_for_conversation(
+                        &self.agent_run_repo,
+                        conversation,
+                    )
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?,
+                    None => None,
+                };
+                provider_switch_requires_fresh_session = continuation_runtime
+                    .as_ref()
+                    .and_then(continuation_runtime::ContinuationRuntime::effective_model)
+                    .is_none_or(|current_model| current_model != requested_model);
+            }
+        }
         let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
             if self.persona_feature_enabled() {
                 let gate_workspace = self
@@ -6000,6 +6023,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             },
             None => None,
         };
+        let continuation_runtime = if force_new_provider_session {
+            None
+        } else {
+            match continuation_runtime::resolve_for_conversation(
+                &self.agent_run_repo,
+                &conversation,
+            )
+            .await
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(error.to_string()));
+                }
+            }
+        };
         let mut resolved_spawn_settings =
             if let Some(defaults) = self.manual_role_default_service.as_ref() {
                 match crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
@@ -6030,6 +6068,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 )
                 .await
             };
+        if let Some(runtime) = continuation_runtime.as_ref() {
+            runtime.apply_defaults(
+                &mut resolved_spawn_settings,
+                continuation_runtime::RuntimeOverridePresence {
+                    model: options.model_override.is_some(),
+                    logical_effort: options.logical_effort_override.is_some(),
+                    service_tier: options.service_tier_override.is_some(),
+                    approval_policy: options.approval_policy_override.is_some(),
+                    sandbox_mode: options.sandbox_mode_override.is_some(),
+                },
+            );
+        }
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
         log_send_message_spawn_prep_phase(
             context_type,
@@ -6118,27 +6168,35 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
         }
         let effective_model_id = resolved_spawn_settings.model.clone();
+        if let Err(reason) =
+            crate::application::agent_lane_resolution::validate_model_harness_compatibility(
+                resolved_spawn_settings.effective_harness,
+                &effective_model_id,
+            )
+        {
+            cleanup_and_err!(ChatServiceError::SpawnValidation {
+                harness: resolved_spawn_settings.effective_harness,
+                model: effective_model_id.clone(),
+                reason,
+            });
+        }
         let stored_provider_session = if force_new_provider_session {
             None
         } else {
             let candidate = conversation.provider_session_ref().filter(|session_ref| {
                 session_ref.harness == resolved_spawn_settings.effective_harness
-            });
-            let latest_session_model = match candidate.as_ref() {
-                Some(session_ref) => self
-                    .agent_run_repo
-                    .get_latest_for_conversation(&conversation.id)
-                    .await
-                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
-                    .filter(|run| {
-                        run.provider_session_id.as_deref()
-                            == Some(session_ref.provider_session_id.as_str())
+                    && continuation_runtime.as_ref().is_some_and(|runtime| {
+                        runtime.harness == session_ref.harness
+                            && runtime.provider_session_id == session_ref.provider_session_id
                     })
-                    .and_then(|run| run.effective_model_id.or(run.logical_model)),
-                None => None,
-            };
+            });
+            let latest_session_model = candidate.as_ref().and_then(|_| {
+                continuation_runtime
+                    .as_ref()
+                    .and_then(continuation_runtime::ContinuationRuntime::effective_model)
+            });
             if !chat_service_helpers::provider_session_model_matches_requested(
-                latest_session_model.as_deref(),
+                latest_session_model,
                 &effective_model_id,
             ) {
                 tracing::info!(
