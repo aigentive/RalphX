@@ -48,7 +48,7 @@ use crate::domain::agents::{
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{AgentRun, ChatConversation, ProjectId};
+use crate::domain::entities::ProjectId;
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -422,6 +422,37 @@ impl AppState {
         .with_provider_settings_repo(Arc::clone(&self.agent_provider_settings_repo))
     }
 
+    pub(crate) async fn resolve_effective_manual_role_default(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&std::path::Path>,
+        role: RoutingRole,
+    ) -> AppResult<crate::application::manual_role_default_service::ResolvedManualRoleDefault> {
+        use crate::application::manual_role_default_service::ManualDefaultSource;
+
+        let mut resolved = self
+            .manual_role_default_service()
+            .resolve(project_id, project_root, role)
+            .await?;
+        if role != RoutingRole::WorkspaceReviewer
+            || resolved.source != ManualDefaultSource::ProviderDefault
+        {
+            return Ok(resolved);
+        }
+
+        let Some(settings) = self
+            .resolve_explicit_workspace_review_runtime_settings(project_id, resolved.value.harness)
+            .await?
+        else {
+            return Ok(resolved);
+        };
+
+        resolved.value.model = settings.model;
+        resolved.value.effort = settings.effort;
+        resolved.source = ManualDefaultSource::LegacyWorkspaceReview;
+        Ok(resolved)
+    }
+
     pub fn agent_workflow_runner(
         &self,
     ) -> AppResult<crate::application::agent_workflow_runner::AgentWorkflowRunner> {
@@ -732,11 +763,11 @@ impl AppState {
         }
     }
 
-    async fn resolve_workspace_review_runtime_settings(
+    async fn resolve_explicit_workspace_review_runtime_settings(
         &self,
         project_id: Option<&str>,
         provider: AgentHarnessKind,
-    ) -> AppResult<WorkspaceReviewRuntimeSettings> {
+    ) -> AppResult<Option<WorkspaceReviewRuntimeSettings>> {
         let global_row = self
             .workspace_review_runtime_settings_repo
             .get_global(provider)
@@ -751,21 +782,15 @@ impl AppState {
             None
         };
 
-        Ok(WorkspaceReviewRuntimeSettings::resolve_effective(
+        if global_row.is_none() && project_row.is_none() {
+            return Ok(None);
+        }
+
+        Ok(Some(WorkspaceReviewRuntimeSettings::resolve_effective(
             provider,
             global_row.as_ref().map(|row| &row.settings),
             project_row.as_ref().map(|row| &row.settings),
-        ))
-    }
-
-    fn with_runtime_service_tier(
-        mut runtime: ResolvedBackgroundAgentRuntime,
-        service_tier: Option<String>,
-    ) -> ResolvedBackgroundAgentRuntime {
-        if service_tier.is_some() {
-            runtime.service_tier = service_tier;
-        }
-        runtime
+        )))
     }
 
     pub(crate) fn managed_cli_path_override_for_provider(
@@ -1034,8 +1059,6 @@ impl AppState {
 
     pub(crate) async fn resolve_workspace_reviewer_runtime_for_project(
         &self,
-        conversation: &ChatConversation,
-        latest_run: Option<&AgentRun>,
         project_id: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         let project = self
@@ -1046,16 +1069,17 @@ impl AppState {
             .as_ref()
             .map(|project| std::path::Path::new(&project.working_directory));
         let role_default = self
-            .manual_role_default_service()
-            .resolve(
+            .resolve_effective_manual_role_default(
                 Some(project_id),
                 project_root,
                 RoutingRole::WorkspaceReviewer,
             )
             .await?;
-        if role_default.source
-            != crate::application::manual_role_default_service::ManualDefaultSource::ProviderDefault
-        {
+        use crate::application::manual_role_default_service::ManualDefaultSource;
+        if !matches!(
+            role_default.source,
+            ManualDefaultSource::ProviderDefault | ManualDefaultSource::LegacyWorkspaceReview
+        ) {
             return self
                 .resolve_workspace_role_runtime_for_project(
                     project_id,
@@ -1065,47 +1089,20 @@ impl AppState {
                 )
                 .await;
         }
-        self.resolve_workspace_reviewer_runtime_with_project_scope(
-            conversation,
-            latest_run,
-            Some(project_id),
-        )
-        .await
-    }
-
-    async fn resolve_workspace_reviewer_runtime_with_project_scope(
-        &self,
-        conversation: &ChatConversation,
-        latest_run: Option<&AgentRun>,
-        project_id: Option<&str>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        let requested_harness = latest_run
-            .and_then(|run| run.harness)
-            .or(conversation.provider_harness);
-        let selected_provider = crate::application::resolve_enabled_provider_or_default(
-            &self.agent_provider_settings_repo,
-            requested_harness,
-            "workspace reviewer provider",
-        )
-        .await
-        .map_err(AppError::Infrastructure)?;
+        let provider = role_default.value.harness;
         let runtime = self
-            .resolve_background_agent_runtime_for_harness(
-                selected_provider.provider,
-                "workspace reviewer provider",
-            )
+            .resolve_background_agent_runtime_for_harness(provider, "workspace reviewer provider")
             .await?;
-        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let service_tier = latest_run
-            .filter(|run| run.harness == Some(harness))
-            .and_then(|run| run.service_tier.clone());
-        let settings = self
-            .resolve_workspace_review_runtime_settings(project_id, harness)
-            .await?;
+        if role_default.source == ManualDefaultSource::ProviderDefault {
+            return Ok(runtime);
+        }
 
         Ok(Self::apply_workspace_review_runtime_settings(
-            Self::with_runtime_service_tier(runtime, service_tier),
-            settings,
+            runtime,
+            WorkspaceReviewRuntimeSettings {
+                model: role_default.value.model,
+                effort: role_default.value.effort,
+            },
         ))
     }
 

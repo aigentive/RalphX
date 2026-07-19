@@ -389,7 +389,7 @@ describe("WorkspaceReviewSection", () => {
 
     expect(
       screen.getByText(
-        "Select a project to override Workspace Review defaults for a specific project.",
+        "Select a project to override its legacy Workspace Review fallback.",
       ),
     ).toBeInTheDocument();
   });

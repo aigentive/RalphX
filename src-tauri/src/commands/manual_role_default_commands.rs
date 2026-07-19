@@ -9,7 +9,7 @@ use tauri::{Runtime, State};
 use crate::application::agent_lane_resolution::routing_role_for_chat_launch;
 use crate::application::chat_service::ChatService;
 use crate::application::manual_role_default_service::{
-    validate_role_value, ManualRoleDefaultService, ResolvedManualRoleDefault,
+    validate_role_value, ResolvedManualRoleDefault,
 };
 use crate::application::personas::PersonaService;
 use crate::application::AppState;
@@ -147,13 +147,16 @@ pub async fn get_manual_role_defaults(
 ) -> Result<ManualRoleCatalogResponse, String> {
     let project_root = project_root(state.inner(), project_id.as_deref()).await?;
     let configured = configured_rows(state.inner(), project_id.as_deref()).await?;
-    let resolver = resolver(state.inner());
     let mut roles = Vec::with_capacity(ROUTING_ROLES.len());
 
     for role in ROUTING_ROLES {
         let configured_value = configured.get(&role).map(|row| response(&row.value));
-        let resolution = resolver
-            .resolve(project_id.as_deref(), project_root.as_deref(), role)
+        let resolution = state
+            .resolve_effective_manual_role_default(
+                project_id.as_deref(),
+                project_root.as_deref(),
+                role,
+            )
             .await;
         roles.push(catalog_entry(
             role,
@@ -175,8 +178,12 @@ pub async fn get_effective_manual_role_default(
     let role = parse_role(&input.role)?;
     let project_root = project_root(state.inner(), input.project_id.as_deref()).await?;
     let configured = configured_rows(state.inner(), input.project_id.as_deref()).await?;
-    let resolution = resolver(state.inner())
-        .resolve(input.project_id.as_deref(), project_root.as_deref(), role)
+    let resolution = state
+        .resolve_effective_manual_role_default(
+            input.project_id.as_deref(),
+            project_root.as_deref(),
+            role,
+        )
         .await;
     Ok(catalog_entry(
         role,
@@ -373,10 +380,6 @@ pub async fn clear_manual_role_default(
     .map_err(|error| format!("Failed to clear manual role default: {error}"))
 }
 
-fn resolver(state: &AppState) -> ManualRoleDefaultService {
-    state.manual_role_default_service()
-}
-
 async fn load_project_conversation(
     state: &AppState,
     conversation_id: &str,
@@ -402,8 +405,8 @@ async fn resolve_composer_role_default(
     let root = project_root(state, Some(project_id))
         .await?
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
-    let resolved = resolver(state)
-        .resolve(Some(project_id), Some(&root), role)
+    let resolved = state
+        .resolve_effective_manual_role_default(Some(project_id), Some(&root), role)
         .await
         .map_err(|error| format!("Failed to resolve manual default for {role}: {error}"))?;
     Ok(ComposerRoleDefaultResponse {
