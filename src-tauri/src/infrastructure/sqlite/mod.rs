@@ -11,6 +11,8 @@ pub mod sqlite_agent_conversation_issue_repo;
 pub mod sqlite_agent_conversation_jira_issue_repo;
 pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
+#[cfg(test)]
+mod sqlite_agent_conversation_workspace_repo_tests;
 pub mod sqlite_agent_lane_settings_repo;
 pub mod sqlite_manual_role_default_repo;
 pub mod sqlite_agent_model_registry_repo;

@@ -6343,8 +6343,11 @@ async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attributio
     let archived = archive_agent_conversation(conversation_id.clone(), false, app.state())
         .await
         .expect("conversation should be archived");
-    assert!(archived.archived_at.is_some());
-    assert_eq!(archived.logical_model.as_deref(), Some("gpt-5.5"));
+    assert!(archived.conversation.archived_at.is_some());
+    assert_eq!(
+        archived.conversation.logical_model.as_deref(),
+        Some("gpt-5.5")
+    );
 
     let restored = restore_agent_conversation(conversation_id, app.state())
         .await

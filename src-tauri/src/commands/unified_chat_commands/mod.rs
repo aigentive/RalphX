@@ -28,6 +28,7 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
+use crate::application::agent_workspace_terminal_cleanup::TerminalAgentWorkspaceOutcome;
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
@@ -1032,6 +1033,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
+            plan_branch_repo: Arc::clone(&state.plan_branch_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -1757,6 +1759,12 @@ pub struct AgentConversationResponse {
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveAgentConversationResponse {
+    pub conversation: AgentConversationResponse,
+    pub cleanup: TerminalAgentWorkspaceOutcome,
 }
 
 impl From<ChatConversation> for AgentConversationResponse {
@@ -4302,22 +4310,23 @@ pub async fn archive_agent_conversation_inner(
     conversation_id: &ChatConversationId,
     close_pull_request: bool,
     state: &AppState,
-) -> Result<(), String> {
+) -> Result<TerminalAgentWorkspaceOutcome, String> {
     archive_agent_conversation_for_state(conversation_id, state, close_pull_request).await
 }
 
 /// Archive a conversation.
 /// An open PR is closed only when the caller opts in. Review PR workspaces
-/// never close their reviewed pull request. The local worktree/branch will
-/// be cleaned up on next app restart via the terminal cleanup pipeline.
+/// never close their reviewed pull request. Verified RalphX-owned local
+/// worktree and branch artifacts are cleaned immediately after runtime shutdown.
 #[tauri::command]
 pub async fn archive_agent_conversation(
     conversation_id: String,
     close_pull_request: bool,
     state: State<'_, AppState>,
-) -> Result<AgentConversationResponse, String> {
+) -> Result<ArchiveAgentConversationResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    archive_agent_conversation_inner(&conversation_id, close_pull_request, &state).await?;
+    let cleanup =
+        archive_agent_conversation_inner(&conversation_id, close_pull_request, &state).await?;
 
     let conversation = state
         .chat_conversation_repo
@@ -4325,7 +4334,10 @@ pub async fn archive_agent_conversation(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Conversation not found".to_string())?;
-    agent_conversation_response_for_state(state.inner(), conversation).await
+    Ok(ArchiveAgentConversationResponse {
+        conversation: agent_conversation_response_for_state(state.inner(), conversation).await?,
+        cleanup,
+    })
 }
 
 /// Restore an archived conversation.

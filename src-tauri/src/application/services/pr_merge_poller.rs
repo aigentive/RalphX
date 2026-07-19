@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+};
 use crate::application::chat_service::{ChatService, SendMessageOptions};
-use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
-use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -48,8 +49,6 @@ use crate::infrastructure::agents::claude::agent_names::{
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY_CLASSIFICATION: &str = "agent_fixable:update_only";
-const AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX: &str =
-    "Agent stopped because the workspace pull request was";
 const AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP: &str = "auto_merge_disabled_for_repair";
 const AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY: &str =
     "Temporarily disabled GitHub auto-merge before starting PR repair.";
@@ -194,6 +193,7 @@ impl PrPollerRegistry {
             .read()
             .ok()
             .and_then(|service| service.clone());
+        let plan_branch_repo = Arc::clone(&self.plan_branch_repo);
         let conversation_id_for_spawn = conversation_id.clone();
 
         let handle = tokio::spawn(async move {
@@ -208,6 +208,7 @@ impl PrPollerRegistry {
                 semaphore,
                 workspace_repo,
                 agent_run_repo,
+                plan_branch_repo,
                 chat_service,
                 notification_service,
             )
@@ -865,6 +866,7 @@ async fn agent_workspace_poll_loop(
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
 ) {
@@ -914,23 +916,18 @@ async fn agent_workspace_poll_loop(
         match github.check_pr_status(&working_dir, pr_number).await {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
-                let _ = mark_agent_workspace_pr_terminal(
-                    Arc::clone(&workspace_repo),
-                    &conversation_id,
-                    "merged",
-                    "Pull request merged",
-                )
-                .await;
-                terminalize_agent_workspace_after_pr(
-                    Arc::clone(&workspace_repo),
-                    Arc::clone(&agent_run_repo),
-                    Some(Arc::clone(&chat_service)),
+                terminalize_polled_agent_workspace(
+                    &workspace_repo,
+                    &agent_run_repo,
+                    &plan_branch_repo,
+                    &chat_service,
+                    &stopping,
                     &conversation_id,
                     &project,
-                    Some(Arc::clone(&github)),
-                    true,
-                    true,
+                    TerminalAgentWorkspaceCause::MergedPr,
                     "merged",
+                    "Pull request merged",
+                    interval,
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -939,23 +936,18 @@ async fn agent_workspace_poll_loop(
             }
             Ok(PrStatus::Closed) => {
                 drop(permit);
-                let _ = mark_agent_workspace_pr_terminal(
-                    Arc::clone(&workspace_repo),
-                    &conversation_id,
-                    "closed",
-                    "Pull request closed without merging",
-                )
-                .await;
-                terminalize_agent_workspace_after_pr(
-                    Arc::clone(&workspace_repo),
-                    Arc::clone(&agent_run_repo),
-                    Some(Arc::clone(&chat_service)),
+                terminalize_polled_agent_workspace(
+                    &workspace_repo,
+                    &agent_run_repo,
+                    &plan_branch_repo,
+                    &chat_service,
+                    &stopping,
                     &conversation_id,
                     &project,
-                    None,
-                    false,
-                    true,
+                    TerminalAgentWorkspaceCause::ClosedPr,
                     "closed",
+                    "Pull request closed without merging",
+                    interval,
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -1160,6 +1152,71 @@ async fn agent_workspace_poll_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn terminalize_polled_agent_workspace(
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    plan_branch_repo: &Arc<dyn PlanBranchRepository>,
+    chat_service: &Arc<dyn ChatService>,
+    stopping: &Arc<DashMap<ChatConversationId, ()>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    cause: TerminalAgentWorkspaceCause,
+    status: &str,
+    summary: &str,
+    retry_interval: Duration,
+) {
+    loop {
+        match mark_agent_workspace_pr_terminal(
+            Arc::clone(workspace_repo),
+            conversation_id,
+            status,
+            summary,
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(error) => tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                retry_secs = retry_interval.as_secs(),
+                "Agent workspace PR poller: terminal authority persistence failed; retrying"
+            ),
+        }
+        tokio::time::sleep(retry_interval).await;
+        if stopping.contains_key(conversation_id) {
+            return;
+        }
+    }
+
+    loop {
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(workspace_repo),
+            Arc::clone(agent_run_repo),
+            Some(Arc::clone(plan_branch_repo)),
+            Some(Arc::clone(chat_service)),
+            conversation_id,
+            project,
+            cause,
+        )
+        .await;
+        let Err(error) = terminalized.require_runtime_shutdown() else {
+            return;
+        };
+
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            error,
+            retry_secs = retry_interval.as_secs(),
+            "Agent workspace PR poller: terminal runtime shutdown failed; retrying"
+        );
+        tokio::time::sleep(retry_interval).await;
+        if stopping.contains_key(conversation_id) {
+            return;
+        }
+    }
+}
+
 async fn agent_workspace_pr_polling_should_continue(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
@@ -1323,6 +1380,15 @@ async fn mark_agent_workspace_pr_terminal(
             monitor.last_error = (status == "closed").then(|| summary.to_string());
             workspace_repo.upsert_pr_review_monitor(monitor).await?;
         }
+        workspace_repo
+            .update_publication(
+                conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                Some(status),
+                workspace.publication_push_status.as_deref(),
+            )
+            .await?;
         return workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),
@@ -1593,202 +1659,6 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
     }
 
     Ok(true)
-}
-
-pub(crate) async fn terminalize_agent_workspace_after_pr(
-    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    agent_run_repo: Arc<dyn AgentRunRepository>,
-    chat_service: Option<Arc<dyn ChatService>>,
-    conversation_id: &ChatConversationId,
-    project: &Project,
-    github: Option<Arc<dyn GithubServiceTrait>>,
-    delete_branch_if_merged: bool,
-    cleanup_local_artifacts: bool,
-    pr_status: &str,
-) -> bool {
-    let active_run = match agent_run_repo
-        .get_active_for_conversation(conversation_id)
-        .await
-    {
-        Ok(run) => run,
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Agent workspace terminal PR cleanup: failed to inspect active run; leaving cleanup pending"
-            );
-            return false;
-        }
-    };
-
-    if active_run.is_some() || chat_service.is_some() {
-        let Some(chat_service) = chat_service.as_ref() else {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                pr_status,
-                "Agent workspace terminal PR cleanup: active run exists but no chat service is available; leaving cleanup pending"
-            );
-            return false;
-        };
-
-        let context_id = conversation_id.as_str();
-        match chat_service
-            .stop_agent(ChatContextType::Project, &context_id)
-            .await
-        {
-            Ok(stopped) => {
-                tracing::info!(
-                    conversation_id = conversation_id.as_str(),
-                    pr_status,
-                    stopped,
-                    "Agent workspace terminal PR cleanup: stopped project runtime before local cleanup"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    pr_status,
-                    error = %error,
-                    "Agent workspace terminal PR cleanup: failed to stop project runtime; leaving cleanup pending"
-                );
-                return false;
-            }
-        }
-    }
-
-    if let Some(run) = active_run {
-        let reason = terminal_pr_agent_stop_reason(pr_status);
-        if let Err(error) = agent_run_repo.fail(&run.id, &reason).await {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                run_id = run.id.as_str(),
-                pr_status,
-                error = %error,
-                "Agent workspace terminal PR cleanup: failed to persist terminal PR stop reason"
-            );
-            return false;
-        }
-    }
-
-    match agent_run_repo
-        .get_active_for_conversation(conversation_id)
-        .await
-    {
-        Ok(Some(run)) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                run_id = run.id.as_str(),
-                pr_status,
-                "Agent workspace terminal PR cleanup: active run remains after stop; leaving cleanup pending"
-            );
-            return false;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Agent workspace terminal PR cleanup: failed to verify stopped runtime; leaving cleanup pending"
-            );
-            return false;
-        }
-    }
-
-    if !cleanup_local_artifacts {
-        return true;
-    }
-
-    cleanup_terminal_agent_workspace_after_pr(
-        workspace_repo,
-        conversation_id,
-        project,
-        github,
-        delete_branch_if_merged,
-    )
-    .await;
-    true
-}
-
-fn terminal_pr_agent_stop_reason(pr_status: &str) -> String {
-    match pr_status {
-        "merged" => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} merged"),
-        "closed" => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} closed"),
-        _ => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} terminal"),
-    }
-}
-
-pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
-    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    conversation_id: &ChatConversationId,
-    project: &Project,
-    github: Option<Arc<dyn GithubServiceTrait>>,
-    delete_branch_if_merged: bool,
-) {
-    let cleanup_started = Instant::now();
-    let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
-        Ok(Some(workspace)) => workspace,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!(conversation_id = conversation_id.as_str(), error = %error, "Agent workspace PR cleanup: failed to load workspace");
-            return;
-        }
-    };
-
-    let cleanup_result = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
-        if delete_branch_if_merged {
-            if let Some(github) = github.as_ref() {
-                if let Err(error) = github
-                    .fetch_remote(Path::new(&project.working_directory), &workspace.base_ref)
-                    .await
-                {
-                    tracing::warn!(conversation_id = conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Agent workspace PR cleanup: failed to fetch base before local branch cleanup");
-                }
-            }
-        }
-
-        crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts(
-            project,
-            &workspace,
-            delete_branch_if_merged,
-        )
-        .await
-    })
-    .await;
-
-    match cleanup_result {
-        Ok(report) => {
-            if let Some(status) =
-                terminal_agent_workspace_cleanup_marker_for_report(&report, delete_branch_if_merged)
-            {
-                if let Err(error) = workspace_repo
-                    .mark_local_cleanup_status(
-                        &workspace.conversation_id,
-                        status,
-                        chrono::Utc::now(),
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        conversation_id = conversation_id.as_str(),
-                        status,
-                        error = %error,
-                        "Agent workspace PR cleanup: failed to persist local cleanup marker"
-                    );
-                }
-            }
-            tracing::info!(
-                conversation_id = conversation_id.as_str(),
-                worktree_removed = report.worktree_removed,
-                branch_deleted = report.branch_deleted,
-                skipped_reason = report.skipped_reason.as_deref(),
-                elapsed_ms = cleanup_started.elapsed().as_millis() as u64,
-                "Agent workspace PR cleanup: local artifact cleanup completed"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(conversation_id = conversation_id.as_str(), elapsed_ms = cleanup_started.elapsed().as_millis() as u64, error = %error, "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)");
-        }
-    }
 }
 
 async fn route_review_feedback_if_present(

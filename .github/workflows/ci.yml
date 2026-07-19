@@ -128,6 +128,10 @@ jobs:
         shell: bash
         run: bash scripts/tests/test-ci-rust-full-integration-targets.sh
 
+      - name: Validate Rust full integration progress reporting
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-heartbeat.sh
+
       - name: Validate Rust coverage shard topology
         shell: bash
         run: bash scripts/tests/test-coverage-rust-shards.sh
@@ -468,6 +472,23 @@ jobs:
 
       - name: Run Rust integration tests shard ${{ matrix.shard }}/3
         run: |
+          heartbeat() {
+            while true; do
+              printf '[rust-full-integration] %s still running\n' \
+                "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+              sleep 60
+            done
+          }
+
+          heartbeat &
+          heartbeat_pid=$!
+
+          cleanup() {
+            kill "${heartbeat_pid}" 2>/dev/null || true
+            wait "${heartbeat_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
           cargo nextest run \
             --archive-file rust-integration-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
