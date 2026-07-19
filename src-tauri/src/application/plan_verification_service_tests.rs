@@ -1,10 +1,12 @@
 use crate::application::chat_service::MockChatService;
 use crate::application::plan_verification_service::{
     ensure_plan_verification_for_acceptance, request_plan_verification,
-    PlanVerificationRequestSource,
+    PlanVerificationRequestOutcome, PlanVerificationRequestSource,
 };
 use crate::application::AppState;
-use crate::domain::entities::{ArtifactId, IdeationSession, ProjectId};
+use crate::domain::entities::{
+    ArtifactId, IdeationSession, ProjectId, VerificationRunSnapshot, VerificationStatus,
+};
 use crate::domain::services::EffectiveGatePolicy;
 
 fn policy(auto_verify_plans: bool, require_verification_for_accept: bool) -> EffectiveGatePolicy {
@@ -137,5 +139,73 @@ async fn concurrent_verification_requests_admit_exactly_one_turn() {
         chat.call_count(),
         1,
         "admission must be serialized per plan"
+    );
+}
+
+#[tokio::test]
+async fn verification_request_does_not_queue_when_session_is_already_in_progress() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+    state
+        .ideation_session_repo
+        .update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .expect("active verification state should be recorded");
+
+    let outcome = request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .expect("request should return the current verification state");
+
+    assert_eq!(outcome, PlanVerificationRequestOutcome::AlreadyRunning);
+    assert_eq!(chat.call_count(), 0, "active work must not be duplicated");
+}
+
+#[tokio::test]
+async fn verification_request_does_not_queue_when_current_snapshot_is_in_progress() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+    let snapshot = VerificationRunSnapshot {
+        generation: session.verification_generation,
+        status: VerificationStatus::Reviewing,
+        in_progress: true,
+        current_round: 1,
+        max_rounds: 3,
+        best_round_index: None,
+        convergence_reason: None,
+        current_gaps: vec![],
+        rounds: vec![],
+    };
+    state
+        .ideation_session_repo
+        .save_verification_run_snapshot(&session.id, &snapshot)
+        .await
+        .expect("active run snapshot should be recorded");
+    state
+        .ideation_session_repo
+        .update_verification_state(&session.id, VerificationStatus::Unverified, false)
+        .await
+        .expect("stale session summary should be reset");
+
+    let outcome = request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Automatic,
+    )
+    .await
+    .expect("request should respect the current run snapshot");
+
+    assert_eq!(outcome, PlanVerificationRequestOutcome::AlreadyRunning);
+    assert_eq!(
+        chat.call_count(),
+        0,
+        "snapshot-owned work must not be duplicated"
     );
 }
