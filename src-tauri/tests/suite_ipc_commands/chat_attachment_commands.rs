@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use ralphx_lib::application::builder_attachment_materializer::materialize_builder_attachment;
+use ralphx_lib::application::builder_attachment_materializer::{
+    materialize_builder_attachment, remove_materialized_builder_attachment_if_present,
+};
 use ralphx_lib::application::chat_attachment_service::ChatAttachmentService;
 use ralphx_lib::application::chat_service::format_attachments_for_agent;
 use ralphx_lib::application::standalone_workspace::{create_workspace, resolve_workspace};
@@ -388,5 +390,61 @@ async fn persona_builder_attachment_materialization_rejects_workspace_symlink_es
             .count(),
         0,
         "containment rejection must happen before creating any outside entry"
+    );
+}
+
+#[tokio::test]
+async fn persona_builder_attachment_removal_is_idempotent_and_rejects_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let (temp, state, conversation) = builder_state();
+    let attachment = ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
+    )
+    .upload(
+        &conversation.id,
+        "remove-safely.txt",
+        b"source attachment must survive",
+        Some("text/plain".to_string()),
+    )
+    .await
+    .expect("seed stored attachment");
+
+    remove_materialized_builder_attachment_if_present(state.app_paths.app_data_dir(), &attachment)
+        .expect("a missing builder workspace must be an idempotent no-op");
+    create_workspace(state.app_paths.app_data_dir(), &conversation.id.as_str())
+        .expect("create empty builder workspace");
+    remove_materialized_builder_attachment_if_present(state.app_paths.app_data_dir(), &attachment)
+        .expect("a missing materialized file must be an idempotent no-op");
+
+    let materialized = materialize_builder_attachment(
+        state.app_paths.app_data_dir(),
+        &state.attachment_storage_path,
+        &attachment,
+    )
+    .expect("materialize contained attachment fixture");
+    // The production helper returned this canonical, app-owned workspace path.
+    // codeql[rust/path-injection]
+    std::fs::remove_file(&materialized).expect("replace materialized file with a symlink");
+    let outside = temp.path().join("outside-source.txt");
+    std::fs::write(&outside, "outside content must survive").expect("seed outside target");
+    symlink(&outside, &materialized).expect("seed malicious materialized symlink");
+
+    let error = remove_materialized_builder_attachment_if_present(
+        state.app_paths.app_data_dir(),
+        &attachment,
+    )
+    .expect_err("materialized symlinks must fail closed before deletion");
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert_eq!(
+        std::fs::read_to_string(&outside).expect("read outside target"),
+        "outside content must survive",
+        "symlink rejection must not delete or mutate its outside target"
+    );
+    assert!(
+        materialized.is_symlink(),
+        "fail-closed deletion must leave the rejected symlink untouched"
     );
 }
