@@ -173,6 +173,33 @@ async fn test_full_update_with_tasks_policy_rejects_stale_progress_after_pause()
 }
 
 #[tokio::test]
+async fn test_expected_status_update_with_tasks_policy_rejects_progress() {
+    let db = setup_test_db();
+    let seed_repo = SqliteTaskRepository::new(db.new_connection());
+    let mut task = seed_repo
+        .create(create_test_task("Task with guarded compare-and-set"))
+        .await
+        .unwrap();
+    task.internal_status = InternalStatus::Ready;
+    let guarded_repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+
+    let error = guarded_repo
+        .update_with_expected_status(&task, InternalStatus::Backlog)
+        .await
+        .expect_err("disabled Tasks must reject guarded progress writes");
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        guarded_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Backlog
+    );
+}
+
+#[tokio::test]
 async fn test_get_by_id_retrieves_task_correctly() {
     let db = setup_test_db();
     let repo = SqliteTaskRepository::new(db.new_connection());
