@@ -8,6 +8,7 @@ fn test_ideation_plan_mode_default() {
 #[test]
 fn test_ideation_settings_default() {
     let settings = IdeationSettings::default();
+    assert!(!settings.tasks_enabled);
     assert_eq!(settings.plan_mode, IdeationPlanMode::Optional);
     assert!(!settings.require_plan_approval);
     assert!(settings.suggest_plans_for_complex);
@@ -35,6 +36,7 @@ fn test_ideation_plan_mode_serialization() {
 #[test]
 fn test_ideation_settings_serialization() {
     let settings = IdeationSettings {
+        tasks_enabled: true,
         plan_mode: IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
@@ -53,6 +55,7 @@ fn test_ideation_settings_serialization() {
     let deserialized: IdeationSettings = serde_json::from_str(&json).unwrap();
 
     assert_eq!(deserialized.plan_mode, IdeationPlanMode::Required);
+    assert!(deserialized.tasks_enabled);
     assert!(deserialized.require_plan_approval);
     assert!(!deserialized.suggest_plans_for_complex);
     assert!(!deserialized.auto_link_proposals);

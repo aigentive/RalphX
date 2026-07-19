@@ -14,17 +14,23 @@ import type { IdeationSettings } from "@/types/ideation-config";
 import { defaultIdeationSettings } from "@/types/ideation-config";
 
 const IDEATION_SETTINGS_KEY = ["ideation", "settings"];
+const TASKS_DRAIN_INCOMPLETE_ERROR_CODE = "ralphx:tasks_drain_incomplete";
+
+function isCommittedTasksOffError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(TASKS_DRAIN_INCOMPLETE_ERROR_CODE);
+}
 
 /**
  * Hook to fetch and update ideation settings
  */
-export function useIdeationSettings() {
+export function useIdeationSettings(enabled = true) {
   const queryClient = useQueryClient();
 
   // Fetch settings
   const query = useQuery({
     queryKey: IDEATION_SETTINGS_KEY,
     queryFn: () => ideationApi.settings.get(),
+    enabled,
     staleTime: 1000 * 60 * 5, // 5 minutes
     gcTime: 1000 * 60 * 10, // 10 minutes (formerly cacheTime)
     placeholderData: defaultIdeationSettings,
@@ -46,6 +52,10 @@ export function useIdeationSettings() {
       return { previousSettings };
     },
     onError: (_err, _newSettings, context) => {
+      if (isCommittedTasksOffError(_err)) {
+        void queryClient.invalidateQueries({ queryKey: IDEATION_SETTINGS_KEY });
+        return;
+      }
       // Rollback on error
       if (context?.previousSettings) {
         queryClient.setQueryData(IDEATION_SETTINGS_KEY, context.previousSettings);
@@ -64,5 +74,6 @@ export function useIdeationSettings() {
     error: query.error,
     updateSettings: mutation.mutate,
     isUpdating: mutation.isPending,
+    updateError: mutation.error,
   };
 }

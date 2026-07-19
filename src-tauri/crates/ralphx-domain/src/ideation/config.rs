@@ -38,6 +38,9 @@ pub struct ExternalIdeationOverrides {
 /// Ideation-specific settings (separate from QA settings)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdeationSettings {
+    /// Master switch for the product Tasks/Kanban/Autopilot feature.
+    #[serde(default)]
+    pub tasks_enabled: bool,
     /// How implementation plans are created in ideation flow
     pub plan_mode: IdeationPlanMode,
     /// In Required mode, whether explicit approval is needed before proposals
@@ -66,6 +69,7 @@ pub struct IdeationSettings {
 impl Default for IdeationSettings {
     fn default() -> Self {
         Self {
+            tasks_enabled: false,
             plan_mode: IdeationPlanMode::Optional,
             require_plan_approval: false, // Plan existence is sufficient by default
             suggest_plans_for_complex: true,
