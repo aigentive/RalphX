@@ -18,6 +18,8 @@ fn spawnable_command_debug_redacts_persona_bearing_arguments_and_stdin() {
     assert!(debug.contains("has_prompt_artifact: true"));
     assert!(debug.contains("/tmp/ralphx-prompt.log"));
     assert!(debug.contains("stdin_prompt_redacted: true"));
+    assert!(debug.contains("stdin_transport: Inherited"));
+    assert!(debug.contains("has_stdin_prompt: true"));
     assert!(!debug.contains(PERSONA_BODY));
     assert!(!debug.contains("stdin_prompt_preview"));
 }

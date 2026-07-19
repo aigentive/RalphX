@@ -284,8 +284,14 @@ pub enum StreamError {
     SessionNotFound { session_id: String },
     /// Failed to spawn the agent CLI process.
     ProcessSpawnFailed { command: String, error: String },
-    /// Agent completed but produced no meaningful output (no text, no tool calls).
-    NoOutput { context_type: ChatContextType },
+    /// Codex exited without a meaningful response. Terminal details are retained
+    /// so progress notices cannot mask the actual empty completion.
+    NoOutput {
+        context_type: ChatContextType,
+        exit_code: Option<i32>,
+        exit_signal: Option<i32>,
+        stderr: String,
+    },
     /// Agent run was cancelled (e.g., user-initiated stop or prune engine).
     /// `turns_finalized` tracks how many interactive turns completed before cancellation.
     /// When > 0, the agent completed normally and the cancellation path should still
@@ -347,12 +353,20 @@ impl std::fmt::Display for StreamError {
             Self::ProcessSpawnFailed { command, error } => {
                 write!(f, "Failed to spawn agent ({}): {}", command, error)
             }
-            Self::NoOutput { context_type } => {
+            Self::NoOutput {
+                context_type,
+                exit_code,
+                exit_signal,
+                stderr,
+            } => {
                 write!(
                     f,
-                    "Agent completed with no output (context={})",
-                    context_type
-                )
+                    "Codex exited without a response (context={context_type}, code={exit_code:?}, signal={exit_signal:?})"
+                )?;
+                if !stderr.trim().is_empty() {
+                    write!(f, "; diagnostics: {}", truncate_agent_error(stderr.trim()))?;
+                }
+                Ok(())
             }
             Self::Cancelled {
                 completion_tool_called,
@@ -598,7 +612,13 @@ pub fn classify_codex_stream_failure(
     exit_code: Option<i32>,
     completed_successfully: bool,
 ) -> Option<StreamError> {
-    for message in runtime_errors {
+    let runtime_errors = runtime_errors
+        .iter()
+        .map(String::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .filter(|message| !is_agent_progress_noise(message))
+        .collect::<Vec<_>>();
+    for message in &runtime_errors {
         if let Some(provider_error) = classify_provider_error(message) {
             return Some(provider_error);
         }
@@ -637,8 +657,7 @@ pub fn classify_codex_stream_failure(
     if !runtime_errors.is_empty() {
         let error_message = runtime_errors
             .iter()
-            .map(String::as_str)
-            .filter(|message| !message.trim().is_empty())
+            .copied()
             .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
             .collect::<Vec<_>>()
             .join("; ");
@@ -650,8 +669,7 @@ pub fn classify_codex_stream_failure(
 
     let error_message = runtime_errors
         .iter()
-        .map(String::as_str)
-        .filter(|message| !message.trim().is_empty())
+        .copied()
         .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
         .collect::<Vec<_>>()
         .join("; ");
@@ -722,9 +740,14 @@ fn normalized_error_lines(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn meaningful_agent_exit_stderr(stderr: &str) -> String {
+    normalized_error_lines(stderr).join("; ")
+}
+
 fn is_agent_progress_noise(line: &str) -> bool {
     let lower = line.to_lowercase();
-    lower.starts_with("compiling ")
+    lower.contains("reading additional input from stdin")
+        || lower.starts_with("compiling ")
         || lower.starts_with("building [")
         || lower.starts_with("finished `")
         || lower.starts_with("running ")
@@ -926,126 +949,5 @@ pub fn classify_agent_error(
 mod summary_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        classify_codex_stream_failure, classify_provider_error_from_assistant_content,
-        is_nonfatal_mcp_tool_cancellation, ProviderErrorCategory, StreamError,
-    };
-
-    #[test]
-    fn detects_user_cancelled_mcp_tool_call_variants() {
-        assert!(is_nonfatal_mcp_tool_cancellation(
-            "user cancelled MCP tool call"
-        ));
-        assert!(is_nonfatal_mcp_tool_cancellation(
-            "Agent failed: user canceled mcp tool call"
-        ));
-        assert!(!is_nonfatal_mcp_tool_cancellation(
-            "tool call failed: provider timeout"
-        ));
-    }
-
-    #[test]
-    fn codex_local_command_failure_with_rate_limit_text_is_local_tool_failure() {
-        let runtime_errors = Vec::<String>::new();
-        let local_tool_errors = vec![
-            "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
-             src-tauri/src/application/chat_service/chat_service_errors.rs: RateLimit => write!(f, \"rate_limit\")"
-                .to_string(),
-        ];
-
-        let result =
-            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
-                .expect("local command failure should surface as a local tool error");
-
-        match result {
-            StreamError::LocalToolFailed { message } => {
-                assert!(message.contains("No such file or directory"));
-                assert!(message.contains("rate_limit"));
-            }
-            other => {
-                panic!("expected local Codex failure to become LocalToolFailed, got {other:?}")
-            }
-        }
-    }
-
-    #[test]
-    fn codex_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
-        let runtime_errors = Vec::<String>::new();
-        let local_tool_errors = vec![
-            "delegate_start failed after reading provider_error category rate_limit from local metadata"
-                .to_string(),
-        ];
-
-        let result =
-            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
-                .expect("local MCP failure should surface as a local tool error");
-
-        assert!(
-            matches!(result, StreamError::LocalToolFailed { .. }),
-            "local MCP failures must not become provider backpressure"
-        );
-    }
-
-    #[test]
-    fn codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
-        let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
-        let local_tool_errors = Vec::<String>::new();
-
-        let result =
-            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
-                .expect("runtime provider failure should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn codex_split_runtime_provider_error_joins_runtime_messages() {
-        let runtime_errors = vec!["429".to_string(), "Usage limit exceeded".to_string()];
-        let local_tool_errors = Vec::<String>::new();
-
-        let result =
-            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
-                .expect("split runtime provider failure should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn codex_stream_failure_without_error_text_returns_none() {
-        assert!(classify_codex_stream_failure(&[], &[], Some(0), false).is_none());
-    }
-
-    #[test]
-    fn assistant_content_rate_limit_literal_is_not_provider_error() {
-        assert!(classify_provider_error_from_assistant_content(
-            "The local metadata file contains the literal rate_limit string."
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn assistant_content_claude_usage_limit_banner_stays_provider_error() {
-        let result = classify_provider_error_from_assistant_content(
-            "You've hit your limit. Your limit will reset at 2026-05-09 18:00:00",
-        )
-        .expect("Claude usage-limit banner should classify");
-
-        match result {
-            StreamError::ProviderError { category, .. } => {
-                assert_eq!(category, ProviderErrorCategory::RateLimit);
-            }
-            other => panic!("expected provider rate limit, got {other:?}"),
-        }
-    }
-}
+#[path = "chat_service_errors_tests.rs"]
+mod tests;

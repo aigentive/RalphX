@@ -209,3 +209,30 @@ async fn verification_request_does_not_queue_when_current_snapshot_is_in_progres
         "snapshot-owned work must not be duplicated"
     );
 }
+
+#[tokio::test]
+async fn failed_verification_launch_releases_admission_without_writing_proof() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+    chat.set_available(false).await;
+
+    request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .expect_err("failed launch must remain an error");
+
+    assert!(state.plan_verification_admissions.is_empty());
+    let stored = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("load session")
+        .expect("session should exist");
+    assert_eq!(stored.verified_plan_artifact_id, None);
+    assert_eq!(stored.verified_plan_agent_run_id, None);
+}

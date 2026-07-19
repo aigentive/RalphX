@@ -14,6 +14,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  NEXTEST_VERSION: "0.9.133"
+
 jobs:
   changes:
     name: Detect CI scope
@@ -38,6 +41,9 @@ jobs:
               - '.github/workflows/**'
               - '.github/codeql/**'
               - '.github/dependabot.yml'
+              - 'scripts/test-rust-fast.sh'
+              - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
+              - 'scripts/tests/test-coverage-rust-shards.sh'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
             plugins:
@@ -118,6 +124,14 @@ jobs:
 
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "${yaml_files[@]}"
 
+      - name: Validate Rust full integration target scope
+        shell: bash
+        run: bash scripts/tests/test-ci-rust-full-integration-targets.sh
+
+      - name: Validate Rust coverage shard topology
+        shell: bash
+        run: bash scripts/tests/test-coverage-rust-shards.sh
+
       - name: Validate release scripts
         shell: bash
         run: |
@@ -146,6 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
@@ -161,11 +176,15 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          save-if: "false"
 
       - name: Validate SQLite migrations
         run: |
@@ -195,6 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
@@ -210,11 +230,15 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          save-if: "false"
 
       - name: Build Rust lib tests archive
         run: |
@@ -234,7 +258,7 @@ jobs:
           retention-days: 1
 
   rust-lib-tests:
-    name: Rust Lib Tests (Shard ${{ matrix.partition }})
+    name: Rust Lib Tests (Shard ${{ matrix.shard }}/4)
     needs:
       - changes
       - rust-lib-nextest-archive
@@ -244,7 +268,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: ["1/2", "2/2"]
+        shard: [1, 2, 3, 4]
     env:
       RALPHX_TEST_MODE: "1"
     steps:
@@ -261,6 +285,8 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Download Rust lib tests archive
         uses: actions/download-artifact@v8
@@ -268,13 +294,22 @@ jobs:
           name: rust-lib-tests-nextest-archive
           path: .
 
-      - name: Run Rust lib tests shard ${{ matrix.partition }}
+      - name: Run Rust lib tests shard ${{ matrix.shard }}/4
         run: |
           cargo nextest run \
             --archive-file rust-lib-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --partition hash:${{ matrix.partition }}
+            --partition hash:${{ matrix.shard }}/4
+
+      - name: Upload Rust lib test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-lib-tests-junit-${{ matrix.shard }}-of-4
+          path: src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   rust-clippy:
     name: Rust Clippy
@@ -348,20 +383,14 @@ jobs:
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc
 
-  rust-full-integration:
-    name: Rust Full Integration (Shard ${{ matrix.partition }})
-    needs:
-      - changes
-      - rust-lib-nextest-archive
+  rust-integration-nextest-archive:
+    name: Rust Integration Tests Archive
+    needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        partition: ["1/2", "2/2"]
+    timeout-minutes: 40
     env:
-      CARGO_BUILD_JOBS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
@@ -377,16 +406,71 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-test-deps
+          cache-on-failure: true
+          save-if: "true"
 
-      - name: Run full Rust integration suite
+      - name: Build Rust integration tests archive
+        run: |
+          bash scripts/test-rust-fast.sh full-integration-archive rust-integration-tests.tar.zst
+
+      - name: Upload Rust integration tests archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-integration-tests-nextest-archive
+          path: rust-integration-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+
+  rust-full-integration:
+    name: Rust Full Integration (Shard ${{ matrix.shard }}/3)
+    needs:
+      - changes
+      - rust-integration-nextest-archive
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Download Rust integration tests archive
+        uses: actions/download-artifact@v8
+        with:
+          name: rust-integration-tests-nextest-archive
+          path: .
+
+      - name: Run Rust integration tests shard ${{ matrix.shard }}/3
         run: |
           cargo nextest run \
-            --manifest-path src-tauri/Cargo.toml \
+            --archive-file rust-integration-tests.tar.zst \
+            --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
             --test suite_agent_workspace \
             --test suite_chat_service \
@@ -402,7 +486,16 @@ jobs:
             --test suite_transition_git \
             --test plan_selector_performance \
             --features test-utils \
-            --partition hash:${{ matrix.partition }}
+            --partition slice:${{ matrix.shard }}/3
+
+      - name: Upload Rust integration test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-integration-tests-junit-${{ matrix.shard }}-of-3
+          path: src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   rust-macos-build:
     name: Rust macOS Build
@@ -452,6 +545,7 @@ jobs:
       - rust-lib-tests
       - rust-clippy
       - rust-doctests
+      - rust-integration-nextest-archive
       - rust-full-integration
       - rust-macos-build
     if: always()
@@ -478,6 +572,7 @@ jobs:
             "${{ needs.rust-lib-tests.result }}" \
             "${{ needs.rust-clippy.result }}" \
             "${{ needs.rust-doctests.result }}" \
+            "${{ needs.rust-integration-nextest-archive.result }}" \
             "${{ needs.rust-full-integration.result }}" \
             "${{ needs.rust-macos-build.result }}"; do
             if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then

@@ -128,10 +128,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - partition: "1/2"
+          - partition: "1/4"
             artifact_suffix: "1"
-          - partition: "2/2"
+          - partition: "2/4"
             artifact_suffix: "2"
+          - partition: "3/4"
+            artifact_suffix: "3"
+          - partition: "4/4"
+            artifact_suffix: "4"
     env:
       CARGO_TERM_COLOR: never
       CARGO_BUILD_JOBS: "2"
@@ -467,44 +471,35 @@ jobs:
           set -euo pipefail
           mkdir -p ../coverage/rust-ipc
           cargo llvm-cov clean --workspace
+          IPC_FILTER="$(
+            printf '%s' \
+              'test(ipc_contract) or ' \
+              'test(release_notes_commands) or ' \
+              'test(agent_workspace_repair_auto_publish) or ' \
+              'test(agent_workspace_pr_review_notifications) or ' \
+              'test(metrics_commands) or ' \
+              'test(metrics_delivery_trends) or ' \
+              'test(metrics_integration) or ' \
+              'test(metrics_pr_insights) or ' \
+              'test(test_restart_ideation_implementation_core) or ' \
+              'test(persona)'
+          )"
+          # Keep the selected contract suites in one invocation. Separate llvm-cov
+          # nextest calls relink the instrumented root crate for every filter group.
           cargo llvm-cov nextest \
             --profile ci \
             --features test-utils \
             --test suite_ipc_commands \
             --test suite_commands \
             --test suite_agent_workspace \
-            -E 'test(ipc_contract) or test(release_notes_commands) or test(agent_workspace_repair_auto_publish) or test(agent_workspace_pr_review_notifications)' \
-            --remap-path-prefix \
-            | tee ../coverage/rust-ipc/summary.txt
-          cargo llvm-cov nextest \
-            --profile ci \
-            --features test-utils \
-            --test suite_commands \
             --test suite_metrics \
-            -E 'test(metrics_commands) or test(metrics_delivery_trends) or test(metrics_integration) or test(metrics_pr_insights)' \
-            --remap-path-prefix \
-            | tee -a ../coverage/rust-ipc/summary.txt
-          cargo llvm-cov nextest \
-            --profile ci \
-            --features test-utils \
             --test suite_ideation \
-            -E 'test(test_restart_ideation_implementation_core)' \
-            --remap-path-prefix \
-            | tee -a ../coverage/rust-ipc/summary.txt
-          # Agent Persona System: persona command/handler/context/recovery/IPR
-          # coverage lives in these suites (all persona tests carry "persona"
-          # in the name).
-          cargo llvm-cov nextest \
-            --profile ci \
-            --features test-utils \
-            --test suite_ipc_commands \
             --test suite_chat_service \
             --test suite_http_handlers \
             --test suite_interactive_process \
-            --test suite_ideation \
-            -E 'test(persona)' \
+            -E "${IPC_FILTER}" \
             --remap-path-prefix \
-            | tee -a ../coverage/rust-ipc/summary.txt
+            | tee ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
@@ -940,6 +935,8 @@ jobs:
             if [[ "${RUN_RUST}" == "true" ]]; then
               [[ -s coverage-artifacts/coverage-rust-lib-1/lcov.info ]] || return 1
               [[ -s coverage-artifacts/coverage-rust-lib-2/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-lib-3/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-lib-4/lcov.info ]] || return 1
               [[ -s coverage-artifacts/coverage-rust-ipc/lcov.info ]] || return 1
             fi
             if [[ "${RUN_FRONTEND}" == "true" ]]; then
@@ -994,7 +991,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-lib-3/lcov.info,coverage-artifacts/coverage-rust-lib-4/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
           override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -1009,7 +1006,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-lib-3/lcov.info,coverage-artifacts/coverage-rust-lib-4/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
           override_commit: ${{ github.event.pull_request.head.sha || github.sha }}

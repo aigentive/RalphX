@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
-    generic_harness_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
-    ManualServiceTier, RoutingRole, RoutingRoleFamily, StoredAgentLaneSettings,
-    DEFAULT_AGENT_HARNESS,
+    generic_harness_lane_defaults, generic_harness_role_defaults, AgentHarnessKind, AgentLane,
+    AgentLaneSettings, LogicalEffort, ManualServiceTier, RoutingRole, RoutingRoleFamily,
+    StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
 use crate::domain::repositories::AgentLaneSettingsRepository;
@@ -234,7 +234,14 @@ pub async fn resolve_agent_spawn_settings(
                         .as_ref()
                         .and_then(|settings| settings.model.clone())
                 })
-                .unwrap_or_else(|| resolve_model(Some(agent_name))),
+                .unwrap_or_else(|| {
+                    if effective_harness == AgentHarnessKind::Claude {
+                        resolve_model(Some(agent_name))
+                    } else {
+                        crate::domain::agents::default_model_for_provider(effective_harness)
+                            .to_string()
+                    }
+                }),
             logical_effort: None,
             claude_effort: None,
             approval_policy: default_approval_policy_for_harness(effective_harness)
@@ -471,8 +478,8 @@ fn manual_role_harness_defaults(
     role: RoutingRole,
     harness: AgentHarnessKind,
 ) -> Option<AgentLaneSettings> {
-    if role.metadata().family == RoutingRoleFamily::Utility {
-        return Some(utility_harness_defaults(harness));
+    if role == RoutingRole::WorkspacePlan || role.metadata().family == RoutingRoleFamily::Utility {
+        return Some(generic_harness_role_defaults(harness, role));
     }
 
     let lane = role.legacy_lane().or(match role {
@@ -480,19 +487,39 @@ fn manual_role_harness_defaults(
         | RoutingRole::ExecutionQaRefiner
         | RoutingRole::ExecutionQaTester => Some(AgentLane::ExecutionWorker),
         _ => None,
-    })?;
+    });
+    if let Some(lane) = lane {
+        return nondefault_harness_lane_settings(lane, harness);
+    }
 
-    nondefault_harness_lane_settings(lane, harness)
+    (harness != DEFAULT_AGENT_HARNESS).then(|| generic_harness_role_defaults(harness, role))
 }
 
-fn utility_harness_defaults(harness: AgentHarnessKind) -> AgentLaneSettings {
-    let mut settings = AgentLaneSettings::new(harness);
-    settings.model =
-        Some(crate::domain::agents::lightweight_model_for_provider(harness).to_string());
-    settings.effort = Some(LogicalEffort::Medium);
-    settings.approval_policy = default_approval_policy_for_harness(harness).map(str::to_string);
-    settings.sandbox_mode = default_sandbox_mode_for_harness(harness).map(str::to_string);
-    settings
+/// Reject a model only when the built-in catalog positively assigns it to a
+/// different harness. Unknown/custom aliases remain eligible for provider-side
+/// validation.
+#[doc(hidden)]
+pub fn validate_model_harness_compatibility(
+    harness: AgentHarnessKind,
+    model: &str,
+) -> Result<(), String> {
+    let owners = crate::domain::agents::built_in_agent_models()
+        .into_iter()
+        .filter(|definition| definition.model_id == model)
+        .map(|definition| definition.provider)
+        .collect::<std::collections::HashSet<_>>();
+    if owners.is_empty() || owners.contains(&harness) {
+        return Ok(());
+    }
+
+    let owner = owners
+        .iter()
+        .next()
+        .copied()
+        .expect("non-empty model owner set");
+    Err(format!(
+        "Model '{model}' belongs to the {owner} harness and cannot launch with {harness}"
+    ))
 }
 
 async fn resolve_manual_subagent_model(
