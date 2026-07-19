@@ -115,13 +115,23 @@ export function hydrateRalphxRuntimeEnvFromCli(
 export function buildArtifactMutationTransportHeaders(
   context: RuntimeContext
 ): Record<string, string> | undefined {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...(buildRuntimeTransportHeaders(context) ?? {}),
+  };
   if (context.contextType === "ideation" && context.contextId) {
     headers["X-RalphX-Caller-Session-Id"] = context.contextId;
   }
   if (context.agentRunId && context.conversationId) {
     headers["x-ralphx-agent-run-id"] = context.agentRunId;
-    headers["x-ralphx-conversation-id"] = context.conversationId;
   }
   return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+export function buildRuntimeTransportHeaders(
+  context: RuntimeContext
+): Record<string, string> | undefined {
+  const conversationId = context.conversationId?.trim();
+  return conversationId
+    ? { "x-ralphx-conversation-id": conversationId }
+    : undefined;
 }

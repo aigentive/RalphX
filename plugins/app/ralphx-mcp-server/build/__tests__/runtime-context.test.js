@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { buildArtifactMutationTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "../runtime-context.js";
+import { buildArtifactMutationTransportHeaders, buildRuntimeTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "../runtime-context.js";
 describe("parseCliOptionFromArgs", () => {
     it("supports inline and pair-style CLI options", () => {
         expect(parseCliOptionFromArgs(["node", "index.js", "--context-type=ideation"], "context-type")).toBe("ideation");
         expect(parseCliOptionFromArgs(["node", "index.js", "--context-id", "session-123"], "context-id")).toBe("session-123");
+    });
+});
+describe("buildRuntimeTransportHeaders", () => {
+    it("carries trusted conversation identity without requiring run authority", () => {
+        expect(buildRuntimeTransportHeaders({ conversationId: "conversation-current" })).toEqual({ "x-ralphx-conversation-id": "conversation-current" });
+    });
+    it("omits missing and blank conversation identity", () => {
+        expect(buildRuntimeTransportHeaders({})).toBeUndefined();
+        expect(buildRuntimeTransportHeaders({ conversationId: "  " })).toBeUndefined();
     });
 });
 describe("hydrateRalphxRuntimeEnvFromCli", () => {
@@ -107,11 +116,13 @@ describe("buildArtifactMutationTransportHeaders", () => {
             "x-ralphx-conversation-id": "conversation-current",
         });
     });
-    it("does not invent partial action authority", () => {
+    it("keeps conversation identity even without action authority", () => {
         expect(buildArtifactMutationTransportHeaders({
             contextType: "project",
             conversationId: "conversation-current",
-        })).toBeUndefined();
+        })).toEqual({
+            "x-ralphx-conversation-id": "conversation-current",
+        });
     });
 });
 //# sourceMappingURL=runtime-context.test.js.map

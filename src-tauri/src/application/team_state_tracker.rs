@@ -293,6 +293,18 @@ pub struct PendingTeamPlan {
     pub lead_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingTeamPlanRemovalReason {
+    Superseded,
+    GarbageCollected,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemovedPendingTeamPlan {
+    pub plan: PendingTeamPlan,
+    pub reason: PendingTeamPlanRemovalReason,
+}
+
 /// A teammate in a pending plan (carries full spawn data)
 #[derive(Debug, Clone)]
 pub struct PendingTeammate {
@@ -310,7 +322,8 @@ pub struct TeamStateTracker {
     teams: Arc<RwLock<HashMap<String, TeamState>>>,
     pending_plans: Arc<RwLock<HashMap<String, PendingTeamPlan>>>,
     /// Watch channels for blocking plan approval — plan_id → (sender, created_at)
-    plan_channels: Arc<RwLock<HashMap<String, (watch::Sender<Option<PlanDecision>>, std::time::Instant)>>>,
+    plan_channels:
+        Arc<RwLock<HashMap<String, (watch::Sender<Option<PlanDecision>>, std::time::Instant)>>>,
 }
 
 impl std::fmt::Debug for TeamStateTracker {
@@ -345,24 +358,40 @@ impl TeamStateTracker {
     /// 2. Plan GC: removes stale plans older than 30 minutes.
     /// 3. Channel GC: removes watch channels older than 20 minutes and channels belonging
     ///    to plans that were just cancelled (piggyback sweep, avoids a separate GC task).
-    pub async fn store_pending_plan(&self, plan: PendingTeamPlan) {
+    pub async fn store_pending_plan(&self, plan: PendingTeamPlan) -> Vec<RemovedPendingTeamPlan> {
         // Phase 1: update pending plans, collect IDs of old plans for the same context.
-        let superseded_ids: Vec<String> = {
+        let removed: Vec<RemovedPendingTeamPlan> = {
             let mut plans = self.pending_plans.write().await;
-            // Cleanup stale plans (older than 30 minutes)
             let stale_cutoff = Utc::now() - chrono::Duration::minutes(30);
-            plans.retain(|_id, p| p.created_at > stale_cutoff);
-            // Single-plan-per-context: collect and remove old plans for this context_id.
-            let superseded: Vec<String> = plans
+            let stale_ids: Vec<String> = plans
+                .values()
+                .filter(|pending| pending.created_at <= stale_cutoff)
+                .map(|pending| pending.plan_id.clone())
+                .collect();
+            let superseded_ids: Vec<String> = plans
                 .values()
                 .filter(|p| p.context_id == plan.context_id && p.plan_id != plan.plan_id)
                 .map(|p| p.plan_id.clone())
                 .collect();
-            for id in &superseded {
-                plans.remove(id);
+            let mut removed = Vec::new();
+            for id in stale_ids {
+                if let Some(plan) = plans.remove(&id) {
+                    removed.push(RemovedPendingTeamPlan {
+                        plan,
+                        reason: PendingTeamPlanRemovalReason::GarbageCollected,
+                    });
+                }
+            }
+            for id in superseded_ids {
+                if let Some(plan) = plans.remove(&id) {
+                    removed.push(RemovedPendingTeamPlan {
+                        plan,
+                        reason: PendingTeamPlanRemovalReason::Superseded,
+                    });
+                }
             }
             plans.insert(plan.plan_id.clone(), plan);
-            superseded
+            removed
         };
 
         // Phase 2: sweep plan_channels — remove GC'd entries and cancelled-plan channels.
@@ -370,12 +399,13 @@ impl TeamStateTracker {
             let mut channels = self.plan_channels.write().await;
             let now = std::time::Instant::now();
             channels.retain(|id, (_tx, created_at)| {
-                if superseded_ids.contains(id) {
+                if removed.iter().any(|removed| removed.plan.plan_id == *id) {
                     return false; // cancel superseded plan's channel
                 }
                 now.duration_since(*created_at) < std::time::Duration::from_secs(20 * 60)
             });
         }
+        removed
     }
 
     /// Take a pending plan by ID (removes it from the store)
@@ -425,6 +455,15 @@ impl TeamStateTracker {
     pub async fn remove_plan_channel(&self, plan_id: &str) {
         let mut channels = self.plan_channels.write().await;
         channels.remove(plan_id);
+    }
+
+    /// Atomically removes both pending authority and its approval channel.
+    pub async fn expire_pending_plan(&self, plan_id: &str) -> Option<PendingTeamPlan> {
+        let mut plans = self.pending_plans.write().await;
+        let plan = plans.remove(plan_id)?;
+        let mut channels = self.plan_channels.write().await;
+        channels.remove(plan_id);
+        Some(plan)
     }
 
     /// Get the pending plan for a context_id (for frontend reconciliation).

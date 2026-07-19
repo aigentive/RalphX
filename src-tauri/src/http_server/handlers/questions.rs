@@ -7,9 +7,12 @@ use uuid::Uuid;
 
 use super::*;
 use crate::application::harness_runtime_registry::default_external_mcp_human_wait_timeout_secs;
-use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::interactive_notification_producer::{
+    question_notification_key, InteractiveNotificationProducer,
+};
 use crate::application::{NotificationContextResolver, QuestionAnswer, QuestionOption};
 use crate::domain::entities::ChatConversationId;
+use crate::domain::entities::NotificationTargetKind;
 
 pub async fn request_question(
     State(state): State<HttpServerState>,
@@ -53,7 +56,7 @@ pub async fn request_question(
         .resolve_conversation_target(&ChatConversationId::from_string(input.session_id.clone()))
         .await
     {
-        Ok(resolved) => {
+        Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
             state
                 .app_state
                 .notification_service()
@@ -63,6 +66,9 @@ pub async fn request_question(
                     resolved,
                 ))
                 .await;
+        }
+        Ok(_) => {
+            tracing::warn!(request_id = %request_id, "Skipped question notification without a navigable target")
         }
         Err(error) => {
             tracing::warn!(error = %error, request_id = %request_id, "Failed to resolve question notification context");
@@ -119,6 +125,11 @@ async fn expire_question_wait(
         .await
         .is_some()
     {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&question_notification_key(request_id))
+            .await;
         Err(StatusCode::REQUEST_TIMEOUT)
     } else {
         resolved_answer_or_timeout(state, request_id).await
@@ -213,6 +224,11 @@ pub async fn resolve_question(
         .await;
 
     if result.resolved {
+        state
+            .app_state
+            .notification_service()
+            .resolve_workflow_notification(&question_notification_key(&input.request_id))
+            .await;
         if let Some(ref sid) = result.session_id {
             crate::http_server::emit_http_event(
                 &state,

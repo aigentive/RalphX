@@ -79,6 +79,7 @@ pub async fn update_plan_artifact(
         linked_proposal_ids,
         verification_reset,
     );
+    reconcile_plan_notifications(&state, Some(&old_artifact_id_str), &created, &sessions).await;
     let mut response = ArtifactResponse::from(created);
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());

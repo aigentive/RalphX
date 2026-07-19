@@ -35,6 +35,7 @@ import type {
   TeamMessagePayload,
   TeamCostUpdatePayload,
   TeamPlanRequestedPayload,
+  TeamPlanResolvedPayload,
   TeamPlanAutoApprovedPayload,
 } from "@/types/events";
 
@@ -50,6 +51,7 @@ export function useTeamEvents(contextKey: string | null) {
   const setTeamActive = useChatStore((s) => s.setTeamActive);
   const setPendingPlan = useTeamStore((s) => s.setPendingPlan);
   const clearPendingPlan = useTeamStore((s) => s.clearPendingPlan);
+  const clearPendingPlanIfMatches = useTeamStore((s) => s.clearPendingPlanIfMatches);
   const bumpArtifactVersion = useTeamStore((s) => s.bumpArtifactVersion);
 
   // Derive contextId from contextKey (format: "prefix:contextId")
@@ -118,6 +120,16 @@ export function useTeamEvents(contextKey: string | null) {
       }),
     );
 
+    // Clear only the plan that reached a terminal backend state. A late event
+    // for an older plan must not remove its replacement from the approval UI.
+    unsubs.push(
+      bus.subscribe<TeamPlanResolvedPayload>("team:plan_resolved", (payload) => {
+        if (matchKey(payload)) {
+          clearPendingPlanIfMatches(contextKey, payload.plan_id);
+        }
+      }),
+    );
+
     // team:teammate_spawned — moved to Effect 1 to avoid race condition.
     // Backend emits this immediately after team:created, so we must subscribe
     // before Effect 2 has a chance to re-run.
@@ -164,7 +176,7 @@ export function useTeamEvents(contextKey: string | null) {
     );
 
     return () => unsubs.forEach((u) => u());
-  }, [bus, contextKey, matchKey, createTeam, disbandTeam, setTeamActive, setPendingPlan, clearPendingPlan, addTeammate, bumpArtifactVersion]);
+  }, [bus, contextKey, matchKey, createTeam, disbandTeam, setTeamActive, setPendingPlan, clearPendingPlan, clearPendingPlanIfMatches, addTeammate, bumpArtifactVersion]);
 
   // ── Effect 3: Mount-time hydration — restore pending plans on mount ───────
   // Handles app restarts or remounts where plan was pending before component mounted.
