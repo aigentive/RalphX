@@ -352,6 +352,47 @@ fn build_mcp_runtime_context_persona_builder_mode_regression_unchanged() {
     );
 }
 
+#[test]
+fn build_mcp_runtime_context_rejects_persona_builder_mode_for_task_context() {
+    let working_directory = PathBuf::from("/tmp/invalid-task-builder-enforcement");
+    let context = build_mcp_runtime_context(
+        ChatContextType::Task,
+        "task-id",
+        None,
+        "task-conversation-id",
+        None,
+        &working_directory,
+        None,
+        None,
+        &[],
+        None,
+        None,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+    );
+
+    assert!(
+        !context.enforce_filesystem_roots,
+        "an invalid Task PersonaBuilder row must not acquire builder filesystem authority"
+    );
+}
+
+#[test]
+fn native_persona_skip_reason_is_claude_only() {
+    assert_eq!(
+        super::native_persona_injection_skipped_reason(AgentHarnessKind::Claude, true, true),
+        Some("native_agent_flag")
+    );
+    assert_eq!(
+        super::native_persona_injection_skipped_reason(AgentHarnessKind::Codex, true, true),
+        None,
+        "a Claude-native flag must never suppress Codex persona injection"
+    );
+    assert_eq!(
+        super::native_persona_injection_skipped_reason(AgentHarnessKind::Claude, false, true),
+        None
+    );
+}
+
 fn write_test_file(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent dirs");

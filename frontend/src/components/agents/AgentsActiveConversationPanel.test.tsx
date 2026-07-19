@@ -2543,6 +2543,62 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-logical-effort", "xhigh");
   });
 
+  it.each([
+    {
+      mode: "chat",
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    },
+    {
+      mode: "chat",
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    },
+    {
+      mode: "persona_builder",
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    },
+    {
+      mode: "persona_builder",
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    },
+  ] as const)(
+    "keeps $provider runtime on standalone $mode continuation sends",
+    ({ mode, provider, modelId, effort }) => {
+      renderPanel({
+        activeConversation: {
+          ...projectConversation(),
+          id: "standalone-1",
+          contextType: "standalone",
+          contextId: "standalone-1",
+          projectId: null,
+          agentMode: mode,
+          providerHarness: provider,
+          logicalModel: modelId,
+          logicalEffort: effort,
+        },
+        activeConversationMode: mode,
+        activeProjectId: null,
+        activeProjectOptions: [],
+        activeWorkspace: null,
+        normalizedActiveRuntime: { provider, modelId, effort },
+        selectedConversationId: "standalone-1",
+      });
+
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute("data-send-conversation-id", "standalone-1");
+      expect(panel).toHaveAttribute("data-send-provider-harness", provider);
+      expect(panel).toHaveAttribute("data-send-model-id", modelId);
+      expect(panel).toHaveAttribute("data-send-logical-effort", effort);
+    },
+  );
+
   it("returns from child chat focus to the workspace chat from the header", async () => {
     const onSelectChatFocus = vi.fn();
 

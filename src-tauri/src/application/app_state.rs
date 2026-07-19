@@ -416,7 +416,7 @@ impl AppState {
             Arc::clone(&self.agent_provider_settings_repo),
             Arc::clone(&self.persona_repo),
             Arc::clone(&self.agent_capability_gate),
-            crate::infrastructure::agents::claude::agent_personas_enabled(),
+            crate::infrastructure::agents::agent_personas_enabled(),
             self.app_paths.global_router_path(),
         )
     }

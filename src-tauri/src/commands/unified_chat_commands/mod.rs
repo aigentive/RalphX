@@ -139,9 +139,8 @@ use crate::domain::services::{
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
-use crate::infrastructure::agents::claude::{
-    agent_personas_enabled, git_runtime_config, ui_feature_flags_config,
-};
+use crate::infrastructure::agents::agent_personas_enabled;
+use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -2895,7 +2894,7 @@ fn parse_agent_workspace_mode_for_creation(
     };
     let mode = mode.parse::<AgentConversationWorkspaceMode>()?;
     if mode == AgentConversationWorkspaceMode::PersonaBuilder
-        && !crate::infrastructure::agents::claude::agent_personas_enabled()
+        && !crate::infrastructure::agents::agent_personas_enabled()
     {
         return Err("PersonaBuilder mode requires the agent_personas feature flag".to_string());
     }
@@ -10455,6 +10454,13 @@ pub async fn create_agent_conversation(
 
     let context_type = parse_context_type(&input.context_type)?;
     let mode = parse_agent_workspace_mode_for_creation(input.mode.as_deref())?;
+    if mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && !ChatConversation::is_persona_builder_identity(context_type, mode)
+    {
+        return Err(
+            "PersonaBuilder conversations must use Project or Standalone context".to_string(),
+        );
+    }
     let coordination_mode = coordination_mode_from_team_intent(input.team_intent.as_ref())?;
     if (context_type == ChatContextType::Standalone
         || mode == Some(AgentConversationWorkspaceMode::PersonaBuilder))
@@ -10487,7 +10493,7 @@ pub async fn create_agent_conversation(
             if context_id.is_some() {
                 return Err(STANDALONE_CONTEXT_ID_MUST_BE_ABSENT_ERROR.to_string());
             }
-            if !crate::infrastructure::agents::claude::standalone_conversations_enabled() {
+            if !crate::infrastructure::agents::standalone_conversations_enabled() {
                 return Err(STANDALONE_CONVERSATIONS_DISABLED_ERROR.to_string());
             }
             ChatConversation::new_standalone()
@@ -10553,7 +10559,7 @@ pub async fn create_agent_conversation(
         .await
         .map_err(|e| e.to_string())?;
     if conversation.context_type == ChatContextType::Standalone
-        || conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        || conversation.is_persona_builder()
     {
         if let Err(error) = crate::application::standalone_workspace::create_workspace(
             state.app_paths.app_data_dir(),

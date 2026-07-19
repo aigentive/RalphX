@@ -109,7 +109,7 @@ pub async fn resolve_conversation_spawn_context(
         crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
             Arc::clone(folder_reference_repo),
             app_data_dir.to_path_buf(),
-            crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+            crate::infrastructure::agents::limits_config().max_live_folder_references,
         )
         .render_prompt_block_for_roots(&conversation.id, &folder_roots)
         .await?

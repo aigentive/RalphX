@@ -21,7 +21,8 @@ use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::VerificationStatus;
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, PersonaDirective,
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
+    PersonaDirective, PersonaId,
 };
 use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
@@ -187,6 +188,31 @@ pub async fn attempt_session_recovery<R: Runtime>(
     )
     .map_err(AppError::Infrastructure)?;
 
+    let authoritative_conversation = conversation_repo
+        .get_by_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Conversation {} was not found for session recovery",
+                conversation_id.as_str()
+            ))
+        })?;
+    super::conversation_launch_security::validate_conversation_launch_identity(
+        &authoritative_conversation,
+        requested_conversation_id.as_str(),
+        context_type,
+        context_id,
+    )
+    .map_err(AppError::Infrastructure)?;
+    let conversation = &authoritative_conversation;
+    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && !conversation.is_persona_builder()
+    {
+        return Err(AppError::Validation(
+            super::PERSONA_BUILDER_CONTEXT_ERROR.to_string(),
+        ));
+    }
+
     // Helper closure to log failure with duration
     let log_failure = |error: &AppError| {
         tracing::error!(
@@ -240,6 +266,41 @@ pub async fn attempt_session_recovery<R: Runtime>(
         new_message,
         ideation_metadata.as_ref(),
     );
+    let builder_draft = if conversation.is_persona_builder() {
+        if let Some(draft_id) = conversation.builder_draft_id.as_deref() {
+            let app_state = app_handle
+                .and_then(|handle| handle.try_state::<AppState>())
+                .ok_or_else(|| {
+                    AppError::PersonaUnavailable(
+                        "[Persona unavailable: PersonaBuilder draft repository is unavailable]"
+                            .to_string(),
+                    )
+                })?;
+            Some(
+                app_state
+                    .persona_repo
+                    .get_by_id(&PersonaId::from(draft_id))
+                    .await
+                    .map_err(|error| {
+                        AppError::PersonaUnavailable(format!("[Persona unavailable: {error}]"))
+                    })?
+                    .ok_or_else(|| {
+                        AppError::PersonaUnavailable(format!(
+                            "[Persona unavailable: bound PersonaBuilder draft {draft_id} was not found]"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let bootstrap_prompt = super::persona_builder_runtime_message(
+        bootstrap_prompt,
+        Some(conversation),
+        builder_draft.as_ref(),
+    );
 
     let ideation_model_settings_repo = app_handle.map(|handle| {
         let app_state = handle.state::<AppState>();
@@ -277,17 +338,36 @@ pub async fn attempt_session_recovery<R: Runtime>(
     } else {
         None
     };
-    let recovery_agent_name = super::chat_service_helpers::resolve_agent_with_team_mode(
-        &context_type,
-        entity_status.as_deref(),
-        team_mode,
-    );
+    let recovery_agent_name = conversation
+        .bound_agent_name
+        .as_deref()
+        .or_else(|| {
+            conversation
+                .agent_mode
+                .map(super::agent_name_for_conversation_mode)
+        })
+        .unwrap_or_else(|| {
+            super::chat_service_helpers::resolve_agent_with_team_mode(
+                &context_type,
+                entity_status.as_deref(),
+                team_mode,
+            )
+        });
+    let recovery_agent_profile = conversation
+        .bound_agent_name
+        .is_none()
+        .then(|| {
+            conversation
+                .agent_mode
+                .and_then(super::agent_profile_for_conversation_mode)
+        })
+        .flatten();
     chat_service_context::await_required_external_mcp(
         app_handle,
         harness,
         plugin_dir,
         recovery_agent_name,
-        None,
+        recovery_agent_profile,
     )
     .await
     .map_err(|error| {
@@ -344,7 +424,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
                 Some(app_state.app_paths.app_data_dir()),
                 Some(app_state.app_paths.app_data_dir()),
                 Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
-                crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+                crate::infrastructure::agents::composer_folder_references_enabled(),
             )
             .await?
         } else {
@@ -355,12 +435,22 @@ pub async fn attempt_session_recovery<R: Runtime>(
             )
         };
 
+    // Both noninteractive provider adapters already honor an explicit conversation binding.
+    // Materialize the authoritative builder-mode binding for recovery so Claude and Codex use
+    // the same agent without persisting a redundant derived value on the conversation row.
+    let mut recovery_conversation = conversation.clone();
+    if recovery_conversation.bound_agent_name.is_none()
+        && recovery_conversation.is_persona_builder()
+    {
+        recovery_conversation.bound_agent_name = Some(recovery_agent_name.to_string());
+    }
+
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness_with_folder_refs(
         harness,
         cli_path,
         plugin_dir,
-        conversation,
+        &recovery_conversation,
         &bootstrap_prompt,
         resolved_persona,
         spawn_context.folder_refs_block.as_deref(),

@@ -190,3 +190,83 @@ async fn folder_references_off_project_builder_still_materializes_text_attachmen
         "pre-send builder attachment"
     );
 }
+
+#[tokio::test]
+async fn existing_project_builder_persistence_failure_restores_runtime_and_workspace() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("builder-start-compensation");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let project = seed_project(
+        &state,
+        "project-builder-start-compensation",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let mut seeded = ChatConversation::new_project(project.id.clone());
+    seeded.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    seeded.set_coordination_mode(CoordinationMode::Solo);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("seed existing project conversation");
+    db.with_connection(|connection| {
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_builder_mode_update
+                 BEFORE UPDATE OF agent_mode ON chat_conversations
+                 BEGIN SELECT RAISE(ABORT, 'forced mode persistence failure'); END;",
+            )
+            .expect("mode failure trigger should install");
+    });
+    let workspace = standalone_workspace_path(
+        &standalone_workspaces_root(state.app_paths.app_data_dir()),
+        &seeded.id.as_str(),
+    );
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    let input = service_start_input(
+        &project.id,
+        "Prepare a builder",
+        "persona_builder",
+        None,
+        None,
+        Some(&seeded.id),
+        None,
+    );
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("forced mode persistence failure must reject the start");
+    assert!(
+        error.contains("forced mode persistence failure"),
+        "unexpected error: {error}"
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("existing conversation must remain");
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::Chat),
+        "failed preparation must restore the previous mode"
+    );
+    assert_eq!(
+        stored.coordination_mode,
+        CoordinationMode::Solo,
+        "failed preparation must preserve the previous coordination mode"
+    );
+    assert!(
+        !workspace.exists(),
+        "failed preparation must remove the newly created private workspace"
+    );
+}

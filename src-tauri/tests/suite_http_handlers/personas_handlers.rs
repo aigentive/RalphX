@@ -10,7 +10,8 @@ use ralphx_lib::application::personas::{PersonaService, SavePersonaDraftInput};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, PersonaScopeFilter, PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, ChatConversation, IdeationSessionId, PersonaScopeFilter,
+    PersonaStatus, ProjectId,
 };
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::delegation::DelegationService;
@@ -19,7 +20,7 @@ use ralphx_lib::http_server::handlers::{
     get_persona_draft, save_persona_draft, SavePersonaDraftRequest,
 };
 use ralphx_lib::http_server::types::HttpServerState;
-use ralphx_lib::infrastructure::agents::claude::{
+use ralphx_lib::infrastructure::agents::{
     reset_agent_personas_override_for_test, set_agent_personas_override,
 };
 use ralphx_lib::infrastructure::sqlite::{
@@ -631,7 +632,65 @@ async fn save_draft_rejects_non_builder_caller_conversation() {
     assert!(error
         .message
         .as_deref()
-        .is_some_and(|message| message.contains("not in persona builder mode")));
+        .is_some_and(|message| message.contains("not a valid persona builder conversation")));
+}
+
+#[tokio::test]
+async fn save_draft_rejects_invalid_context_builder_without_mutating_bound_draft() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let service = persona_service(&state);
+    let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed invalid-context builder row");
+    let draft = service
+        .create_bound_draft(
+            true,
+            &conversation.id,
+            SavePersonaDraftInput {
+                project_id: None,
+                slug: "invalid-context-bound".to_string(),
+                content: persona_content("invalid-context-bound", "Before"),
+                source_session_id: Some(conversation.id.as_str()),
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect("seed bound draft fixture");
+
+    let error = save_persona_draft(
+        State(state.clone()),
+        conversation_headers(&conversation),
+        Json(SavePersonaDraftRequest {
+            draft_id: Some(draft.id.as_str().to_string()),
+            slug: draft.slug.clone(),
+            content: persona_content(&draft.slug, "After"),
+            source_session_id: Some(conversation.id.as_str()),
+        }),
+    )
+    .await
+    .expect_err("unsupported context must not gain persona-writer authority");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("Project or Standalone")));
+    let unchanged = state
+        .app_state
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .expect("load bound draft")
+        .expect("bound draft should remain");
+    assert_eq!(unchanged.version, draft.version);
+    assert_eq!(unchanged.content, draft.content);
 }
 
 #[tokio::test]

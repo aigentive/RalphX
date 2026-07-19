@@ -9,14 +9,11 @@ use serde_json::json;
 use crate::application::personas::{
     draft_updated_payload, PersonaService, SavePersonaDraftInput, PERSONA_FEATURE_DISABLED_PREFIX,
 };
-use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversationId, Persona, PersonaId,
-    ProjectId,
-};
+use crate::domain::entities::{ChatContextType, ChatConversationId, Persona, PersonaId, ProjectId};
 use crate::error::AppError;
 use crate::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
 use crate::http_server::types::{HttpError, HttpServerState};
-use crate::infrastructure::agents::claude::agent_personas_enabled;
+use crate::infrastructure::agents::agent_personas_enabled;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,9 +51,9 @@ pub async fn save_persona_draft(
                     .to_string(),
             )
         })?;
-    if conversation.agent_mode != Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+    if !conversation.is_persona_builder() {
         return Err(HttpError::validation(
-            "save_persona_draft caller conversation is not in persona builder mode; use a persona builder conversation"
+            "save_persona_draft caller is not a valid persona builder conversation; use PersonaBuilder mode with Project or Standalone context"
                 .to_string(),
         ));
     }

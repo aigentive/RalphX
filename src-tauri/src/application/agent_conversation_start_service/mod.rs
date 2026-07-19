@@ -18,11 +18,14 @@ use crate::application::clickup_git_association::{
 use crate::application::external_issue_link_service::TicketConversationLinkInput;
 use crate::application::git_service::GitService;
 use crate::application::personas::PersonaService;
+use crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
 };
-use crate::application::standalone_workspace::{create_workspace, remove_workspace_if_present};
+use crate::application::standalone_workspace::{
+    create_workspace, remove_workspace_if_present, resolve_workspace,
+};
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::application::app_state::ApplicationExecutionState;
 use crate::domain::agents::{
@@ -39,9 +42,7 @@ use crate::domain::services::{
     ComposerSelectionSnapshot,
 };
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::{
-    agent_personas_enabled, standalone_conversations_enabled,
-};
+use crate::infrastructure::agents::{agent_personas_enabled, standalone_conversations_enabled};
 
 mod finish_flow;
 mod helpers;

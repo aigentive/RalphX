@@ -10,10 +10,11 @@ use ralphx_lib::commands::unified_chat_commands::{
     create_agent_conversation, CreateAgentConversationInput,
 };
 use ralphx_lib::domain::entities::{
-    ChatConversation, ChatConversationId, IdeationSessionId, ProjectId,
+    AgentConversationWorkspaceMode, ChatConversation, ChatConversationId, IdeationSessionId,
+    ProjectId,
 };
 use ralphx_lib::error::AppError;
-use ralphx_lib::infrastructure::agents::claude::{
+use ralphx_lib::infrastructure::agents::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
     set_agent_personas_override, set_standalone_conversations_override,
 };
@@ -125,7 +126,8 @@ async fn folder_reference_commands_gate_feature_and_context_while_allowing_build
     let project = ChatConversation::new_project(ProjectId::new());
     let project_id = project.id;
     state.chat_conversation_repo.create(project).await.unwrap();
-    let ideation = ChatConversation::new_ideation(IdeationSessionId::new());
+    let mut ideation = ChatConversation::new_ideation(IdeationSessionId::new());
+    ideation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
     let ideation_id = ideation.id;
     state.chat_conversation_repo.create(ideation).await.unwrap();
     let builder_id = ChatConversationId::from_string(

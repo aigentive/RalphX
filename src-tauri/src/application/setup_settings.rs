@@ -13,9 +13,9 @@ use crate::application::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
-use crate::infrastructure::agents::claude::{
-    apply_claude_provider_permission_settings, set_agent_personas_override,
-    set_composer_folder_references_override,
+use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
+use crate::infrastructure::agents::{
+    set_agent_personas_override, set_composer_folder_references_override,
 };
 use crate::AppState;
 

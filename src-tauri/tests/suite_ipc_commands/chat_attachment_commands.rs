@@ -8,7 +8,9 @@ use ralphx_lib::application::{AppPaths, AppState};
 use ralphx_lib::commands::chat_attachment_commands::{
     delete_chat_attachment_for_state, upload_chat_attachment_for_state, UploadChatAttachmentInput,
 };
-use ralphx_lib::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
+use ralphx_lib::domain::entities::{
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, IdeationSessionId, ProjectId,
+};
 use ralphx_lib::error::AppError;
 
 fn builder_state() -> (tempfile::TempDir, AppState, ChatConversation) {
@@ -54,6 +56,7 @@ async fn builder_text_attachment_is_materialized_once_and_prompt_references_path
         .expect("attach-time materializer creates legacy workspace");
     let prompt = format_attachments_for_agent(
         &attachments,
+        conversation.context_type,
         conversation.agent_mode,
         Some(state.app_paths.app_data_dir()),
     )
@@ -123,6 +126,7 @@ async fn builder_attachment_render_fails_when_materialized_file_is_missing() {
 
     let error = format_attachments_for_agent(
         &[attachment],
+        conversation.context_type,
         conversation.agent_mode,
         Some(state.app_paths.app_data_dir()),
     )
@@ -217,6 +221,64 @@ async fn deleting_non_builder_attachment_does_not_mutate_builder_workspace_paths
 }
 
 #[tokio::test]
+async fn invalid_context_persona_builder_never_materializes_or_removes_workspace_copies() {
+    let (_temp, state, _) = builder_state();
+    let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed invalid-context builder row");
+
+    let created = upload_chat_attachment_for_state(
+        UploadChatAttachmentInput {
+            conversation_id: conversation.id.as_str(),
+            file_name: "invalid-builder.txt".to_string(),
+            file_data: b"must remain an ordinary attachment".to_vec(),
+            mime_type: Some("text/plain".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("invalid builder identity should retain ordinary attachment behavior");
+    let workspaces_root = ralphx_lib::application::standalone_workspace::standalone_workspaces_root(
+        state.app_paths.app_data_dir(),
+    );
+    assert!(
+        !workspaces_root.exists(),
+        "an unsupported context must not acquire builder workspace write authority"
+    );
+
+    let attachment = state
+        .chat_attachment_repo
+        .get_by_id(&ralphx_lib::domain::entities::ChatAttachmentId::from_string(&created.id))
+        .await
+        .expect("load uploaded attachment")
+        .expect("uploaded attachment should exist");
+    materialize_builder_attachment(
+        state.app_paths.app_data_dir(),
+        &state.attachment_storage_path,
+        &attachment,
+    )
+    .expect("prepare a copy that invalid-context deletion must not touch");
+    let materialized = ralphx_lib::application::builder_attachment_materializer::materialized_builder_attachment_path(
+        state.app_paths.app_data_dir(),
+        &attachment,
+    )
+    .expect("materialized fixture path");
+
+    delete_chat_attachment_for_state(created.id, &state)
+        .await
+        .expect("delete ordinary attachment");
+
+    assert!(
+        materialized.exists(),
+        "an unsupported context must not acquire builder workspace delete authority"
+    );
+}
+
+#[tokio::test]
 async fn builder_binary_attachment_is_rejected_before_storage_with_typed_actionable_error() {
     let (_temp, state, conversation) = builder_state();
     state
@@ -273,7 +335,7 @@ async fn non_builder_attachment_prompt_keeps_exact_inline_format() {
         .find_by_conversation_id(&conversation.id)
         .await
         .expect("list attachments");
-    let prompt = format_attachments_for_agent(&attachments, None, None)
+    let prompt = format_attachments_for_agent(&attachments, ChatContextType::Project, None, None)
         .await
         .expect("format ordinary attachment");
     assert_eq!(

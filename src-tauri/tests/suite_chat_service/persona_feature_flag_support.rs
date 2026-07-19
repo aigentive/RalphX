@@ -18,7 +18,7 @@ pub(super) use ralphx_lib::domain::entities::{
     ChatConversationId, Persona, PersonaId, PersonaStatus, Project,
 };
 pub(super) use ralphx_lib::domain::repositories::ChatConversationRepository;
-pub(super) use ralphx_lib::infrastructure::agents::claude::{
+pub(super) use ralphx_lib::infrastructure::agents::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
     set_agent_personas_override, set_standalone_conversations_override,
 };

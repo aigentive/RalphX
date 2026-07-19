@@ -588,6 +588,40 @@ fn persona_builder_runtime_message_injects_bound_draft_without_leaking_content()
 }
 
 #[test]
+fn persona_builder_runtime_message_rejects_mode_only_identity_in_unsupported_context() {
+    let mut conversation = ChatConversation::new_review(TaskId::new());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("invalid-context-draft".to_string());
+    let now = Utc::now();
+    let draft = Persona {
+        id: PersonaId::from("invalid-context-draft"),
+        artifact_id: None,
+        project_id: None,
+        slug: "invalid-context-draft".to_string(),
+        name: "Invalid Context Draft".to_string(),
+        description: "Must not be injected".to_string(),
+        content: "MUST NOT APPEAR".to_string(),
+        status: PersonaStatus::Draft,
+        version: 1,
+        content_hash: "invalid-context-hash".to_string(),
+        source_session_id: Some(conversation.id.as_str()),
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let message = persona_builder_runtime_message(
+        "ordinary review request".to_string(),
+        Some(&conversation),
+        Some(&draft),
+    );
+
+    assert_eq!(message, "ordinary review request");
+}
+
+#[test]
 fn edit_mode_plan_handoff_runtime_message_injects_linked_plan_context() {
     let conversation_id = ChatConversationId::from_string("conversation-plan-1".to_string());
     let mut workspace = AgentConversationWorkspace::new(

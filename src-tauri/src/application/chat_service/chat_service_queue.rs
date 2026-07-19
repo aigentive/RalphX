@@ -1617,6 +1617,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 .map(|state| state.app_paths.app_data_dir().to_path_buf());
             let attachment_context = match chat_service_context::format_attachments_for_agent(
                 &turn_attachments,
+                context_type,
                 queued_agent_context.effective_mode,
                 app_data_dir.as_deref(),
             )
@@ -1972,7 +1973,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     Some(state.app_paths.app_data_dir()),
                     Some(state.app_paths.app_data_dir()),
                     Some(Arc::clone(&state.conversation_folder_reference_repo)),
-                    crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+                    crate::infrastructure::agents::composer_folder_references_enabled(),
                 )
                 .await
                 {

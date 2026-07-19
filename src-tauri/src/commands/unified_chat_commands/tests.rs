@@ -718,14 +718,14 @@ struct StandaloneConversationsFlagOverrideReset;
 
 impl Drop for StandaloneConversationsFlagOverrideReset {
     fn drop(&mut self) {
-        crate::infrastructure::agents::claude::reset_standalone_conversations_override_for_test();
+        crate::infrastructure::agents::reset_standalone_conversations_override_for_test();
     }
 }
 
 #[tokio::test]
 async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
     let _reset = StandaloneConversationsFlagOverrideReset;
-    crate::infrastructure::agents::claude::set_standalone_conversations_override(Some(true));
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
     let response = create_agent_conversation(
@@ -757,7 +757,7 @@ async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
 #[tokio::test]
 async fn create_agent_conversation_standalone_flag_off_is_rejected() {
     let _reset = StandaloneConversationsFlagOverrideReset;
-    crate::infrastructure::agents::claude::set_standalone_conversations_override(Some(false));
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(false));
     let app = build_send_now_command_app(AppState::new_test());
 
     let error = create_agent_conversation(
@@ -779,7 +779,7 @@ async fn create_agent_conversation_standalone_flag_off_is_rejected() {
 #[tokio::test]
 async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
     let _reset = StandaloneConversationsFlagOverrideReset;
-    crate::infrastructure::agents::claude::set_standalone_conversations_override(Some(true));
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
     let error = create_agent_conversation(
@@ -801,7 +801,7 @@ async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
 #[tokio::test]
 async fn create_agent_conversation_standalone_rejects_team_intent() {
     let _reset = StandaloneConversationsFlagOverrideReset;
-    crate::infrastructure::agents::claude::set_standalone_conversations_override(Some(true));
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
     let error = create_agent_conversation(

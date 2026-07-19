@@ -29,7 +29,7 @@ FILESYSTEM_ENFORCEMENT_ALLOWLIST = {
     ): 2,
     (
         "src-tauri/src/application/chat_service/chat_service_context.rs",
-        "enforce_filesystem_roots: matches!(",
+        "enforce_filesystem_roots: context_type == ChatContextType::Standalone",
     ): 1,
     (
         "src-tauri/src/infrastructure/agents/mcp_runtime_context.rs",

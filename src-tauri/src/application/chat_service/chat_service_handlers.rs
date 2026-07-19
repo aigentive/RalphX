@@ -2664,7 +2664,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             conv,
                             resolved_project_id.as_deref(),
                             working_directory,
-                            crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+                            crate::infrastructure::agents::composer_folder_references_enabled(),
                         )
                         .await;
 

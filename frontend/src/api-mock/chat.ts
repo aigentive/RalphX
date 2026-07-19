@@ -832,6 +832,32 @@ export async function mockGetAgentRunStatus(
   return null;
 }
 
+type MockConversationRuntimeInput = Pick<
+  StartAgentConversationInput,
+  "providerHarness" | "modelId" | "logicalEffort"
+>;
+
+function applyMockConversationRuntime(
+  conversation: ChatConversation,
+  input: MockConversationRuntimeInput,
+): ChatConversation {
+  return {
+    ...conversation,
+    ...(input.providerHarness !== undefined
+      ? { providerHarness: input.providerHarness }
+      : {}),
+    ...(input.modelId
+      ? { logicalModel: input.modelId, effectiveModelId: input.modelId }
+      : {}),
+    ...(input.logicalEffort
+      ? {
+          logicalEffort: input.logicalEffort,
+          effectiveEffort: input.logicalEffort,
+        }
+      : {}),
+  };
+}
+
 export async function mockSendAgentMessage(
   contextType: ContextType,
   contextId: string,
@@ -851,10 +877,13 @@ export async function mockSendAgentMessage(
   if (!conversation) {
     conversation = await mockCreateConversation(contextType, contextId);
   }
-  if (options?.teamIntent) {
+  if (options) {
     conversation = {
-      ...conversation,
-      coordinationMode: options.teamIntent.coordinationMode,
+      ...applyMockConversationRuntime(conversation, options),
+      coordinationMode:
+        options.capabilityIntent?.coordinationMode ??
+        options.teamIntent?.coordinationMode ??
+        conversation.coordinationMode,
       updatedAt: new Date().toISOString(),
     };
     mockConversations.set(conversation.id, conversation);
@@ -880,10 +909,12 @@ export async function mockStartAgentConversation(
     : await mockCreateConversation(contextType, contextId);
   const mode = input.mode ?? "edit";
   const modeConversation: ChatConversation = {
-    ...conversation,
+    ...applyMockConversationRuntime(conversation, input),
     agentMode: mode,
     coordinationMode:
-      input.teamIntent?.coordinationMode ?? conversation.coordinationMode,
+      input.capabilityIntent?.coordinationMode ??
+      input.teamIntent?.coordinationMode ??
+      conversation.coordinationMode,
     updatedAt: new Date().toISOString(),
   };
   mockConversations.set(conversation.id, modeConversation);

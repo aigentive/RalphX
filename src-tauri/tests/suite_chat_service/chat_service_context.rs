@@ -1864,7 +1864,8 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
 #[tokio::test]
 async fn test_format_attachments_empty() {
     let attachments: Vec<ChatAttachment> = vec![];
-    let result = format_attachments_for_agent(&attachments, None, None).await;
+    let result =
+        format_attachments_for_agent(&attachments, ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "");
 }
@@ -1880,7 +1881,8 @@ async fn test_format_attachments_binary_file() {
         Some("image/png".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment], None, None).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1911,7 +1913,8 @@ async fn test_format_attachments_text_file() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment], None, None).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1954,8 +1957,13 @@ async fn test_format_attachments_multiple_files() {
         Some("image/png".to_string()),
     );
 
-    let result =
-        format_attachments_for_agent(&[text_attachment, binary_attachment], None, None).await;
+    let result = format_attachments_for_agent(
+        &[text_attachment, binary_attachment],
+        ChatContextType::Project,
+        None,
+        None,
+    )
+    .await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();
@@ -1982,7 +1990,8 @@ async fn test_format_attachments_file_read_error() {
         Some("text/plain".to_string()),
     );
 
-    let result = format_attachments_for_agent(&[attachment], None, None).await;
+    let result =
+        format_attachments_for_agent(&[attachment], ChatContextType::Project, None, None).await;
     assert!(result.is_ok());
 
     let formatted = result.unwrap();

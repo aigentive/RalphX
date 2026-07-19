@@ -1,5 +1,64 @@
 use super::*;
 
+async fn abort_new_conversation_after_failure(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    failed_phase: &'static str,
+) {
+    if let Err(cleanup_error) = abort_seeded_agent_conversation(state, conversation_id).await {
+        tracing::warn!(
+            %conversation_id,
+            %cleanup_error,
+            failed_phase,
+            "Failed to abort a newly created conversation after start preparation failed"
+        );
+    }
+}
+
+async fn restore_existing_conversation_after_failure(
+    state: &AppState,
+    previous: &ChatConversation,
+    failed_phase: &'static str,
+) {
+    let mode_result = state
+        .chat_conversation_repo
+        .update_agent_mode(&previous.id, previous.agent_mode)
+        .await;
+    let coordination_result = state
+        .chat_conversation_repo
+        .update_coordination_mode(&previous.id, previous.coordination_mode)
+        .await;
+    if let Err(cleanup_error) = mode_result.and(coordination_result) {
+        tracing::error!(
+            conversation_id = %previous.id,
+            %cleanup_error,
+            failed_phase,
+            "Failed to restore an existing conversation after start preparation failed"
+        );
+    }
+}
+
+async fn remove_new_private_workspace_after_failure(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    private_workspace_existed: bool,
+    failed_phase: &'static str,
+) {
+    if private_workspace_existed {
+        return;
+    }
+    if let Err(cleanup_error) =
+        remove_workspace_if_present(state.app_paths.app_data_dir(), &conversation_id.as_str())
+    {
+        tracing::warn!(
+            %conversation_id,
+            %cleanup_error,
+            failed_phase,
+            "Failed to remove a newly prepared private workspace after start preparation failed"
+        );
+    }
+}
+
 pub(super) struct FinishFlow {
     pub(super) input: StartAgentConversationInput,
     pub(super) command_started: Instant,
@@ -60,6 +119,19 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "persist_conversation",
             "Saving chat",
         );
+        let persisted_before_start = if should_create_conversation {
+            None
+        } else {
+            Some(
+                self.deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(&conversation.id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Conversation not found: {}", conversation.id))?,
+            )
+        };
         let mut conversation = if should_create_conversation {
             self.deps
                 .state
@@ -68,58 +140,38 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 .await
                 .map_err(|error| error.to_string())?
         } else {
-            self.deps
-                .state
-                .chat_conversation_repo
-                .update_agent_mode(&conversation.id, Some(mode))
-                .await
-                .map_err(|error| error.to_string())?;
-            if let Some(coordination_mode) = requested_coordination_mode {
-                self.deps
-                    .state
-                    .chat_conversation_repo
-                    .update_coordination_mode(&conversation.id, coordination_mode)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
             conversation
         };
         let needs_private_workspace = context_type == ChatContextType::Standalone
             || mode == AgentConversationWorkspaceMode::PersonaBuilder;
+        let private_workspace_existed = needs_private_workspace
+            && resolve_workspace(
+                self.deps.state.app_paths.app_data_dir(),
+                &conversation.id.as_str(),
+            )
+            .is_ok();
         if needs_private_workspace {
             if let Err(error) = create_workspace(
                 self.deps.state.app_paths.app_data_dir(),
                 &conversation.id.as_str(),
             ) {
                 if should_create_conversation {
-                    let deleted = match self
-                        .deps
-                        .state
-                        .chat_conversation_repo
-                        .delete(&conversation.id)
-                        .await
-                    {
-                        Ok(()) => true,
-                        Err(cleanup_error) => {
-                            tracing::warn!(
-                                conversation_id = %conversation.id,
-                                error = %cleanup_error,
-                                "Failed to delete newly created conversation after workspace creation failed"
-                            );
-                            false
-                        }
-                    };
-                    if deleted {
-                        if let Err(cleanup_error) = remove_workspace_if_present(
-                            self.deps.state.app_paths.app_data_dir(),
-                            &conversation.id.as_str(),
-                        ) {
-                            tracing::warn!(
-                                conversation_id = %conversation.id,
-                                error = %cleanup_error,
-                                "Failed to remove partial standalone workspace after workspace creation failed"
-                            );
-                        }
+                    abort_new_conversation_after_failure(
+                        self.deps.state,
+                        &conversation.id,
+                        "create_private_workspace",
+                    )
+                    .await;
+                } else if !private_workspace_existed {
+                    if let Err(cleanup_error) = remove_workspace_if_present(
+                        self.deps.state.app_paths.app_data_dir(),
+                        &conversation.id.as_str(),
+                    ) {
+                        tracing::warn!(
+                            conversation_id = %conversation.id,
+                            %cleanup_error,
+                            "Failed to remove a partial private workspace after workspace creation failed"
+                        );
                     }
                 }
                 return Err(error.to_string());
@@ -135,33 +187,80 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .await
             {
                 if should_create_conversation {
-                    match self
-                        .deps
-                        .state
-                        .chat_conversation_repo
-                        .delete(&conversation.id)
-                        .await
-                    {
-                        Ok(()) => {
-                            if let Err(cleanup_error) = remove_workspace_if_present(
-                                self.deps.state.app_paths.app_data_dir(),
-                                &conversation.id.as_str(),
-                            ) {
-                                tracing::warn!(
-                                    conversation_id = %conversation.id,
-                                    error = %cleanup_error,
-                                    "Failed to remove builder workspace after attachment sync failed"
-                                );
-                            }
-                        }
-                        Err(cleanup_error) => tracing::warn!(
+                    abort_new_conversation_after_failure(
+                        self.deps.state,
+                        &conversation.id,
+                        "sync_builder_attachments",
+                    )
+                    .await;
+                } else if !private_workspace_existed {
+                    if let Err(cleanup_error) = remove_workspace_if_present(
+                        self.deps.state.app_paths.app_data_dir(),
+                        &conversation.id.as_str(),
+                    ) {
+                        tracing::warn!(
                             conversation_id = %conversation.id,
-                            error = %cleanup_error,
-                            "Failed to delete newly created builder conversation after attachment sync failed"
-                        ),
+                            %cleanup_error,
+                            "Failed to remove a newly prepared builder workspace after attachment sync failed"
+                        );
                     }
                 }
                 return Err(error.to_string());
+            }
+        }
+        if let Some(previous) = persisted_before_start.as_ref() {
+            if let Err(error) = self
+                .deps
+                .state
+                .chat_conversation_repo
+                .update_agent_mode(&conversation.id, Some(mode))
+                .await
+            {
+                remove_new_private_workspace_after_failure(
+                    self.deps.state,
+                    &conversation.id,
+                    private_workspace_existed,
+                    "persist_agent_mode",
+                )
+                .await;
+                return Err(error.to_string());
+            }
+            if let Some(coordination_mode) = requested_coordination_mode {
+                if let Err(error) = self
+                    .deps
+                    .state
+                    .chat_conversation_repo
+                    .update_coordination_mode(&conversation.id, coordination_mode)
+                    .await
+                {
+                    let rollback_error = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .update_agent_mode(&conversation.id, previous.agent_mode)
+                        .await
+                        .err();
+                    if let Some(rollback_error) = rollback_error.as_ref() {
+                        tracing::error!(
+                            conversation_id = %conversation.id,
+                            %rollback_error,
+                            "Failed to restore conversation mode after coordination persistence failed"
+                        );
+                    }
+                    remove_new_private_workspace_after_failure(
+                        self.deps.state,
+                        &conversation.id,
+                        private_workspace_existed,
+                        "persist_coordination_mode",
+                    )
+                    .await;
+                    return match rollback_error {
+                        Some(rollback_error) => Err(format!(
+                            "{error}; failed to restore prior conversation mode: {rollback_error}"
+                        )),
+                        None => Err(error.to_string()),
+                    };
+                }
             }
         }
         if let Some(source_persona_id) = source_persona_id.as_ref() {
@@ -184,35 +283,26 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 .await
             {
                 if should_create_conversation {
-                    let deleted = match self
-                        .deps
-                        .state
-                        .chat_conversation_repo
-                        .delete(&conversation.id)
-                        .await
-                    {
-                        Ok(()) => true,
-                        Err(cleanup_error) => {
-                            tracing::warn!(
-                                conversation_id = %conversation.id,
-                                error = %cleanup_error,
-                                "Failed to delete newly created conversation after persona draft seeding failed"
-                            );
-                            false
-                        }
-                    };
-                    if deleted && context_type == ChatContextType::Standalone {
-                        if let Err(cleanup_error) = remove_workspace_if_present(
-                            self.deps.state.app_paths.app_data_dir(),
-                            &conversation.id.as_str(),
-                        ) {
-                            tracing::warn!(
-                                conversation_id = %conversation.id,
-                                error = %cleanup_error,
-                                "Failed to remove standalone workspace after persona draft seeding failed"
-                            );
-                        }
-                    }
+                    abort_new_conversation_after_failure(
+                        self.deps.state,
+                        &conversation.id,
+                        "seed_persona_draft",
+                    )
+                    .await;
+                } else if let Some(previous) = persisted_before_start.as_ref() {
+                    restore_existing_conversation_after_failure(
+                        self.deps.state,
+                        previous,
+                        "seed_persona_draft",
+                    )
+                    .await;
+                    remove_new_private_workspace_after_failure(
+                        self.deps.state,
+                        &conversation.id,
+                        private_workspace_existed,
+                        "seed_persona_draft",
+                    )
+                    .await;
                 }
                 return Err(error.to_string());
             }

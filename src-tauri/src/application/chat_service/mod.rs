@@ -864,19 +864,46 @@ pub(super) fn persona_resolve_flags_for_conversation(
     }
 }
 
-/// Returns whether this conversation uses the PersonaBuilder ingest-only runtime mode.
-pub fn is_persona_builder_conversation(agent_mode: Option<AgentConversationWorkspaceMode>) -> bool {
-    agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+/// Returns whether the context and mode form a valid PersonaBuilder identity.
+pub fn is_persona_builder_conversation(
+    context_type: ChatContextType,
+    agent_mode: Option<AgentConversationWorkspaceMode>,
+) -> bool {
+    ChatConversation::is_persona_builder_identity(context_type, agent_mode)
 }
 
 pub const PERSONA_BUILDER_FEATURE_DISABLED_ERROR: &str =
     "PersonaBuilder mode requires the agent_personas feature flag";
+pub const PERSONA_BUILDER_CONTEXT_ERROR: &str =
+    "PersonaBuilder conversations must use Project or Standalone context";
+
+fn native_persona_injection_skipped_reason(
+    harness: AgentHarnessKind,
+    native_agent_flag_enabled: bool,
+    persona_present: bool,
+) -> Option<&'static str> {
+    (harness == AgentHarnessKind::Claude)
+        .then(|| {
+            crate::infrastructure::agents::claude::persona_injection_skipped_reason(
+                native_agent_flag_enabled,
+                persona_present,
+            )
+        })
+        .flatten()
+}
 
 pub(super) fn validate_persona_builder_feature_for_conversation(
     feature_enabled: bool,
     conversation: &ChatConversation,
 ) -> Result<(), ChatServiceError> {
-    if !feature_enabled && is_persona_builder_conversation(conversation.agent_mode) {
+    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && !conversation.is_persona_builder()
+    {
+        return Err(ChatServiceError::PersonaUnavailable(
+            PERSONA_BUILDER_CONTEXT_ERROR.to_string(),
+        ));
+    }
+    if !feature_enabled && conversation.is_persona_builder() {
         return Err(ChatServiceError::PersonaUnavailable(
             PERSONA_BUILDER_FEATURE_DISABLED_ERROR.to_string(),
         ));
@@ -963,9 +990,8 @@ fn persona_builder_runtime_message(
     conversation: Option<&ChatConversation>,
     draft: Option<&Persona>,
 ) -> String {
-    let Some(conversation) = conversation.filter(|conversation| {
-        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
-    }) else {
+    let Some(conversation) = conversation.filter(|conversation| conversation.is_persona_builder())
+    else {
         return message;
     };
     let Some(draft) = draft.filter(|draft| {
@@ -1660,7 +1686,7 @@ impl<R: Runtime> AppChatService<R> {
 
     fn persona_feature_enabled(&self) -> bool {
         self.persona_feature_enabled_override
-            .unwrap_or_else(crate::infrastructure::agents::claude::agent_personas_enabled)
+            .unwrap_or_else(crate::infrastructure::agents::agent_personas_enabled)
     }
 
     #[doc(hidden)]
@@ -1976,6 +2002,7 @@ impl<R: Runtime> AppChatService<R> {
         let app_data_dir = self.resolve_app_data_dir();
         chat_service_context::format_attachments_for_agent(
             attachments,
+            conversation.context_type,
             conversation.agent_mode,
             app_data_dir.as_deref(),
         )
@@ -3966,15 +3993,15 @@ impl<R: Runtime> AppChatService<R> {
             persona_ingest_app_data_dir.as_deref(),
             self.folder_reference_app_data_dir.as_deref(),
             self.conversation_folder_reference_repo.as_ref().map(Arc::clone),
-            crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+            crate::infrastructure::agents::composer_folder_references_enabled(),
         )
         .await
         .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
-        let native_persona_injection_skipped_reason =
-            crate::infrastructure::agents::claude::persona_injection_skipped_reason(
-                crate::infrastructure::agents::claude::native_agent_flag_enabled(),
-                persona.is_some(),
-            );
+        let native_persona_injection_skipped_reason = native_persona_injection_skipped_reason(
+            effective_harness,
+            crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+            persona.is_some(),
+        );
         let persona_for_metadata = persona.clone();
         let build_plan_started = Instant::now();
         let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
@@ -4177,9 +4204,7 @@ impl<R: Runtime> AppChatService<R> {
         };
         let builder_draft_id = builder_conversation
             .as_ref()
-            .filter(|conversation| {
-                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
-            })
+            .filter(|conversation| conversation.is_persona_builder())
             .and_then(|conversation| conversation.builder_draft_id.as_deref());
         let builder_draft = if let Some(draft_id) = builder_draft_id {
             let persona_repo = self.persona_repo.as_ref().ok_or_else(|| {
@@ -4426,15 +4451,8 @@ impl<R: Runtime> AppChatService<R> {
 
     async fn validate_resumed_persona_builder_feature(
         &self,
-        context_type: ChatContextType,
         conversation_id: Option<&ChatConversationId>,
     ) -> Result<(), ChatServiceError> {
-        if !matches!(
-            context_type,
-            ChatContextType::Project | ChatContextType::Standalone
-        ) {
-            return Ok(());
-        }
         let Some(conversation_id) = conversation_id else {
             return Ok(());
         };
@@ -4556,10 +4574,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             context_id,
             options.conversation_id_override.as_ref(),
         );
-        self.validate_resumed_persona_builder_feature(
-            context_type,
-            options.conversation_id_override.as_ref(),
-        )
+        self.validate_resumed_persona_builder_feature(options.conversation_id_override.as_ref())
         .await?;
         self.validate_conversation_override_identity_for_send(
             context_type,
@@ -4836,12 +4851,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         } else {
             None
         };
-        let injection_would_be_skipped =
-            crate::infrastructure::agents::claude::persona_injection_skipped_reason(
-                crate::infrastructure::agents::claude::native_agent_flag_enabled(),
-                resolved_persona.is_some(),
-            )
-            .is_some();
+        let interactive_harness = interactive_process_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.harness)
+            .or_else(|| {
+                existing_conv
+                    .as_ref()
+                    .and_then(|conversation| conversation.provider_harness)
+            })
+            .unwrap_or(DEFAULT_AGENT_HARNESS);
+        let injection_would_be_skipped = native_persona_injection_skipped_reason(
+            interactive_harness,
+            crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+            resolved_persona.is_some(),
+        )
+        .is_some();
         let effective_resolved = effective_resolved_persona_for_injection(
             resolved_persona.as_ref(),
             injection_would_be_skipped,
@@ -6819,17 +6843,26 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 } else {
                     None
                 };
-                let injection_would_be_skipped =
-                    crate::infrastructure::agents::claude::persona_injection_skipped_reason(
-                        crate::infrastructure::agents::claude::native_agent_flag_enabled(),
-                        resolved_persona.is_some(),
-                    )
-                    .is_some();
+                let process_metadata = self.ipr().get_metadata(&interactive_key).await;
+                let interactive_harness = process_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.harness)
+                    .or_else(|| {
+                        existing_conv
+                            .as_ref()
+                            .and_then(|conversation| conversation.provider_harness)
+                    })
+                    .unwrap_or(DEFAULT_AGENT_HARNESS);
+                let injection_would_be_skipped = native_persona_injection_skipped_reason(
+                    interactive_harness,
+                    crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+                    resolved_persona.is_some(),
+                )
+                .is_some();
                 let effective_resolved = effective_resolved_persona_for_injection(
                     resolved_persona.as_ref(),
                     injection_would_be_skipped,
                 );
-                let process_metadata = self.ipr().get_metadata(&interactive_key).await;
                 persona_switch_requires_process_invalidation(
                     effective_resolved,
                     process_metadata.as_ref(),

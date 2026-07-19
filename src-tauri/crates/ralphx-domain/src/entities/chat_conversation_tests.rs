@@ -87,6 +87,35 @@ fn test_new_standalone_conversations_have_distinct_ids() {
 }
 
 #[test]
+fn persona_builder_identity_requires_supported_context_and_mode() {
+    for context_type in [ChatContextType::Project, ChatContextType::Standalone] {
+        assert!(ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        ));
+        assert!(!ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::Chat),
+        ));
+    }
+
+    for context_type in [
+        ChatContextType::Ideation,
+        ChatContextType::Delegation,
+        ChatContextType::Task,
+        ChatContextType::TaskExecution,
+        ChatContextType::Review,
+        ChatContextType::Merge,
+        ChatContextType::BranchUpdate,
+    ] {
+        assert!(!ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        ));
+    }
+}
+
+#[test]
 fn test_is_valid_standalone_self_key_rejects_mismatched_context_id() {
     let mut conversation = ChatConversation::new_standalone();
     conversation.context_id = "not-my-own-id".to_string();

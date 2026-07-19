@@ -6,12 +6,9 @@ use tauri::State;
 
 use crate::application::conversation_folder_reference_service::ConversationFolderReferenceService;
 use crate::application::AppState;
-use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversationId,
-    ConversationFolderReferenceId,
-};
+use crate::domain::entities::{ChatContextType, ChatConversationId, ConversationFolderReferenceId};
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::{composer_folder_references_enabled, limits_config};
+use crate::infrastructure::agents::{composer_folder_references_enabled, limits_config};
 
 pub const COMPOSER_FOLDER_REFERENCES_DISABLED: &str =
     "[Composer folder references disabled: enable composer_folder_references to use folder references]";
@@ -95,8 +92,7 @@ pub async fn add_conversation_folder_reference_for_state(
         .ok_or_else(|| {
             AppError::NotFound(format!("Conversation {conversation_id} was not found"))
         })?;
-    let is_builder =
-        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let is_builder = conversation.is_persona_builder();
     if conversation.context_type != ChatContextType::Project && !is_builder {
         return Err(AppError::ConversationFolderReferenceUnsupportedContext);
     }

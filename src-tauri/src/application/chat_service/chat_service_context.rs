@@ -63,7 +63,7 @@ pub fn folder_references_skip_reason(
     context_type: ChatContextType,
     effective_mode: Option<AgentConversationWorkspaceMode>,
 ) -> Option<&'static str> {
-    if super::is_persona_builder_conversation(effective_mode) {
+    if super::is_persona_builder_conversation(context_type, effective_mode) {
         None
     } else if context_type != ChatContextType::Project {
         Some(FOLDER_REFS_SKIPPED_NON_PROJECT)
@@ -1844,7 +1844,14 @@ pub async fn resolve_mcp_filesystem_read_roots(
     conversation_id: Option<&str>,
     app_data_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    let builder_mode = super::is_persona_builder_conversation(context_type, effective_mode);
+    if effective_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) && !builder_mode {
+        tracing::warn!(
+            %context_type,
+            "Rejecting PersonaBuilder filesystem roots for an unsupported context"
+        );
+        return Vec::new();
+    }
     let builder_workspace = if builder_mode {
         let (Some(app_data_dir), Some(conversation_id)) = (app_data_dir, conversation_id) else {
             return Vec::new();
@@ -1974,7 +1981,12 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
         runtime_app_data_dir,
     )
     .await;
-    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    let builder_mode = super::is_persona_builder_conversation(context_type, effective_mode);
+    if effective_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) && !builder_mode {
+        return Err(crate::error::AppError::Validation(
+            super::PERSONA_BUILDER_CONTEXT_ERROR.to_string(),
+        ));
+    }
     if !folder_references_enabled || (context_type != ChatContextType::Project && !builder_mode) {
         return Ok(roots);
     }
@@ -1987,7 +1999,7 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
     let service = crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
         folder_reference_repo,
         folder_reference_app_data_dir.to_path_buf(),
-        crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+        crate::infrastructure::agents::limits_config().max_live_folder_references,
     );
     let references = service
         .list_live_validated(&ChatConversationId::from_string(conversation_id))
@@ -2350,6 +2362,7 @@ pub fn is_text_file(mime_type: Option<&str>, file_name: &str) -> bool {
 #[doc(hidden)]
 pub async fn format_attachments_for_agent(
     attachments: &[ChatAttachment],
+    context_type: ChatContextType,
     effective_mode: Option<AgentConversationWorkspaceMode>,
     app_data_dir: Option<&Path>,
 ) -> Result<String, String> {
@@ -2358,7 +2371,10 @@ pub async fn format_attachments_for_agent(
     }
 
     let mut output = String::from("\n\n<attachments>\n");
-    let builder_mode = super::is_persona_builder_conversation(effective_mode);
+    let builder_mode = super::is_persona_builder_conversation(context_type, effective_mode);
+    if effective_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) && !builder_mode {
+        return Err(super::PERSONA_BUILDER_CONTEXT_ERROR.to_string());
+    }
     if builder_mode && app_data_dir.is_none() {
         return Err(
             "Persona builder attachment formatting requires an app-owned data directory"
@@ -2551,10 +2567,8 @@ pub(super) fn build_mcp_runtime_context(
         // Single derivation seam (Phase 0 + 4a.2): filesystem containment is enforced
         // for PersonaBuilder-mode conversations and for Standalone-context conversations
         // (which always run against their own private workspace, never a project tree).
-        enforce_filesystem_roots: matches!(
-            effective_mode,
-            Some(AgentConversationWorkspaceMode::PersonaBuilder)
-        ) || context_type == ChatContextType::Standalone,
+        enforce_filesystem_roots: context_type == ChatContextType::Standalone
+            || ChatConversation::is_persona_builder_identity(context_type, effective_mode),
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
@@ -2784,8 +2798,13 @@ pub async fn build_command_with_app_data_dir(
                 .filter(|a| a.message_id.is_none())
                 .collect::<Vec<_>>();
 
-            format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
-                .await?
+            format_attachments_for_agent(
+                &attachments,
+                conversation.context_type,
+                conversation.agent_mode,
+                app_data_dir,
+            )
+            .await?
         }
     };
     let resolved_spawn_settings =
@@ -3113,9 +3132,13 @@ pub async fn build_codex_command(
                 "chat_service.build_codex_command phase completed"
             );
             let attachment_context_started = Instant::now();
-            let attachment_context =
-                format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
-                    .await?;
+            let attachment_context = format_attachments_for_agent(
+                &attachments,
+                conversation.context_type,
+                conversation.agent_mode,
+                app_data_dir,
+            )
+            .await?;
             tracing::info!(
                 context_type = %conversation.context_type,
                 context_id = %conversation.context_id,
@@ -3815,9 +3838,13 @@ pub async fn build_interactive_command(
             );
 
             let attachment_context_started = Instant::now();
-            let attachment_context =
-                format_attachments_for_agent(&attachments, conversation.agent_mode, app_data_dir)
-                    .await?;
+            let attachment_context = format_attachments_for_agent(
+                &attachments,
+                conversation.context_type,
+                conversation.agent_mode,
+                app_data_dir,
+            )
+            .await?;
             log_claude_launch_plan_phase(
                 conversation,
                 "format_pending_attachments",

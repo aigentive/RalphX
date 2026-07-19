@@ -7,7 +7,7 @@ use crate::application::personas::{
 };
 use crate::application::AppState;
 use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, ProjectId};
-use crate::infrastructure::agents::claude::agent_personas_enabled;
+use crate::infrastructure::agents::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

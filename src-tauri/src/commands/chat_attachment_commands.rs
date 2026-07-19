@@ -13,9 +13,7 @@ use crate::application::builder_attachment_materializer::{
 };
 use crate::application::chat_attachment_service::ChatAttachmentService;
 use crate::application::AppState;
-use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatAttachmentId, ChatConversationId, ChatMessageId,
-};
+use crate::domain::entities::{ChatAttachmentId, ChatConversationId, ChatMessageId};
 use crate::error::AppError;
 
 // ============================================================================
@@ -97,8 +95,7 @@ pub async fn upload_chat_attachment_for_state(
         .get_by_id(&conversation_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
-    let is_builder =
-        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let is_builder = conversation.is_persona_builder();
     if is_builder {
         validate_builder_attachment_text(&input.file_data)?;
     }
@@ -227,7 +224,7 @@ pub async fn delete_chat_attachment_for_state(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Conversation {} not found", attachment.conversation_id))?;
-    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+    if conversation.is_persona_builder() {
         remove_materialized_builder_attachment_if_present(
             state.app_paths.app_data_dir(),
             &attachment,

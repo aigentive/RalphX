@@ -14,6 +14,19 @@ pub mod spawner;
 
 // Re-export commonly used items
 pub use claude::ClaudeCodeClient;
+// Provider-neutral runtime configuration facade. The implementation remains in
+// the legacy Claude config module for persisted/config compatibility, while new
+// shared application code imports these values from `infrastructure::agents`.
+pub use claude::{
+    agent_personas_enabled, composer_folder_references_enabled, limits_config,
+    set_agent_personas_override, set_composer_folder_references_override,
+    set_standalone_conversations_override, standalone_conversations_enabled, LimitsConfig,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use claude::{
+    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
+    reset_standalone_conversations_override_for_test,
+};
 pub use claude::{
     StreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig, TeammateSpawnResult,
 };

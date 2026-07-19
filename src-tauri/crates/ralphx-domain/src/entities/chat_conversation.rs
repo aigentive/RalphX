@@ -468,6 +468,26 @@ impl ChatConversation {
         self.context_type == ChatContextType::Standalone && self.context_id == self.id.as_str()
     }
 
+    /// Returns true only for the two context types that own PersonaBuilder
+    /// conversations and the PersonaBuilder workspace mode.
+    pub const fn is_persona_builder_identity(
+        context_type: ChatContextType,
+        agent_mode: Option<AgentConversationWorkspaceMode>,
+    ) -> bool {
+        matches!(
+            context_type,
+            ChatContextType::Project | ChatContextType::Standalone
+        ) && matches!(
+            agent_mode,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        )
+    }
+
+    /// Returns true when this row is a valid Project or Standalone PersonaBuilder.
+    pub const fn is_persona_builder(&self) -> bool {
+        Self::is_persona_builder_identity(self.context_type, self.agent_mode)
+    }
+
     /// Create a new conversation for task execution (worker output).
     /// Pass `parent_id` when re-executing a task to link to the prior run's conversation.
     pub fn new_task_execution(task_id: TaskId) -> Self {

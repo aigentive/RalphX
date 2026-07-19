@@ -1009,7 +1009,7 @@ async fn switch_mode_rejects_persona_builder_target() {
 
 #[tokio::test]
 async fn create_agent_conversation_persona_builder_is_flag_gated_and_persists_mode() {
-    use ralphx_lib::infrastructure::agents::claude::{
+    use ralphx_lib::infrastructure::agents::{
         reset_agent_personas_override_for_test, set_agent_personas_override,
     };
     let app = tauri::test::mock_builder()
@@ -1046,7 +1046,7 @@ async fn create_agent_conversation_persona_builder_is_flag_gated_and_persists_mo
 
 #[tokio::test]
 async fn create_agent_conversation_project_persona_builder_rejects_team_intent() {
-    use ralphx_lib::infrastructure::agents::claude::{
+    use ralphx_lib::infrastructure::agents::{
         reset_agent_personas_override_for_test, set_agent_personas_override,
     };
     set_agent_personas_override(Some(true));
@@ -1067,6 +1067,48 @@ async fn create_agent_conversation_project_persona_builder_rejects_team_intent()
     .await
     .expect_err("Project builder create must reject Team intent");
     assert!(error.contains("Team mode"));
+    reset_agent_personas_override_for_test();
+}
+
+#[tokio::test]
+async fn create_agent_conversation_rejects_persona_builder_outside_project_or_standalone() {
+    use ralphx_lib::infrastructure::agents::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    set_agent_personas_override(Some(true));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    for context_type in [ChatContextType::Task, ChatContextType::Ideation] {
+        let context_id = format!("invalid-builder-{context_type}");
+        let error = create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: context_type.to_string(),
+                context_id: Some(context_id.clone()),
+                title: None,
+                mode: Some("persona_builder".to_string()),
+                team_intent: None,
+            },
+            app.state(),
+        )
+        .await
+        .expect_err("PersonaBuilder must reject unsupported contexts before persistence");
+
+        assert!(
+            error.contains("Project or Standalone"),
+            "unexpected error: {error}"
+        );
+        assert!(app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_context(context_type, &context_id)
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty());
+    }
+
     reset_agent_personas_override_for_test();
 }
 

@@ -22,7 +22,8 @@ use crate::domain::entities::{
     PersonaId, ProjectId,
 };
 use crate::domain::services::RunningAgentKey;
-use crate::infrastructure::agents::claude::{agent_personas_enabled, ui_feature_flags_config};
+use crate::infrastructure::agents::agent_personas_enabled;
+use crate::infrastructure::agents::claude::ui_feature_flags_config;
 
 use super::unified_chat_commands::create_chat_service;
 use super::ExecutionState;

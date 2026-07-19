@@ -1836,93 +1836,106 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("seeds and starts a standalone chat without project or Team intent and wires its queue key", async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false, gcTime: 0 },
-        mutations: { retry: false },
-      },
-    });
-    const standaloneConversation = conversation({
-      id: "standalone-1",
-      contextType: "standalone",
-      contextId: "standalone-1",
-      projectId: null,
-      agentMode: "chat",
-    });
-    createConversationMock.mockResolvedValue(standaloneConversation);
-    startAgentConversationMock.mockResolvedValue({
-      conversation: standaloneConversation,
-      workspace: null,
-      sendResult: {
-        conversationId: "standalone-1",
-        agentRunId: "run-standalone-1",
-        isNewConversation: false,
-        wasQueued: true,
-        queuedAsPending: false,
-        queuedMessageId: "queued-standalone-1",
-      },
-    });
-    const selectConversation = vi.fn();
-    const handleAutoManagedTitle = vi.fn();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
-    const { result } = renderHook(
-      () =>
-        useStartAgentConversation({
-          handleAutoManagedTitle,
-          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
-          queryClient,
-          selectConversation,
-          setActiveConversation: useChatStore.getState().setActiveConversation,
-          setFocusedProject: vi.fn(),
-          setOptimisticConversationsById: vi.fn(),
-          setOptimisticSelectedConversationId: vi.fn(),
-          setOptimisticWorkspacesByConversationId: vi.fn(),
-          setRuntimeForConversation: vi.fn(),
-        }),
-      { wrapper },
-    );
-
-    await result.current({
-      projectId: null,
-      content: "Explore privately",
-      runtime: { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
-      mode: "edit",
-      base: null,
-      files: [],
-      capabilityIntent: { coordinationMode: "rx_native_team" },
-      composerProjectReferences: [
-        {
-          projectId: "stale-project",
-          projectName: "Stale project",
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "seeds and starts a standalone chat with $provider runtime and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, gcTime: 0 },
+          mutations: { retry: false },
         },
-      ],
-    });
+      });
+      const standaloneConversation = conversation({
+        id: "standalone-1",
+        contextType: "standalone",
+        contextId: "standalone-1",
+        projectId: null,
+        agentMode: "chat",
+      });
+      createConversationMock.mockResolvedValue(standaloneConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: standaloneConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "standalone-1",
+          agentRunId: "run-standalone-1",
+          isNewConversation: false,
+          wasQueued: true,
+          queuedAsPending: false,
+          queuedMessageId: "queued-standalone-1",
+        },
+      });
+      const selectConversation = vi.fn();
+      const handleAutoManagedTitle = vi.fn();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle,
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation,
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
 
-    expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
-    expect(startAgentConversationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
+      await result.current({
+        projectId: null,
         content: "Explore privately",
-        conversationId: "standalone-1",
-        mode: "chat",
-        providerHarness: "codex",
-      }),
-    );
-    const startInput = startAgentConversationMock.mock.calls[0]?.[0];
-    expect(startInput).not.toHaveProperty("projectId");
-    expect(startInput).not.toHaveProperty("capabilityIntent");
-    expect(startInput).not.toHaveProperty("teamIntent");
-    expect(startInput).not.toHaveProperty("composerProjectReferences");
-    expect(selectConversation).toHaveBeenCalledWith(null, "standalone-1");
-    expect(useChatStore.getState().queuedMessages["standalone:standalone-1"]).toEqual([
-      expect.objectContaining({ id: "queued-standalone-1", content: "Explore privately" }),
-    ]);
-    expect(handleAutoManagedTitle).toHaveBeenCalledWith(
-      expect.objectContaining({ targetProjectId: null }),
-    );
-  });
+        runtime: { provider, modelId, effort },
+        mode: "edit",
+        base: null,
+        files: [],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+        composerProjectReferences: [
+          {
+            projectId: "stale-project",
+            projectName: "Stale project",
+          },
+        ],
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "Explore privately",
+          conversationId: "standalone-1",
+          mode: "chat",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+      expect(startInput).not.toHaveProperty("composerProjectReferences");
+      expect(selectConversation).toHaveBeenCalledWith(null, "standalone-1");
+      expect(
+        useChatStore.getState().queuedMessages["standalone:standalone-1"],
+      ).toEqual([
+        expect.objectContaining({
+          id: "queued-standalone-1",
+          content: "Explore privately",
+        }),
+      ]);
+      expect(handleAutoManagedTitle).toHaveBeenCalledWith(
+        expect.objectContaining({ targetProjectId: null }),
+      );
+    },
+  );
 
   it.each([
     { provider: "claude", modelId: "sonnet", effort: "medium" },
@@ -2022,6 +2035,80 @@ describe("AgentsView start conversation", () => {
       expect(startInput).not.toHaveProperty("projectId");
       expect(startInput).not.toHaveProperty("capabilityIntent");
       expect(startInput).not.toHaveProperty("teamIntent");
+    },
+  );
+
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a project persona builder with $provider runtime",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-project-1",
+        contextType: "project",
+        contextId: "project-1",
+        projectId: "project-1",
+        agentMode: "persona_builder",
+      });
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: conversationWorkspace({
+          conversationId: "builder-project-1",
+          mode: "persona_builder",
+        }),
+        sendResult: {
+          conversationId: "builder-project-1",
+          agentRunId: "run-builder-project-1",
+          isNewConversation: true,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: "project-1",
+        content: "Build a project reviewer",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        base: null,
+        files: [],
+      });
+
+      expect(createConversationMock).not.toHaveBeenCalled();
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "Build a project reviewer",
+          mode: "persona_builder",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
     },
   );
 

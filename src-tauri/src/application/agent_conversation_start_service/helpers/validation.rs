@@ -40,7 +40,7 @@ pub(crate) fn parse_agent_workspace_mode(
         .unwrap_or("edit");
     let mode = mode.parse::<AgentConversationWorkspaceMode>()?;
     if mode == AgentConversationWorkspaceMode::PersonaBuilder
-        && !crate::infrastructure::agents::claude::agent_personas_enabled()
+        && !crate::infrastructure::agents::agent_personas_enabled()
     {
         return Err("PersonaBuilder mode requires the agent_personas feature flag".to_string());
     }

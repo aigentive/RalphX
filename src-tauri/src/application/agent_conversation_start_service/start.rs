@@ -90,6 +90,15 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         } else {
             None
         };
+        if input.source_persona_id.is_some()
+            && seeded_conversation
+                .as_ref()
+                .is_some_and(|conversation| conversation.builder_draft_id.is_some())
+        {
+            return Err(
+                "source_persona_id cannot replace an existing bound persona draft".to_string(),
+            );
+        }
         if seeded_conversation.as_ref().is_some_and(|conversation| {
             matches!(
                 conversation.agent_mode,

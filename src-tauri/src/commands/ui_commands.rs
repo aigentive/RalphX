@@ -7,7 +7,7 @@ use crate::application::{
     agent_capability_gate::AgentCapabilities, harness_runtime_registry::default_ui_feature_flags,
     AppState,
 };
-use crate::infrastructure::agents::claude::{
+use crate::infrastructure::agents::{
     agent_personas_enabled, composer_folder_references_enabled, set_agent_personas_override,
     set_composer_folder_references_override,
 };

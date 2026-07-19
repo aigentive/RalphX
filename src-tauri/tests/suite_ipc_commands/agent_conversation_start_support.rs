@@ -42,7 +42,7 @@ pub(super) use ralphx_lib::domain::entities::{
     IdeationSessionFlow, MessageRole, Persona, PersonaId, PersonaStatus, Project, ProjectId,
     TaskId, TeamIntent,
 };
-pub(super) use ralphx_lib::infrastructure::agents::claude::{
+pub(super) use ralphx_lib::infrastructure::agents::{
     reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
     reset_standalone_conversations_override_for_test, set_agent_personas_override,
     set_composer_folder_references_override, set_standalone_conversations_override,
