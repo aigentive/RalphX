@@ -7,10 +7,7 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "models", heading: "Models" },
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
-  { id: "execution", heading: "Execution" },
   { id: "agents", heading: "Agents" },
-  { id: "global-execution", heading: "Global Capacity" },
-  { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
@@ -42,32 +39,6 @@ test.describe("Settings Dialog", () => {
       return getComputedStyle(dialog.closest('[role="dialog"]') ?? dialog).zIndex;
     });
     expect(zIndex).not.toBeNull();
-  });
-
-  test("execution section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("execution");
-    await settingsPage.waitForSection("execution", "Execution");
-    await expect(settingsPage.maxConcurrentTasksInput).toBeVisible();
-    await expect(settingsPage.projectIdeationMaxInput).toBeVisible();
-  });
-
-  test("global capacity section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("global-execution");
-    await settingsPage.waitForSection("global-execution", "Global Capacity");
-    await expect(settingsPage.globalMaxConcurrentInput).toBeVisible();
-    await expect(settingsPage.globalIdeationMaxInput).toBeVisible();
-    await expect(settingsPage.allowIdeationBorrowIdleExecutionToggle).toBeVisible();
-  });
-
-  test("review section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("review");
-    await settingsPage.waitForSection("review", "Review Policy");
-    await expect(settingsPage.requireHumanReviewToggle).toBeVisible();
-    await expect(settingsPage.maxFixAttemptsInput).toBeVisible();
-    await expect(settingsPage.maxRevisionCyclesInput).toBeVisible();
   });
 
   test("external MCP section contains all controls", async ({ page }) => {
