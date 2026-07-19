@@ -2,6 +2,11 @@
 paths:
   - "src-tauri/**/*.rs"
   - "src-tauri/CLAUDE.md"
+  - ".github/workflows/ci.yml"
+  - ".github/workflows/coverage.yml"
+  - "scripts/test-rust-fast.sh"
+  - "scripts/tests/test-ci-rust-full-integration-targets.sh"
+  - "scripts/tests/test-coverage-rust-shards.sh"
   - ".claude/rules/*.md"
 ---
 
@@ -64,6 +69,17 @@ paths:
 | Large lib suites | When a lib-side test file becomes a massive orchestration suite, prefer moving it to `src-tauri/tests/` and exposing only the minimum internal-facing API with `#[doc(hidden)] pub` rather than keeping it in the giant `--lib` binary |
 | Internal support | Invest early in a thin shared test-support layer under `src-tauri/src/testing/` when setup repeats |
 | CI coverage split | PR CI owns layering, IPC contracts, root-lib shards, dual clippy, workspace doctests, and full integration; local agents provide only focused evidence before publication |
+
+## CI Topology Maintenance
+
+| Change | Keep in sync |
+|---|---|
+| Add an integration test module | Prefer an existing `src-tauri/tests/suite_*/main.rs` target and update the suite mapping below; the existing target is already included in the integration archive |
+| Add an unavoidable top-level integration target | Add it to `FULL_INTEGRATION_TESTS` in `scripts/test-rust-fast.sh`; add a `nextest.toml` group override only when resource behavior requires one; ❌ duplicate the target list in workflow YAML |
+| Change archive execution | Keep one archive producer and partition-only consumers on the same profile/features/workspace remap; consumers must not rebuild Cargo targets |
+| Add IPC/command coverage | Update the single target/filter union in `.github/workflows/coverage.yml`; keep one `cargo llvm-cov nextest` invocation so filter groups do not relink the instrumented root crate repeatedly |
+| Change shard counts or artifact names | Update the matrix, unique artifact/JUnit names, publish-time artifact validation, and every Codecov input together |
+| Validate topology changes | Run `scripts/tests/test-ci-rust-full-integration-targets.sh` and `scripts/tests/test-coverage-rust-shards.sh` plus YAML/actionlint checks; do not run broad Rust/llvm-cov suites merely to validate workflow wiring |
 
 ## Focused Agent Commands
 

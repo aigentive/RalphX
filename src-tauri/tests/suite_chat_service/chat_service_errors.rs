@@ -125,6 +125,9 @@ fn test_stream_error_is_retryable() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
         StreamError::Cancelled {
             turns_finalized: 0,
@@ -174,6 +177,9 @@ fn test_stream_error_requires_session_clear() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
         StreamError::Cancelled {
             turns_finalized: 0,
@@ -238,6 +244,9 @@ fn test_stream_error_suggested_task_status() {
         },
         StreamError::NoOutput {
             context_type: ChatContextType::TaskExecution,
+            exit_code: None,
+            exit_signal: None,
+            stderr: String::new(),
         },
     ];
 
