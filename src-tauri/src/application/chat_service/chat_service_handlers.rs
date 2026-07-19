@@ -245,9 +245,11 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&str>,
+    working_directory: &Path,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
 ) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
-    match recovery_retry_provider_decision(
+    let provider_env = match recovery_retry_provider_decision(
         app_handle,
         agent_provider_settings_repo,
         recovery_harness,
@@ -255,15 +257,22 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     )
     .await
     {
-        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
-            provider_spawnable.apply_provider_env(&provider_env);
-            Some(provider_spawnable.spawnable)
-        }
-        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
-            Some(provider_spawnable.spawnable)
-        }
-        Err(_) => None,
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => Some(provider_env),
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
+        Err(_) => return None,
+    };
+    let handle = app_handle.as_ref()?;
+    let app_state = handle.state::<AppState>();
+    let policy = app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
+        .await
+        .ok()?;
+    provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
+    if let Some(provider_env) = provider_env.as_ref() {
+        provider_spawnable.apply_provider_env(provider_env);
     }
+    Some(provider_spawnable.spawnable)
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +281,8 @@ struct RecoveryRetryProviderGate<'a, R: Runtime> {
     agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&'a str>,
+    working_directory: &'a Path,
 }
 
 impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
@@ -280,12 +291,16 @@ impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
         agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
         recovery_harness: AgentHarnessKind,
         context_type: ChatContextType,
+        project_id: Option<&'a str>,
+        working_directory: &'a Path,
     ) -> Self {
         Self {
             app_handle,
             agent_provider_settings_repo,
             recovery_harness,
             context_type,
+            project_id,
+            working_directory,
         }
     }
 }
@@ -301,6 +316,8 @@ async fn resolve_recovery_retry_spawnable<R: Runtime>(
                 provider_gate.agent_provider_settings_repo,
                 provider_gate.recovery_harness,
                 provider_gate.context_type,
+                provider_gate.project_id,
+                provider_gate.working_directory,
                 provider_spawnable,
             )
             .await
@@ -2608,8 +2625,22 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .ok()
                             .and_then(|persona| persona.clone());
 
-                        let retry_provider_spawnable = match retry_persona {
-                            Ok(persona) => {
+                        let retry_agent_name =
+                            super::chat_service_helpers::resolve_agent_with_team_mode(
+                                &context_type,
+                                None,
+                                team_mode,
+                            );
+                        let external_readiness = chat_service_context::await_required_external_mcp(
+                            app_handle.as_ref(),
+                            recovery_harness,
+                            plugin_dir,
+                            retry_agent_name,
+                            None,
+                        )
+                        .await;
+                        let retry_provider_spawnable = match (retry_persona, external_readiness) {
+                            (Ok(persona), Ok(())) => {
                                 chat_service_context::build_resume_command_for_harness(
                                     recovery_harness,
                                     cli_path,
@@ -2653,13 +2684,18 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 )
                                 .await
                             }
-                            Err(error) => Err(format!("Persona unavailable: {error}")),
+                            (Err(error), _) => Err(format!("Persona unavailable: {error}")),
+                            (_, Err(error)) => Err(format!(
+                                "External MCP transport is not ready for recovery retry: {error}"
+                            )),
                         };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
                             app_handle,
                             &retry_agent_provider_settings_repo,
                             recovery_harness,
                             context_type,
+                            resolved_project_id.as_deref(),
+                            working_directory,
                         );
                         let retry_spawnable = resolve_recovery_retry_spawnable(
                             retry_provider_spawnable,

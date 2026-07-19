@@ -706,6 +706,7 @@ impl AgenticClientSpawner {
             max_tokens: None,
             timeout_secs: None,
             env,
+            mcp_launch_policy: Default::default(),
         };
 
         if matches!(client_type, ClientType::ClaudeCode | ClientType::Codex) {

@@ -27,6 +27,7 @@ use crate::application::team_state_tracker::{
     PendingTeamPlan, PendingTeamPlanRemovalReason, PendingTeammate, PlanDecision,
     PlanDecisionTeammate, TeammateHandle, TeammateStatus,
 };
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactRelation, ArtifactRelationId,
     ArtifactRelationType, ArtifactType, NotificationTargetKind, TaskId,

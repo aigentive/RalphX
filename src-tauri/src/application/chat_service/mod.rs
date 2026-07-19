@@ -17,6 +17,8 @@ mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
 mod chat_service_merge;
+#[cfg(test)]
+mod mcp_policy_launch_seam_tests;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
@@ -66,9 +68,7 @@ use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS,
-};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -88,11 +88,11 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -1447,6 +1447,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     activity_event_repo: Arc<dyn ActivityEventRepository>,
     message_queue: Arc<MessageQueue>,
@@ -1490,6 +1491,21 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     /// Prevents idle verification processes from lingering until the 600s timeout fires.
     verification_child_registry:
         Arc<verification_child_process_registry::VerificationChildProcessRegistry>,
+}
+
+async fn resolve_mcp_launch_policy_with_service(
+    service: Option<&crate::application::mcp_policy_service::McpPolicyService>,
+    provider: AgentHarnessKind,
+    project_id: Option<&str>,
+    working_directory: &Path,
+) -> Result<crate::domain::agents::McpLaunchPolicy, ChatServiceError> {
+    let service = service.ok_or_else(|| {
+        ChatServiceError::SpawnFailed("MCP launch policy service is unavailable".to_string())
+    })?;
+    service
+        .resolve_launch_policy(provider, project_id, Some(working_directory))
+        .await
+        .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))
 }
 
 #[derive(Debug)]
@@ -1545,6 +1561,7 @@ impl<R: Runtime> AppChatService<R> {
             granola_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
+            mcp_policy_service: None,
             ideation_session_repo,
             activity_event_repo,
             message_queue,
@@ -1880,6 +1897,29 @@ impl<R: Runtime> AppChatService<R> {
     ) -> Self {
         self.ideation_model_settings_repo = Some(repo);
         self
+    }
+
+    pub fn with_mcp_policy_service(
+        mut self,
+        service: crate::application::mcp_policy_service::McpPolicyService,
+    ) -> Self {
+        self.mcp_policy_service = Some(service);
+        self
+    }
+
+    async fn resolve_mcp_launch_policy(
+        &self,
+        provider: AgentHarnessKind,
+        project_id: Option<&str>,
+        working_directory: &Path,
+    ) -> Result<crate::domain::agents::McpLaunchPolicy, ChatServiceError> {
+        resolve_mcp_launch_policy_with_service(
+            self.mcp_policy_service.as_ref(),
+            provider,
+            project_id,
+            working_directory,
+        )
+        .await
     }
 
     async fn enqueue_pending_send(
@@ -3933,6 +3973,28 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
+            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
+        });
+        #[cfg(any(test, feature = "test-utils"))]
+        let should_await_external_mcp = self.app_handle.is_some();
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let should_await_external_mcp = true;
+        if should_await_external_mcp {
+            chat_service_context::await_required_external_mcp(
+                self.app_handle.as_ref(),
+                effective_harness,
+                &plugin_dir,
+                effective_agent_name,
+                agent_profile,
+            )
+            .await
+            .map_err(ChatServiceError::SpawnFailed)?;
+        }
+        let mcp_launch_policy = self
+            .resolve_mcp_launch_policy(effective_harness, project_id, working_directory)
+            .await?;
+        launch_plan.apply_mcp_policy(effective_harness, &mcp_launch_policy);
         launch_plan.apply_provider_env(&provider_env);
         let persona_injected = launch_plan.persona_injected();
         let injection_would_be_skipped =
@@ -7605,12 +7667,12 @@ mod stale_registry_gate_tests {
 
 #[cfg(test)]
 mod coordination_mode_send_tests {
+    use super::SendMessageOptions;
     use crate::application::AppState;
     use crate::domain::entities::{
         ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
         TeamIntent,
     };
-    use super::SendMessageOptions;
 
     #[tokio::test]
     async fn explicit_team_intent_persists_coordination_mode_for_existing_conversation() {

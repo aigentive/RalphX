@@ -322,6 +322,7 @@ struct ExternalMcpConfigRawOverlay {
     host: Option<String>,
     max_restart_attempts: Option<u32>,
     restart_delay_ms: Option<u64>,
+    startup_timeout_secs: Option<u64>,
     human_wait_timeout_secs: Option<u64>,
     auth_token: Option<String>,
     node_path: Option<String>,
@@ -584,6 +585,9 @@ fn apply_external_mcp_config_overlay(
     }
     if let Some(restart_delay_ms) = overlay.restart_delay_ms {
         cfg.external_mcp.restart_delay_ms = restart_delay_ms;
+    }
+    if let Some(startup_timeout_secs) = overlay.startup_timeout_secs {
+        cfg.external_mcp.startup_timeout_secs = startup_timeout_secs;
     }
     if let Some(human_wait_timeout_secs) = overlay.human_wait_timeout_secs {
         cfg.external_mcp.human_wait_timeout_secs = human_wait_timeout_secs;

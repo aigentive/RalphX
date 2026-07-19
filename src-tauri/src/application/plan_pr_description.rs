@@ -295,6 +295,7 @@ async fn draft_plan_pr_description_inner(
             max_tokens: None,
             timeout_secs: Some(120),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {

@@ -95,6 +95,7 @@ pub async fn invoke_automation_utility_agent(
             max_tokens: None,
             timeout_secs: Some(timeout.as_secs().max(1)),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| AppError::Infrastructure(format!("failed to spawn {purpose}: {error}")))?;

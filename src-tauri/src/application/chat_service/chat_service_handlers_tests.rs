@@ -12,7 +12,9 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, ProviderSessionRef};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentProviderSettings, McpOverrideState, McpServerKey, ProviderSessionRef,
+};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
     ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
@@ -489,6 +491,8 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -500,20 +504,55 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
 }
 
 #[tokio::test]
-async fn recovery_retry_spawnable_gate_allows_non_execution_without_provider_repo() {
+async fn recovery_retry_spawnable_gate_blocks_non_execution_without_app_state() {
     let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
         &None,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
 
     assert!(
-        spawnable.is_some(),
-        "non-execution recovery retry can preserve the legacy no-provider path"
+        spawnable.is_none(),
+        "non-execution recovery retry must not bypass MCP policy without app state"
     );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_policy_without_provider_repo() {
+    let app_state = AppState::new_test();
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    app_state
+        .mcp_policy_repo
+        .set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .expect("save global MCP deny");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .expect("app state can resolve policy without provider settings");
+
+    assert!(spawnable
+        .get_args_for_test()
+        .windows(2)
+        .any(|args| args == ["--disallowedTools", "mcp__github__*"]));
 }
 
 #[tokio::test]
@@ -533,6 +572,8 @@ async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -560,12 +601,19 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
         .await
         .expect("save enabled provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
 
-    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
-        &None,
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -579,11 +627,18 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
 
 #[tokio::test]
 async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
     let provider_gate = RecoveryRetryProviderGate::new(
-        &None,
+        &app_handle,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
@@ -605,6 +660,8 @@ async fn resolve_recovery_retry_spawnable_drops_build_errors() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(

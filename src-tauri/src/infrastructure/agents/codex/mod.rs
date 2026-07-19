@@ -1,5 +1,13 @@
+pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
+pub(crate) mod mcp_catalog;
 pub mod stream_processor;
+
+#[cfg(test)]
+mod app_server_mcp_catalog_tests;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -299,6 +307,7 @@ fn build_codex_internal_mcp_overrides(
     runtime_context: Option<&CodexMcpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
+    let startup_timeout_secs = external_mcp_config().startup_timeout_secs;
     let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
 
     let node_command = node_utils::find_node_binary()
@@ -351,6 +360,8 @@ fn build_codex_internal_mcp_overrides(
             encode_codex_string_array(&mcp_args)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!("mcp_servers.{mcp_server_name}.startup_timeout_sec={startup_timeout_secs}"),
     ];
 
     if let Some(tools) = enabled_tools {
@@ -395,6 +406,11 @@ fn build_codex_external_mcp_overrides(
             encode_codex_string_literal(TAURI_MCP_BYPASS_TOKEN_ENV)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!(
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={}",
+            cfg.startup_timeout_secs
+        ),
     ];
 
     if !codex_metadata.mcp_tools.is_empty() {
