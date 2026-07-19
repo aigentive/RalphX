@@ -26,6 +26,7 @@ describe("manualRoleDefaultsApi", () => {
         {
           role: "workspace_edit",
           display_name: "Edit",
+          description: "Implements changes in the selected project workspace.",
           family: "workspace",
           family_display_name: "Workspace",
           configured: rawValue,
@@ -50,6 +51,7 @@ describe("manualRoleDefaultsApi", () => {
       roles: [
         {
           displayName: "Edit",
+          description: "Implements changes in the selected project workspace.",
           familyDisplayName: "Workspace",
           configured: {
             serviceTier: "standard",
@@ -63,6 +65,35 @@ describe("manualRoleDefaultsApi", () => {
     expect(invoke).toHaveBeenCalledWith("get_manual_role_defaults", {
       projectId: "project-1",
     });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+  ])("rejects a %s backend-owned role description", async (_label, description) => {
+    vi.mocked(invoke).mockResolvedValue({
+      project_id: null,
+      roles: [
+        {
+          role: "workspace_edit",
+          display_name: "Edit",
+          ...(description !== undefined && { description }),
+          family: "workspace",
+          family_display_name: "Workspace",
+          configured: null,
+          effective: rawValue,
+          source: "provider_default",
+          diagnostics: [],
+          controls: {
+            capabilities: [],
+            speeds: [],
+            persona: { enabled: false, disabled_reason: null },
+          },
+        },
+      ],
+    });
+
+    await expect(manualRoleDefaultsApi.list(null)).rejects.toThrow();
   });
 
   it("sends the exact whole role value and clears only the selected scope", async () => {

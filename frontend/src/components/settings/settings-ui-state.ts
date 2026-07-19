@@ -13,14 +13,25 @@ import {
 
 const ACTIVE_SECTION_KEY = "ralphx-settings-active-section";
 const ACTIVE_SECTION_VERSION_KEY = "ralphx-settings-active-section-version";
-const HARNESS_TAB_KEY = "ralphx-settings-harness-tab";
-const HARNESS_EXPANDED_KEY = "ralphx-settings-harness-expanded";
+const AGENTS_STATE_KEY = "ralphx-settings-agents-state";
 const SETTINGS_ACTIVE_SECTION_VERSION = 3;
+const AGENTS_STATE_VERSION = 1;
 const LEGACY_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "execution";
 const PRE_HARNESS_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "repository";
 
-export type HarnessTabScope = "ideation" | "execution";
-export type HarnessTabValue = "global" | "project";
+export type AgentsTabValue = "global" | "project";
+export type AgentsDisclosureScope = "global" | `project:${string}`;
+
+export interface AgentsDisclosure {
+  families: Record<string, boolean>;
+  roles: Record<string, boolean>;
+}
+
+interface AgentsSettingsState {
+  version: typeof AGENTS_STATE_VERSION;
+  activeTab: AgentsTabValue;
+  disclosures: Record<string, AgentsDisclosure>;
+}
 
 function safeGet(key: string): string | null {
   try {
@@ -44,6 +55,154 @@ function safeRemove(key: string): void {
   } catch {
     /* ignore write errors */
   }
+}
+
+function emptyAgentsState(): AgentsSettingsState {
+  return {
+    version: AGENTS_STATE_VERSION,
+    activeTab: "global",
+    disclosures: {},
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseBooleanRecord(value: unknown): Record<string, boolean> | null {
+  if (!isRecord(value)) return null;
+  const result: Record<string, boolean> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    if (typeof candidate !== "boolean") return null;
+    result[key] = candidate;
+  }
+  return result;
+}
+
+function parseAgentsDisclosure(value: unknown): AgentsDisclosure | null {
+  if (!isRecord(value)) return null;
+  const families = parseBooleanRecord(value.families);
+  const roles = parseBooleanRecord(value.roles);
+  return families && roles ? { families, roles } : null;
+}
+
+function loadAgentsState(): AgentsSettingsState {
+  const raw = safeGet(AGENTS_STATE_KEY);
+  if (!raw) return emptyAgentsState();
+  try {
+    const candidate: unknown = JSON.parse(raw);
+    if (
+      !isRecord(candidate) ||
+      candidate.version !== AGENTS_STATE_VERSION ||
+      (candidate.activeTab !== "global" && candidate.activeTab !== "project") ||
+      !isRecord(candidate.disclosures)
+    ) {
+      return emptyAgentsState();
+    }
+    const disclosures: Record<string, AgentsDisclosure> = {};
+    for (const [scope, disclosure] of Object.entries(candidate.disclosures)) {
+      const parsed = parseAgentsDisclosure(disclosure);
+      if (!parsed) return emptyAgentsState();
+      disclosures[scope] = parsed;
+    }
+    return {
+      version: AGENTS_STATE_VERSION,
+      activeTab: candidate.activeTab,
+      disclosures,
+    };
+  } catch {
+    return emptyAgentsState();
+  }
+}
+
+function saveAgentsState(state: AgentsSettingsState): void {
+  safeSet(AGENTS_STATE_KEY, JSON.stringify(state));
+}
+
+export function agentsDisclosureScope(
+  projectId: string | null,
+): AgentsDisclosureScope {
+  return projectId ? `project:${projectId}` : "global";
+}
+
+export function loadAgentsTab(hasActiveProject: boolean): AgentsTabValue {
+  const saved = loadAgentsState().activeTab;
+  return saved === "project" && !hasActiveProject ? "global" : saved;
+}
+
+export function saveAgentsTab(tab: AgentsTabValue): void {
+  saveAgentsState({ ...loadAgentsState(), activeTab: tab });
+}
+
+export function loadAgentsDisclosure(
+  scope: AgentsDisclosureScope,
+): AgentsDisclosure {
+  const disclosure = loadAgentsState().disclosures[scope];
+  return disclosure
+    ? { families: { ...disclosure.families }, roles: { ...disclosure.roles } }
+    : { families: {}, roles: {} };
+}
+
+export function loadAgentsDisclosures(): Record<string, AgentsDisclosure> {
+  return Object.fromEntries(
+    Object.entries(loadAgentsState().disclosures).map(([scope, disclosure]) => [
+      scope,
+      {
+        families: { ...disclosure.families },
+        roles: { ...disclosure.roles },
+      },
+    ]),
+  );
+}
+
+function saveAgentsDisclosure(
+  scope: AgentsDisclosureScope,
+  disclosure: AgentsDisclosure,
+): void {
+  const state = loadAgentsState();
+  saveAgentsState({
+    ...state,
+    disclosures: { ...state.disclosures, [scope]: disclosure },
+  });
+}
+
+export function saveAgentsFamilyExpanded(
+  scope: AgentsDisclosureScope,
+  family: string,
+  expanded: boolean,
+): void {
+  const disclosure = loadAgentsDisclosure(scope);
+  saveAgentsDisclosure(scope, {
+    ...disclosure,
+    families: { ...disclosure.families, [family]: expanded },
+  });
+}
+
+export function saveAgentsFamiliesExpanded(
+  scope: AgentsDisclosureScope,
+  families: readonly string[],
+  expanded: boolean,
+): void {
+  const disclosure = loadAgentsDisclosure(scope);
+  saveAgentsDisclosure(scope, {
+    ...disclosure,
+    families: {
+      ...disclosure.families,
+      ...Object.fromEntries(families.map((family) => [family, expanded])),
+    },
+  });
+}
+
+export function saveAgentsRoleExpanded(
+  scope: AgentsDisclosureScope,
+  role: string,
+  expanded: boolean,
+): void {
+  const disclosure = loadAgentsDisclosure(scope);
+  saveAgentsDisclosure(scope, {
+    ...disclosure,
+    roles: { ...disclosure.roles, [role]: expanded },
+  });
 }
 
 function loadActiveSectionVersion(): number {
@@ -97,90 +256,4 @@ export function loadActiveSection(): SettingsSectionId | null {
 export function saveActiveSection(section: SettingsSectionId): void {
   safeSet(ACTIVE_SECTION_KEY, section);
   safeSet(ACTIVE_SECTION_VERSION_KEY, String(SETTINGS_ACTIVE_SECTION_VERSION));
-}
-
-function loadHarnessTabMap(): Record<string, HarnessTabValue> {
-  try {
-    const raw = localStorage.getItem(HARNESS_TAB_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, HarnessTabValue>) : {};
-  } catch {
-    return {};
-  }
-}
-
-export function loadHarnessTab(scope: HarnessTabScope): HarnessTabValue {
-  return loadHarnessTabMap()[scope] ?? "global";
-}
-
-export function saveHarnessTab(
-  scope: HarnessTabScope,
-  tab: HarnessTabValue,
-): void {
-  try {
-    const next = { ...loadHarnessTabMap(), [scope]: tab };
-    localStorage.setItem(HARNESS_TAB_KEY, JSON.stringify(next));
-  } catch {
-    /* ignore write errors */
-  }
-}
-
-function loadHarnessExpandedMap(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(HARNESS_EXPANDED_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-  } catch {
-    return {};
-  }
-}
-
-export function expandedKey(
-  tab: HarnessTabValue,
-  laneId: string,
-): string {
-  return `${tab}:${laneId}`;
-}
-
-export function loadHarnessExpanded(
-  tab: HarnessTabValue,
-  laneIds: string[],
-): Record<string, boolean> {
-  const map = loadHarnessExpandedMap();
-  const result: Record<string, boolean> = {};
-  for (const laneId of laneIds) {
-    const stored = map[expandedKey(tab, laneId)];
-    if (stored !== undefined) {
-      result[laneId] = stored;
-    }
-  }
-  return result;
-}
-
-export function saveHarnessExpanded(
-  tab: HarnessTabValue,
-  laneId: string,
-  expanded: boolean,
-): void {
-  try {
-    const map = loadHarnessExpandedMap();
-    map[expandedKey(tab, laneId)] = expanded;
-    localStorage.setItem(HARNESS_EXPANDED_KEY, JSON.stringify(map));
-  } catch {
-    /* ignore write errors */
-  }
-}
-
-export function saveHarnessExpandedBulk(
-  tab: HarnessTabValue,
-  laneIds: string[],
-  expanded: boolean,
-): void {
-  try {
-    const map = loadHarnessExpandedMap();
-    for (const laneId of laneIds) {
-      map[expandedKey(tab, laneId)] = expanded;
-    }
-    localStorage.setItem(HARNESS_EXPANDED_KEY, JSON.stringify(map));
-  } catch {
-    /* ignore write errors */
-  }
 }
