@@ -1,13 +1,7 @@
 use std::sync::Arc;
 
-use crate::domain::agents::STANDARD_AGENT_HARNESSES;
-use tracing::{info, warn};
-
 use tauri::Manager;
 
-use crate::application::harness_runtime_registry::{
-    resolve_startup_harness_integration_with_provider_repo, run_startup_harness_integration,
-};
 use crate::application::runtime_wiring::build_http_app_state;
 use crate::application::{HttpShutdownHandle, TeamStateTracker};
 use crate::commands::ExecutionState;
@@ -46,30 +40,4 @@ pub(crate) fn start_server_boot(
             tracing::error!("HTTP server failed: {}", e);
         }
     });
-
-    // Run any harness-specific startup integrations, such as Claude MCP registration.
-    let provider_settings_repo = Arc::clone(&app_state.agent_provider_settings_repo);
-    for harness in STANDARD_AGENT_HARNESSES {
-        let provider_settings_repo = Arc::clone(&provider_settings_repo);
-        tauri::async_runtime::spawn(async move {
-            match resolve_startup_harness_integration_with_provider_repo(
-                harness,
-                &provider_settings_repo,
-            )
-            .await
-            {
-                Ok(Some(integration)) => {
-                    let harness_name = integration.harness();
-                    let description = integration.description();
-                    info!("Starting {} {}", harness_name, description);
-                    match run_startup_harness_integration(integration).await {
-                        Ok(()) => info!("{} {} succeeded", harness_name, description),
-                        Err(e) => warn!("{} {} failed: {}", harness_name, description, e),
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => warn!("Skipping {} startup integration: {}", harness, error),
-            }
-        });
-    }
 }

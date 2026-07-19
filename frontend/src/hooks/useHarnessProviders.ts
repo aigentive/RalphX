@@ -21,6 +21,7 @@ const EMPTY_PROVIDER_SETTINGS: AgentProvidersSettingsResponse = {
 
 interface UseHarnessProvidersOptions {
   refreshRuntime?: boolean;
+  enabled?: boolean;
 }
 
 export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
@@ -32,6 +33,7 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
     staleTime: 1000 * 30,
     gcTime: 1000 * 60 * 5,
     placeholderData: EMPTY_PROVIDER_SETTINGS,
+    enabled: options.enabled ?? true,
   });
 
   const mutation = useMutation({

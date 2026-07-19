@@ -124,6 +124,7 @@ async fn run_plan_complexity_assessor(
             max_tokens: None,
             timeout_secs: Some(ASSESSOR_TIMEOUT_SECS),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {

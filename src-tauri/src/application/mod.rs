@@ -18,6 +18,15 @@ pub mod agent_issue_report;
 pub mod agent_lane_resolution;
 pub mod manual_role_default_service;
 pub mod manual_router_config;
+pub mod mcp_policy_config;
+pub mod mcp_policy_agent_client;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+#[cfg(test)]
+mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
@@ -135,8 +144,11 @@ pub mod priority_service;
 pub mod project_pr_template;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
+pub(crate) mod provider_management_eligibility;
 #[cfg(test)]
 mod provider_onboarding_gate_tests;
+#[cfg(test)]
+mod provider_management_eligibility_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;

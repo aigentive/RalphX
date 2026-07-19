@@ -321,6 +321,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     pub linear_integration_service: Option<Arc<LinearIntegrationService>>,
     pub granola_integration_service: Option<Arc<GranolaIntegrationService>>,
+    pub mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -384,6 +385,7 @@ impl ChatRuntimeFactoryDeps {
             atlassian_integration_service: None,
             linear_integration_service: None,
             granola_integration_service: None,
+            mcp_policy_service: None,
         }
     }
 
@@ -568,6 +570,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_mcp_policy_service(
+        mut self,
+        service: crate::application::mcp_policy_service::McpPolicyService,
+    ) -> Self {
+        self.mcp_policy_service = Some(service);
+        self
+    }
+
     pub(crate) fn with_runtime_support(
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -705,6 +715,7 @@ impl ChatRuntimeFactoryDeps {
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
         .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
         .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
+        .with_mcp_policy_service(state.mcp_policy_service())
     }
 }
 
@@ -817,6 +828,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(granola) = deps.granola_integration_service.as_ref() {
         service = service.with_granola_integration_service(Arc::clone(granola));
+    }
+    if let Some(policy_service) = deps.mcp_policy_service.as_ref() {
+        service = service.with_mcp_policy_service(policy_service.clone());
     }
 
     service

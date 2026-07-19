@@ -763,6 +763,7 @@ pub async fn spawn_project_analyzer(
         max_tokens: None,
         timeout_secs: Some(120),
         env,
+        mcp_launch_policy: Default::default(),
     };
 
     tokio::spawn(async move {

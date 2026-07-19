@@ -488,6 +488,9 @@ mod v20260716210000_supervised_native_task_pipeline_tests;
 mod v20260717235338_github_cli_token_environment_setting;
 #[cfg(test)]
 mod v20260717235338_github_cli_token_environment_setting_tests;
+mod v20260718014631_mcp_policy_overrides;
+#[cfg(test)]
+mod v20260718014631_mcp_policy_overrides_tests;
 mod v20260718162852_clear_detected_validation_commands;
 #[cfg(test)]
 mod v20260718162852_clear_detected_validation_commands_tests;
@@ -1609,6 +1612,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260717235338,
         name: "github_cli_token_environment_setting",
         migrate: v20260717235338_github_cli_token_environment_setting::migrate,
+    },
+    Migration {
+        version: 20260718014631,
+        name: "mcp_policy_overrides",
+        migrate: v20260718014631_mcp_policy_overrides::migrate,
     },
     Migration {
         version: 20260718162852,

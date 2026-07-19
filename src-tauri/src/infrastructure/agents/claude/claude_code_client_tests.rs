@@ -315,11 +315,11 @@ fn test_spawn_agent_command_uses_prompt_injection_for_utility_agents() {
     );
     assert!(
         args.contains(&"--mcp-config".to_string()),
-        "utility agent should still receive a strict MCP config"
+        "utility agent should still receive its required RalphX MCP config"
     );
     assert!(
-        args.contains(&"--strict-mcp-config".to_string()),
-        "utility agent should keep strict MCP isolation"
+        !args.contains(&"--strict-mcp-config".to_string()),
+        "utility agent should inherit enabled provider-native MCP servers"
     );
 }
 
@@ -339,6 +339,27 @@ fn test_build_cli_args_with_resume() {
     // Agent MUST be present when resuming to enforce disallowedTools
     assert!(args.contains(&"--agent".to_string()));
     assert!(args.contains(&"worker".to_string()));
+}
+
+#[test]
+fn build_cli_args_applies_resolved_mcp_denies_without_strict_isolation() {
+    let client = ClaudeCodeClient::new();
+    let mut config = AgentConfig::worker("Test").with_agent("worker");
+    config.mcp_launch_policy.disabled_servers = vec!["github".to_string()];
+    config
+        .mcp_launch_policy
+        .disabled_tools
+        .insert("linear".to_string(), vec!["delete_issue".to_string()]);
+
+    let args = client
+        .build_cli_args(&config, None, false)
+        .expect("build CLI args");
+
+    assert_eq!(
+        arg_value(&args, "--disallowedTools"),
+        Some("mcp__github__*,mcp__linear__delete_issue")
+    );
+    assert!(!args.contains(&"--strict-mcp-config".to_string()));
 }
 
 #[test]

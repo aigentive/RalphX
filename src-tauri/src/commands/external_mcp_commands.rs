@@ -1,12 +1,20 @@
 // External MCP config commands — expose ExternalMcpConfig as readable/writable via Tauri IPC.
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
 
 use crate::application::harness_runtime_registry::{
     default_external_mcp_config, default_external_mcp_config_path,
 };
 
 const AUTH_TOKEN_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+
+#[tauri::command]
+pub fn get_external_mcp_readiness(
+    handle: State<'_, crate::infrastructure::ExternalMcpHandle>,
+) -> crate::infrastructure::ExternalMcpReadinessState {
+    handle.readiness()
+}
 
 /// Masked view of ExternalMcpConfig safe for frontend consumption.
 /// auth_token is never returned in plaintext — masked as "••••••••" when set, None when unset.

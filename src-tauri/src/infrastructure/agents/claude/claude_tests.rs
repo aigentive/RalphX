@@ -42,12 +42,6 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, original }
     }
-
-    fn unset(key: &'static str) -> Self {
-        let original = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, original }
-    }
 }
 
 impl Drop for EnvGuard {
@@ -67,19 +61,6 @@ fn read_test_file(path: impl AsRef<Path>) -> String {
 fn test_path_exists(path: impl AsRef<Path>) -> bool {
     checked_exists(path.as_ref(), "Claude plugin test fixture")
         .expect("inspect Claude plugin test fixture")
-}
-
-fn write_executable(path: &Path, contents: &str) {
-    std::fs::write(path, contents).expect("write executable");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(path)
-            .expect("executable metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).expect("mark executable");
-    }
 }
 
 fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
@@ -237,69 +218,6 @@ fn test_apply_common_spawn_env_preserves_user_shims_while_ensuring_node_bin() {
         );
     }
     assert!(path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin"));
-}
-
-#[allow(clippy::await_holding_lock)]
-#[tokio::test]
-async fn register_mcp_server_ensures_resolved_node_for_env_shim() {
-    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
-        .lock()
-        .expect("env mutex");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let empty_path = temp_dir.path().join("empty-path");
-    std::fs::create_dir_all(&empty_path).expect("create empty path");
-    let nvm_bin = temp_dir
-        .path()
-        .join(".nvm")
-        .join("versions")
-        .join("node")
-        .join("v22.16.0")
-        .join("bin");
-    std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
-    let node_path = nvm_bin.join("node");
-    let claude_path = nvm_bin.join("claude");
-    let captured_add_json_path = temp_dir.path().join("captured-add-json.txt");
-    write_executable(
-        &node_path,
-        &format!(
-            r#"#!/bin/sh
-capture='{}'
-shift
-if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
-  exit 0
-elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
-  printf '%s' "$6" > "$capture"
-  exit 0
-else
-  printf 'unexpected args\n' >&2
-  exit 64
-fi
-"#,
-            captured_add_json_path.to_string_lossy()
-        ),
-    );
-    write_executable(&claude_path, "#!/usr/bin/env node\n");
-
-    let _home = EnvGuard::set_os("HOME", temp_dir.path());
-    let _path = EnvGuard::set_os("PATH", &empty_path);
-    let _nvm_bin = EnvGuard::unset("NVM_BIN");
-    let _volta_home = EnvGuard::unset("VOLTA_HOME");
-    let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
-
-    register_mcp_server(&claude_path, temp_dir.path())
-        .await
-        .expect("Claude MCP registration should run npm shim with resolved node");
-
-    let captured_add_json =
-        std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
-    assert!(
-        captured_add_json.contains("--trace-dir"),
-        "registered MCP config should include trace-dir arg"
-    );
-    assert!(
-        captured_add_json.contains("mcp-proxy"),
-        "registered MCP config should point traces at MCP proxy log root"
-    );
 }
 
 /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the

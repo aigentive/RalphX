@@ -268,6 +268,24 @@ pub async fn attempt_session_recovery<R: Runtime>(
     } else {
         None
     };
+    let recovery_agent_name = super::chat_service_helpers::resolve_agent_with_team_mode(
+        &context_type,
+        entity_status.as_deref(),
+        team_mode,
+    );
+    chat_service_context::await_required_external_mcp(
+        app_handle,
+        harness,
+        plugin_dir,
+        recovery_agent_name,
+        None,
+    )
+    .await
+    .map_err(|error| {
+        AppError::Infrastructure(format!(
+            "External MCP transport is not ready for session recovery: {error}"
+        ))
+    })?;
     let resolved_persona = if persona_feature_enabled {
         if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
             let workspace_mode = app_state
@@ -339,6 +357,23 @@ pub async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    let mut provider_spawnable = provider_spawnable;
+    let handle = app_handle.ok_or_else(|| {
+        AppError::Infrastructure("MCP launch policy service is unavailable".to_string())
+    })?;
+    let app_state = handle.state::<AppState>();
+    let policy = app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(
+            harness,
+            _resolved_project_id.as_deref(),
+            Some(working_directory),
+        )
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("Failed to resolve MCP launch policy: {error}"))
+        })?;
+    provider_spawnable.apply_mcp_policy(harness, &policy);
     let persona_injected = provider_spawnable.spawnable.persona_injected();
     let persona_injection_skipped_reason = provider_spawnable
         .spawnable

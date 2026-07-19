@@ -28,7 +28,7 @@ use super::{
     build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
     create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
     get_effective_settings, get_preapproved_tools, normalize_claude_effort_for_cli_path,
-    sanitize_claude_user_state, validate_claude_model_for_cli_path, SpawnableCommand,
+    validate_claude_model_for_cli_path, SpawnableCommand,
 };
 
 #[cfg(test)]
@@ -150,6 +150,8 @@ pub struct TeammateSpawnConfig {
     pub context: TeammateContext,
     /// Effort level override (e.g. "max"). Falls back to global default_effort when None.
     pub effort: Option<String>,
+    /// Resolved provider-native MCP deny policy for this teammate launch.
+    pub mcp_launch_policy: crate::domain::agents::McpLaunchPolicy,
 }
 
 impl TeammateSpawnConfig {
@@ -180,6 +182,7 @@ impl TeammateSpawnConfig {
             print_mode_prompt: None,
             context: TeammateContext::default(),
             effort: None,
+            mcp_launch_policy: Default::default(),
         }
     }
 
@@ -261,6 +264,14 @@ impl TeammateSpawnConfig {
 
     pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
         self.effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_mcp_launch_policy(
+        mut self,
+        policy: crate::domain::agents::McpLaunchPolicy,
+    ) -> Self {
+        self.mcp_launch_policy = policy;
         self
     }
 }
@@ -475,6 +486,11 @@ impl ClaudeCodeClient {
             spawnable.arg("--max-tokens");
             spawnable.arg(&max_tokens.to_string());
         }
+        let disallowed_tools = config.mcp_launch_policy.claude_disallowed_tools();
+        if !disallowed_tools.is_empty() {
+            spawnable.arg("--disallowedTools");
+            spawnable.arg(&disallowed_tools.join(","));
+        }
 
         Ok(spawnable)
     }
@@ -644,7 +660,6 @@ impl ClaudeCodeClient {
         resume_session_id: Option<&str>,
         interactive: bool,
     ) -> Result<Vec<String>, String> {
-        sanitize_claude_user_state();
         let cli_path = self.cli_path_for_config(config);
         let mut args = Vec::new();
 
@@ -668,16 +683,11 @@ impl ClaudeCodeClient {
         if let Some(plugin_dir) = &config.plugin_dir {
             args.extend(["--plugin-dir".to_string(), plugin_dir.display().to_string()]);
 
-            // Create dynamic MCP config for agent-specific tool filtering
-            // Use --strict-mcp-config to ignore user/global MCP servers that can hang
-            // Hard error on invalid config — MCP is critical infra, fail loud.
+            // Add RalphX's dynamic MCP config without suppressing provider-native
+            // user, project, and local MCP configuration layers.
             if let Some(agent) = &config.agent {
                 let temp_path = create_mcp_config(plugin_dir, agent, false)?;
-                args.extend([
-                    "--mcp-config".to_string(),
-                    temp_path.display().to_string(),
-                    "--strict-mcp-config".to_string(),
-                ]);
+                args.extend(["--mcp-config".to_string(), temp_path.display().to_string()]);
             }
         }
 
@@ -739,6 +749,10 @@ impl ClaudeCodeClient {
                 args.push("--allowedTools".to_string());
                 args.push(preapproved);
             }
+        }
+        let disallowed_tools = config.mcp_launch_policy.claude_disallowed_tools();
+        if !disallowed_tools.is_empty() {
+            args.extend(["--disallowedTools".to_string(), disallowed_tools.join(",")]);
         }
 
         Ok(args)
@@ -937,7 +951,6 @@ impl ClaudeCodeClient {
         &self,
         config: &TeammateSpawnConfig,
     ) -> Result<Vec<String>, String> {
-        sanitize_claude_user_state();
         let mut args = Vec::new();
 
         // Output format for streaming (same as other modes)
@@ -962,11 +975,7 @@ impl ClaudeCodeClient {
             // Uses mcp_agent_type (e.g., "ideation-team-member") not the Claude Code agent_type
             // Hard error on invalid config — MCP is critical infra, fail loud.
             let temp_path = create_mcp_config(plugin_dir, &config.mcp_agent_type, false)?;
-            args.extend([
-                "--mcp-config".to_string(),
-                temp_path.display().to_string(),
-                "--strict-mcp-config".to_string(),
-            ]);
+            args.extend(["--mcp-config".to_string(), temp_path.display().to_string()]);
         }
 
         // --- Team-specific CLI flags ---
@@ -1017,6 +1026,10 @@ impl ClaudeCodeClient {
                 .map(|t| format!("mcp__{mcp_server_name}__{t}"))
                 .collect();
             args.extend(["--allowedTools".to_string(), prefixed.join(",")]);
+        }
+        let disallowed_tools = config.mcp_launch_policy.claude_disallowed_tools();
+        if !disallowed_tools.is_empty() {
+            args.extend(["--disallowedTools".to_string(), disallowed_tools.join(",")]);
         }
 
         // Prompt mode: -p is REQUIRED for --output-format stream-json to produce output.
