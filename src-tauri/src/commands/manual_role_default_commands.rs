@@ -63,6 +63,7 @@ pub struct RoleControlOptionsResponse {
 pub struct ManualRoleCatalogEntryResponse {
     pub role: String,
     pub display_name: String,
+    pub description: String,
     pub family: String,
     pub family_display_name: String,
     pub configured: Option<ManualRoleDefaultResponse>,
@@ -460,7 +461,7 @@ async fn validate_persona(state: &AppState, persona_id: Option<&PersonaId>) -> R
     .map_err(|error| error.to_string())
 }
 
-fn catalog_entry(
+pub(super) fn catalog_entry(
     role: RoutingRole,
     configured: Option<ManualRoleDefaultResponse>,
     resolution: crate::error::AppResult<ResolvedManualRoleDefault>,
@@ -487,6 +488,7 @@ fn catalog_entry(
     ManualRoleCatalogEntryResponse {
         role: metadata.key.to_string(),
         display_name: metadata.display_name.to_string(),
+        description: metadata.description.to_string(),
         family: metadata.family.key().to_string(),
         family_display_name: metadata.family.display_name().to_string(),
         configured,

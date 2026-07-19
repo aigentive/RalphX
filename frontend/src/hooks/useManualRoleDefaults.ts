@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
@@ -41,12 +42,24 @@ export function useManualRoleDefaults(projectId: string | null) {
   const query = useQuery({
     queryKey,
     queryFn: () => manualRoleDefaultsApi.list(projectId),
+    placeholderData: () => undefined,
     staleTime: 30_000,
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ role, value }: { role: string; value: ManualRoleDefault }) =>
-      manualRoleDefaultsApi.update({ projectId, role, value }),
+    mutationFn: ({
+      projectId: mutationProjectId,
+      role,
+      value,
+    }: {
+      projectId: string | null;
+      role: string;
+      value: ManualRoleDefault;
+    }) => manualRoleDefaultsApi.update({
+      projectId: mutationProjectId,
+      role,
+      value,
+    }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
         queryKey: manualRoleDefaultKeys.all,
@@ -54,23 +67,55 @@ export function useManualRoleDefaults(projectId: string | null) {
     },
   });
   const clearMutation = useMutation({
-    mutationFn: (role: string) =>
-      manualRoleDefaultsApi.clear({ projectId, role }),
+    mutationFn: ({
+      projectId: mutationProjectId,
+      role,
+    }: {
+      projectId: string | null;
+      role: string;
+    }) => manualRoleDefaultsApi.clear({ projectId: mutationProjectId, role }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
         queryKey: manualRoleDefaultKeys.all,
       });
     },
   });
+  const resetUpdate = updateMutation.reset;
+  const resetClear = clearMutation.reset;
+
+  useEffect(() => {
+    resetUpdate();
+    resetClear();
+  }, [projectId, resetClear, resetUpdate]);
+
+  const updateMatchesScope = updateMutation.variables?.projectId === projectId;
+  const clearMatchesScope = clearMutation.variables?.projectId === projectId;
 
   return {
     catalog: query.data ?? null,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,
-    isSaving: updateMutation.isPending || clearMutation.isPending,
-    updateDefault: (role: string, value: ManualRoleDefault) =>
-      updateMutation.mutate({ role, value }),
-    clearDefault: clearMutation.mutate,
+    saveError:
+      (updateMatchesScope ? updateMutation.error : null) ??
+      (clearMatchesScope ? clearMutation.error : null) ??
+      null,
+    isSaving:
+      (updateMatchesScope && updateMutation.isPending) ||
+      (clearMatchesScope && clearMutation.isPending),
+    updateDefault: (role: string, value: ManualRoleDefault) => {
+      updateMutation.reset();
+      clearMutation.reset();
+      updateMutation.mutate({ projectId, role, value });
+    },
+    clearDefaultAsync: (role: string) => {
+      updateMutation.reset();
+      clearMutation.reset();
+      return clearMutation.mutateAsync({ projectId, role });
+    },
+    dismissSaveError: () => {
+      updateMutation.reset();
+      clearMutation.reset();
+    },
   };
 }

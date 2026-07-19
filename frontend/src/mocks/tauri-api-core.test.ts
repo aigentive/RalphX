@@ -173,6 +173,57 @@ describe("review settings command mocks", () => {
   });
 });
 
+describe("manual role default command mocks", () => {
+  it("mirrors the complete backend catalog and project inheritance sources", async () => {
+    const globalCatalog = await invoke<{
+      roles: Array<{
+        role: string;
+        description: string;
+        configured: Record<string, unknown> | null;
+        effective: Record<string, unknown> | null;
+        source: string;
+      }>;
+    }>("get_manual_role_defaults", { projectId: null });
+    expect(globalCatalog.roles).toHaveLength(29);
+    expect(globalCatalog.roles.every((role) => role.description.trim().length > 0)).toBe(true);
+
+    const inheritedCatalog = await invoke<typeof globalCatalog>(
+      "get_manual_role_defaults",
+      { projectId: "mock-agents-project" },
+    );
+    const inheritedEdit = inheritedCatalog.roles.find(
+      (role) => role.role === "workspace_edit",
+    );
+    expect(inheritedEdit).toMatchObject({
+      configured: null,
+      effective: globalCatalog.roles.find((role) => role.role === "workspace_edit")?.configured,
+      source: "global_ui",
+    });
+
+    await invoke("update_manual_role_default", {
+      input: {
+        projectId: "mock-agents-project",
+        role: "workspace_edit",
+        value: { marker: "project override" },
+      },
+    });
+    const projectCatalog = await invoke<typeof globalCatalog>(
+      "get_manual_role_defaults",
+      { projectId: "mock-agents-project" },
+    );
+    expect(projectCatalog.roles.find((role) => role.role === "workspace_edit"))
+      .toMatchObject({
+        configured: { marker: "project override" },
+        effective: { marker: "project override" },
+        source: "project_ui",
+      });
+
+    await invoke("clear_manual_role_default", {
+      input: { projectId: "mock-agents-project", role: "workspace_edit" },
+    });
+  });
+});
+
 describe("ticketing command mocks", () => {
   it("returns ticket filter options in the same object shape as the Tauri command", async () => {
     const options = await invoke<{
