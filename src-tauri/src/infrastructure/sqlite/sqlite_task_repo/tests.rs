@@ -49,6 +49,130 @@ async fn test_create_inserts_task_and_returns_it() {
 }
 
 #[tokio::test]
+async fn test_create_with_tasks_policy_rejects_disabled_without_inserting() {
+    let db = setup_test_db();
+    let repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+    let project_id = ProjectId::from_string("test-project".to_string());
+
+    let error = repo
+        .create(create_test_task("Disabled Task"))
+        .await
+        .expect_err("disabled Tasks must reject standalone creation");
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        repo.count_tasks(&project_id, true, None, None)
+            .await
+            .unwrap(),
+        0
+    );
+
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+    repo.create(create_test_task("Enabled Task"))
+        .await
+        .expect("re-enabled Tasks must allow creation");
+    assert_eq!(
+        repo.count_tasks(&project_id, true, None, None)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_status_change_with_tasks_policy_rejects_progress_but_allows_pause() {
+    let db = setup_test_db();
+    let seed_repo = SqliteTaskRepository::new(db.new_connection());
+    let task = seed_repo
+        .create(create_test_task("Task to pause"))
+        .await
+        .unwrap();
+    let guarded_repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+
+    let error = guarded_repo
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Backlog,
+            InternalStatus::Ready,
+            "stale-worker",
+        )
+        .await
+        .expect_err("disabled Tasks must reject progress persistence");
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        guarded_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Backlog
+    );
+
+    guarded_repo
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Backlog,
+            InternalStatus::Paused,
+            "tasks-feature-disabled",
+        )
+        .await
+        .expect("safe pause must remain available while Tasks are off");
+    assert_eq!(
+        guarded_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
+async fn test_full_update_with_tasks_policy_rejects_stale_progress_after_pause() {
+    let db = setup_test_db();
+    let seed_repo = SqliteTaskRepository::new(db.new_connection());
+    let task = seed_repo
+        .create(create_test_task("Task with stale worker"))
+        .await
+        .unwrap();
+    let mut stale_worker_task = task.clone();
+    stale_worker_task.internal_status = InternalStatus::Ready;
+
+    seed_repo
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Backlog,
+            InternalStatus::Paused,
+            "tasks-feature-disabled",
+        )
+        .await
+        .unwrap();
+
+    let guarded_repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+    let error = guarded_repo
+        .update(&stale_worker_task)
+        .await
+        .expect_err("stale full-task writes must not revive a paused Task while Tasks are off");
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        guarded_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
 async fn test_get_by_id_retrieves_task_correctly() {
     let db = setup_test_db();
     let repo = SqliteTaskRepository::new(db.new_connection());

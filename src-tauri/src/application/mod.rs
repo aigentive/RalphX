@@ -179,6 +179,12 @@ mod task_diff_base_tests;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
+pub(crate) mod tasks_feature_policy;
+#[cfg(test)]
+mod tasks_feature_policy_tests;
+pub(crate) mod tasks_feature_toggle_service;
+#[cfg(test)]
+mod tasks_feature_toggle_service_tests;
 pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;

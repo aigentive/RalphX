@@ -330,6 +330,68 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
 }
 
 #[tokio::test]
+async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Disabled Tasks plan".to_string(),
+            content: "# Disabled Tasks".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    state
+        .db
+        .run(|conn| {
+            conn.execute(
+                "UPDATE ideation_settings SET tasks_enabled = 0 WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Tasks OFF must reject new pipeline activation");
+    assert!(error.starts_with("ralphx:tasks_disabled"));
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
 async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
     let (state, _project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;

@@ -178,6 +178,13 @@ fn build_task_scheduler(
     scheduler_concrete as Arc<dyn TaskScheduler>
 }
 
+async fn authorize_task_mutation(state: &AppState, task: &Task) -> Result<(), String> {
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(state)
+        .authorize_session(task.ideation_session_id.as_ref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Create a new task
 #[tauri::command]
 pub async fn create_task(
@@ -201,6 +208,7 @@ pub async fn create_task(
         task.priority = priority;
     }
     attach_create_task_plan_scope(&mut task, &input, &state).await?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Create the task first
     let created_task = state
@@ -257,6 +265,7 @@ pub async fn update_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Apply updates
     if let Some(title) = input.title {
@@ -286,6 +295,13 @@ pub async fn update_task(
 #[tauri::command]
 pub async fn delete_task(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let task_id = TaskId::from_string(id);
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
     state
         .task_repo
         .delete(&task_id)
@@ -330,6 +346,7 @@ pub async fn move_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    authorize_task_mutation(&state, &old_task).await?;
 
     let old_status = old_task.internal_status;
     let project_id = old_task.project_id.clone();
@@ -472,6 +489,10 @@ pub async fn inject_task(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<InjectTaskResponse, String> {
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(None)
+        .await
+        .map_err(|error| error.to_string())?;
     let project_id = ProjectId::from_string(input.project_id.clone());
     let category: TaskCategory = input
         .category
@@ -637,6 +658,13 @@ pub async fn archive_task(
     app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id_obj = TaskId::from_string(task_id.clone());
+    let task = state
+        .task_repo
+        .get_by_id(&task_id_obj)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id_obj.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Archive the task via repository
     let archived_task = state
@@ -676,6 +704,13 @@ pub async fn restore_task(
     app: tauri::AppHandle,
 ) -> Result<TaskResponse, String> {
     let task_id_obj = TaskId::from_string(task_id.clone());
+    let task = state
+        .task_repo
+        .get_by_id(&task_id_obj)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Task not found: {}", task_id_obj.as_str()))?;
+    authorize_task_mutation(&state, &task).await?;
 
     // Restore the task via repository
     let restored_task = state

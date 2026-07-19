@@ -19,6 +19,7 @@ export const ExternalIdeationOverridesSchema = z.object({
 export type ExternalIdeationOverrides = z.infer<typeof ExternalIdeationOverridesSchema>;
 
 export const IdeationSettingsSchema = z.object({
+  tasksEnabled: z.boolean(),
   autoVerifyPlans: z.boolean(),
   requireAcceptForFinalize: z.boolean(),
   requireVerificationForAccept: z.boolean(),
@@ -31,6 +32,7 @@ export type IdeationSettings = z.infer<typeof IdeationSettingsSchema>;
  * Default ideation settings (matches Rust backend defaults)
  */
 export const defaultIdeationSettings: IdeationSettings = {
+  tasksEnabled: false,
   autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
@@ -49,6 +51,7 @@ export const defaultIdeationSettings: IdeationSettings = {
  * Ideation settings response schema (snake_case from Rust)
  */
 export const IdeationSettingsResponseSchema = z.object({
+  tasks_enabled: z.boolean().default(false),
   plan_mode: z.string().optional(),
   require_plan_approval: z.boolean().optional(),
   suggest_plans_for_complex: z.boolean().optional(),

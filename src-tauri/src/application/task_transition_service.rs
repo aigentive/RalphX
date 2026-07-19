@@ -42,9 +42,9 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
-    ValidationRunRepository,
+    IdeationSessionRepository, IdeationSettingsRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -881,6 +881,7 @@ pub struct TaskTransitionService {
 
     /// Agent conversation workspace repository for linked plan-branch PR supervision.
     agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    tasks_feature_settings_repo: Option<Arc<dyn IdeationSettingsRepository>>,
 
     /// Task step repository for updating step statuses.
     /// Passed to TaskServices so TransitionHandler can fail in-progress steps.
@@ -1339,6 +1340,7 @@ impl TaskTransitionService {
             pr_poller_registry: None,
             github_service: None,
             agent_conversation_workspace_repo: None,
+            tasks_feature_settings_repo: None,
             webhook_publisher: None,
             plan_pr_description_drafter: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
@@ -1405,6 +1407,14 @@ impl TaskTransitionService {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ) -> Self {
         self.agent_conversation_workspace_repo = Some(repo);
+        self
+    }
+
+    pub fn with_tasks_feature_settings_repo(
+        mut self,
+        repo: Arc<dyn IdeationSettingsRepository>,
+    ) -> Self {
+        self.tasks_feature_settings_repo = Some(repo);
         self
     }
 
@@ -2052,6 +2062,13 @@ impl TaskTransitionService {
         if old_status == new_status {
             tracing::debug!("Status unchanged, skipping transition");
             return Ok((task, false));
+        }
+
+        if !matches!(
+            new_status,
+            InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+        ) {
+            self.authorize_task_progress(&task).await?;
         }
 
         tracing::debug!(
@@ -3555,6 +3572,21 @@ impl TaskTransitionService {
             context::TaskContext, machine::TaskStateMachine, transition_handler::TransitionHandler,
         };
 
+        if !matches!(
+            status,
+            InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+        ) {
+            if let Err(error) = self.authorize_task_progress(task).await {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    status = status.as_str(),
+                    error = %error,
+                    "Skipped task entry actions because Tasks are disabled"
+                );
+                return;
+            }
+        }
+
         let guard_execution_entry = matches!(
             status,
             InternalStatus::Executing | InternalStatus::ReExecuting
@@ -3954,6 +3986,29 @@ impl TaskTransitionService {
             tracing::debug!(?auto_state, "Auto-transition on_enter complete");
             current_state = auto_state;
         }
+    }
+
+    async fn authorize_task_progress(&self, task: &Task) -> AppResult<()> {
+        let Some(settings_repo) = self.tasks_feature_settings_repo.as_ref() else {
+            return Ok(());
+        };
+        let Some(workspace_repo) = self.agent_conversation_workspace_repo.as_ref() else {
+            return Err(AppError::FeatureDisabled(
+                crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+            ));
+        };
+        let Some(session_repo) = self.ideation_session_repo.as_ref() else {
+            return Err(AppError::FeatureDisabled(
+                crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+            ));
+        };
+        crate::application::tasks_feature_policy::TasksFeaturePolicy::new(
+            Arc::clone(settings_repo),
+            Arc::clone(workspace_repo),
+            Arc::clone(session_repo),
+        )
+        .authorize_session(task.ideation_session_id.as_ref())
+        .await
     }
 
     /// Shared handler for `BranchFreshnessConflict` errors.

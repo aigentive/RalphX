@@ -74,6 +74,20 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];
 
+const TASKS_ONLY_SETTINGS_SECTIONS = new Set<SettingsSectionId>([
+  "execution",
+  "global-execution",
+  "review",
+  "workspace-review",
+  "autonomy",
+]);
+
+export function visibleSettingsSections(tasksEnabled: boolean): SettingsSectionMeta[] {
+  return tasksEnabled
+    ? SETTINGS_SECTIONS
+    : SETTINGS_SECTIONS.filter((section) => !TASKS_ONLY_SETTINGS_SECTIONS.has(section.id));
+}
+
 export function isSettingsSectionId(value: unknown): value is SettingsSectionId {
   return (
     typeof value === "string" &&

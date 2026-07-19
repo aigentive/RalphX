@@ -7,6 +7,7 @@ async fn test_get_default_settings() {
     let repo = SqliteIdeationSettingsRepository::from_shared(db.shared_conn());
 
     let settings = repo.get_settings().await.unwrap();
+    assert!(!settings.tasks_enabled);
     assert_eq!(settings.plan_mode, IdeationPlanMode::Optional);
     assert!(!settings.require_plan_approval);
     assert!(settings.suggest_plans_for_complex);
@@ -21,6 +22,7 @@ async fn test_update_settings() {
     let repo = SqliteIdeationSettingsRepository::from_shared(db.shared_conn());
 
     let new_settings = IdeationSettings {
+        tasks_enabled: true,
         plan_mode: IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
@@ -33,6 +35,7 @@ async fn test_update_settings() {
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
     assert_eq!(updated.plan_mode, IdeationPlanMode::Required);
+    assert!(updated.tasks_enabled);
     assert!(updated.require_plan_approval);
     assert!(!updated.suggest_plans_for_complex);
     assert!(!updated.auto_link_proposals);
@@ -40,6 +43,7 @@ async fn test_update_settings() {
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.plan_mode, IdeationPlanMode::Required);
+    assert!(retrieved.tasks_enabled);
     assert!(retrieved.require_plan_approval);
     assert!(!retrieved.suggest_plans_for_complex);
     assert!(!retrieved.auto_link_proposals);

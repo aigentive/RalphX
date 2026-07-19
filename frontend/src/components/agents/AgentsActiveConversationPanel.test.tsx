@@ -52,6 +52,7 @@ const {
   toastErrorMock,
   toastInfoMock,
   toastSuccessMock,
+  tasksEnabledRef,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -82,6 +83,21 @@ const {
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastSuccessMock: vi.fn(),
+  tasksEnabledRef: { current: true },
+}));
+
+vi.mock("@/hooks/useIdeationSettings", () => ({
+  useIdeationSettings: () => ({
+    settings: {
+      tasksEnabled: tasksEnabledRef.current,
+      autoVerifyPlans: false,
+      requireAcceptForFinalize: false,
+      requireVerificationForAccept: false,
+      externalOverrides: {},
+    },
+    isLoading: false,
+    isError: false,
+  }),
 }));
 
 const deferredHydrationTimeout = { timeout: 3_000 };
@@ -1067,6 +1083,7 @@ describe("AgentsActiveConversationPanel", () => {
     composerAgentStatusRef.current = "idle";
     composerPersonaControlRef.current = undefined;
     agentPersonasEnabledRef.current = false;
+    tasksEnabledRef.current = true;
     personaQueryMock.mockReturnValue({
       data: [
         {
@@ -3130,6 +3147,35 @@ describe("AgentsActiveConversationPanel", () => {
       "tasks",
       promotedWorkspace,
     );
+  });
+
+  it("offers only direct implementation for an approved plan while Tasks are off", async () => {
+    tasksEnabledRef.current = false;
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    expect(
+      within(row).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeEnabled();
+    expect(
+      within(row).queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByTestId("agents-plan-composer-cta-hint"),
+    ).toHaveTextContent(/Tasks is off/i);
+    expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
   it("focuses the linked ideation chat and pins the returned conversation from the composer CTA row", async () => {
