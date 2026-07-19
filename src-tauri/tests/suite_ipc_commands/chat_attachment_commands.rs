@@ -447,4 +447,52 @@ async fn persona_builder_attachment_removal_is_idempotent_and_rejects_symlinks()
         materialized.is_symlink(),
         "fail-closed deletion must leave the rejected symlink untouched"
     );
+
+    let destination_error = materialize_builder_attachment(
+        state.app_paths.app_data_dir(),
+        &state.attachment_storage_path,
+        &attachment,
+    )
+    .expect_err("materialization must reject an existing destination symlink");
+    assert!(matches!(destination_error, AppError::Validation(_)));
+    assert_eq!(
+        std::fs::read_to_string(&outside).expect("read destination target"),
+        "outside content must survive",
+        "destination rejection must not overwrite its outside target"
+    );
+
+    // The production helper returned this canonical, app-owned workspace path.
+    // codeql[rust/path-injection]
+    std::fs::remove_file(&materialized).expect("remove rejected destination symlink");
+    let source = std::path::PathBuf::from(&attachment.file_path);
+    let canonical_storage = state
+        .attachment_storage_path
+        .canonicalize()
+        .expect("canonicalize app-owned attachment storage");
+    let canonical_source = source
+        .canonicalize()
+        .expect("canonicalize stored attachment fixture");
+    assert!(
+        canonical_source.starts_with(&canonical_storage),
+        "source fixture must remain under app-owned storage"
+    );
+    // The source was validated under the canonical app-owned storage root.
+    // codeql[rust/path-injection]
+    std::fs::remove_file(&canonical_source).expect("replace stored source with a symlink");
+    // The source was validated under the canonical app-owned storage root.
+    // codeql[rust/path-injection]
+    symlink(&outside, &canonical_source).expect("seed malicious stored-source symlink");
+
+    let source_error = materialize_builder_attachment(
+        state.app_paths.app_data_dir(),
+        &state.attachment_storage_path,
+        &attachment,
+    )
+    .expect_err("materialization must reject a symlinked source attachment");
+    assert!(matches!(source_error, AppError::Validation(_)));
+    assert_eq!(
+        std::fs::read_to_string(&outside).expect("read source target"),
+        "outside content must survive",
+        "source rejection must not mutate its outside target"
+    );
 }
