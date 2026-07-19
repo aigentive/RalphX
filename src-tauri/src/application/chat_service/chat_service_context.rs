@@ -4099,16 +4099,12 @@ pub async fn get_entity_status_for_resume(
                 None
             }
         }
-        // Ideation context: verification sessions must keep verifier-specific
-        // launch settings; other sessions route from workflow status.
+        // Ideation context: route from the session status. Legacy verification children
+        // no longer select a dedicated agent.
         ChatContextType::Ideation => {
             let session_id = IdeationSessionId::from_string(context_id);
             if let Ok(Some(session)) = ideation_session_repo.get_by_id(&session_id).await {
-                if session.session_purpose == SessionPurpose::Verification {
-                    Some(SessionPurpose::Verification.to_string())
-                } else {
-                    Some(session.status.to_string())
-                }
+                Some(session.status.to_string())
             } else {
                 None
             }
