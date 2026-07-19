@@ -90,6 +90,7 @@ import {
   useConversationHistoryWindow,
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { validateDependencyGraph } from "@/hooks/useDependencyGraphComplete";
@@ -592,6 +593,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const ideationSettingsQuery = useIdeationSettings();
+  const tasksEnabled =
+    !ideationSettingsQuery.isLoading &&
+    !ideationSettingsQuery.isError &&
+    ideationSettingsQuery.settings.tasksEnabled;
   const automationId = conversation?.automationId ?? null;
   const focusedRunTarget =
     automationRunFocusTarget?.automationId === automationId
@@ -1832,6 +1838,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ) : (
           <ArtifactContent
           activeTab={effectiveActiveTab}
+          tasksEnabled={tasksEnabled}
           workspace={scopedWorkspace}
           conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
@@ -1947,6 +1954,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
+  tasksEnabled: boolean;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -2030,6 +2038,7 @@ type ArtifactContentProps = {
 
 function ArtifactContent({
   activeTab,
+  tasksEnabled,
   workspace,
   conversationId,
   activeWorkspaceFreshness,
@@ -2243,6 +2252,7 @@ function ArtifactContent({
     return (
       <AgentPlanPanel
         conversationId={conversationId}
+        tasksEnabled={tasksEnabled}
         workspace={workspace}
         activeWorkspaceFreshness={activeWorkspaceFreshness}
         session={session}
@@ -2295,6 +2305,7 @@ function ArtifactContent({
 
 function AgentPlanPanel({
   conversationId,
+  tasksEnabled,
   workspace,
   activeWorkspaceFreshness,
   session,
@@ -2316,6 +2327,7 @@ function AgentPlanPanel({
   onOpenTasks,
 }: {
   conversationId: string | null;
+  tasksEnabled: boolean;
   workspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   session: IdeationSession | null;
@@ -2513,10 +2525,14 @@ function AgentPlanPanel({
     isOwnedCurrentPlan &&
     verificationState !== null &&
     !isPlanVerificationSatisfied;
+  const isTasksPipelineEntitled = Boolean(
+    session?.id && workspace?.taskPipelineSessionId === session.id,
+  );
   const canCreateProposals =
     (canShowManualPlanContinuationActions || canRetryTaskDecomposition) &&
     session !== null &&
-    (!isPlanningSession || isPlanApproved);
+    (!isPlanningSession || isPlanApproved) &&
+    (tasksEnabled || isTasksPipelineEntitled);
   const canImplementDirectly = Boolean(
     canShowManualPlanContinuationActions &&
     isOwnedCurrentPlan &&
@@ -2534,6 +2550,7 @@ function AgentPlanPanel({
     ],
     queryFn: () => artifactApi.getPlanComplexityAssessment(session!.id),
     enabled: Boolean(
+      tasksEnabled &&
       session &&
       isOwnedCurrentPlan &&
       isPlanApproved &&
@@ -2542,31 +2559,39 @@ function AgentPlanPanel({
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
-  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+  const isPlanRecommendationPending = tasksEnabled && isPlanRecommendationCheckPending({
     assessment: planComplexityQuery.data,
     isFetching:
       (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
       !planComplexityQuery.data,
     approvedAt: planArtifact?.planApproval?.approvedAt,
   });
-  const planActionHint = buildPlanActionHint({
-    assessment: planComplexityQuery.data,
-    isAssessing: isPlanRecommendationPending,
-    canChoose: canImplementDirectly && canCreateProposals,
-  });
-  const primaryPlanAction = planComplexityQuery.data?.recommendedAction;
+  const planActionHint = !tasksEnabled && isPlanApproved
+    ? "Tasks is off. Implement this approved plan directly."
+    : buildPlanActionHint({
+        assessment: planComplexityQuery.data,
+        isAssessing: isPlanRecommendationPending,
+        canChoose: canImplementDirectly && canCreateProposals,
+      });
+  const primaryPlanAction = tasksEnabled
+    ? planComplexityQuery.data?.recommendedAction
+    : "implement_directly";
   const isAcceptedPlan = session?.status === "accepted";
   const planRuntimeControlCounts = useMemo(
     () => getPlanRuntimeControlCounts(visibleImplementationTasks),
     [visibleImplementationTasks],
   );
   const canRestartImplementation = Boolean(
-    isAcceptedPlan && implementationTaskCounts.total > 0 && session?.id,
+    isAcceptedPlan &&
+      implementationTaskCounts.total > 0 &&
+      session?.id &&
+      (tasksEnabled || isTasksPipelineEntitled),
   );
   const canPauseExecutionPlan = Boolean(
     isAcceptedPlan &&
       session?.id &&
       session.projectId &&
+      (tasksEnabled || isTasksPipelineEntitled) &&
       planRuntimeControlCounts.running > 0,
   );
   const canStopExecutionPlan = canPauseExecutionPlan;
@@ -2574,6 +2599,7 @@ function AgentPlanPanel({
     isAcceptedPlan &&
       session?.id &&
       session.projectId &&
+      (tasksEnabled || isTasksPipelineEntitled) &&
       planRuntimeControlCounts.running === 0 &&
       planRuntimeControlCounts.paused > 0,
   );

@@ -494,6 +494,9 @@ mod v20260718014631_mcp_policy_overrides_tests;
 mod v20260718162852_clear_detected_validation_commands;
 #[cfg(test)]
 mod v20260718162852_clear_detected_validation_commands_tests;
+mod v20260718182035_add_tasks_enabled_setting;
+#[cfg(test)]
+mod v20260718182035_add_tasks_enabled_setting_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -588,7 +591,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260718162852;
+pub const SCHEMA_VERSION: i64 = 20260718182035;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1622,6 +1625,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260718162852,
         name: "clear_detected_validation_commands",
         migrate: v20260718162852_clear_detected_validation_commands::migrate,
+    },
+    Migration {
+        version: 20260718182035,
+        name: "add_tasks_enabled_setting",
+        migrate: v20260718182035_add_tasks_enabled_setting::migrate,
     },
 ];
 

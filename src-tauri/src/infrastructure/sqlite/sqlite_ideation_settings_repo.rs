@@ -38,6 +38,7 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     let ext_require_accept_for_finalize: Option<i64> = row.get(9)?;
     let auto_verify_plans: i64 = row.get(10)?;
     let ext_auto_verify_plans: Option<i64> = row.get(11)?;
+    let tasks_enabled: i64 = row.get(12)?;
 
     let plan_mode = match plan_mode_str.as_str() {
         "required" => IdeationPlanMode::Required,
@@ -47,6 +48,7 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     };
 
     Ok(IdeationSettings {
+        tasks_enabled: tasks_enabled != 0,
         plan_mode,
         require_plan_approval: require_plan_approval != 0,
         suggest_plans_for_complex: suggest_plans_for_complex != 0,
@@ -76,7 +78,8 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
                 ext_require_verification_for_proposals,
                 ext_require_accept_for_finalize,
                 auto_verify_plans,
-                ext_auto_verify_plans
+                ext_auto_verify_plans,
+                tasks_enabled
          FROM ideation_settings WHERE id = 1
          LIMIT 1",
         [],
@@ -88,6 +91,46 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(IdeationSettings::default()),
         Err(e) => Err(AppError::Database(e.to_string())),
     }
+}
+
+pub(crate) fn authorize_tasks_session_sync(
+    conn: &Connection,
+    session_id: Option<&str>,
+) -> AppResult<()> {
+    let settings = get_settings_sync(conn)?;
+    if settings.tasks_enabled {
+        return Ok(());
+    }
+
+    let session_id = session_id.ok_or_else(|| tasks_disabled_error("standalone Task"))?;
+    let entitled = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM agent_conversation_workspaces workspace
+                INNER JOIN ideation_sessions session
+                    ON session.id = workspace.task_pipeline_session_id
+                WHERE workspace.task_pipeline_session_id = ?1
+                  AND workspace.status = 'active'
+                  AND workspace.project_id = session.project_id
+             )",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if entitled {
+        Ok(())
+    } else {
+        Err(tasks_disabled_error(
+            "Task is not attached to an active Agent pipeline",
+        ))
+    }
+}
+
+fn tasks_disabled_error(detail: &str) -> AppError {
+    AppError::FeatureDisabled(format!(
+        "ralphx:tasks_disabled: Tasks are disabled in Planning & Verification settings ({detail})"
+    ))
 }
 
 #[async_trait]
@@ -127,6 +170,7 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                  ext_require_accept_for_finalize = ?10,
                  auto_verify_plans = ?11,
                  ext_auto_verify_plans = ?12,
+                 tasks_enabled = ?13,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -154,6 +198,7 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                             .external_overrides
                             .auto_verify_plans
                             .map(|v| v as i64),
+                        settings.tasks_enabled as i64,
                     ],
                 )?;
 

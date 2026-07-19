@@ -20,6 +20,15 @@ import { SETTINGS_SECTIONS } from "./settings-registry";
 import { sectionModuleLoaders } from "./SettingsDialog.performance";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
+const settingsTasksEnabledRef = vi.hoisted(() => ({ current: true }));
+
+vi.mock("@/hooks/useIdeationSettings", () => ({
+  useIdeationSettings: () => ({
+    settings: { tasksEnabled: settingsTasksEnabledRef.current },
+    isLoading: false,
+    isError: false,
+  }),
+}));
 
 // ---------------------------------------------------------------------------
 // uiStore mock
@@ -138,6 +147,8 @@ describe("SettingsDialog", () => {
     uiState.modalContext = undefined;
     uiState.closeModal = mockCloseModal;
     featureFlags.agentPersonas = false;
+    settingsTasksEnabledRef.current = true;
+    vi.mocked(invoke).mockResolvedValue(undefined);
   });
 
   // --------------------------------------------------------------------------
@@ -294,6 +305,21 @@ describe("SettingsDialog", () => {
       expect(await screen.findByTestId("personas-section")).toBeInTheDocument();
     });
 
+  });
+
+  it("hides Tasks-only settings and redirects their deep links while Tasks are off", async () => {
+    settingsTasksEnabledRef.current = false;
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "execution" };
+    render(<SettingsDialog {...defaultProps} />);
+
+    expect(screen.queryByRole("button", { name: "Execution" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Global Capacity" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review Policy" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Autonomy Policy" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Planning & Verification", { selector: ".cur" }))
+      .toBeInTheDocument();
   });
 
   // --------------------------------------------------------------------------

@@ -27,6 +27,7 @@ vi.mock("@/stores/uiStore", () => ({
 }));
 
 const defaultSettings: IdeationSettings = {
+  tasksEnabled: false,
   autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
@@ -76,6 +77,25 @@ describe("IdeationSettingsPanel", () => {
           "When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting",
         ),
       ).toBeInTheDocument();
+    });
+  });
+
+  it("renders Tasks disabled by default and persists an enable request", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.update).mockResolvedValue({
+      ...defaultSettings,
+      tasksEnabled: true,
+    });
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    const checkbox = await screen.findByTestId("enable-tasks");
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+
+    await waitFor(() => {
+      expect(ideationApi.settings.update).toHaveBeenCalledWith(
+        expect.objectContaining({ tasksEnabled: true }),
+      );
     });
   });
 

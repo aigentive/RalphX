@@ -1,11 +1,14 @@
 // Orchestrator agent integration and ideation settings commands
 
-use tauri::State;
+use std::sync::Arc;
+
+use tauri::{AppHandle, State};
 
 use crate::application::{
     resolve_primary_ideation_harness_availability_for_state, validate_chat_runtime_for_context,
     AppState,
 };
+use crate::commands::ExecutionState;
 use crate::domain::entities::{IdeationSessionId, IdeationSessionStatus};
 use crate::domain::ideation::IdeationSettings;
 
@@ -109,10 +112,12 @@ pub async fn get_ideation_settings(state: State<'_, AppState>) -> Result<Ideatio
 pub async fn update_ideation_settings(
     settings: IdeationSettings,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: AppHandle,
 ) -> Result<IdeationSettings, String> {
     state
-        .ideation_settings_repo
-        .update_settings(&settings)
+        .build_tasks_feature_toggle_service(Arc::clone(execution_state.inner()), Some(app))
+        .update_settings(settings)
         .await
         .map_err(|e| e.to_string())
 }

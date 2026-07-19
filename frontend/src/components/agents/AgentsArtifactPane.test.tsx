@@ -139,6 +139,7 @@ const {
   toastLoadingMock,
   toastMessageMock,
   toastSuccessMock,
+  tasksEnabledRef,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
@@ -208,6 +209,21 @@ const {
   toastLoadingMock: vi.fn(),
   toastMessageMock: vi.fn(),
   toastSuccessMock: vi.fn(),
+  tasksEnabledRef: { current: true },
+}));
+
+vi.mock("@/hooks/useIdeationSettings", () => ({
+  useIdeationSettings: () => ({
+    settings: {
+      tasksEnabled: tasksEnabledRef.current,
+      autoVerifyPlans: false,
+      requireAcceptForFinalize: false,
+      requireVerificationForAccept: false,
+      externalOverrides: {},
+    },
+    isLoading: false,
+    isError: false,
+  }),
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -1418,6 +1434,7 @@ describe("AgentsArtifactPane", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
+    tasksEnabledRef.current = true;
     useChatStore.setState({ activeConversationIds: {} });
     getWorkspaceChangesMock.mockResolvedValue([
       {
@@ -6893,6 +6910,33 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps an approved plan direct-only while Tasks are off", async () => {
+    tasksEnabledRef.current = false;
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const banner = await screen.findByTestId("plan-lifecycle-banner");
+    expect(
+      within(banner).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeEnabled();
+    expect(
+      within(banner).queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+    expect(within(banner).getByText(/Tasks is off/i)).toBeInTheDocument();
+    expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
   it("starts the complete reviewed proposal set from Tasks mode", async () => {

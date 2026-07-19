@@ -21,6 +21,8 @@ use crate::application::runtime_factory::{
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
 };
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
+use crate::application::task_cleanup_service::TaskCleanupService;
+use crate::application::tasks_feature_toggle_service::TasksFeatureToggleService;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
 use crate::application::AtlassianIntegrationService;
@@ -49,6 +51,7 @@ use crate::domain::agents::{
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::ProjectId;
+use crate::domain::ideation::IdeationSettings;
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -1001,6 +1004,7 @@ impl AppState {
         let started_at = Instant::now();
         let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps)
             .with_event_sink(Arc::clone(&self.events))
+            .with_tasks_feature_settings_repo(Arc::clone(&self.ideation_settings_repo))
             .with_notifier(Arc::new(
                 crate::application::task_notification_producer::TaskPipelineNotificationProducer::new(
                     self.notification_service(),
@@ -1022,6 +1026,35 @@ impl AppState {
         service = service.with_plan_pr_description_drafter(drafter);
 
         service
+    }
+
+    pub(crate) fn build_tasks_feature_toggle_service(
+        &self,
+        execution_state: Arc<ExecutionState>,
+        app_handle: Option<AppHandle>,
+    ) -> TasksFeatureToggleService<'_> {
+        let transition_service = self
+            .build_transition_service_for_runtime(Arc::clone(&execution_state), app_handle.clone());
+        let cleanup = TaskCleanupService::new(
+            Arc::clone(&self.task_repo),
+            Arc::clone(&self.project_repo),
+            Arc::clone(&self.running_agent_registry),
+            app_handle.clone(),
+        )
+        .with_interactive_process_registry(Arc::clone(&self.interactive_process_registry));
+        TasksFeatureToggleService::new(self, transition_service, cleanup, app_handle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_tasks_feature_toggle_service_for_test(
+        &self,
+    ) -> TasksFeatureToggleService<'_> {
+        self.build_tasks_feature_toggle_service(Arc::new(ExecutionState::new()), None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_transition_service_for_test_runtime(&self) -> TaskTransitionService {
+        self.build_transition_service_for_runtime(Arc::new(ExecutionState::new()), None)
     }
 
     pub fn build_task_scheduler_for_runtime(
@@ -1191,8 +1224,9 @@ impl AppState {
         internal_event_bus: InternalEventBus,
     ) -> AppResult<Self> {
         // Create repositories that are used by services
-        let task_repo: Arc<dyn TaskRepository> =
-            Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn)));
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(
+            SqliteTaskRepository::from_shared(Arc::clone(&shared_conn)).with_tasks_feature_policy(),
+        );
         let project_repo: Arc<dyn ProjectRepository> = Arc::new(
             SqliteProjectRepository::from_shared(Arc::clone(&shared_conn)),
         );
@@ -1517,6 +1551,11 @@ impl AppState {
         let conn = open_connection(&std::path::PathBuf::from(":memory:"))
             .expect("Failed to open in-memory SQLite for handler tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
+        conn.execute(
+            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            [],
+        )
+        .expect("Failed to enable Tasks for legacy handler tests");
         // Migrations may leave foreign_keys = ON. Disable for tests: we test handler logic,
         // not FK enforcement. Sessions reference projects that don't exist in the test DB.
         conn.execute("PRAGMA foreign_keys = OFF", [])
@@ -1582,7 +1621,12 @@ impl AppState {
             agent_conversation_issue_repo: Arc::new(
                 SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
-            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
+            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
+                IdeationSettings {
+                    tasks_enabled: true,
+                    ..Default::default()
+                },
+            )),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
@@ -1699,6 +1743,11 @@ impl AppState {
         let conn = open_connection(&std::path::PathBuf::from(":memory:"))
             .expect("Failed to open in-memory SQLite for handler tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
+        conn.execute(
+            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            [],
+        )
+        .expect("Failed to enable Tasks for legacy handler tests");
         conn.execute("PRAGMA foreign_keys = OFF", [])
             .expect("Failed to disable foreign_keys for test DB");
         let shared_conn = Arc::new(tokio::sync::Mutex::new(conn));
@@ -1762,7 +1811,12 @@ impl AppState {
             agent_conversation_issue_repo: Arc::new(
                 SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
-            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
+            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
+                IdeationSettings {
+                    tasks_enabled: true,
+                    ..Default::default()
+                },
+            )),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
@@ -1885,6 +1939,11 @@ impl AppState {
         let conn = open_connection(&std::path::PathBuf::from(":memory:"))
             .expect("Failed to open in-memory SQLite for apply_proposals_core tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
+        conn.execute(
+            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            [],
+        )
+        .expect("Failed to enable Tasks for legacy apply tests");
         conn.execute("PRAGMA foreign_keys = OFF", [])
             .expect("Failed to disable foreign_keys for test DB");
         let shared_conn = Arc::new(tokio::sync::Mutex::new(conn));
@@ -1951,7 +2010,12 @@ impl AppState {
             agent_conversation_issue_repo: Arc::new(
                 SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
-            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
+            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
+                IdeationSettings {
+                    tasks_enabled: true,
+                    ..Default::default()
+                },
+            )),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
@@ -2125,7 +2189,12 @@ impl AppState {
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
             agent_workflow_repo: Self::memory_agent_workflow_repo(),
             agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),
-            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
+            ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
+                IdeationSettings {
+                    tasks_enabled: true,
+                    ..Default::default()
+                },
+            )),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),

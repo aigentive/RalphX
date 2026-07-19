@@ -9,6 +9,7 @@ use crate::domain::ideation::config::{
 
 fn settings(required: bool) -> IdeationSettings {
     IdeationSettings {
+        tasks_enabled: false,
         plan_mode: IdeationPlanMode::Optional,
         require_plan_approval: false,
         suggest_plans_for_complex: false,
