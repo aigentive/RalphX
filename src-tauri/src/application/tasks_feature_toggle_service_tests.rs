@@ -185,3 +185,27 @@ async fn disabling_tasks_keeps_off_when_drain_cannot_enumerate_projects() {
             .tasks_enabled
     );
 }
+
+#[tokio::test]
+async fn enabling_tasks_persists_the_setting_without_an_app_handle() {
+    let state = AppState::new_test();
+
+    let updated = state
+        .build_tasks_feature_toggle_service_for_test()
+        .update_settings(IdeationSettings {
+            tasks_enabled: true,
+            ..Default::default()
+        })
+        .await
+        .expect("re-enabling Tasks without the desktop app handle must persist the setting");
+
+    assert!(updated.tasks_enabled);
+    assert!(
+        state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .unwrap()
+            .tasks_enabled
+    );
+}
