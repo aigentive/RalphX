@@ -35,6 +35,7 @@ export const ManualRoleControlsResponseSchema = z.object({
 export const ManualRoleCatalogEntryResponseSchema = z.object({
   role: z.string().min(1),
   display_name: z.string().min(1),
+  description: z.string().trim().min(1),
   family: z.string().min(1),
   family_display_name: z.string().min(1),
   configured: ManualRoleDefaultResponseSchema.nullable().optional(),

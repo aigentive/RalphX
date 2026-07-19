@@ -46,6 +46,7 @@ export function transformManualRoleCatalogEntry(
   return {
     role: raw.role,
     displayName: raw.display_name,
+    description: raw.description,
     family: raw.family,
     familyDisplayName: raw.family_display_name,
     configured: raw.configured ? transformManualRoleDefault(raw.configured) : null,

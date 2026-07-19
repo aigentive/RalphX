@@ -226,15 +226,16 @@ describe("SettingsView", () => {
   });
 
   describe("Error Banner", () => {
-    it("can dismiss error by clicking X button", async () => {
+    it("can dismiss an error with the accessible dismiss button", async () => {
       const user = userEvent.setup();
       const errorMessage = "Failed to save settings";
       render(<SettingsView error={errorMessage} />);
 
       expect(screen.getByText(errorMessage)).toBeInTheDocument();
 
-      // Find and click the dismiss button
-      const dismissButton = screen.getByRole("button", { name: "" });
+      const dismissButton = screen.getByRole("button", {
+        name: "Dismiss error",
+      });
       await user.click(dismissButton);
 
       expect(screen.queryByText(errorMessage)).not.toBeInTheDocument();
