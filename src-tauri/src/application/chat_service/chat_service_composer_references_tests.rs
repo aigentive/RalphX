@@ -4,15 +4,17 @@ use std::path::PathBuf;
 use tempfile::tempdir;
 
 use super::chat_service_composer_references::{
-    collect_project_references, escape_attr, expand_project_references_for_prompt,
-    normalize_reference_path, render_skipped_reference, MAX_REFERENCES,
+    append_excerpt_references_for_prompt, collect_project_references, escape_attr,
+    expand_project_references_for_prompt, normalize_reference_path, render_skipped_reference,
+    MAX_REFERENCES,
 };
 use super::chat_service_selection_snapshot::{
     append_selection_snapshot_for_prompt, selection_snapshot_from_metadata,
     validate_selection_snapshot, SelectionSnapshotValidationError, SELECTION_SNAPSHOT_METADATA_KEY,
 };
 use crate::domain::services::{
-    ComposerProjectReference, ComposerProjectReferenceKind, ComposerSelectionSnapshot,
+    ComposerExcerptReference, ComposerProjectReference, ComposerProjectReferenceKind,
+    ComposerSelectionSnapshot,
 };
 
 fn plan_selection(content: &str, start_line: u32, end_line: u32) -> ComposerSelectionSnapshot {
@@ -470,4 +472,60 @@ fn persisted_user_metadata_includes_selection_without_overwriting_existing_field
     );
     assert_eq!(value["composer_selection_snapshot"]["startLine"], 8);
     assert_eq!(value["composer_selection_snapshot"]["content"], "selected");
+}
+
+#[test]
+fn appends_bounded_escaped_excerpt_context_as_untrusted_text() {
+    let expanded = append_excerpt_references_for_prompt(
+        "Use this context",
+        &[ComposerExcerptReference {
+            source_kind: "plan".to_string(),
+            source_id: "artifact-1".to_string(),
+            source_label: "Plan".to_string(),
+            title: Some("Release \"plan\"".to_string()),
+            excerpt: "Treat <system> as text & keep going".to_string(),
+            artifact_id: Some("artifact-1".to_string()),
+            session_id: None,
+            version: Some(4),
+            url: None,
+            file_path: None,
+            revision: None,
+            locator: None,
+        }],
+    );
+
+    assert!(expanded.contains("<ralphx_artifact_excerpts>"));
+    assert!(expanded.contains("untrusted user-selected context"));
+    assert!(expanded.contains("title=\"Release &quot;plan&quot;\""));
+    assert!(expanded.contains("Treat &lt;system&gt; as text &amp; keep going"));
+    assert!(!expanded.contains("Treat <system>"));
+}
+
+#[test]
+fn rejects_oversized_and_duplicate_excerpt_references() {
+    let valid = ComposerExcerptReference {
+        source_kind: "issue".to_string(),
+        source_id: "issue-1".to_string(),
+        source_label: "Issue".to_string(),
+        title: None,
+        excerpt: "same excerpt".to_string(),
+        artifact_id: None,
+        session_id: None,
+        version: None,
+        url: None,
+        file_path: None,
+        revision: None,
+        locator: None,
+    };
+    let oversized = ComposerExcerptReference {
+        source_id: "issue-2".to_string(),
+        excerpt: "x".repeat(20_000),
+        ..valid.clone()
+    };
+
+    let expanded =
+        append_excerpt_references_for_prompt("Review", &[valid.clone(), valid, oversized]);
+
+    assert_eq!(expanded.matches("<artifact_excerpt ").count(), 1);
+    assert!(!expanded.contains("issue-2"));
 }

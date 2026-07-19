@@ -214,6 +214,39 @@ describe("parseComposerReferencesFromMetadata", () => {
       },
     });
   });
+
+  it("round-trips generic artifact excerpts independently from whole-source references", () => {
+    const metadata = serializeComposerReferencesMetadata({
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+
+    expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      projectReferences: [],
+      integrationReferences: [],
+      artifactReferences: [],
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+  });
 });
 
 describe("MessageReferences", () => {

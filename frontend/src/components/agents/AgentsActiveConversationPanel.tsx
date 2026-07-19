@@ -2809,6 +2809,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 options.selectionSnapshot,
                             }
                           : {}),
+                        ...(options?.excerptReferences?.length
+                          ? {
+                              composerExcerptReferences:
+                                options.excerptReferences,
+                            }
+                          : {}),
                       },
                     );
                     onAgentUserMessageSent({

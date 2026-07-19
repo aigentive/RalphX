@@ -1839,15 +1839,6 @@ export interface ComposerIntegrationReference {
   includeTranscript?: boolean;
 }
 
-export interface ComposerArtifactReference {
-  artifactId: string;
-  kind: string;
-  title?: string;
-  sessionId?: string;
-  version?: number;
-  status?: string;
-}
-
 export interface ComposerSelectionSnapshot {
   sourceType: "artifact" | "ticket" | "note";
   sourceKind: "plan" | "jira" | "linear" | "clickup" | "granola";
@@ -1860,6 +1851,42 @@ export interface ComposerSelectionSnapshot {
   startLine: number;
   endLine: number;
   content: string;
+}
+
+export interface ComposerArtifactReference {
+  artifactId: string;
+  kind: string;
+  title?: string;
+  sessionId?: string;
+  version?: number;
+  status?: string;
+}
+
+export type ComposerExcerptSourceKind =
+  | "plan"
+  | "review"
+  | "issue"
+  | "task"
+  | "automation_spec"
+  | "pull_request"
+  | "workspace_diff"
+  | "jira"
+  | "linear"
+  | "granola";
+
+export interface ComposerExcerptReference {
+  sourceKind: ComposerExcerptSourceKind;
+  sourceId: string;
+  sourceLabel: string;
+  title?: string;
+  excerpt: string;
+  artifactId?: string;
+  sessionId?: string;
+  version?: number;
+  url?: string;
+  filePath?: string;
+  revision?: string;
+  locator?: string;
 }
 
 export type TeamIntentStrategy = "research" | "debate" | "execution";
@@ -1894,6 +1921,7 @@ export interface SendAgentMessageOptions {
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
   composerSelectionSnapshot?: ComposerSelectionSnapshot;
+  composerExcerptReferences?: ComposerExcerptReference[];
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -4335,6 +4363,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.composerSelectionSnapshot
           ? { composerSelectionSnapshot: options.composerSelectionSnapshot }
+          : {}),
+        ...(options?.composerExcerptReferences?.length
+          ? { composerExcerptReferences: options.composerExcerptReferences }
           : {}),
       },
     },

@@ -28,6 +28,7 @@ import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
+  ComposerExcerptReference,
   CapabilityIntent,
   ComposerIntegrationReference,
   ComposerProjectReference,
@@ -64,6 +65,7 @@ interface UseChatActionsProps {
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      composerExcerptReferences?: ComposerExcerptReference[];
       capabilityIntent?: CapabilityIntent | null;
       composerSelectionSnapshot?: ComposerSelectionSnapshot;
       teamIntent?: TeamIntent | null;
@@ -175,6 +177,7 @@ export function useChatActions({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         selectionSnapshot?: ComposerSelectionSnapshot;
         teamIntent?: TeamIntent | null;
@@ -207,6 +210,7 @@ export function useChatActions({
                 integrationReferences: composerOptions?.integrationReferences,
                 artifactReferences: composerOptions?.artifactReferences,
                 selectionSnapshot: composerOptions?.selectionSnapshot,
+                excerptReferences: composerOptions?.excerptReferences,
               });
               const message = referenceMetadata
                 ? addOptimisticUserMessageToConversationCache(
@@ -229,6 +233,7 @@ export function useChatActions({
               composerOptions?.projectReferences?.length ||
               composerOptions?.integrationReferences?.length ||
               composerOptions?.artifactReferences?.length ||
+              composerOptions?.excerptReferences?.length ||
               composerOptions?.capabilityIntent ||
               composerOptions?.selectionSnapshot ||
               composerOptions?.teamIntent
@@ -261,6 +266,12 @@ export function useChatActions({
                       ? {
                           composerSelectionSnapshot:
                             composerOptions.selectionSnapshot,
+                        }
+                      : {}),
+                    ...(composerOptions?.excerptReferences?.length
+                      ? {
+                          composerExcerptReferences:
+                            composerOptions.excerptReferences,
                         }
                       : {}),
                   }
@@ -307,6 +318,7 @@ export function useChatActions({
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            composerExcerptReferences?: ComposerExcerptReference[];
             capabilityIntent?: CapabilityIntent | null;
             composerSelectionSnapshot?: ComposerSelectionSnapshot;
             teamIntent?: TeamIntent | null;
@@ -327,6 +339,9 @@ export function useChatActions({
           if (composerOptions?.artifactReferences?.length) {
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
+          }
+          if (composerOptions?.excerptReferences?.length) {
+            params.composerExcerptReferences = composerOptions.excerptReferences;
           }
           if (composerOptions?.capabilityIntent) {
             params.capabilityIntent = composerOptions.capabilityIntent;

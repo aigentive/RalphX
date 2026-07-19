@@ -2,6 +2,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, FileText } from "lucide-react";
 
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
+import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
 import { Button } from "@/components/ui/button";
 import { useArtifact } from "@/hooks/useArtifacts";
 
@@ -102,7 +103,17 @@ export function AutomationSpecView({
   const hasContent = content.trim().length > 0;
 
   return (
-    <div className="space-y-2">
+    <ArtifactSelectableRegion
+      className="space-y-2"
+      source={{
+        sourceKind: "automation_spec",
+        sourceId: data.id,
+        sourceLabel: "Automation spec",
+        title: data.name,
+        artifactId: data.id,
+        version: data.version,
+      }}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <FileText
@@ -168,6 +179,6 @@ export function AutomationSpecView({
           {expanded ? "Hide spec" : "Show full spec"}
         </Button>
       ) : null}
-    </div>
+    </ArtifactSelectableRegion>
   );
 }

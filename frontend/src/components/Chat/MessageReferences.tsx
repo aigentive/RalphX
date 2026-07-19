@@ -25,6 +25,7 @@ export function MessageReferences({
   integrationReferences,
   artifactReferences,
   selectionSnapshot,
+  excerptReferences = [],
 }: MessageComposerReferences) {
   const setTicketProvider = useTicketingStore((s) => s.setProvider);
   const setSelectedTicketRef = useTicketingStore((s) => s.setSelectedTicketRef);
@@ -34,7 +35,8 @@ export function MessageReferences({
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
     artifactReferences.length === 0 &&
-    !selectionSnapshot
+    !selectionSnapshot &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -136,6 +138,27 @@ export function MessageReferences({
       {selectionSnapshot ? (
         <SelectionSnapshotReference snapshot={selectionSnapshot} />
       ) : null}
+      {excerptReferences.map((reference) => {
+        const label = reference.title ?? reference.sourceId;
+        const description = [
+          reference.version !== undefined ? `v${reference.version}` : null,
+          reference.filePath,
+          reference.locator,
+          reference.excerpt,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ReferenceChip
+            key={`excerpt:${reference.sourceKind}:${reference.sourceId}:${reference.excerpt}`}
+            testId={`message-reference-excerpt:${reference.sourceKind}:${reference.sourceId}`}
+            icon={ScrollText}
+            typeLabel={`${reference.sourceLabel} excerpt`}
+            label={label}
+            {...(description ? { description } : {})}
+          />
+        );
+      })}
     </div>
   );
 }

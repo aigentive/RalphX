@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,6 +9,7 @@ import {
   AgentComposerProjectLine,
   AgentComposerSurface,
 } from "./AgentComposerSurface";
+import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -127,6 +128,48 @@ describe("AgentComposerSurface", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("stages artifact selections as removable excerpt chips and sends them separately", async () => {
+    const onSend = vi.fn();
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    act(() => {
+      stageComposerExcerptReference("conversation-1", {
+        sourceKind: "plan",
+        sourceId: "artifact-1",
+        sourceLabel: "Plan",
+        title: "Release plan",
+        excerpt: "Ship the native selection flow",
+        artifactId: "artifact-1",
+        version: 4,
+      });
+    });
+
+    const chip = screen.getByTestId(
+      "agent-composer-reference-pill-excerpt:plan:artifact-1",
+    );
+    expect(chip).toHaveTextContent("Plan excerpt");
+    expect(chip).toHaveTextContent("Ship the native selection flow");
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Use this context" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Use this context", {
+      excerptReferences: [
+        {
+          sourceKind: "plan",
+          sourceId: "artifact-1",
+          sourceLabel: "Plan",
+          title: "Release plan",
+          excerpt: "Ship the native selection flow",
+          artifactId: "artifact-1",
+          version: 4,
+        },
+      ],
+    });
   });
 
   it("keeps the runtime selector content-sized instead of filling the footer row", () => {

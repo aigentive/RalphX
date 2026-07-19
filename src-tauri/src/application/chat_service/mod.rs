@@ -95,9 +95,9 @@ use crate::domain::repositories::{
     TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, QueueKey, QueuedMessage,
-    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    is_process_alive, kill_process, ComposerArtifactReference, ComposerExcerptReference,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue,
+    QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
@@ -404,10 +404,15 @@ fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
 
 fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let metadata = strip_resume_in_place_metadata(options.metadata.clone());
+    let excerpt_references =
+        chat_service_composer_references::normalize_excerpt_references(
+            &options.composer_excerpt_references,
+        );
     if options.composer_project_references.is_empty()
         && options.composer_integration_references.is_empty()
         && options.composer_artifact_references.is_empty()
         && options.composer_selection_snapshot.is_none()
+        && excerpt_references.is_empty()
     {
         return metadata;
     }
@@ -441,6 +446,10 @@ fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
             chat_service_selection_snapshot::SELECTION_SNAPSHOT_METADATA_KEY.to_string(),
             snapshot,
         );
+    }
+    if !excerpt_references.is_empty() {
+        let references = serde_json::to_value(&excerpt_references).ok()?;
+        object.insert("composer_excerpt_references".to_string(), references);
     }
     Some(value.to_string())
 }
@@ -1232,6 +1241,8 @@ pub struct SendMessageOptions {
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Immutable whole-line artifact or ticket excerpt selected for this user turn.
     pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    /// Bounded selected excerpts for runtime-only prompt context.
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     /// Chat attachment IDs explicitly selected by the composer for this user turn.
     pub attachment_ids: Vec<ChatAttachmentId>,
     /// Optional native team-mode overlay request.
@@ -1949,6 +1960,9 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_integration_references.clone(),
                 options.composer_artifact_references.clone(),
                 options.composer_selection_snapshot.clone(),
+                chat_service_composer_references::normalize_excerpt_references(
+                    &options.composer_excerpt_references,
+                ),
                 options.attachment_ids.clone(),
             );
         let key = Self::queued_key(context_type, context_id);
@@ -4116,6 +4130,7 @@ impl<R: Runtime> AppChatService<R> {
         integration_references: &[ComposerIntegrationReference],
         artifact_references: &[ComposerArtifactReference],
         selection_snapshot: Option<&ComposerSelectionSnapshot>,
+        excerpt_references: &[ComposerExcerptReference],
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
         source_message_id: Option<&str>,
@@ -4250,9 +4265,14 @@ impl<R: Runtime> AppChatService<R> {
                 selection_snapshot,
             )
             .map_err(|error| ChatServiceError::InvalidInput(error.to_string()))?;
+        let with_excerpt_references =
+            chat_service_composer_references::append_excerpt_references_for_prompt(
+                &with_selection_snapshot,
+                excerpt_references,
+            );
 
         let with_persona_builder = persona_builder_runtime_message(
-            with_selection_snapshot,
+            with_excerpt_references,
             builder_conversation.as_ref(),
             builder_draft.as_ref(),
         );
@@ -4946,6 +4966,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     &options.composer_integration_references,
                     &options.composer_artifact_references,
                     options.composer_selection_snapshot.as_ref(),
+                    &options.composer_excerpt_references,
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                     pending_user_message
@@ -6461,6 +6482,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 &options.composer_integration_references,
                 &options.composer_artifact_references,
                 options.composer_selection_snapshot.as_ref(),
+                &options.composer_excerpt_references,
                 Some(&conversation_id),
                 Some(&working_directory),
                 source_message_id.as_deref(),
@@ -7016,6 +7038,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             composer_integration_references: queued_msg.composer_integration_references.clone(),
             composer_artifact_references: queued_msg.composer_artifact_references.clone(),
             composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
+            composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
             attachment_ids: queued_msg.attachment_ids.clone(),
             ..Default::default()
         };
