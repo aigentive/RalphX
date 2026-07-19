@@ -59,6 +59,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
@@ -84,6 +89,12 @@ import {
   type AgentComposerMenuItem,
 } from "./composer/AgentComposerCommandMenu";
 import { ComposerRuntimeSelector } from "./composer/runtime/ComposerRuntimeSelector";
+import { subscribeToComposerExcerptReferences } from "./artifact-selection/composerExcerptBridge";
+import {
+  composerExcerptReferenceKey,
+  normalizeComposerExcerptReferences,
+  type ComposerExcerptReference,
+} from "./artifact-selection/artifactSelection.types";
 import type {
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
@@ -231,6 +242,7 @@ export interface AgentComposerSendOptions {
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
+  excerptReferences?: ComposerExcerptReference[];
   capabilityIntent?: CapabilityIntent | null;
   selectionSnapshot?: ComposerSelectionSnapshot;
   teamIntent?: TeamIntent | null;
@@ -393,6 +405,9 @@ export function AgentComposerSurface({
   const [selectedArtifactReferences, setSelectedArtifactReferences] = useState<
     Map<string, AgentComposerArtifactReference>
   >(() => new Map());
+  const [selectedExcerptReferences, setSelectedExcerptReferences] = useState<
+    Map<string, ComposerExcerptReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -550,6 +565,7 @@ export function AgentComposerSurface({
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
     setSelectedArtifactReferences(new Map());
+    setSelectedExcerptReferences(new Map());
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
@@ -577,6 +593,23 @@ export function AgentComposerSurface({
       });
     },
     [markComposerFocused],
+  );
+
+  useEffect(
+    () =>
+      subscribeToComposerExcerptReferences(conversationId, (reference) => {
+        setSelectedExcerptReferences((current) => {
+          const next = normalizeComposerExcerptReferences([
+            ...current.values(),
+            reference,
+          ]);
+          return new Map(
+            next.map((item) => [composerExcerptReferenceKey(item), item]),
+          );
+        });
+        focusTextareaAtComposerCursor(latestValueRef.current.length);
+      }),
+    [conversationId, focusTextareaAtComposerCursor],
   );
 
   const applyComposerText = useCallback(
@@ -718,6 +751,10 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  const selectedExcerptReferenceList = useMemo(
+    () => normalizeComposerExcerptReferences([...selectedExcerptReferences.values()]),
+    [selectedExcerptReferences],
+  );
   useEffect(() => {
     onIntegrationReferencesChange?.(selectedIntegrationReferenceList);
   }, [onIntegrationReferencesChange, selectedIntegrationReferenceList]);
@@ -774,7 +811,8 @@ export function AgentComposerSurface({
   const hasSelectedReferences =
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
-    selectedArtifactReferenceList.length > 0;
+    selectedArtifactReferenceList.length > 0 ||
+    selectedExcerptReferenceList.length > 0;
   const hasSelectionSnapshot = Boolean(selectionSnapshot);
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
@@ -1319,6 +1357,9 @@ export function AgentComposerSurface({
       const normalizedArtifactReferences = normalizeComposerArtifactReferences([
         ...artifactReferences.values(),
       ]);
+      const excerptReferences = normalizeComposerExcerptReferences(
+        selectedExcerptReferenceList,
+      );
       const capabilityIntent = capability
         ? ({ coordinationMode: capability.value } satisfies CapabilityIntent)
         : null;
@@ -1331,6 +1372,7 @@ export function AgentComposerSurface({
         normalizedIntegrationReferences.length > 0 ||
         normalizedArtifactReferences.length > 0 ||
         selectionSnapshot ||
+        excerptReferences.length > 0 ||
         capabilityIntent ||
         teamIntent
           ? {
@@ -1342,6 +1384,7 @@ export function AgentComposerSurface({
                 ...(normalizedArtifactReferences.length > 0
                   ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
+                ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
                 ...(capabilityIntent ? { capabilityIntent } : {}),
                 ...(selectionSnapshot ? { selectionSnapshot } : {}),
                 ...(teamIntent ? { teamIntent } : {}),
@@ -1354,6 +1397,7 @@ export function AgentComposerSurface({
       questionMode,
       selectedArtifactReferenceList,
       selectedIntegrationReferenceList,
+      selectedExcerptReferenceList,
       selectedInternalSkillNames,
       selectedProjectReferenceList,
       selectionSnapshot,
@@ -1394,6 +1438,18 @@ export function AgentComposerSurface({
         const nextSet = new Map(current);
         nextSet.delete(`${reference.kind}:${reference.artifactId}`);
         return nextSet;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
+  );
+
+  const removeSelectedExcerptReference = useCallback(
+    (reference: ComposerExcerptReference) => {
+      setSelectedExcerptReferences((current) => {
+        const next = new Map(current);
+        next.delete(composerExcerptReferenceKey(reference));
+        return next;
       });
       focusTextareaAtComposerCursor(cursorPosition);
     },
@@ -1460,6 +1516,7 @@ export function AgentComposerSurface({
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());
       onClearSelectionSnapshot?.();
+      setSelectedExcerptReferences(new Map());
       return;
     }
 
@@ -1467,6 +1524,7 @@ export function AgentComposerSurface({
     try {
       await sendOutgoing();
       onClearSelectionSnapshot?.();
+      setSelectedExcerptReferences(new Map());
     } catch {
       // Errors surface through the parent; preserve the current interaction model.
     }
@@ -1779,11 +1837,13 @@ export function AgentComposerSurface({
                   projectReferences={selectedProjectReferenceList}
                   integrationReferences={selectedIntegrationReferenceList}
                   artifactReferences={selectedArtifactReferenceList}
+                  excerptReferences={selectedExcerptReferenceList}
                   onRemoveProjectReference={removeSelectedProjectReference}
                   onRemoveIntegrationReference={
                     removeSelectedIntegrationReference
                   }
                   onRemoveArtifactReference={removeSelectedArtifactReference}
+                  onRemoveExcerptReference={removeSelectedExcerptReference}
                 />
               </div>
             )}
@@ -2249,13 +2309,16 @@ function ComposerReferencePills({
   projectReferences,
   integrationReferences,
   artifactReferences,
+  excerptReferences,
   onRemoveProjectReference,
   onRemoveIntegrationReference,
   onRemoveArtifactReference,
+  onRemoveExcerptReference,
 }: {
   projectReferences: AgentComposerProjectReference[];
   integrationReferences: AgentComposerIntegrationReference[];
   artifactReferences: AgentComposerArtifactReference[];
+  excerptReferences: ComposerExcerptReference[];
   onRemoveProjectReference: (path: string) => void;
   onRemoveIntegrationReference: (
     reference: AgentComposerIntegrationReference,
@@ -2263,11 +2326,13 @@ function ComposerReferencePills({
   onRemoveArtifactReference: (
     reference: AgentComposerArtifactReference,
   ) => void;
+  onRemoveExcerptReference: (reference: ComposerExcerptReference) => void;
 }) {
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
-    artifactReferences.length === 0
+    artifactReferences.length === 0 &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -2349,6 +2414,29 @@ function ComposerReferencePills({
           />
         );
       })}
+      {excerptReferences.map((reference) => {
+        const label = reference.title ?? reference.sourceId;
+        const description = [
+          reference.version !== undefined ? `v${reference.version}` : null,
+          reference.filePath,
+          reference.locator,
+          reference.excerpt,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ComposerReferencePill
+            key={composerExcerptReferenceKey(reference)}
+            testId={`agent-composer-reference-pill-excerpt:${reference.sourceKind}:${reference.sourceId}`}
+            icon={ScrollText}
+            typeLabel={`${reference.sourceLabel} excerpt`}
+            label={label}
+            description={description}
+            removeLabel={`Remove ${reference.sourceLabel} excerpt ${label}`}
+            onRemove={() => onRemoveExcerptReference(reference)}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -2398,14 +2486,21 @@ function ComposerReferencePill({
           {description}
         </span>
       ) : null}
-      <button
-        type="button"
-        className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        aria-label={removeLabel}
-        onClick={onRemove}
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            aria-label={removeLabel}
+            onClick={onRemove}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">
+          {removeLabel}
+        </TooltipContent>
+      </Tooltip>
     </span>
   );
 }

@@ -325,10 +325,14 @@ fn queued_persisted_metadata(
     queued_msg: &crate::domain::services::QueuedMessage,
 ) -> Option<String> {
     let metadata = queued_msg.metadata_override.clone();
+    let excerpt_references = super::chat_service_composer_references::normalize_excerpt_references(
+        &queued_msg.composer_excerpt_references,
+    );
     if queued_msg.composer_project_references.is_empty()
         && queued_msg.composer_integration_references.is_empty()
         && queued_msg.composer_artifact_references.is_empty()
         && queued_msg.composer_selection_snapshot.is_none()
+        && excerpt_references.is_empty()
     {
         return metadata;
     }
@@ -362,6 +366,10 @@ fn queued_persisted_metadata(
             super::chat_service_selection_snapshot::SELECTION_SNAPSHOT_METADATA_KEY.to_string(),
             snapshot,
         );
+    }
+    if !excerpt_references.is_empty() {
+        let references = serde_json::to_value(&excerpt_references).ok()?;
+        object.insert("composer_excerpt_references".to_string(), references);
     }
     Some(value.to_string())
 }
@@ -414,6 +422,7 @@ fn provider_switch_send_options_for_queued_message(
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
         composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
+        composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
         team_intent,
         force_new_provider_session,
@@ -1842,6 +1851,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         };
                     }
                 };
+            let runtime_content =
+                super::chat_service_composer_references::append_excerpt_references_for_prompt(
+                    &runtime_content,
+                    &queued_msg.composer_excerpt_references,
+                );
             let runtime_content = super::plan_mode_runtime_message(
                 runtime_content,
                 queued_agent_context.workspace.as_ref(),

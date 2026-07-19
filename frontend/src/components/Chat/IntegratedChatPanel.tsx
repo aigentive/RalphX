@@ -46,6 +46,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatApi,
   type ComposerArtifactReference,
+  type ComposerExcerptReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
   type CapabilityIntent,
@@ -154,6 +155,7 @@ type PersonaRetryAttempt = {
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       }
@@ -274,6 +276,7 @@ export interface IntegratedChatComposerRenderProps {
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
       artifactReferences?: ComposerArtifactReference[];
+      excerptReferences?: ComposerExcerptReference[];
       capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
     },
@@ -1242,6 +1245,7 @@ export function IntegratedChatPanel({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       },

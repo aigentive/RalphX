@@ -27,6 +27,7 @@ import type { Artifact, ArtifactVersionSummary } from "@/types/artifact";
 import { formatDateTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
+import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
 import type { TeamFinding } from "./TeamFindingsSection";
 import { DebateSummary } from "./DebateSummary";
 import type { DebateSummaryData } from "./DebateSummary";
@@ -973,14 +974,24 @@ export function PlanDisplay({
             />
           </div>
         ) : displayContent ? (
-          <div className="text-[0.8125rem] leading-relaxed">
+          <ArtifactSelectableRegion
+            source={{
+              sourceKind: artifactLabel === "Review" ? "review" : "plan",
+              sourceId: plan.id,
+              sourceLabel: artifactLabel,
+              title: plan.name,
+              artifactId: plan.id,
+              version: selectedVersion,
+            }}
+            className="text-[0.8125rem] leading-relaxed"
+          >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={markdownComponents}
             >
               {bodyAfterHeading ?? ""}
             </ReactMarkdown>
-          </div>
+          </ArtifactSelectableRegion>
         ) : (
           <p
             className="text-[0.8125rem] italic py-8 text-center"
@@ -1403,11 +1414,21 @@ export function PlanDisplay({
                   </div>
                 </div>
               ) : displayContent ? (
-                <div className="text-[0.8125rem] leading-relaxed">
+                <ArtifactSelectableRegion
+                  source={{
+                    sourceKind: artifactLabel === "Review" ? "review" : "plan",
+                    sourceId: plan.id,
+                    sourceLabel: artifactLabel,
+                    title: plan.name,
+                    artifactId: plan.id,
+                    version: selectedVersion,
+                  }}
+                  className="text-[0.8125rem] leading-relaxed"
+                >
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {displayContent}
                   </ReactMarkdown>
-                </div>
+                </ArtifactSelectableRegion>
               ) : (
                 <p
                   className="text-[0.8125rem] italic py-8 text-center"

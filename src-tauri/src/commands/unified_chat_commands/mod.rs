@@ -132,9 +132,9 @@ use crate::domain::execution::{
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, ComposerSelectionSnapshot, QueuedMessage, RunningAgentKey,
-    RunningAgentRegistry,
+    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
+    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
@@ -193,6 +193,9 @@ pub struct SendAgentMessageInput {
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Immutable whole-line artifact or ticket excerpt selected for this turn.
     pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    /// Bounded plain-text excerpts selected from the artifact pane.
+    #[serde(default)]
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     /// Optional native team-mode overlay request for this send.
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
@@ -1694,6 +1697,7 @@ pub struct QueuedMessageResponse {
     pub created_at: String,
     pub is_editing: bool,
     pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     pub attachment_ids: Vec<String>,
 }
 
@@ -1705,6 +1709,7 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             created_at: msg.created_at,
             is_editing: msg.is_editing,
             composer_selection_snapshot: msg.composer_selection_snapshot,
+            composer_excerpt_references: msg.composer_excerpt_references,
             attachment_ids: msg
                 .attachment_ids
                 .into_iter()
@@ -4022,6 +4027,7 @@ pub async fn send_agent_message(
                 composer_integration_references: input.composer_integration_references,
                 composer_artifact_references: input.composer_artifact_references,
                 composer_selection_snapshot: input.composer_selection_snapshot,
+                composer_excerpt_references: input.composer_excerpt_references,
                 team_intent: input.team_intent,
                 team_message_target: input.team_message_target,
                 attachment_ids,
