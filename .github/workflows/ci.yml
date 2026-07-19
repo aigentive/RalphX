@@ -43,6 +43,7 @@ jobs:
               - '.github/dependabot.yml'
               - 'scripts/test-rust-fast.sh'
               - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
+              - 'scripts/tests/test-coverage-rust-shards.sh'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
             plugins:
@@ -126,6 +127,10 @@ jobs:
       - name: Validate Rust full integration target scope
         shell: bash
         run: bash scripts/tests/test-ci-rust-full-integration-targets.sh
+
+      - name: Validate Rust coverage shard topology
+        shell: bash
+        run: bash scripts/tests/test-coverage-rust-shards.sh
 
       - name: Validate release scripts
         shell: bash
