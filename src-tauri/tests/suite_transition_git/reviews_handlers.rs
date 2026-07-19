@@ -1063,6 +1063,7 @@ async fn test_complete_review_allows_unrelated_drift_escalation_after_revision_b
         .review_settings_repo
         .update_settings(&ReviewSettings {
             max_revision_cycles: 1,
+            auto_create_followup_agent_conversation: true,
             ..ReviewSettings::default()
         })
         .await
@@ -1149,6 +1150,7 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .review_settings_repo
         .update_settings(&ReviewSettings {
             max_revision_cycles: 1,
+            auto_create_followup_agent_conversation: true,
             ..ReviewSettings::default()
         })
         .await
