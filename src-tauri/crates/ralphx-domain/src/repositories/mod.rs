@@ -79,7 +79,9 @@ pub use agent_conversation_issue_repository::{
 };
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
-pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
+pub use agent_conversation_workspace_repository::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use manual_role_default_repository::ManualRoleDefaultRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;

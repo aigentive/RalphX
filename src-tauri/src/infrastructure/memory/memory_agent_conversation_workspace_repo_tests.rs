@@ -10,6 +10,7 @@ use crate::domain::entities::{
     IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::AgentWorkspaceLocalCleanupClaim;
 
 fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
     AgentConversationWorkspace::new(
@@ -293,6 +294,133 @@ async fn cleanup_status_round_trips_and_clears() {
             .expect("read cleared marker"),
         None
     );
+}
+
+#[tokio::test]
+async fn local_cleanup_claim_is_single_flight_and_cleaned_is_monotonic() {
+    let repo = std::sync::Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::from_string("conversation-cleanup-claim");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+    let claimed_at = chrono::Utc::now();
+    let stale_before = claimed_at - chrono::Duration::hours(1);
+
+    let (first, second) = tokio::join!(
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+    );
+    let claims = [first.expect("first claim"), second.expect("second claim")];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| **claim == AgentWorkspaceLocalCleanupClaim::Claimed)
+            .count(),
+        1
+    );
+    assert!(claims.contains(&AgentWorkspaceLocalCleanupClaim::AlreadyInProgress));
+
+    let replacement_claimed_at = claimed_at + chrono::Duration::hours(2);
+    assert_eq!(
+        repo.claim_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("replacement claim"),
+        AgentWorkspaceLocalCleanupClaim::Claimed
+    );
+    assert!(!repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            claimed_at,
+            "failed_operational",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("stale owner finalize is rejected"));
+    assert!(repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            "cleaned",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("replacement owner finalizes"));
+    assert_eq!(
+        repo.claim_local_cleanup(&conversation_id, chrono::Utc::now(), stale_before)
+            .await
+            .expect("claim after success"),
+        AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
+    );
+}
+
+#[tokio::test]
+async fn terminal_cleanup_candidates_include_only_stale_retryable_markers() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let project_id = ProjectId::from_string("project-memory".to_string());
+    let stale_checked_at = chrono::Utc::now() - chrono::Duration::days(30);
+    let fresh_checked_at = chrono::Utc::now();
+    let retryable_statuses = [
+        "pending",
+        "failed",
+        "failed_unsafe",
+        "failed_operational",
+        "unsafe",
+        "target_ref_missing",
+        "workspace_dirty",
+        "branch_missing",
+        "cleaning",
+    ];
+
+    let mut retryable_conversation_ids = Vec::new();
+    for status in retryable_statuses {
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = make_workspace(conversation_id.clone());
+        workspace.status = AgentConversationWorkspaceStatus::Active;
+        workspace.publication_pr_status = Some("merged".to_string());
+        repo.create_or_update(workspace)
+            .await
+            .expect("insert terminal workspace");
+        repo.mark_local_cleanup_status(&conversation_id, status, stale_checked_at)
+            .await
+            .expect("mark stale retryable cleanup");
+        retryable_conversation_ids.push((status, conversation_id));
+    }
+    let fresh_id = ChatConversationId::new();
+    let mut fresh_workspace = make_workspace(fresh_id.clone());
+    fresh_workspace.status = AgentConversationWorkspaceStatus::Active;
+    fresh_workspace.publication_pr_status = Some("closed".to_string());
+    repo.create_or_update(fresh_workspace)
+        .await
+        .expect("insert fresh terminal workspace");
+    repo.mark_local_cleanup_status(&fresh_id, "cleaning", fresh_checked_at)
+        .await
+        .expect("mark fresh cleanup");
+    let non_terminal_id = ChatConversationId::new();
+    repo.create_or_update(make_workspace(non_terminal_id))
+        .await
+        .expect("insert active workspace");
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .expect("list terminal cleanup candidates");
+
+    assert_eq!(candidates.len(), retryable_statuses.len());
+    for (status, conversation_id) in retryable_conversation_ids {
+        assert!(
+            candidates
+                .iter()
+                .any(|workspace| workspace.conversation_id == conversation_id),
+            "stale retryable marker {status} should be returned"
+        );
+    }
+    assert!(!candidates
+        .iter()
+        .any(|workspace| workspace.conversation_id == fresh_id));
 }
 
 #[tokio::test]

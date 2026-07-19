@@ -493,6 +493,9 @@ pub struct GitRuntimeConfig {
     pub terminal_pr_local_cleanup_retry_secs: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
+    /// Seconds between same-process orphan agent-worktree cleanup passes.
+    #[serde(default = "default_orphan_worktree_cleanup_interval_secs")]
+    pub orphan_worktree_cleanup_interval_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
@@ -526,6 +529,7 @@ impl Default for GitRuntimeConfig {
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
+            orphan_worktree_cleanup_interval_secs: 900,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
             cleanup_worktree_timeout_secs: 15,
@@ -541,6 +545,10 @@ fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_orphan_worktree_cleanup_interval_secs() -> u64 {
     900
 }
 
@@ -991,6 +999,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.orphan_worktree_cleanup_marker_retry_secs,
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS"
+    );
+    env_u64!(
+        cfg.git.orphan_worktree_cleanup_interval_secs,
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS"
     );
     env_u64!(
         cfg.git.agent_kill_settle_secs,
