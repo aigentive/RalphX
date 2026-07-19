@@ -440,6 +440,43 @@ describe("MessageReferences", () => {
     expect(chip.getAttribute("type")).toBe("button");
   });
 
+  it("renders distinct same-text excerpts from one source as separate chips", () => {
+    // Regression: keying excerpt chips only by sourceKind:sourceId:excerpt let
+    // two references with identical text but different revision/version/locator
+    // collide in React rendering, hiding one chip after reload.
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        excerptReferences={[
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "abc123",
+          },
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "def456",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getAllByTestId(
+        "message-reference-excerpt:workspace_diff:conversation-1",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("renders non-ticket integrations (confluence) as links without onOpenTicket", () => {
     render(
       <MessageReferences

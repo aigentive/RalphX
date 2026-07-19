@@ -15,6 +15,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { composerExcerptReferenceKey } from "@/components/agents/artifact-selection/artifactSelection.types";
 import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -150,7 +151,7 @@ export function MessageReferences({
           .join(" · ");
         return (
           <ReferenceChip
-            key={`excerpt:${reference.sourceKind}:${reference.sourceId}:${reference.excerpt}`}
+            key={`excerpt:${composerExcerptReferenceKey(reference)}`}
             testId={`message-reference-excerpt:${reference.sourceKind}:${reference.sourceId}`}
             icon={ScrollText}
             typeLabel={`${reference.sourceLabel} excerpt`}
