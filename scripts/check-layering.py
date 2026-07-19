@@ -25,12 +25,8 @@ FILESYSTEM_ENFORCEMENT_ALLOWLIST = {
     ): 1,
     (
         "src-tauri/src/application/chat_service/resolved_conversation_spawn_context.rs",
-        "let enforce_filesystem_roots = super::build_mcp_runtime_context(",
-    ): 1,
-    (
-        "src-tauri/src/application/chat_service/resolved_conversation_spawn_context.rs",
         "let enforce_filesystem_roots = build_mcp_runtime_context(",
-    ): 1,
+    ): 2,
     (
         "src-tauri/src/application/chat_service/chat_service_context.rs",
         "enforce_filesystem_roots: matches!(",
