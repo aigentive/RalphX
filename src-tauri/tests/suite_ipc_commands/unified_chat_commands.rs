@@ -2112,7 +2112,7 @@ async fn workspace_publish_fixable_failure_is_routed_by_backend() {
 }
 
 #[tokio::test]
-async fn workspace_publish_repair_inherits_workspace_runtime_but_starts_fresh_session() {
+async fn workspace_publish_repair_defers_to_role_runtime_but_starts_fresh_session() {
     let state = AppState::new_test();
     let service = MockChatService::new();
     let workspace = test_agent_workspace();
@@ -2151,12 +2151,9 @@ async fn workspace_publish_repair_inherits_workspace_runtime_but_starts_fresh_se
 
     let options = service.get_sent_options().await;
     assert_eq!(options.len(), 1);
-    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
-    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.4"));
-    assert_eq!(
-        options[0].logical_effort_override,
-        Some(LogicalEffort::High)
-    );
+    assert_eq!(options[0].harness_override, None);
+    assert_eq!(options[0].model_override, None);
+    assert_eq!(options[0].logical_effort_override, None);
     assert!(options[0].force_new_provider_session);
     assert!(options[0].preserve_conversation_provider_session_ref);
 }
