@@ -248,13 +248,13 @@ async fn create_plan_artifact_records_each_non_automation_planning_artifact() {
     let rows = plan_notifications(&state).await;
     assert_eq!(rows.len(), 2);
     let first_dedupe_key = format!("plan:{}:{}", session.id, first.id);
-    assert!(rows
-        .iter()
-        .any(|row| { row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) }));
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) && row.read_at.is_some()
+    }));
     let second_dedupe_key = format!("plan:{}:{}", session.id, second.id);
-    assert!(rows
-        .iter()
-        .any(|row| { row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) }));
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) && row.read_at.is_none()
+    }));
     let conversation_id = conversation.id.as_str();
     assert!(rows
         .iter()

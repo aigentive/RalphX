@@ -215,6 +215,14 @@ describe("useAgentsViewController automation run focus", () => {
     view.rerenderController();
 
     await expectRunFocusApplied();
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().visibleAgentScope).toEqual({
+        workspaceConversationId: hydratedSetup.id,
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+    });
     expect(clearSpy).toHaveBeenCalledTimes(1);
     expect(
       useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
@@ -224,6 +232,8 @@ describe("useAgentsViewController automation run focus", () => {
 
     view.rerenderController();
     expect(clearSpy).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(useAgentSessionStore.getState().visibleAgentScope).toBeNull();
   });
 
   it("does not re-apply a consumed request after manually switching back to Workspace", async () => {

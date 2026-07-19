@@ -349,13 +349,17 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc
 
   rust-full-integration:
-    name: Rust Full Integration
+    name: Rust Full Integration (Shard ${{ matrix.partition }})
     needs:
       - changes
       - rust-lib-nextest-archive
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: ["1/2", "2/2"]
     env:
       CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
@@ -397,7 +401,8 @@ jobs:
             --test suite_sqlite_repos \
             --test suite_transition_git \
             --test plan_selector_performance \
-            --features test-utils
+            --features test-utils \
+            --partition hash:${{ matrix.partition }}
 
   rust-macos-build:
     name: Rust macOS Build

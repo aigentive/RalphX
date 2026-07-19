@@ -666,6 +666,28 @@ describe("agentSessionStore", () => {
       ).toBeUndefined();
     });
 
+    it("keeps the exact visible Agent scope transient", () => {
+      useAgentSessionStore.getState().setVisibleAgentScope({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+
+      expect(useAgentSessionStore.getState().visibleAgentScope).toEqual({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+      const partialize = useAgentSessionStore.persist.getOptions().partialize;
+      const persisted = partialize?.(useAgentSessionStore.getState()) as Record<
+        string,
+        unknown
+      >;
+      expect(persisted).not.toHaveProperty("visibleAgentScope");
+    });
+
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {
       const { setRuntimeForConversation, setLastRuntimeForProject } =
         useAgentSessionStore.getState();

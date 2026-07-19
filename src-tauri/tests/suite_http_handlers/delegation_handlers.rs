@@ -9,7 +9,9 @@ use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
-use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
+use ralphx_lib::domain::agents::{
+    AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole,
+};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, DelegatedSession,
     DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId,
@@ -256,7 +258,7 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
 fn delegate_start_request_accepts_legacy_message_alias_for_prompt() {
     let parsed: DelegateStartRequest = serde_json::from_str(
         r#"{
-            "agent_name": "ralphx:ralphx-ideation-specialist-intent",
+            "agent_name": "ralphx:ralphx-ideation-specialist-backend",
             "message": "SESSION_ID: parent\nAnalyze intent alignment."
         }"#,
     )
@@ -496,7 +498,7 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert_eq!(latest_run.status, "completed");
     assert_eq!(latest_run.harness.as_deref(), Some("codex"));
     assert_eq!(latest_run.upstream_provider.as_deref(), Some("openai"));
-    assert_eq!(latest_run.logical_model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(latest_run.logical_model, None);
     let recent_messages = delegated_status
         .recent_messages
         .expect("delegated status should expose handoff messages when requested");
@@ -920,7 +922,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
     let start = start_delegate(
         State(state.clone()),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
@@ -931,7 +933,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Publish a verification finding.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -960,7 +962,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
 }
 
 #[tokio::test]
-async fn test_delegate_start_uses_verifier_subagent_lane_model_when_model_is_omitted() {
+async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
     let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
@@ -971,7 +973,7 @@ async fn test_delegate_start_uses_verifier_subagent_lane_model_when_model_is_omi
     let start = start_delegate(
         State(state.clone()),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
@@ -982,7 +984,7 @@ async fn test_delegate_start_uses_verifier_subagent_lane_model_when_model_is_omi
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -1027,7 +1029,7 @@ async fn test_delegate_start_uses_verifier_subagent_lane_model_when_model_is_omi
         .and_then(|status| status.latest_run)
         .expect("latest delegated run");
     assert_eq!(latest_run.harness.as_deref(), Some("codex"));
-    assert_eq!(latest_run.logical_model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(latest_run.logical_model, None);
     assert_eq!(latest_run.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         latest_run.sandbox_mode.as_deref(),
@@ -1221,7 +1223,7 @@ async fn test_delegate_start_infers_parent_session_from_verification_child_conte
     let start = start_delegate(
         State(state.clone()),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
@@ -1232,7 +1234,7 @@ async fn test_delegate_start_infers_parent_session_from_verification_child_conte
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -1286,7 +1288,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
     let start = start_delegate(
         State(state.clone()),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
@@ -1297,7 +1299,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -1320,7 +1322,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
 }
 
 #[tokio::test]
-async fn test_delegate_start_uses_verifier_subagent_harness_when_harness_is_omitted() {
+async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omitted() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
     let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
@@ -1330,19 +1332,22 @@ async fn test_delegate_start_uses_verifier_subagent_harness_when_harness_is_omit
 
     state
         .app_state
-        .agent_lane_settings_repo
+        .manual_role_default_repo
         .upsert_global(
-            AgentLane::IdeationVerifierSubagent,
-            &AgentLaneSettings {
+            RoutingRole::IdeationVerifierSubagent,
+            &ManualRoleDefault {
                 harness: AgentHarnessKind::Codex,
                 model: Some("gpt-5.4-mini".to_string()),
                 effort: None,
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
             },
         )
         .await
-        .expect("verifier subagent lane upsert should succeed");
+        .expect("ideation verifier subagent role default should persist");
 
     let mut verification_child = IdeationSession::builder()
         .project_id(parent.project_id.clone())
@@ -1361,7 +1366,7 @@ async fn test_delegate_start_uses_verifier_subagent_harness_when_harness_is_omit
     let start = start_delegate(
         State(state.clone()),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
@@ -1372,7 +1377,7 @@ async fn test_delegate_start_uses_verifier_subagent_harness_when_harness_is_omit
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -1462,19 +1467,22 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
 
     state
         .app_state
-        .agent_lane_settings_repo
+        .manual_role_default_repo
         .upsert_global(
-            AgentLane::IdeationSubagent,
-            &AgentLaneSettings {
+            RoutingRole::IdeationSubagent,
+            &ManualRoleDefault {
                 harness: AgentHarnessKind::Codex,
                 model: Some("gpt-5.4-mini".to_string()),
                 effort: None,
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
             },
         )
         .await
-        .expect("ideation subagent lane upsert should succeed");
+        .expect("ideation subagent role default should persist");
 
     let start = start_delegate(
         State(state.clone()),
@@ -1490,7 +1498,7 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
             parent_tool_use_id: Some("toolu-ideation-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-ideation-specialist-intent".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Analyze the plan intent and summarize any scope drift risks.".to_string(),
             title: Some("Delegated Intent Specialist".to_string()),
             inherit_context: true,
@@ -1598,7 +1606,7 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
     let start = start_delegate(
         State(state),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
@@ -1609,7 +1617,7 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
             inherit_context: true,
@@ -1657,7 +1665,7 @@ async fn test_delegate_start_rejects_parent_session_mismatch_against_verificatio
     let error = start_delegate(
         State(state),
         Json(DelegateStartRequest {
-            caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_name: Some("ralphx-ideation".to_string()),
             caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
@@ -1668,7 +1676,7 @@ async fn test_delegate_start_rejects_parent_session_mismatch_against_verificatio
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
-            agent_name: "ralphx-plan-critic-completeness".to_string(),
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
             inherit_context: true,

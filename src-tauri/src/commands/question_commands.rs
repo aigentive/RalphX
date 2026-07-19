@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Runtime, State};
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::interactive_notification_producer::question_notification_key;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
@@ -233,6 +234,10 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
     let result = state.question_state.resolve(&request_id, answer).await;
 
     if result.resolved {
+        state
+            .notification_service()
+            .resolve_workflow_notification(&question_notification_key(&request_id))
+            .await;
         let mut plan_mode_proposal_handled = false;
         if let Some(proposal) = accepted_plan_mode_proposal {
             match handle_accepted_plan_mode_proposal(

@@ -1058,9 +1058,9 @@ async fn test_execution_complete_without_test_result_leaves_no_cache() {
     );
 }
 
-/// execution_complete acknowledgement does not emit the completion event before finalizer authority.
+/// execution_complete only accepts the worker signal; stream completion owns the event.
 #[tokio::test]
-async fn test_execution_complete_defers_external_event_to_finalizer() {
+async fn test_execution_complete_does_not_emit_external_event_before_stream_success() {
     let state = setup_test_state().await;
 
     let project = create_test_project(&state, "Webhook Project", "/tmp/webhook-project").await;
@@ -1083,6 +1083,8 @@ async fn test_execution_complete_defers_external_event_to_finalizer() {
     .unwrap();
     assert!(response.0.success);
 
+    // The accepted tool signal is not final transition authority. Emitting here would
+    // falsely report completion before the worker stream settles successfully.
     let events = state
         .app_state
         .external_events_repo
@@ -1094,6 +1096,6 @@ async fn test_execution_complete_defers_external_event_to_finalizer() {
         events
             .iter()
             .all(|event| event.event_type != "task:execution_completed"),
-        "task:execution_completed must be emitted only after the finalizer transition wins"
+        "task:execution_completed must wait for authoritative stream success"
     );
 }

@@ -1173,7 +1173,7 @@ impl AppState {
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
 
-        Ok(Self {
+        let state = Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1425,7 +1425,11 @@ impl AppState {
             events,
             internal_event_bus,
             app_paths,
-        })
+        };
+        state
+            .pr_poller_registry
+            .set_notification_service(state.notification_service());
+        Ok(state)
     }
 
     /// Create AppState with a specific database path

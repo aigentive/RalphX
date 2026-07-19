@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { safeError } from "./redact.js";
 import { buildTauriApiUrl } from "./tauri-client.js";
+import { buildRuntimeTransportHeaders, } from "./runtime-context.js";
 /** Timeout for long-polling (15 minutes — staggered 1 min above backend's 14 min) */
 const TEAM_PLAN_TIMEOUT_MS = 15 * 60 * 1000;
 const SAFE_TEAM_NAME = /^[A-Za-z0-9._-]{1,128}$/;
@@ -44,7 +45,7 @@ function sanitizeLeadSessionId(value) {
  * 4. GET /api/team/plan/await/:plan_id — blocks until user approves/rejects (15 min timeout)
  * 5. Return approval result to agent
  */
-export async function handleRequestTeamPlan(args, contextType, contextId, leadSessionId) {
+export async function handleRequestTeamPlan(args, contextType, contextId, leadSessionId, runtimeContext = {}) {
     const teamName = args.team_name;
     // Validate team_name is present
     if (!teamName) {
@@ -100,7 +101,10 @@ export async function handleRequestTeamPlan(args, contextType, contextId, leadSe
     try {
         const registerResponse = await fetch(buildTauriApiUrl("team/plan/request"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+            },
             body: JSON.stringify({
                 context_type: contextType || "ideation",
                 context_id: contextId || "",

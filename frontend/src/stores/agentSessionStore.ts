@@ -90,6 +90,13 @@ export interface AgentAutomationRunFocusRequest {
   requestId: number;
 }
 
+export interface VisibleAgentScope {
+  workspaceConversationId: string;
+  visibleConversationId?: string;
+  automationRunId?: string;
+  automationConversationId?: string;
+}
+
 export type AgentAutomationRunFocusRequestInput = Omit<
   AgentAutomationRunFocusRequest,
   "requestId"
@@ -144,6 +151,8 @@ interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
+  /** Exact Agent surface currently rendered; intentionally excluded from persistence. */
+  visibleAgentScope: VisibleAgentScope | null;
   startConversationDraft: AgentStartConversationDraft | null;
   startConversationFailure: AgentStartConversationFailure | null;
   lastSelectedConversationByProjectId: Record<string, string>;
@@ -174,6 +183,7 @@ interface AgentSessionActions {
   setFocusedProject: (projectId: string | null) => void;
   selectConversation: (projectId: string, conversationId: string) => void;
   clearSelection: () => void;
+  setVisibleAgentScope: (scope: VisibleAgentScope | null) => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
   setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
@@ -459,6 +469,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       focusedProjectId: null,
       selectedProjectId: null,
       selectedConversationId: null,
+      visibleAgentScope: null,
       startConversationDraft: null,
       startConversationFailure: null,
       lastSelectedConversationByProjectId: {},
@@ -500,6 +511,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         set((state) => {
           state.selectedProjectId = null;
           state.selectedConversationId = null;
+        }),
+
+      setVisibleAgentScope: (scope) =>
+        set((state) => {
+          state.visibleAgentScope = scope;
         }),
 
       setStartConversationDraft: (draft) =>
