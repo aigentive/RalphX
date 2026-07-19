@@ -2,8 +2,8 @@ use super::*;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::ChatAttachmentId;
 use crate::domain::services::{
-    ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
-    ComposerProjectReferenceKind,
+    ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
+    ComposerProjectReference, ComposerProjectReferenceKind,
 };
 use crate::infrastructure::agents::claude::agent_names;
 
@@ -77,6 +77,20 @@ fn queued_persisted_metadata_embeds_composer_references() {
         path: "src/main.rs".to_string(),
         kind: Some(ComposerProjectReferenceKind::File),
     }];
+    message.composer_excerpt_references = vec![ComposerExcerptReference {
+        source_kind: "workspace_diff".to_string(),
+        source_id: "conversation-1".to_string(),
+        source_label: "Diff".to_string(),
+        title: Some("Workspace changes".to_string()),
+        excerpt: "const answer = 42;".to_string(),
+        artifact_id: None,
+        session_id: None,
+        version: None,
+        url: None,
+        file_path: Some("src/main.rs".to_string()),
+        revision: Some("abc123".to_string()),
+        locator: None,
+    }];
 
     let metadata = queued_persisted_metadata(&message).expect("metadata");
     let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
@@ -87,6 +101,14 @@ fn queued_persisted_metadata_embeds_composer_references() {
         "src/main.rs"
     );
     assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    assert_eq!(
+        value["composer_excerpt_references"][0]["sourceKind"],
+        "workspace_diff"
+    );
+    assert_eq!(
+        value["composer_excerpt_references"][0]["excerpt"],
+        "const answer = 42;"
+    );
 }
 
 #[test]
@@ -187,6 +209,20 @@ fn provider_switch_send_options_for_queued_message_preserve_payload() {
         version: Some(1),
         status: Some("approved".to_string()),
     }];
+    message.composer_excerpt_references = vec![ComposerExcerptReference {
+        source_kind: "task".to_string(),
+        source_id: "task-1".to_string(),
+        source_label: "Task".to_string(),
+        title: Some("Task details".to_string()),
+        excerpt: "Selected task context".to_string(),
+        artifact_id: None,
+        session_id: None,
+        version: None,
+        url: None,
+        file_path: None,
+        revision: None,
+        locator: Some("Description".to_string()),
+    }];
     message.attachment_ids = vec![attachment_id];
 
     let options = provider_switch_send_options_for_queued_message(
@@ -227,6 +263,10 @@ fn provider_switch_send_options_for_queued_message_preserve_payload() {
     assert_eq!(
         options.composer_artifact_references,
         message.composer_artifact_references
+    );
+    assert_eq!(
+        options.composer_excerpt_references,
+        message.composer_excerpt_references
     );
     assert_eq!(options.attachment_ids, message.attachment_ids);
     assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
@@ -333,6 +373,7 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         Vec::new(),
         None,
         Vec::new(),
+        Vec::new(),
     );
 
     let outcome = process_queued_messages::<tauri::test::MockRuntime>(
@@ -418,6 +459,7 @@ async fn missing_continuation_authority_records_failed_action_run() {
         Vec::new(),
         Vec::new(),
         None,
+        Vec::new(),
         Vec::new(),
     );
 

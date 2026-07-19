@@ -1913,6 +1913,7 @@ async fn send_queued_message_now_preserves_suppress_directive_and_agent_override
         }],
         None,
         Vec::new(),
+        Vec::new(),
     );
 
     let result = service
@@ -2020,6 +2021,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         vec![selected_attachment.id],
     );

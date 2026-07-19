@@ -108,6 +108,8 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         vec![project_reference.clone()],
         vec![integration_reference.clone()],
         Vec::new(),
+        None,
+        Vec::new(),
         vec![attachment_id],
     );
 

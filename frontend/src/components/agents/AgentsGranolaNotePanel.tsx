@@ -27,6 +27,7 @@ import {
   buildGranolaSelectionContent,
   getGranolaSelectionSourceTitle,
 } from "./artifact-selection/granolaSelectionContent";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsGranolaNotePanelProps {
   conversationId: string | null;
@@ -310,7 +311,16 @@ function BoundNoteDetails({
   onReassign: () => void;
 }) {
   return (
-    <div className="space-y-3">
+    <ArtifactSelectableRegion
+      className="space-y-3"
+      source={{
+        sourceKind: "granola",
+        sourceId: note.noteId,
+        sourceLabel: "Granola note",
+        ...(note.title ? { title: note.title } : {}),
+        ...(note.noteUrl ? { url: note.noteUrl } : {}),
+      }}
+    >
       <div className="min-w-0">
         <h3 className="text-sm font-semibold">{note.title ?? note.noteId}</h3>
         <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
@@ -330,7 +340,7 @@ function BoundNoteDetails({
       <Button type="button" variant="outline" size="sm" onClick={onReassign}>
         Choose another note
       </Button>
-    </div>
+    </ArtifactSelectableRegion>
   );
 }
 
