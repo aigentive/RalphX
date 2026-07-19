@@ -78,6 +78,9 @@ grep -Fq -- '--archive-file rust-integration-tests.tar.zst' <<< "${integration_j
   || fail "Rust Full Integration does not execute the shared archive"
 grep -Fq -- "--partition slice:${MATRIX_SHARD_EXPR}/3" <<< "${integration_job}" \
   || fail "Rust Full Integration does not use balanced slice partitioning"
+if grep -Eq -- '--test |--features ' <<< "${integration_job}"; then
+  fail "Rust Full Integration reselects targets or features already embedded in its archive"
+fi
 
 if grep -Fq 'CARGO_BUILD_JOBS' <<< "${integration_archive_job}${integration_job}"; then
   fail "Rust integration compilation is still artificially serialized"
