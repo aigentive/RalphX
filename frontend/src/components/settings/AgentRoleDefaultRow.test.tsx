@@ -102,6 +102,30 @@ function renderRow(
 }
 
 describe("AgentRoleDefaultRow", () => {
+  it("labels bridged legacy workspace-review defaults", () => {
+    render(
+      <AgentRoleDefaultRow
+        entry={{
+          ...entry,
+          configured: null,
+          source: "legacy_workspace_review",
+        }}
+        expanded={false}
+        disabled={false}
+        providers={["codex"]}
+        modelsForProvider={() => []}
+        personas={[]}
+        onUpdate={vi.fn()}
+        onExpandedChange={vi.fn()}
+        onUseInheritedDefault={vi.fn().mockResolvedValue(true)}
+        onManagePersonas={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Inherited · Legacy Workspace Review"))
+      .toBeInTheDocument();
+  });
+
   it("renders a compact configured summary without mounting editor controls", () => {
     renderRow();
 

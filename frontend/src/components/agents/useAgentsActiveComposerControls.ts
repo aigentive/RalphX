@@ -25,10 +25,7 @@ import {
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
-import { workspaceReviewUtilityRuntimeForProvider } from "./agentConversationRuntime";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
-
-type RuntimeDefaultPolicy = "provider_default" | "workspace_review_utility";
 
 interface UseAgentsActiveComposerControlsArgs {
   activeConversation: AgentConversation | null;
@@ -42,7 +39,6 @@ interface UseAgentsActiveComposerControlsArgs {
   projects: Project[];
   queryClient: QueryClient;
   runtimeConversationId: string | null;
-  runtimeDefaultPolicy: RuntimeDefaultPolicy;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
   setRuntimeForConversation: (
@@ -64,7 +60,6 @@ export function useAgentsActiveComposerControls({
   projects,
   queryClient,
   runtimeConversationId,
-  runtimeDefaultPolicy,
   runtimeByConversationId,
   selectedConversationId,
   setRuntimeForConversation,
@@ -106,18 +101,15 @@ export function useAgentsActiveComposerControls({
         modelRegistry,
         providerSupportedModelAliases,
       );
-      const runtime =
-        runtimeDefaultPolicy === "workspace_review_utility"
-          ? workspaceReviewUtilityRuntimeForProvider(provider)
-          : {
-              provider,
-              modelId: defaultModelId,
-              effort: defaultEffortForModel(
-                provider,
-                defaultModelId,
-                modelRegistry,
-              ),
-            };
+      const runtime = {
+        provider,
+        modelId: defaultModelId,
+        effort: defaultEffortForModel(
+          provider,
+          defaultModelId,
+          modelRegistry,
+        ),
+      };
       setRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
@@ -133,7 +125,6 @@ export function useAgentsActiveComposerControls({
       activeProjectId,
       modelRegistry,
       runtimeConversationId,
-      runtimeDefaultPolicy,
       setRuntimeForConversation,
     ]
   );
