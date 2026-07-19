@@ -21,6 +21,137 @@ async fn source_persona_id_rejects_non_builder_mode() {
 }
 
 #[tokio::test]
+async fn persona_seeded_refine_draft_failure_restores_conversation_without_run_or_spawn() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    let fake_codex = FakeCodex::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_codex
+            .cli_path
+            .to_str()
+            .expect("fake Codex path should be UTF-8"),
+    );
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let app_data_dir = validate_absolute_non_root_path(
+        &temp.path().join("app-data"),
+        "seeded refine failure app data",
+    )
+    .expect("app data should be a safe process-owned path");
+    std::fs::create_dir(&app_data_dir).expect("isolated app data should be created");
+    let db = SqliteTestDb::new("seeded-refine-draft-failure-restores-start-state");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    state.app_paths = AppPaths::new(app_data_dir, None);
+    state.attachment_storage_path = state.app_paths.attachment_storage_path();
+    let project = seed_project(
+        &state,
+        "project-refine-draft-failure",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let source =
+        seed_project_persona(&state, "project-refine-draft-failure-source", &project.id).await;
+    let mut seeded = ChatConversation::new_project(project.id.clone());
+    seeded.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+    seeded.set_coordination_mode(CoordinationMode::Solo);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("empty conversation seed should persist");
+    db.with_connection(|connection| {
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_seeded_refine_draft_insert
+                 BEFORE INSERT ON personas
+                 BEGIN SELECT RAISE(ABORT, 'forced seeded refine draft failure'); END;",
+            )
+            .expect("persona insert failure trigger should install");
+    });
+    let workspace = standalone_workspace_path(
+        &standalone_workspaces_root(state.app_paths.app_data_dir()),
+        &seeded.id.as_str(),
+    );
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    let mut input = service_start_input(
+        &project.id,
+        "Refine without leaking partial start state",
+        "persona_builder",
+        None,
+        None,
+        Some(&seeded.id),
+        None,
+    );
+    input.source_persona_id = Some(source.id.as_str().to_string());
+    input.provider_harness = Some("codex".to_string());
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("failed draft creation must reject the start");
+
+    assert!(
+        error.contains("forced seeded refine draft failure"),
+        "unexpected error: {error}"
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("the pre-existing conversation must remain");
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::Chat),
+        "failed draft creation must restore the prior conversation mode"
+    );
+    assert_eq!(
+        stored.coordination_mode,
+        CoordinationMode::Solo,
+        "failed draft creation must restore the prior coordination mode"
+    );
+    assert!(
+        stored.builder_draft_id.is_none(),
+        "the failed transaction must not leave a draft binding"
+    );
+    assert!(
+        app.state::<AppState>()
+            .persona_repo
+            .get_draft_by_source_persona_id(&source.id)
+            .await
+            .expect("seeded draft lookup should succeed")
+            .is_none(),
+        "the failed transaction must not leave a seeded draft"
+    );
+    assert!(
+        !ralphx_lib::utils::path_safety::checked_exists(
+            &workspace,
+            "seeded refine failure workspace",
+        )
+        .expect("workspace path should remain safe"),
+        "failed draft creation must remove the newly created private workspace"
+    );
+    let runs = app
+        .state::<AppState>()
+        .agent_run_repo
+        .get_by_conversation(&seeded.id)
+        .await
+        .expect("agent run lookup should succeed");
+    assert!(
+        runs.is_empty(),
+        "failed preparation must not create an agent run"
+    );
+    assert!(
+        !fake_codex.was_invoked(),
+        "failed preparation must not spawn the selected provider"
+    );
+}
+
+#[tokio::test]
 async fn seeded_refine_start_enforces_source_status_and_exact_scope_then_stamps_provenance() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));

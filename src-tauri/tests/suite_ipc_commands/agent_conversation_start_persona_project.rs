@@ -270,3 +270,108 @@ async fn existing_project_builder_persistence_failure_restores_runtime_and_works
         "failed preparation must remove the newly created private workspace"
     );
 }
+
+#[tokio::test]
+async fn persona_builder_binary_attachment_failure_preserves_existing_conversation_without_run() {
+    let _reset = PersonaFlagsOverrideReset;
+    set_agent_personas_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let db = SqliteTestDb::new("builder-start-binary-attachment-compensation");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let app_data_dir = temp.path().join("app-data");
+    std::fs::create_dir(&app_data_dir).expect("create isolated app data");
+    state.app_paths = AppPaths::new(app_data_dir.clone(), None);
+    state.attachment_storage_path = state.app_paths.attachment_storage_path();
+    let project = seed_project(
+        &state,
+        "project-builder-binary-attachment",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let mut seeded = ChatConversation::new_project(project.id.clone());
+    seeded.agent_mode = Some(AgentConversationWorkspaceMode::Chat);
+    let seeded = state
+        .chat_conversation_repo
+        .create(seeded)
+        .await
+        .expect("seed existing project conversation");
+    let attachment = ChatAttachmentService::new(
+        Arc::clone(&state.chat_attachment_repo),
+        state.attachment_storage_path.clone(),
+    )
+    .upload(
+        &seeded.id,
+        "binary-context.dat",
+        &[0, 159, 146, 150],
+        Some("application/octet-stream".to_string()),
+    )
+    .await
+    .expect("seed low-level binary attachment fixture");
+    let workspace = standalone_workspace_path(
+        &standalone_workspaces_root(&app_data_dir),
+        &seeded.id.as_str(),
+    );
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Use the binary context",
+            "persona_builder",
+            None,
+            None,
+            Some(&seeded.id),
+            None,
+        ),
+    )
+    .await
+    .expect_err("binary builder attachment must abort preparation");
+
+    assert!(
+        error.contains("only read text context"),
+        "unexpected materialization error: {error}"
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("existing conversation must remain");
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::Chat),
+        "attachment preparation must fail before changing the persisted mode"
+    );
+    assert_eq!(stored.coordination_mode, CoordinationMode::Solo);
+    assert!(stored.builder_draft_id.is_none());
+    assert!(
+        !workspace.exists(),
+        "failed attachment sync must remove the newly prepared private workspace"
+    );
+    assert!(
+        app.state::<AppState>()
+            .agent_run_repo
+            .get_by_conversation(&seeded.id)
+            .await
+            .expect("run lookup should succeed")
+            .is_empty(),
+        "failed preparation must not dispatch or persist an agent run"
+    );
+    assert!(
+        app.state::<AppState>()
+            .chat_attachment_repo
+            .get_by_id(&attachment.id)
+            .await
+            .expect("attachment lookup should succeed")
+            .is_some(),
+        "failed preparation must preserve the user's source attachment"
+    );
+}

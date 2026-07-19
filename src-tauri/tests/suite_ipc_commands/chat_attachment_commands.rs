@@ -27,7 +27,8 @@ fn builder_state() -> (tempfile::TempDir, AppState, ChatConversation) {
 }
 
 #[tokio::test]
-async fn builder_text_attachment_is_materialized_once_and_prompt_references_path_without_inline() {
+async fn persona_builder_text_attachment_is_materialized_once_and_prompt_references_path_without_inline(
+) {
     let (_temp, state, conversation) = builder_state();
     state
         .chat_conversation_repo
@@ -90,7 +91,7 @@ async fn builder_text_attachment_is_materialized_once_and_prompt_references_path
 }
 
 #[tokio::test]
-async fn builder_attachment_render_fails_when_materialized_file_is_missing() {
+async fn persona_builder_attachment_render_fails_when_materialized_file_is_missing() {
     let (_temp, state, conversation) = builder_state();
     state
         .chat_conversation_repo
@@ -144,7 +145,7 @@ async fn builder_attachment_render_fails_when_materialized_file_is_missing() {
 }
 
 #[tokio::test]
-async fn deleting_builder_attachment_removes_materialized_workspace_copy() {
+async fn deleting_persona_builder_attachment_removes_materialized_workspace_copy() {
     let (_temp, state, conversation) = builder_state();
     state
         .chat_conversation_repo
@@ -279,7 +280,8 @@ async fn invalid_context_persona_builder_never_materializes_or_removes_workspace
 }
 
 #[tokio::test]
-async fn builder_binary_attachment_is_rejected_before_storage_with_typed_actionable_error() {
+async fn persona_builder_binary_attachment_is_rejected_before_storage_with_typed_actionable_error()
+{
     let (_temp, state, conversation) = builder_state();
     state
         .chat_conversation_repo
@@ -345,7 +347,8 @@ async fn non_builder_attachment_prompt_keeps_exact_inline_format() {
 }
 
 #[tokio::test]
-async fn builder_attachment_materialization_rejects_workspace_symlink_escape_before_write() {
+async fn persona_builder_attachment_materialization_rejects_workspace_symlink_escape_before_write()
+{
     use std::os::unix::fs::symlink;
 
     let (temp, state, conversation) = builder_state();

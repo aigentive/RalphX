@@ -211,7 +211,7 @@ async fn start_agent_conversation_standalone_chat_mode_creates_self_keyed_conver
 }
 
 #[tokio::test]
-async fn standalone_global_codex_role_defaults_are_validated_and_launched() {
+async fn ipc_contract_standalone_global_codex_role_defaults_are_validated_and_launched() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
     set_standalone_conversations_override(Some(true));
@@ -280,7 +280,7 @@ async fn standalone_global_codex_role_defaults_are_validated_and_launched() {
 }
 
 #[tokio::test]
-async fn start_agent_conversation_standalone_chat_accepts_codex() {
+async fn ipc_contract_start_agent_conversation_standalone_chat_accepts_codex() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
     let fake_codex = FakeCodex::new();
@@ -335,7 +335,7 @@ async fn start_agent_conversation_standalone_chat_accepts_codex() {
 }
 
 #[tokio::test]
-async fn start_agent_conversation_standalone_seeded_ownership_accepts_valid_self_keyed_draft() {
+async fn ipc_contract_standalone_seeded_ownership_accepts_valid_self_keyed_draft() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
     let _allow_spawn =
@@ -426,7 +426,7 @@ async fn start_agent_conversation_standalone_context_id_mismatch_cannot_be_seede
 }
 
 #[tokio::test]
-async fn start_agent_conversation_standalone_seeded_ownership_rejects_wrong_context_type() {
+async fn ipc_contract_standalone_seeded_ownership_rejects_wrong_context_type() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
     ralphx_lib::testing::seed_available_harness_probes_for_test();
@@ -458,7 +458,7 @@ async fn start_agent_conversation_standalone_seeded_ownership_rejects_wrong_cont
 }
 
 #[tokio::test]
-async fn start_agent_conversation_standalone_seeded_ownership_rejects_when_project_id_is_set() {
+async fn ipc_contract_standalone_seeded_ownership_rejects_when_project_id_is_set() {
     // D3.6: valid iff context_type == Standalone && context_id == id &&
     // input.project_id == None. Supplying a project_id alongside a standalone
     // seed must be rejected (it routes into the Project ownership branch,
