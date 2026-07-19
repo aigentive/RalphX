@@ -93,6 +93,7 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewHunkAnnotation,
     AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };

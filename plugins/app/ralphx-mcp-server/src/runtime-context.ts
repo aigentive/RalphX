@@ -121,10 +121,18 @@ export function buildArtifactMutationTransportHeaders(
   if (context.contextType === "ideation" && context.contextId) {
     headers["X-RalphX-Caller-Session-Id"] = context.contextId;
   }
-  if (context.agentRunId && context.conversationId) {
-    headers["x-ralphx-agent-run-id"] = context.agentRunId;
-  }
+  Object.assign(headers, buildRuntimeIdentityTransportHeaders(context));
   return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+export function buildRuntimeIdentityTransportHeaders(
+  context: { agentRunId?: string | undefined; conversationId?: string | undefined }
+): Record<string, string> | undefined {
+  if (!context.agentRunId || !context.conversationId) return undefined;
+  return {
+    "x-ralphx-agent-run-id": context.agentRunId,
+    "x-ralphx-conversation-id": context.conversationId,
+  };
 }
 
 export function buildRuntimeTransportHeaders(
