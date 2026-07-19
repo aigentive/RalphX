@@ -20,13 +20,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import type { ProjectSettings } from "@/types/settings";
 
 import {
   DEFAULT_SETTINGS_SECTION,
   SETTINGS_GROUPS,
-  SETTINGS_SECTIONS,
   resolveSettingsSectionId,
+  visibleSettingsSections,
   type SettingsSectionId,
 } from "./settings-registry";
 import { loadActiveSection, saveActiveSection } from "./settings-ui-state";
@@ -59,12 +60,26 @@ export default function SettingsDialog({
   const modalContext = useUiStore((s) => s.modalContext);
   const closeModal = useUiStore((s) => s.closeModal);
   const isOpen = activeModal === "settings";
+  const ideationSettingsQuery = useIdeationSettings(isOpen);
+  const tasksEnabled =
+    !ideationSettingsQuery.isLoading &&
+    !ideationSettingsQuery.isError &&
+    ideationSettingsQuery.settings.tasksEnabled;
 
   const [activeSection, setActiveSectionState] = useState<SettingsSectionId>(
     () => loadActiveSection() ?? DEFAULT_SETTINGS_SECTION,
   );
+  const visibleSections = visibleSettingsSections(tasksEnabled);
+  const effectiveActiveSection = visibleSections.some(
+    (section) => section.id === activeSection,
+  )
+    ? activeSection
+    : "ideation-workflow";
   const shouldRenderFrame = useDeferredDialogFrame(isOpen);
-  const isSectionHydrated = useDeferredHydratedSection(isOpen, activeSection);
+  const isSectionHydrated = useDeferredHydratedSection(
+    isOpen,
+    effectiveActiveSection,
+  );
   const persistJobRef = useRef<ScheduledJob | null>(null);
   const closeJobRef = useRef<ScheduledJob | null>(null);
   const warmedSectionsRef = useRef<Partial<Record<SettingsSectionId, true>>>({});
@@ -131,8 +146,15 @@ export default function SettingsDialog({
     }
   }, [isOpen, modalContext, setActiveSection]);
 
-  const activeSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection);
-  const visibleSections = SETTINGS_SECTIONS;
+  useEffect(() => {
+    if (!ideationSettingsQuery.isLoading && activeSection !== effectiveActiveSection) {
+      setActiveSection(effectiveActiveSection);
+    }
+  }, [activeSection, effectiveActiveSection, ideationSettingsQuery.isLoading, setActiveSection]);
+
+  const activeSectionMeta = visibleSections.find(
+    (section) => section.id === effectiveActiveSection,
+  );
 
   const disabled = isLoadingSettings || isSavingSettings;
 
@@ -203,7 +225,7 @@ export default function SettingsDialog({
                     {group.label}
                   </p>
                   {groupSections.map((section) => {
-                    const isActive = section.id === activeSection;
+                    const isActive = section.id === effectiveActiveSection;
                     return (
                       <div
                         key={section.id}
@@ -236,7 +258,7 @@ export default function SettingsDialog({
           {/* Mobile section selector — visible below lg breakpoint */}
           <div className="block lg:hidden w-full px-4 py-2 border-b border-[var(--border-subtle)] shrink-0">
             <select
-              value={activeSection}
+              value={effectiveActiveSection}
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
               className="settings-input w-full focus:outline-none"
             >
@@ -262,7 +284,7 @@ export default function SettingsDialog({
             <ScrollArea className="flex-1">
               <div className="settings-pane__inner">
                 <SettingsSectionContent
-                  section={activeSection}
+                  section={effectiveActiveSection}
                   executionSettings={executionSettings}
                   disabled={disabled}
                   isHydrated={isSectionHydrated}

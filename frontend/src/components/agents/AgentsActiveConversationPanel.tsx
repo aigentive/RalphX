@@ -85,6 +85,7 @@ import {
 } from "@/hooks/useAutomations";
 import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
 import { ideationKeys } from "@/hooks/useIdeation";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
@@ -945,6 +946,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace,
   );
   const queryClient = useQueryClient();
+  const ideationSettingsQuery = useIdeationSettings();
+  const tasksEnabled =
+    !ideationSettingsQuery.isLoading &&
+    !ideationSettingsQuery.isError &&
+    ideationSettingsQuery.settings.tasksEnabled;
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const focusedWorkspaceReviewConversationId =
@@ -1922,7 +1928,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !!planApprovalArtifact &&
     planArtifactApprovalStatus === "draft";
   const canCreatePlanProposals =
-    !!planApprovalSessionId && isPlanApproved && !activeAutomationRunId;
+    !!planApprovalSessionId &&
+    isPlanApproved &&
+    !activeAutomationRunId &&
+    (tasksEnabled || activeWorkspace?.taskPipelineSessionId === planApprovalSessionId);
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
@@ -1940,14 +1949,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ],
     queryFn: () => artifactApi.getPlanComplexityAssessment(planApprovalSessionId!),
     enabled: Boolean(
-      planApprovalSessionId &&
+      tasksEnabled &&
+        planApprovalSessionId &&
         planApprovalArtifact?.id &&
         isPlanApproved,
     ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
-  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+  const isPlanRecommendationPending = tasksEnabled && isPlanRecommendationCheckPending({
     assessment: planComplexityQuery.data,
     isFetching:
       (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
@@ -2146,6 +2156,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     if (canApproveComposerPlan) {
       return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
+    if (!tasksEnabled && isPlanApproved) {
+      return "Tasks is off. Implement this approved plan directly.";
+    }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
       isAssessing: isPlanRecommendationPending,
@@ -2156,6 +2169,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canApproveComposerPlan,
     canCreatePlanProposals,
     canImplementPlanDirectly,
+    tasksEnabled,
+    isPlanApproved,
     isPlanArtifactVisible,
     isPlanRecommendationPending,
     planComplexityQuery.data,
@@ -2217,8 +2232,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             icon: Play,
             isPrimary:
               !isPlanRecommendationPending &&
-              planComplexityQuery.data?.recommendedAction !==
-              "create_proposals",
+              (!tasksEnabled ||
+                planComplexityQuery.data?.recommendedAction !==
+                "create_proposals"),
             isPending: isImplementingPlanDirectly,
             disabled: isPlanRecommendationPending,
             onClick: () => {
@@ -2243,8 +2259,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         }
       : null;
     const mainActions =
-      isPlanRecommendationPending ||
-      planComplexityQuery.data?.recommendedAction === "create_proposals"
+      tasksEnabled &&
+      (isPlanRecommendationPending ||
+        planComplexityQuery.data?.recommendedAction === "create_proposals")
         ? [proposalsAction, implementationAction]
         : [implementationAction, proposalsAction];
     return [...mainActions, verifyAction].filter(
@@ -2269,6 +2286,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planApprovalArtifact,
     planApprovalSessionId,
     planComplexityQuery.data?.recommendedAction,
+    tasksEnabled,
     planVerificationInProgress,
   ]);
   const planComposerViewPlanAction = useMemo<
@@ -2868,6 +2886,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
                       viewPlanAction={planComposerViewPlanAction}
+                      compactHintOverride={
+                        !tasksEnabled && isPlanApproved
+                          ? "Tasks is off"
+                          : undefined
+                      }
                     />
                   )}
                   {shouldShowAutomationComposerCta && (

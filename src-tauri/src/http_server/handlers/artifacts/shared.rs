@@ -145,6 +145,10 @@ pub(super) fn map_app_err(e: AppError) -> HttpError {
             status: StatusCode::CONFLICT,
             message: Some(msg),
         },
+        AppError::FeatureDisabled(msg) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(msg),
+        },
         _ => StatusCode::INTERNAL_SERVER_ERROR.into(),
     }
 }

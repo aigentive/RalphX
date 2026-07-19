@@ -198,10 +198,17 @@ function OverrideSelectRow({
 // ============================================================================
 
 export function IdeationSettingsPanel() {
-  const { settings, updateSettings, isUpdating } = useIdeationSettings();
+  const { settings, updateSettings, isLoading, isUpdating, updateError } = useIdeationSettings();
   const autoAcceptPlans = useUiStore((s) => s.autoAcceptPlans);
   const setAutoAcceptPlans = useUiStore((s) => s.setAutoAcceptPlans);
   const [showExternalOverrides, setShowExternalOverrides] = useState(false);
+
+  const handleTasksEnabledChange = (checked: boolean) => {
+    updateSettings({
+      ...settings,
+      tasksEnabled: checked,
+    });
+  };
 
   const handleRequireAcceptForFinalizeChange = (checked: boolean) => {
     updateSettings({
@@ -244,6 +251,21 @@ export function IdeationSettingsPanel() {
       description="Configure acceptance and verification gates"
     >
       <>
+        <CheckboxSettingRow
+          id="enable-tasks"
+          label="Enable Tasks"
+          description="Off by default. Plans can still be implemented directly; attached Agent pipelines may finish, while active standalone Tasks are paused."
+          checked={settings.tasksEnabled}
+          disabled={isLoading || isUpdating}
+          onChange={handleTasksEnabledChange}
+        />
+        {updateError instanceof Error &&
+          updateError.message.includes("ralphx:tasks_drain_incomplete") && (
+            <p role="alert" className="py-2 text-xs text-[var(--status-warning)]">
+              Tasks is off. Some running Task processes could not be stopped yet and will be retried.
+              <span className="block mt-1">{updateError.message}</span>
+            </p>
+          )}
         {/* Require agent confirmation before finalizing proposals */}
         <CheckboxSettingRow
           id="require-accept-for-finalize"

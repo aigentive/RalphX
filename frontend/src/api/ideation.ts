@@ -650,6 +650,7 @@ export const ideationApi = {
         "update_ideation_settings",
         {
           settings: {
+            tasks_enabled: settings.tasksEnabled,
             plan_mode: "optional",
             require_plan_approval: false,
             suggest_plans_for_complex: false,
