@@ -53,6 +53,8 @@ Modes:
   doc           Run doctests.
   full-integration
                 Run the full Rust integration sweep.
+  full-integration-archive <archive-file>
+                Build the explicit full integration targets into a Nextest archive.
   main          Run the broad Rust CI aggregate: fast subset + doctests + full integration.
   help          Show this message.
 
@@ -104,18 +106,30 @@ doc_cmd() {
   cargo test --manifest-path "${MANIFEST_PATH}" --workspace --doc
 }
 
-full_integration_cmd() {
+full_integration_nextest_cmd() {
+  local nextest_subcommand="$1"
+  shift
   local test_args=()
   local test_name
   for test_name in "${FULL_INTEGRATION_TESTS[@]}"; do
     test_args+=(--test "${test_name}")
   done
 
-  cargo nextest run \
+  cargo nextest "${nextest_subcommand}" \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
     "${test_args[@]}" \
-    --features test-utils
+    --features test-utils \
+    "$@"
+}
+
+full_integration_cmd() {
+  full_integration_nextest_cmd run
+}
+
+full_integration_archive_cmd() {
+  local archive_file="$1"
+  full_integration_nextest_cmd archive --archive-file "${archive_file}"
 }
 
 run_ipc() {
@@ -137,6 +151,11 @@ run_docs() {
 
 run_full_integration() {
   run_cmd "full-integration" full_integration_cmd
+}
+
+run_full_integration_archive() {
+  local archive_file="$1"
+  run_cmd "full-integration-archive" full_integration_archive_cmd "${archive_file}"
 }
 
 run_isolated_ipc() {
@@ -242,6 +261,14 @@ case "${mode}" in
     ;;
   full-integration)
     run_full_integration
+    ;;
+  full-integration-archive)
+    archive_file="${2:-}"
+    if [[ -z "${archive_file}" ]]; then
+      printf '[rust-fast] full-integration-archive requires an output file.\n' >&2
+      exit 1
+    fi
+    run_full_integration_archive "${archive_file}"
     ;;
   main)
     run_layering
