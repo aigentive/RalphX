@@ -279,9 +279,9 @@ async fn create_test_proposal(state: &AppState, session_id: &IdeationSessionId) 
         .id
 }
 
-// Scenario 10: An active verification gate blocks draft proposal creation.
+// Scenario 10: The retired proposal gate cannot block draft proposal creation.
 #[tokio::test]
-async fn test_create_requires_verification_when_proposal_gate_is_enabled() {
+async fn test_create_ignores_legacy_proposal_gate_when_unverified() {
     let state = AppState::new_sqlite_test();
     let (session, artifact_id) = setup_session_with_gate(&state, "unverified", true).await;
 
@@ -299,24 +299,30 @@ async fn test_create_requires_verification_when_proposal_gate_is_enabled() {
         expected_proposal_count: None,
     };
 
-    let error = create_proposal_impl(&state, session.id.clone(), options)
-        .await
-        .expect_err("unverified sessions must not create proposals when the gate is enabled");
-    assert!(
-        matches!(error, AppError::Validation(message) if message.contains("plan verification gate passes"))
+    let (created, dependency_errors, ready_to_finalize) =
+        create_proposal_impl(&state, session.id.clone(), options)
+            .await
+            .expect("legacy proposal-gate fields must not block draft creation");
+    assert_eq!(created.title, "Blocked Proposal");
+    assert_eq!(created.session_id, session.id);
+    assert_eq!(created.plan_artifact_id, Some(artifact_id.clone()));
+    assert!(dependency_errors.is_empty());
+    assert!(!ready_to_finalize);
+    assert_eq!(
+        state
+            .task_proposal_repo
+            .get_by_plan_artifact_id(&artifact_id)
+            .await
+            .unwrap()
+            .len(),
+        1
     );
-    assert!(state
-        .task_proposal_repo
-        .get_by_plan_artifact_id(&artifact_id)
-        .await
-        .unwrap()
-        .is_empty());
 }
 
-// Scenario 11: Tauri IPC and HTTP retain the same gated draft-creation semantics
+// Scenario 11: Tauri IPC and HTTP retain the same ungated draft-creation semantics
 // because both use create_proposal_impl.
 #[tokio::test]
-async fn test_create_ipc_http_parity_when_verification_gate_is_enabled() {
+async fn test_create_ipc_http_parity_when_legacy_gate_is_enabled() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "unverified", true).await;
 
@@ -351,12 +357,19 @@ async fn test_create_ipc_http_parity_when_verification_gate_is_enabled() {
     let ipc_result = create_proposal_impl(&state, session.id.clone(), ipc_options).await;
     let http_result = create_proposal_impl(&state, session.id.clone(), http_options).await;
 
-    assert!(
-        matches!(ipc_result, Err(AppError::Validation(message)) if message.contains("plan verification gate passes"))
-    );
-    assert!(
-        matches!(http_result, Err(AppError::Validation(message)) if message.contains("plan verification gate passes"))
-    );
+    let (ipc_created, ipc_dependency_errors, ipc_ready) =
+        ipc_result.expect("IPC-backed draft creation must ignore the legacy gate");
+    let (http_created, http_dependency_errors, http_ready) =
+        http_result.expect("HTTP-backed draft creation must ignore the legacy gate");
+    assert_eq!(ipc_created.title, "IPC Proposal");
+    assert_eq!(http_created.title, "HTTP Proposal");
+    assert_eq!(ipc_created.session_id, session.id);
+    assert_eq!(http_created.session_id, session.id);
+    assert_ne!(ipc_created.id, http_created.id);
+    assert!(ipc_dependency_errors.is_empty());
+    assert!(http_dependency_errors.is_empty());
+    assert!(!ipc_ready);
+    assert!(!http_ready);
 }
 
 // Scenario 12: Legacy Reviewing state cannot block proposal draft updates.
@@ -407,9 +420,9 @@ async fn test_update_ignores_legacy_reviewing_gate() {
     assert_eq!(persisted.title, "Updated");
 }
 
-// Scenario 13: NeedsRevision blocks proposal draft archival while the gate is enabled.
+// Scenario 13: Legacy NeedsRevision state cannot block proposal draft archival.
 #[tokio::test]
-async fn test_archive_requires_verification_when_proposal_gate_is_enabled() {
+async fn test_archive_ignores_legacy_needs_revision_gate() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
     let proposal_id = create_test_proposal(&state, &session.id).await;
@@ -434,19 +447,17 @@ async fn test_archive_requires_verification_when_proposal_gate_is_enabled() {
         .await
         .unwrap();
 
-    let error = archive_proposal_impl(&state, proposal_id.clone())
+    let archived_session_id = archive_proposal_impl(&state, proposal_id.clone())
         .await
-        .expect_err("NeedsRevision sessions must not archive proposals while the gate is enabled");
-    assert!(
-        matches!(error, AppError::Validation(message) if message.contains("plan verification gate passes"))
-    );
-    let proposal = state
+        .expect("legacy NeedsRevision state must not block draft archival");
+    assert_eq!(archived_session_id, session.id);
+    let archived = state
         .task_proposal_repo
         .get_by_id(&proposal_id)
         .await
         .unwrap()
-        .expect("blocked proposal must remain queryable");
-    assert!(proposal.archived_at.is_none());
+        .expect("archived proposal must remain queryable");
+    assert!(archived.archived_at.is_some());
 }
 
 // Scenario 14: Single event per operation — verify proposal appears exactly once in DB
