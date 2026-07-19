@@ -1337,7 +1337,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     if (hasWorkspaceReviewPublishAuthorization(reviewDisplayContext))
       return "var(--status-success)";
     if (
-      reviewDisplayContext?.isOutdated ||
+      reviewDisplayContext?.reviewArtifactIsOutdated ||
       reviewDisplayContext?.monitor.reviewGateStatus === "required"
     ) {
       return "var(--status-warning)";

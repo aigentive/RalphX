@@ -5,9 +5,12 @@
  */
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
-type TauriGet = (path: string) => Promise<unknown>;
+type TauriGet = (path: string, options?: {
+    headers?: Record<string, string>;
+}) => Promise<unknown>;
 export type AgentWorkspaceToolRuntimeContext = {
     parentConversationId?: string;
+    conversationId?: string;
     agentRunId?: string;
 };
 export declare const AGENT_WORKSPACE_TOOLS: Tool[];

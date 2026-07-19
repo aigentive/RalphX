@@ -906,6 +906,41 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .cloned())
     }
 
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_target_scope: AgentWorkspaceReviewTargetScope,
+        expected_diff_fingerprint: &str,
+        expected_review_conversation_id: &ChatConversationId,
+        expected_run_id: &str,
+        error: &str,
+    ) -> AppResult<bool> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing
+            || monitor.current_target_scope != Some(expected_target_scope)
+            || monitor.current_diff_fingerprint.as_deref() != Some(expected_diff_fingerprint)
+            || monitor.review_conversation_id.as_ref() != Some(expected_review_conversation_id)
+            || monitor.last_run_id.as_deref() != Some(expected_run_id)
+        {
+            return Ok(false);
+        }
+
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.review_blocking_summary = None;
+        monitor.review_blocking_fingerprint = None;
+        monitor.review_fixer_run_id = None;
+        monitor.review_fixer_conversation_id = None;
+        monitor.review_fixer_status = None;
+        monitor.last_error = Some(error.to_string());
+        monitor.updated_at = Utc::now();
+        Ok(true)
+    }
+
     async fn approve_workspace_review_anyway(
         &self,
         conversation_id: &ChatConversationId,

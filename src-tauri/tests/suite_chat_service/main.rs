@@ -14,6 +14,7 @@ mod chat_service_context;
 mod chat_service_errors;
 mod chat_service_merge;
 mod chat_service_pause_flows;
+mod chat_service_review_immediate_start;
 mod chat_session_recovery_integration;
 mod http_helpers;
 mod pending_session_drain;

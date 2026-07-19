@@ -76,6 +76,78 @@ fn set_workspace_updated_at(
     });
 }
 
+#[tokio::test]
+async fn reserved_workspace_review_start_failure_is_exact_and_cannot_clobber_newer_run() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+    let review_conversation_id =
+        ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-new".to_string());
+    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.last_run_id = Some("run-new".to_string());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert reserved monitor");
+
+    assert!(!repo
+        .fail_reserved_workspace_review_start(
+            &conversation_id,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            "diff-new",
+            &review_conversation_id,
+            "run-old",
+            "stale failure",
+        )
+        .await
+        .expect("reject stale reservation"));
+    let unchanged = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load unchanged monitor")
+        .expect("monitor exists");
+    assert_eq!(
+        unchanged.status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing
+    );
+    assert_eq!(unchanged.last_run_id.as_deref(), Some("run-new"));
+    assert!(unchanged.last_error.is_none());
+
+    assert!(repo
+        .fail_reserved_workspace_review_start(
+            &conversation_id,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            "diff-new",
+            &review_conversation_id,
+            "run-new",
+            "launch failed",
+        )
+        .await
+        .expect("fail exact reservation"));
+    let failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load failed monitor")
+        .expect("monitor exists");
+    assert_eq!(failed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        failed.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        failed.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(failed.last_error.as_deref(), Some("launch failed"));
+}
+
 fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
     AgentConversationWorkspace::new(
         conversation_id,

@@ -2249,6 +2249,58 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_target_scope: AgentWorkspaceReviewTargetScope,
+        expected_diff_fingerprint: &str,
+        expected_review_conversation_id: &ChatConversationId,
+        expected_run_id: &str,
+        error: &str,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_target_scope = expected_target_scope.to_string();
+        let expected_diff_fingerprint = expected_diff_fingerprint.to_string();
+        let expected_review_conversation_id = expected_review_conversation_id.as_str().to_string();
+        let expected_run_id = expected_run_id.to_string();
+        let error = error.to_string();
+        let updated_at = Utc::now().to_rfc3339();
+
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET status = 'blocked',
+                         review_outcome = 'run_failed',
+                         review_gate_status = 'failed',
+                         review_blocking_summary = NULL,
+                         review_blocking_fingerprint = NULL,
+                         review_fixer_run_id = NULL,
+                         review_fixer_conversation_id = NULL,
+                         review_fixer_status = NULL,
+                         last_error = ?6,
+                         updated_at = ?7
+                     WHERE conversation_id = ?1
+                       AND status = 'reviewing'
+                       AND current_target_scope = ?2
+                       AND current_diff_fingerprint = ?3
+                       AND review_conversation_id = ?4
+                       AND last_run_id = ?5",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_review_conversation_id,
+                        expected_run_id,
+                        error,
+                        updated_at,
+                    ],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
     async fn approve_workspace_review_anyway(
         &self,
         conversation_id: &ChatConversationId,

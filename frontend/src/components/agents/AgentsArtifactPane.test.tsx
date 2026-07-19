@@ -1029,6 +1029,10 @@ function workspaceReviewContext(
     overrides.target === undefined ? workspaceReviewTarget : overrides.target;
   const reviewArtifactId = overrides.reviewArtifactId ?? null;
   const conversationId = overrides.conversationId ?? "conversation-1";
+  const reviewArtifactIsCurrent =
+    overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated =
+    overrides.isOutdated ?? false;
 
   return {
     success: true,
@@ -1097,8 +1101,12 @@ function workspaceReviewContext(
       createdAt: "2026-04-23T09:00:00Z",
       updatedAt: "2026-04-23T09:30:00Z",
     },
-    isCurrent: overrides.isCurrent ?? false,
-    isOutdated: overrides.isOutdated ?? false,
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
+    isCurrent: reviewArtifactIsCurrent,
+    isOutdated: reviewArtifactIsOutdated,
     shouldShowTab:
       overrides.shouldShowTab ?? Boolean(target || reviewArtifactId),
   };

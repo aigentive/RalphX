@@ -2223,10 +2223,21 @@ export interface AgentWorkspaceReviewContext {
   events: AgentConversationWorkspacePublicationEvent[];
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
 }
+
+export type AgentWorkspaceReviewRuntimeState =
+  | "active_owned"
+  | "terminal"
+  | "missing_runtime_identity"
+  | "malformed_runtime_identity"
+  | "stale_runtime";
 
 export interface AgentWorkspaceReviewStartConfirmation {
   targetScope: AgentWorkspaceReviewTargetScope | null;
@@ -2252,6 +2263,10 @@ export interface StartAgentWorkspaceReviewResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
@@ -2264,6 +2279,10 @@ export interface StartAgentWorkspaceReviewFixerResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
@@ -2603,6 +2622,19 @@ const AgentWorkspaceReviewContextResponseSchema = z.object({
   events: AgentConversationWorkspacePublicationEventListResponseSchema,
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2611,6 +2643,19 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2644,6 +2689,19 @@ const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -3214,6 +3272,11 @@ function transformAgentWorkspaceReviewContext(
     events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3227,6 +3290,11 @@ function transformStartAgentWorkspaceReviewResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3265,6 +3333,11 @@ function transformStartAgentWorkspaceReviewFixerResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
