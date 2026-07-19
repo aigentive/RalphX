@@ -429,6 +429,7 @@ async fn start_agent_conversation_standalone_context_id_mismatch_cannot_be_seede
 async fn start_agent_conversation_standalone_seeded_ownership_rejects_wrong_context_type() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
     let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
     let state = app.state::<AppState>();
     let project_id = ProjectId::from_string("project-standalone-ownership-mismatch".to_string());
@@ -465,6 +466,7 @@ async fn start_agent_conversation_standalone_seeded_ownership_rejects_when_proje
     // Project — still a correct rejection of the invalid combination).
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
     let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
     let state = app.state::<AppState>();
     let seeded = state

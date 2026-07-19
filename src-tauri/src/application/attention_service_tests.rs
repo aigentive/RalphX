@@ -152,11 +152,12 @@ async fn notification_context_resolver_accepts_only_active_self_keyed_standalone
     ));
     non_self_keyed.context_type = ChatContextType::Standalone;
     non_self_keyed.context_id = "different-conversation".to_string();
-    state
+    let malformed_error = state
         .chat_conversation_repo
-        .create(non_self_keyed.clone())
+        .create(non_self_keyed)
         .await
-        .unwrap();
+        .expect_err("repository must reject a non-self-keyed Standalone conversation");
+    assert!(malformed_error.to_string().contains("context_id"));
 
     let mut archived = ChatConversation::new_project(ProjectId::from_string(
         "standalone-notification-fixture".to_string(),
@@ -194,16 +195,6 @@ async fn notification_context_resolver_accepts_only_active_self_keyed_standalone
         )
         .await
         .unwrap();
-    let non_self_keyed_id = non_self_keyed.id.to_string();
-    let malformed = resolver
-        .resolve_permission_target_with_trusted_conversation(
-            None,
-            Some("standalone"),
-            Some(&non_self_keyed_id),
-            Some(&non_self_keyed_id),
-        )
-        .await
-        .unwrap();
     let archived_id = archived.id.to_string();
     let inactive = resolver
         .resolve_permission_target_with_trusted_conversation(
@@ -225,7 +216,6 @@ async fn notification_context_resolver_accepts_only_active_self_keyed_standalone
     );
     assert_eq!(accepted.project_id, None);
     assert_eq!(wrong_context.target, NotificationTarget::none());
-    assert_eq!(malformed.target, NotificationTarget::none());
     assert_eq!(inactive.target, NotificationTarget::none());
 }
 
