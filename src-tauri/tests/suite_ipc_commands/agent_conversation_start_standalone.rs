@@ -372,6 +372,7 @@ async fn start_agent_conversation_standalone_seeded_ownership_accepts_valid_self
 async fn start_agent_conversation_standalone_seeded_ownership_rejects_team_coordination() {
     let _reset = StandaloneConversationsFlagOverrideReset;
     set_standalone_conversations_override(Some(true));
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
     let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
     let state = app.state::<AppState>();
     let mut seed = ChatConversation::new_standalone();

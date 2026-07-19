@@ -254,6 +254,13 @@ printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error"
         .create(conversation)
         .await
         .expect("persist queued builder conversation");
+    seed_completed_continuation_runtime(
+        &initial_state,
+        &conversation.id,
+        AgentHarnessKind::Claude,
+        "queued-builder-old-session",
+    )
+    .await;
     let queue_context_id = conversation.id.as_str();
     initial_state.message_queue.queue(
         ChatContextType::Project,
@@ -277,6 +284,13 @@ printf '%s\n' '{"type":"result","session_id":"queued-builder-session","is_error"
     .await;
 
     assert_eq!(processed, 1);
+    let capture_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < capture_deadline {
+        if capture_path.is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let captured = fs::read_to_string(capture_path)
         .expect("read queued builder spawn arguments and MCP config");
     assert!(

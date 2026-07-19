@@ -473,7 +473,11 @@ async fn standalone_chat_queue_missing_authoritative_conversation_fails_without_
     let fake_provider = FakeCodex::new();
     let conversation_id = ChatConversationId::new();
     let context_id = conversation_id.as_str();
-    let initial_state = AppState::new_test();
+    let temp = tempfile::tempdir().expect("orphaned queue workspace temp directory");
+    let mut initial_state = AppState::new_test();
+    initial_state.app_paths = AppPaths::new(temp.path().join("app-data"), None);
+    create_workspace(initial_state.app_paths.app_data_dir(), &context_id)
+        .expect("create orphaned queue workspace fixture");
     initial_state.message_queue.queue(
         ChatContextType::Standalone,
         &context_id,
