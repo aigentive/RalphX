@@ -1039,6 +1039,144 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   color: var(--status-success);
 }
 
+.agents-settings-content {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
+
+.agents-settings-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background-color: var(--bg-sunken);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-lg);
+}
+
+.agents-filter-button {
+  min-height: 32px;
+  padding: 0 10px;
+  background-color: var(--bg-elevated);
+  border-color: var(--border-default);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.agents-filter-button:hover,
+.agents-filter-button[aria-pressed="true"] {
+  background-color: var(--accent-muted);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.agents-family {
+  overflow: hidden;
+  background-color: var(--bg-surface);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-lg);
+}
+
+.agents-family__summary {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background-color: var(--bg-surface);
+  border: 0;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.agents-family__summary:hover {
+  background-color: var(--bg-hover);
+}
+
+.agents-family__roles {
+  background-color: var(--bg-sunken);
+  border-top-color: var(--border-subtle);
+  border-top-style: solid;
+  border-top-width: 1px;
+  padding-inline: 14px;
+}
+
+.agents-role-row {
+  padding-block: 14px;
+  border-top-color: var(--border-subtle);
+  border-top-style: solid;
+  border-top-width: 1px;
+}
+
+.agents-role-row:first-child {
+  border-top-width: 0;
+}
+
+.agents-source-badge,
+.agents-count-badge,
+.agents-attention-badge {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border-radius: var(--radius-full);
+  padding-inline: 8px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.agents-source-badge,
+.agents-count-badge {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-subtle);
+  border-style: solid;
+  border-width: 1px;
+  color: var(--text-muted);
+}
+
+.agents-source-badge--configured {
+  background-color: var(--accent-muted);
+  border-color: var(--accent-border);
+  color: var(--accent-primary);
+}
+
+.agents-attention-badge {
+  background-color: var(--status-warning-muted);
+  border-color: var(--status-warning-border);
+  border-style: solid;
+  border-width: 1px;
+  color: var(--status-warning);
+}
+
+.agents-diagnostic {
+  padding: 10px 12px;
+  background-color: var(--status-error-muted);
+  border-color: var(--status-error-border);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--radius-md);
+  color: var(--status-error);
+  font-size: 0.75rem;
+}
+
+.agents-role-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .settings-status-badge svg {
   width: 12px;
   height: 12px;
@@ -1162,6 +1300,22 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   .settings-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
+  }
+
+  .agents-settings-toolbar,
+  .agents-family__summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agents-role-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1500px) {
+  .agents-role-editor-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
