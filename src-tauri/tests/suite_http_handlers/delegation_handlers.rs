@@ -498,7 +498,7 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert_eq!(latest_run.status, "completed");
     assert_eq!(latest_run.harness.as_deref(), Some("codex"));
     assert_eq!(latest_run.upstream_provider.as_deref(), Some("openai"));
-    assert_eq!(latest_run.logical_model, None);
+    assert_eq!(latest_run.logical_model.as_deref(), Some("gpt-5.4-mini"));
     let recent_messages = delegated_status
         .recent_messages
         .expect("delegated status should expose handoff messages when requested");
@@ -962,7 +962,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
 }
 
 #[tokio::test]
-async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted() {
+async fn test_delegate_start_resolves_child_model_from_the_caller_cap_when_model_is_omitted() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
     let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
@@ -1029,7 +1029,7 @@ async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted()
         .and_then(|status| status.latest_run)
         .expect("latest delegated run");
     assert_eq!(latest_run.harness.as_deref(), Some("codex"));
-    assert_eq!(latest_run.logical_model, None);
+    assert_eq!(latest_run.logical_model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(latest_run.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         latest_run.sandbox_mode.as_deref(),

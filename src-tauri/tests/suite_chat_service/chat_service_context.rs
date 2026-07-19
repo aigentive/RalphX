@@ -2661,7 +2661,7 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
 }
 
 #[tokio::test]
-async fn codex_legacy_verification_session_uses_active_ideation_features() {
+async fn codex_verification_session_uses_verifier_features() {
     let home = tempfile::tempdir().expect("tempdir");
     let cli_temp = tempfile::tempdir().expect("tempdir");
     let cli_path = make_fake_codex_cli(&cli_temp);
@@ -2743,21 +2743,21 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
 
     let args = result.spawnable.get_args_for_test();
     assert!(
-        args.iter().any(|arg| arg == "features.shell_tool=true"),
-        "verification must use the active ideation agent's Codex features: {args:?}"
+        args.iter().any(|arg| arg == "features.shell_tool=false"),
+        "verification must use the verifier's Codex features: {args:?}"
     );
     assert!(
-        !args.iter().any(|arg| arg == "features.shell_tool=false"),
-        "legacy verifier features must not override the active ideation agent: {args:?}"
+        !args.iter().any(|arg| arg == "features.shell_tool=true"),
+        "active ideation features must not override the verifier: {args:?}"
     );
     let rendered_args = args.join("\n");
     assert!(
-        rendered_args.contains("--agent-type") && rendered_args.contains("ralphx-ideation"),
-        "verification must launch the active ideation agent: {args:?}"
+        rendered_args.contains("--agent-type") && rendered_args.contains("ralphx-plan-verifier"),
+        "verification must launch the verifier agent: {args:?}"
     );
     assert!(
-        !rendered_args.contains("ralphx-plan-verifier"),
-        "verification must not resurrect the removed fixed verifier: {args:?}"
+        !rendered_args.contains("ralphx-ideation"),
+        "active ideation routing must not override the verifier: {args:?}"
     );
 
     let envs = result.spawnable.get_envs_for_test();

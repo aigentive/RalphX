@@ -98,12 +98,12 @@ fn make_external_session(
 }
 
 // ============================================================================
-// C2: model-native verification rejects legacy verification child creation
+// C2: verification child creation remains compatible for existing callers
 // ============================================================================
 
-/// C2: External parents cannot create retired verification child sessions.
+/// C2: External parents can create verification child sessions.
 #[tokio::test]
-async fn c2_external_parent_rejects_verification_child() {
+async fn c2_external_parent_creates_verification_child() {
     let state = setup_sqlite_state().await;
 
     let project_id = ProjectId::from_string("proj-c2-test".to_string());
@@ -119,7 +119,7 @@ async fn c2_external_parent_rejects_verification_child() {
         .await
         .unwrap();
 
-    // Call the handler to create a verification child session
+    // Call the handler to create a verification child session.
     let req = CreateChildSessionRequest {
         parent_session_id: parent_id.as_str().to_string(),
         title: None,
@@ -137,25 +137,24 @@ async fn c2_external_parent_rejects_verification_child() {
         blocker_fingerprint: None,
     };
 
-    let error = create_child_session(State(state.clone()), Json(req))
+    let response = create_child_session(State(state.clone()), Json(req))
         .await
-        .expect_err("verification must remain in the active Plan conversation");
-    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
-    assert!(error.1["error"]
-        .as_str()
-        .is_some_and(|message| message.contains("active Plan conversation")));
-    assert!(state
+        .expect("verification children remain supported for compatibility")
+        .0;
+    let child = state
         .app_state
         .ideation_session_repo
-        .get_children(&parent_id)
+        .get_by_id(&IdeationSessionId::from_string(response.session_id))
         .await
         .unwrap()
-        .is_empty());
+        .expect("verification child should be persisted");
+    assert_eq!(child.parent_session_id, Some(parent_id));
+    assert_eq!(child.session_purpose, SessionPurpose::Verification);
 }
 
-/// C2b: Internal parents enforce the same no-hidden-verification-child contract.
+/// C2b: Internal parents can also create verification child sessions.
 #[tokio::test]
-async fn c2_internal_parent_rejects_verification_child() {
+async fn c2_internal_parent_creates_verification_child() {
     let state = setup_sqlite_state().await;
 
     let project_id = ProjectId::from_string("proj-c2b-test".to_string());
@@ -188,20 +187,19 @@ async fn c2_internal_parent_rejects_verification_child() {
         blocker_fingerprint: None,
     };
 
-    let error = create_child_session(State(state.clone()), Json(req))
+    let response = create_child_session(State(state.clone()), Json(req))
         .await
-        .expect_err("verification must remain in the active Plan conversation");
-    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
-    assert!(error.1["error"]
-        .as_str()
-        .is_some_and(|message| message.contains("active Plan conversation")));
-    assert!(state
+        .expect("verification children remain supported for internal callers")
+        .0;
+    let child = state
         .app_state
         .ideation_session_repo
-        .get_children(&parent_id)
+        .get_by_id(&IdeationSessionId::from_string(response.session_id))
         .await
         .unwrap()
-        .is_empty());
+        .expect("verification child should be persisted");
+    assert_eq!(child.parent_session_id, Some(parent_id));
+    assert_eq!(child.session_purpose, SessionPurpose::Verification);
 }
 
 // ============================================================================
@@ -553,9 +551,9 @@ async fn c5b_no_external_trigger_sets_internal_origin_for_general_child() {
     );
 }
 
-/// C5c: Trigger-origin flags cannot bypass the no-hidden-verification-child contract.
+/// C5c: Trigger-origin flags do not prevent compatible verification child creation.
 #[tokio::test]
-async fn c5c_verification_child_rejected_regardless_of_external_trigger_flag() {
+async fn c5c_verification_child_is_created_regardless_of_external_trigger_flag() {
     let state = setup_sqlite_state().await;
     let project_id = ProjectId::from_string("proj-c5c".to_string());
 
@@ -568,7 +566,7 @@ async fn c5c_verification_child_rejected_regardless_of_external_trigger_flag() {
         .await
         .unwrap();
 
-    // Pass is_external_trigger=false — verification child must still get External from parent
+    // Pass is_external_trigger=false — verification compatibility must still hold.
     let req = CreateChildSessionRequest {
         parent_session_id: parent_id.as_str().to_string(),
         title: None,
@@ -586,20 +584,19 @@ async fn c5c_verification_child_rejected_regardless_of_external_trigger_flag() {
         blocker_fingerprint: None,
     };
 
-    let error = create_child_session(State(state.clone()), Json(req))
+    let response = create_child_session(State(state.clone()), Json(req))
         .await
-        .expect_err("verification must remain in the active Plan conversation");
-    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
-    assert!(error.1["error"]
-        .as_str()
-        .is_some_and(|message| message.contains("active Plan conversation")));
-    assert!(state
+        .expect("verification child creation must not depend on trigger origin")
+        .0;
+    let child = state
         .app_state
         .ideation_session_repo
-        .get_children(&parent_id)
+        .get_by_id(&IdeationSessionId::from_string(response.session_id))
         .await
         .unwrap()
-        .is_empty());
+        .expect("verification child should be persisted");
+    assert_eq!(child.parent_session_id, Some(parent_id));
+    assert_eq!(child.session_purpose, SessionPurpose::Verification);
 }
 
 /// C5d: Backward compat — request without is_external_trigger field deserializes with default false.
