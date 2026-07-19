@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -24,12 +24,13 @@ const configured: ManualRoleDefault = {
 const entry: ManualRoleCatalogEntry = {
   role: "workspace_project",
   displayName: "Workspace Project",
+  description: "General project conversation and workspace assistance.",
   family: "workspace",
   familyDisplayName: "Workspace",
   configured,
   effective: configured,
   source: "project_ui",
-  diagnostics: ["The configured model is no longer available"],
+  diagnostics: [],
   controls: {
     capabilities: [
       { value: "solo", enabled: true, disabledReason: null },
@@ -62,13 +63,16 @@ const persona: Persona = {
   updatedAt: "2026-07-16T12:00:00Z",
 };
 
-function renderRow() {
+function renderRow(
+  overrides: Partial<React.ComponentProps<typeof AgentRoleDefaultRow>> = {},
+) {
   const onUpdate = vi.fn();
-  const onFollow = vi.fn();
-  const onManagePersonas = vi.fn();
+  const onExpandedChange = vi.fn();
+  const onUseInheritedDefault = vi.fn().mockResolvedValue(true);
   render(
     <AgentRoleDefaultRow
       entry={entry}
+      expanded={false}
       disabled={false}
       providers={["claude", "codex"]}
       modelsForProvider={(provider) => provider === "claude"
@@ -88,92 +92,93 @@ function renderRow() {
           }]}
       personas={[persona]}
       onUpdate={onUpdate}
-      onFollow={onFollow}
-      onManagePersonas={onManagePersonas}
+      onExpandedChange={onExpandedChange}
+      onUseInheritedDefault={onUseInheritedDefault}
+      onManagePersonas={vi.fn()}
+      {...overrides}
     />,
   );
-  return { onUpdate, onFollow };
+  return { onUpdate, onExpandedChange, onUseInheritedDefault };
 }
 
 describe("AgentRoleDefaultRow", () => {
-  it("shows diagnostics and persists every editable runtime field", async () => {
-    const user = userEvent.setup();
-    const { onUpdate } = renderRow();
+  it("renders a compact configured summary without mounting editor controls", () => {
+    renderRow();
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "The configured model is no longer available",
-    );
-    expect(screen.getByText("Workflow is unavailable for this CLI version"))
+    expect(screen.getByText(entry.description)).toBeInTheDocument();
+    expect(screen.getByText("Configured here")).toBeInTheDocument();
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Sonnet")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Workspace Project" }))
+      .toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "Workspace Project provider" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("opens diagnostics and the complete editor without parsing diagnostic text", () => {
+    const { onExpandedChange } = renderRow({
+      entry: {
+        ...entry,
+        diagnostics: ["An unstructured backend diagnostic"],
+      },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("An unstructured backend diagnostic");
+    expect(screen.getByRole("combobox", { name: "Workspace Project provider" }))
       .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Persona & access" }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("combobox", { name: "Workspace Project approval policy" }))
+      .toBeInTheDocument();
+    screen.getByRole("button", { name: "Edit Workspace Project" }).click();
+    expect(onExpandedChange).not.toHaveBeenCalled();
+  });
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project model" }),
-      "__default__",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project effort" }),
-      "medium",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project capability" }),
-      "rx_native_team",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project speed" }),
-      "fast",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project persona" }),
-      "persona-1",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project approval policy" }),
-      "never",
-    );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace Project sandbox mode" }),
-      "workspace-write",
-    );
+  it("requests disclosure without making the summary itself editable", async () => {
+    const user = userEvent.setup();
+    const { onExpandedChange } = renderRow();
 
-    expect(onUpdate).toHaveBeenNthCalledWith(1, {
-      ...configured,
-      model: null,
-      effort: "high",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(2, {
-      ...configured,
-      effort: "medium",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(3, {
-      ...configured,
-      coordinationMode: "rx_native_team",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(4, {
-      ...configured,
-      serviceTier: "fast",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(5, {
-      ...configured,
-      personaId: "persona-1",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(6, {
-      ...configured,
-      approvalPolicy: "never",
-    });
-    expect(onUpdate).toHaveBeenNthCalledWith(7, {
-      ...configured,
-      sandboxMode: "workspace-write",
+    await user.click(screen.getByRole("button", { name: "Edit Workspace Project" }));
+
+    expect(onExpandedChange).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps inheritance confirmation pending through clear settlement", async () => {
+    const user = userEvent.setup();
+    let resolveClear: (() => void) | undefined;
+    const onUseInheritedDefault = vi.fn(
+      () => new Promise<void>((resolve) => { resolveClear = resolve; }),
+    );
+    renderRow({ onUseInheritedDefault });
+
+    await user.click(screen.getByRole("button", {
+      name: "Use inherited default for Workspace Project",
+    }));
+    expect(screen.getByText(/removes the UI override at this scope/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use inherited default" }));
+
+    expect(screen.getByRole("button", { name: "Using inherited default..." }))
+      .toBeDisabled();
+    expect(onUseInheritedDefault).toHaveBeenCalledOnce();
+
+    resolveClear?.();
+    await waitFor(() => {
+      expect(screen.queryByText(/removes the UI override at this scope/i))
+        .not.toBeInTheDocument();
     });
   });
 
-  it("follows the inherited value from the configured row", async () => {
+  it("keeps a failed clear retryable and does not alter the configured summary", async () => {
     const user = userEvent.setup();
-    const { onFollow } = renderRow();
+    const onUseInheritedDefault = vi.fn().mockRejectedValue(new Error("Clear failed"));
+    renderRow({ onUseInheritedDefault });
 
     await user.click(screen.getByRole("button", {
-      name: "Follow Workspace Project default",
+      name: "Use inherited default for Workspace Project",
     }));
+    await user.click(screen.getByRole("button", { name: "Use inherited default" }));
 
-    expect(onFollow).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled());
+    expect(screen.getByText("Configured here")).toBeInTheDocument();
   });
 });

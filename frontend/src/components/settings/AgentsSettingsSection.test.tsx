@@ -1,35 +1,50 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ManualRoleCatalogEntry } from "@/api/manual-role-defaults.types";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { AgentsSettingsSection } from "./AgentsSettingsSection";
 
-const clearDefault = vi.fn();
+const afterPaintCallbacks = vi.hoisted(() => [] as Array<() => void>);
+const clearDefaultAsync = vi.fn().mockResolvedValue(true);
+const dismissSaveError = vi.fn();
 const updateDefault = vi.fn();
 const testState = vi.hoisted(() => ({
   activeProject: null as { id: string; name: string } | null,
   requestedScopes: [] as Array<string | null>,
   isLoading: false,
   error: null as unknown,
+  saveError: null as unknown,
+  isSaving: false,
+  roles: [] as ManualRoleCatalogEntry[],
+}));
+
+vi.mock("./SettingsDialog.performance", () => ({
+  scheduleAfterPaint: (callback: () => void) => {
+    afterPaintCallbacks.push(callback);
+    return { frame: null, timer: null };
+  },
 }));
 
 vi.mock("@/hooks/useManualRoleDefaults", () => ({
   useManualRoleDefaults: (projectId: string | null) => {
     testState.requestedScopes.push(projectId);
     return {
-    catalog: {
-      projectId: null,
-      roles: roleFixtures,
-    },
-    isLoading: testState.isLoading,
-    isError: testState.error !== null,
-    error: testState.error,
-    isSaving: false,
-    updateDefault,
-    clearDefault,
+      catalog: {
+        projectId,
+        roles: testState.roles,
+      },
+      isLoading: testState.isLoading,
+      isError: testState.error !== null,
+      error: testState.error,
+      saveError: testState.saveError,
+      dismissSaveError,
+      isSaving: testState.isSaving,
+      updateDefault,
+      clearDefaultAsync,
     };
   },
 }));
@@ -92,6 +107,7 @@ const roleFixtures: ManualRoleCatalogEntry[] = families.map(
   ([family, familyDisplayName], index) => ({
     role: `${family}_role_${index}`,
     displayName: `${familyDisplayName} role`,
+    description: `Handles ${familyDisplayName.toLowerCase()} work.`,
     family,
     familyDisplayName,
     configured: index === 0 ? defaultValue : null,
@@ -101,25 +117,13 @@ const roleFixtures: ManualRoleCatalogEntry[] = families.map(
     controls: {
       capabilities: [
         { value: "solo", enabled: true, disabledReason: null },
-        {
-          value: "rx_native_team",
-          enabled: false,
-          disabledReason: "Team is available only for Workspace root roles",
-        },
+        { value: "rx_native_team", enabled: false, disabledReason: "Team is unavailable" },
       ],
       speeds: [
         { value: "provider_default", enabled: true, disabledReason: null },
-        { value: "standard", enabled: true, disabledReason: null },
-        {
-          value: "fast",
-          enabled: false,
-          disabledReason: "Fast requires a supported Codex provider and model",
-        },
+        { value: "fast", enabled: false, disabledReason: "Fast is unavailable" },
       ],
-      persona: {
-        enabled: false,
-        disabledReason: "Persona is limited to Workspace Project conversations in V1",
-      },
+      persona: { enabled: false, disabledReason: "Persona is unavailable" },
     },
   }),
 );
@@ -130,32 +134,194 @@ function renderSection() {
   });
   return render(
     <QueryClientProvider client={client}>
-      <AgentsSettingsSection />
+      <TooltipProvider>
+        <AgentsSettingsSection />
+      </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+function flushAfterPaint() {
+  const callbacks = afterPaintCallbacks.splice(0);
+  callbacks.forEach((callback) => callback());
 }
 
 describe("AgentsSettingsSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    afterPaintCallbacks.length = 0;
+    localStorage.clear();
     testState.activeProject = null;
     testState.requestedScopes.length = 0;
     testState.isLoading = false;
     testState.error = null;
+    testState.saveError = null;
+    testState.isSaving = false;
+    testState.roles = roleFixtures;
   });
 
-  it("renders the seven backend-returned families without a frontend role catalog", () => {
+  it("renders seven collapsed backend-returned family overviews without mounting role editors", () => {
     renderSection();
 
     for (const [, familyLabel] of families) {
-      expect(
-        screen.getByRole("button", {
-          name: new RegExp(`^${familyLabel} \\(1\\)$`),
-        }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: new RegExp(`^${familyLabel}`) }))
+        .toHaveAttribute("aria-expanded", "false");
     }
-    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(roleFixtures.length);
-    expect(screen.getByText(/Manual default · Global UI/)).toBeInTheDocument();
+    expect(screen.queryByTestId("manual-role-row")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getByText("1 configured")).toBeInTheDocument();
+  });
+
+  it("opens a family into compact role summaries and mounts controls only after role disclosure", async () => {
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: /^Workspace/ }));
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+    expect(screen.queryByRole("combobox", { name: "Workspace role provider" }))
+      .not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit Workspace role" }));
+    expect(screen.getByRole("combobox", { name: "Workspace role provider" }))
+      .toBeInTheDocument();
+  });
+
+  it("updates disclosure before deferring persistence until after paint", async () => {
+    const user = userEvent.setup();
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    renderSection();
+
+    const workspace = screen.getByRole("button", { name: /^Workspace/ });
+    await user.click(workspace);
+
+    expect(workspace).toHaveAttribute("aria-expanded", "true");
+    expect(setItem).not.toHaveBeenCalled();
+    expect(afterPaintCallbacks).toHaveLength(1);
+
+    flushAfterPaint();
+    expect(setItem).toHaveBeenCalled();
+  });
+
+  it("forces matching families visible without overwriting their saved disclosure", async () => {
+    const user = userEvent.setup();
+    renderSection();
+
+    const workspace = screen.getByRole("button", { name: /^Workspace/ });
+    expect(workspace).toHaveAttribute("aria-expanded", "false");
+    await user.click(workspace);
+    expect(workspace).toHaveAttribute("aria-expanded", "true");
+
+    const search = screen.getByRole("searchbox", { name: "Search agent roles" });
+    await user.type(search, "workspace work");
+    expect(workspace).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+    await user.click(workspace);
+
+    await user.clear(search);
+    expect(workspace).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+  });
+
+  it("filters configured overrides and attention states from backend catalog values", async () => {
+    const user = userEvent.setup();
+    testState.roles = roleFixtures.map((role, index) =>
+      index === 1 ? { ...role, diagnostics: ["Needs repair"] } : role,
+    );
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: "Overrides only" }));
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+    expect(screen.getByText("Workspace role")).toBeInTheDocument();
+    expect(screen.queryByText("Automation role")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Overrides only" }));
+    await user.click(screen.getByRole("button", { name: "Needs attention" }));
+    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
+    expect(screen.getByText("Automation role")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Needs repair");
+    expect(screen.getByRole("button", { name: "Persona & access" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps global and project disclosure independent and restores the saved tab", async () => {
+    const user = userEvent.setup();
+    testState.activeProject = { id: "project-1", name: "RalphX" };
+    const { unmount } = renderSection();
+
+    await user.click(screen.getByRole("button", { name: /^Workspace/ }));
+    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
+    expect(screen.getByRole("button", { name: /^Workspace/ }))
+      .toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: /^Automation/ }));
+    expect(testState.requestedScopes).toContain("project-1");
+
+    flushAfterPaint();
+
+    unmount();
+    renderSection();
+    expect(screen.getByRole("tab", { name: "Project Overrides" }))
+      .toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("button", { name: /^Workspace/ }))
+      .toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /^Automation/ }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("restores a saved project tab when the active project hydrates later", async () => {
+    localStorage.setItem(
+      "ralphx-settings-agents-state",
+      JSON.stringify({ version: 1, activeTab: "project", disclosures: {} }),
+    );
+    const rendered = renderSection();
+    expect(screen.getByRole("tab", { name: "Global Defaults" }))
+      .toHaveAttribute("data-state", "active");
+
+    testState.activeProject = { id: "project-1", name: "Project One" };
+    rendered.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <TooltipProvider>
+          <AgentsSettingsSection />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Project Overrides" }))
+        .toHaveAttribute("data-state", "active");
+    });
+  });
+
+  it("disables scope changes while a mutation is pending and shows dismissible save failures", () => {
+    testState.isSaving = true;
+    testState.saveError = new Error("Could not save role");
+    renderSection();
+
+    expect(screen.getByRole("tab", { name: "Global Defaults" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Project Overrides" })).toBeDisabled();
+    expect(screen.getByText("Could not save role")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss error" })).toBeInTheDocument();
+  });
+
+  it("clears a settled mutation failure when the user changes scope", async () => {
+    const user = userEvent.setup();
+    testState.activeProject = { id: "project-1", name: "Project One" };
+    testState.saveError = new Error("Could not save role");
+    renderSection();
+
+    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
+
+    expect(dismissSaveError).toHaveBeenCalledOnce();
+  });
+
+  it("keeps load failures distinct from empty filtered results", async () => {
+    const user = userEvent.setup();
+    testState.error = new Error("Catalog unavailable");
+    renderSection();
+
+    expect(screen.getByText("Catalog unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss error" })).not.toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search agent roles" }), "missing");
+    expect(screen.queryByText("No agent roles match these filters.")).not.toBeInTheDocument();
   });
 
   it("paints the Agents shell and loading placeholder before catalog rows", () => {
@@ -164,89 +330,6 @@ describe("AgentsSettingsSection", () => {
 
     expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
     expect(screen.getByTestId("agents-settings-loading")).toBeInTheDocument();
-    expect(screen.queryByTestId("manual-role-row")).not.toBeInTheDocument();
-  });
-
-  it("follows the next source by clearing only the configured role row", async () => {
-    const user = userEvent.setup();
-    renderSection();
-
-    await user.click(screen.getByRole("button", { name: "Follow Workspace role default" }));
-
-    expect(clearDefault).toHaveBeenCalledWith("workspace_role_0");
-  });
-
-  it("loads project-scoped overrides from the active project tab", async () => {
-    const user = userEvent.setup();
-    testState.activeProject = { id: "project-1", name: "RalphX" };
-    renderSection();
-
-    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
-
-    expect(testState.requestedScopes).toContain("project-1");
-    expect(screen.getByText(/Overrides for RalphX/)).toBeInTheDocument();
-  });
-
-  it("writes one complete Manual default when a role control changes", async () => {
-    const user = userEvent.setup();
-    renderSection();
-
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Workspace role provider" }),
-      "codex",
-    );
-
-    expect(updateDefault).toHaveBeenCalledWith("workspace_role_0", {
-      ...defaultValue,
-      provider: "codex",
-      model: "gpt-5.6",
-      effort: "xhigh",
-    });
-  });
-
-  it("shows backend-owned disabled reasons for capability, speed, and persona", () => {
-    renderSection();
-
-    expect(
-      screen.getAllByText("Team is available only for Workspace root roles").length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText("Fast requires a supported Codex provider and model").length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText("Persona is limited to Workspace Project conversations in V1").length,
-    ).toBeGreaterThan(0);
-  });
-
-  it("filters roles, keeps matching families expanded, and restores collapsed state", async () => {
-    const user = userEvent.setup();
-    renderSection();
-
-    const workspace = screen.getByRole("button", { name: /^Workspace \(1\)$/ });
-    await user.click(workspace);
-    expect(workspace).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("combobox", { name: "Workspace role provider" }))
-      .not.toBeInTheDocument();
-
-    const search = screen.getByRole("searchbox", { name: "Search agent roles" });
-    await user.type(search, "workspace");
-    expect(workspace).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
-
-    await user.clear(search);
-    expect(workspace).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("shows load failures and an empty search result", async () => {
-    const user = userEvent.setup();
-    testState.error = new Error("Catalog unavailable");
-    renderSection();
-
-    expect(screen.getByText("Catalog unavailable")).toBeInTheDocument();
-    await user.type(
-      screen.getByRole("searchbox", { name: "Search agent roles" }),
-      "missing",
-    );
-    expect(screen.getByText("No agent roles match this search.")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-family-row")).not.toBeInTheDocument();
   });
 });

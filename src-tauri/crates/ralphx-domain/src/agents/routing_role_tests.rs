@@ -70,6 +70,11 @@ fn every_role_round_trips_through_display_parse_and_serde() {
         assert_eq!(serde_json::from_str::<RoutingRole>(&json).unwrap(), role);
         assert_eq!(role.metadata().key, key);
         assert!(!role.metadata().display_name.is_empty());
+        assert!(
+            !role.metadata().description.trim().is_empty(),
+            "{} must expose a task-oriented description",
+            role.metadata().key
+        );
     }
     assert!(RoutingRole::from_str("execution_branch_updater").is_err());
 }
