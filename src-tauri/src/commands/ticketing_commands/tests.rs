@@ -3880,9 +3880,10 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
     .expect("clickup ticket start should validate and persist its link");
 
     assert_eq!(response.conversation.context_id, project_id.as_str());
-    if response.conversation.title.as_deref() != Some("CU-42") {
-        panic!("the conversation title must retain the ClickUp key");
-    }
+    assert!(
+        matches!(response.conversation.title.as_deref(), Some("CU-42")),
+        "the conversation title must retain the ClickUp key"
+    );
     assert!(response.send_result.was_queued);
     let queued = app
         .state::<AppState>()
@@ -3895,9 +3896,13 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
         "clickup"
     );
     assert_eq!(queued[0].composer_integration_references[0].kind, "clickup");
-    if queued[0].composer_integration_references[0].key.as_deref() != Some("CU-42") {
-        panic!("the queued provider-neutral reference must retain the ClickUp key");
-    }
+    assert!(
+        matches!(
+            queued[0].composer_integration_references[0].key.as_deref(),
+            Some("CU-42")
+        ),
+        "the queued provider-neutral reference must retain the ClickUp key"
+    );
     let links = app
         .state::<AppState>()
         .external_issue_link_service
@@ -3906,9 +3911,10 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
         .expect("ClickUp links should load");
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].external_id, "8689abc");
-    if links[0].external_key.as_deref() != Some("CU-42") {
-        panic!("the persisted conversation link must retain the ClickUp key");
-    }
+    assert!(
+        matches!(links[0].external_key.as_deref(), Some("CU-42")),
+        "the persisted conversation link must retain the ClickUp key"
+    );
 }
 
 #[tokio::test]
@@ -3984,8 +3990,7 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
         workspace
             .branch_name
             .starts_with("ralphx/ticket-start-service-project/agent-jira-RX-77-"),
-        "unexpected workspace branch: {}",
-        workspace.branch_name
+        "workspace branch must use the ticket-derived prefix"
     );
     assert_eq!(github.state().push_branch_calls, 0);
     assert!(result.send_result.was_queued);
