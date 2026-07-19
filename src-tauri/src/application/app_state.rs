@@ -50,7 +50,7 @@ use crate::domain::agents::{
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{AgentRun, ChatConversation, ProjectId};
+use crate::domain::entities::ProjectId;
 use crate::domain::ideation::IdeationSettings;
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
