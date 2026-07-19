@@ -1448,6 +1448,11 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         !prompt.contains("mcp__ralphx__"),
         "Codex workspace reviewer prompt should not use Claude-style MCP names"
     );
+    assert!(
+        prompt.contains("Artifact freshness is historical context")
+            && prompt.contains("can_mutate_review_state=true"),
+        "workspace reviewer prompt should make active-run authority independent from prior artifact freshness"
+    );
     for removed_tool in [
         "get_agent_task",
         "list_agent_tasks",

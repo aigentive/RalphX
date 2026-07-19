@@ -47,6 +47,8 @@ pub struct MockChatService {
     delete_queued_message_calls: Mutex<Vec<(ChatContextType, String, String)>>,
     /// When set, the next delete_queued_message call returns an error.
     fail_next_delete_queued_message: Mutex<bool>,
+    /// When set, the next successful send reports a different conversation identity.
+    mismatch_next_send_result_identity: Mutex<bool>,
 }
 
 pub struct MockChatResponse {
@@ -71,6 +73,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
@@ -89,6 +92,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
@@ -113,6 +117,10 @@ impl MockChatService {
 
     pub async fn fail_next_delete_queued_message(&self) {
         *self.fail_next_delete_queued_message.lock().await = true;
+    }
+
+    pub async fn mismatch_next_send_result_identity(&self) {
+        *self.mismatch_next_send_result_identity.lock().await = true;
     }
 
     /// Set the agent running state for a specific context.
@@ -176,7 +184,7 @@ impl ChatService for MockChatService {
         options: SendMessageOptions,
     ) -> Result<SendResult, ChatServiceError> {
         self.sent_messages.lock().await.push(message.to_string());
-        self.sent_options.lock().await.push(options);
+        self.sent_options.lock().await.push(options.clone());
 
         let current = self
             .call_count
@@ -185,6 +193,11 @@ impl ChatService for MockChatService {
 
         if let Some(threshold) = *self.already_running_after.lock().await {
             if current > threshold {
+                if options.queue_policy == super::SendQueuePolicy::RequireImmediateStart {
+                    return Err(ChatServiceError::SpawnFailed(
+                        "immediate start required, but another agent run is active".to_string(),
+                    ));
+                }
                 return Ok(SendResult {
                     was_queued: true,
                     queued_message_id: Some("mock-queued-id".to_string()),
@@ -199,13 +212,27 @@ impl ChatService for MockChatService {
             ));
         }
 
-        let (conversation, _) = self
+        let (mut conversation, _) = self
             .get_or_create_conversation(context_type, context_id)
             .await?;
-        let agent_run = AgentRun::new(conversation.id);
+        if let Some(conversation_id_override) = options.conversation_id_override.clone() {
+            conversation.id = conversation_id_override;
+        }
+        let mut agent_run = AgentRun::new(conversation.id);
+        if let Some(preallocated_agent_run_id) = options.preallocated_agent_run_id {
+            agent_run.id = preallocated_agent_run_id;
+        }
+
+        let mismatch_result_identity =
+            std::mem::take(&mut *self.mismatch_next_send_result_identity.lock().await);
+        let conversation_id = if mismatch_result_identity {
+            ChatConversationId::new().as_str().to_string()
+        } else {
+            conversation.id.as_str().to_string()
+        };
 
         Ok(SendResult {
-            conversation_id: conversation.id.as_str().to_string(),
+            conversation_id,
             agent_run_id: agent_run.id.as_str().to_string(),
             is_new_conversation: conversation.provider_session_ref().is_none(),
             ..Default::default()

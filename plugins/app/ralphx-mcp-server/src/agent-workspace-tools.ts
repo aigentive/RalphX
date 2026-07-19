@@ -5,12 +5,17 @@
  */
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
 
 type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
-type TauriGet = (path: string) => Promise<unknown>;
+type TauriGet = (
+  path: string,
+  options?: { headers?: Record<string, string> },
+) => Promise<unknown>;
 
 export type AgentWorkspaceToolRuntimeContext = {
   parentConversationId?: string;
+  conversationId?: string;
   agentRunId?: string;
 };
 
@@ -128,7 +133,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "get_workspace_review_context",
     description:
-      "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
+      "Read the current general workspace Review context, including the selected review target, compact review packet, prior Review artifact freshness, and backend-derived runtime mutation authority. Artifact freshness does not determine whether an active owned run may refresh it. " +
       "Call this first when running as the workspace Review artifact writer.",
     inputSchema: {
       type: "object",
@@ -715,9 +720,13 @@ export async function callGetWorkspaceReviewContextTool(
     args,
     runtimeContext
   );
-  return callTauriGet(
-    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`
-  );
+  const path =
+    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 
 export async function callWriteWorkspaceReviewArtifactTool(
