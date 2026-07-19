@@ -18,8 +18,6 @@ use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions};
-use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
-use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
