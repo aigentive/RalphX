@@ -92,7 +92,7 @@ pub(super) async fn seed_completed_continuation_runtime(
     harness: AgentHarnessKind,
     provider_session_id: &str,
 ) {
-    let mut run = AgentRun::new(conversation_id.clone());
+    let mut run = AgentRun::new(*conversation_id);
     run.complete();
     run.harness = Some(harness);
     run.provider_session_id = Some(provider_session_id.to_string());
