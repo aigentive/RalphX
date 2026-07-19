@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="${ROOT_DIR}/.github/workflows/ci.yml"
-RUST_RUNNER="${ROOT_DIR}/scripts/test-rust-fast.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -19,7 +18,7 @@ integration_job="$({
 })"
 
 [[ -n "${integration_job}" ]] || fail "Rust Full Integration job is missing"
-grep -Fq 'CARGO_BUILD_JOBS: "2"' <<< "${integration_job}" \
+grep -Fq 'CARGO_BUILD_JOBS: "1"' <<< "${integration_job}" \
   || fail "Rust Full Integration does not bound Cargo build concurrency"
 grep -Fq 'CARGO_PROFILE_TEST_DEBUG: "0"' <<< "${integration_job}" \
   || fail "Rust Full Integration does not disable test-profile debug info"
@@ -31,11 +30,7 @@ grep -Fq 'sleep 60' <<< "${integration_job}" \
   || fail "Rust Full Integration heartbeat interval is not bounded"
 grep -Fq 'trap cleanup EXIT' <<< "${integration_job}" \
   || fail "Rust Full Integration does not clean up its heartbeat"
-grep -Fq 'bash scripts/test-rust-fast.sh full-integration' <<< "${integration_job}" \
-  || fail "Rust Full Integration does not use the canonical Rust test runner"
-grep -Fq -- "--test 'suite_*'" "${RUST_RUNNER}" \
-  || fail "Rust full integration runner also compiles redundant unit-test targets"
-grep -Fq -- '--test plan_selector_performance' "${RUST_RUNNER}" \
-  || fail "Rust full integration runner omits the standalone performance target"
+grep -Fq -- '--partition hash:${{ matrix.partition }}' <<< "${integration_job}" \
+  || fail "Rust Full Integration does not shard integration tests"
 
-echo "PASS: Rust Full Integration bounds compile resources and selects integration targets"
+echo "PASS: Rust Full Integration bounds compile resources and shards integration targets"
