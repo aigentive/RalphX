@@ -231,7 +231,8 @@ describe("mockArchiveConversation", () => {
       closePullRequest: false,
     });
 
-    expect(archived.archivedAt).not.toBeNull();
+    expect(archived.conversation.archivedAt).not.toBeNull();
+    expect(archived.cleanup.localCleanup).toBe("cleaned");
   });
 });
 

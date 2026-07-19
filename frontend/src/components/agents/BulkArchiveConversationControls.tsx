@@ -83,8 +83,9 @@ export function BulkArchiveConversationControls({
             <AlertDialogTitle>Archive selected sessions?</AlertDialogTitle>
             <AlertDialogDescription>
               This hides {selectedCount} selected {selectedCount === 1 ? "session" : "sessions"}
-              {" "}from the active conversation list. Sessions requiring pull-request
-              handling were excluded and must be archived individually.
+              {" "}from the active conversation list and permanently deletes each local RalphX
+              workspace and local branch, including uncommitted changes and ignored build or test
+              artifacts. Remote pull requests remain open.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

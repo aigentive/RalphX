@@ -16,7 +16,7 @@ paths:
 | Lane-aware harnesses | Execution/review/merge runtime selection is lane-based even when the current defaults stay Claude-heavy. |
 | Claude default remains explicit | Worker/reviewer/merger and team-mode guidance in this file describes the current broadest-coverage default path; do not imply Codex parity where the product contract is still incremental. |
 | Validation ownership | Target-project instructions own command selection; execution agents record the narrowest relevant wave/final/re-execution evidence and never manufacture a broad-suite fallback. Broader project/CI automation remains external to the implementation-agent contract. |
-| Validation timing | Execution agents do not run baseline validation by default; pre-change validation is limited to explicit diagnostics, preconditions, or dry-run command selection. |
+| Validation timing | Execution agents do not run baseline validation by default; full baseline task validation and pre-change validation are limited to explicit diagnostics, preconditions, or dry-run command selection. |
 | Failure ownership | Final/wave failures on task-scoped or modified surfaces must be fixed; unrelated pre-existing failures are reported or registered without silently expanding the current task. |
 
 ---

@@ -28,7 +28,6 @@ import {
   preflightAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
 import {
-  BULK_ARCHIVE_BLOCKED_REASON,
   isBulkArchiveConversationEligible,
   type BulkArchiveConversationTarget,
   type BulkArchiveConversationsResult,
@@ -83,7 +82,7 @@ async function archiveAgentConversation(
   if (conversation.contextType === "ideation") {
     await ideationApi.sessions.archive(conversation.contextId);
   }
-  await chatApi.archiveConversation(conversation.id, options);
+  return chatApi.archiveConversation(conversation.id, options);
 }
 
 export function useAgentConversationActions({
@@ -305,11 +304,23 @@ export function useAgentConversationActions({
       options: AgentConversationArchiveOptions
     ) => {
       try {
-        await archiveAgentConversation(conversation, options);
+        const result = await archiveAgentConversation(conversation, options);
         if (selectedConversationId === conversation.id) {
           clearAgentConversationSelection();
         }
         await invalidateProjectConversations(conversation.projectId);
+        if (result.cleanup.localCleanup === "failed_unsafe") {
+          toast.warning(
+            "Session archived, but RalphX refused unsafe local workspace cleanup. Review the workspace metadata before retrying."
+          );
+        } else if (
+          result.cleanup.localCleanup === "failed_operational" ||
+          result.cleanup.localCleanup === "pending"
+        ) {
+          toast.warning(
+            "Session archived. Local workspace cleanup is pending and will retry automatically."
+          );
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to archive session");
       }
@@ -323,6 +334,8 @@ export function useAgentConversationActions({
     ): Promise<BulkArchiveConversationsResult> => {
       const archivedConversationIds: string[] = [];
       const failedConversationIds: string[] = [];
+      const cleanupPendingConversationIds: string[] = [];
+      const cleanupUnsafeConversationIds: string[] = [];
       const failureDetails: string[] = [];
       const affectedProjectIds = new Set<string>();
 
@@ -330,16 +343,24 @@ export function useAgentConversationActions({
         const { conversation } = target;
         if (!isBulkArchiveConversationEligible(target)) {
           failedConversationIds.push(conversation.id);
-          failureDetails.push(`${conversation.title || "Untitled agent"}: ${BULK_ARCHIVE_BLOCKED_REASON}`);
+          failureDetails.push(`${conversation.title || "Untitled agent"}: Already archived`);
           continue;
         }
 
         affectedProjectIds.add(conversation.projectId);
         try {
-          await archiveAgentConversation(conversation, {
+          const result = await archiveAgentConversation(conversation, {
             closePullRequest: false,
           });
           archivedConversationIds.push(conversation.id);
+          if (result.cleanup.localCleanup === "failed_unsafe") {
+            cleanupUnsafeConversationIds.push(conversation.id);
+          } else if (
+            result.cleanup.localCleanup === "failed_operational" ||
+            result.cleanup.localCleanup === "pending"
+          ) {
+            cleanupPendingConversationIds.push(conversation.id);
+          }
         } catch (error) {
           failedConversationIds.push(conversation.id);
           failureDetails.push(
@@ -381,7 +402,27 @@ export function useAgentConversationActions({
         );
       }
 
-      return { archivedConversationIds, failedConversationIds };
+      if (cleanupPendingConversationIds.length > 0) {
+        toast.warning(
+          `Local cleanup is pending automatic retry for ${cleanupPendingConversationIds.length} ${
+            cleanupPendingConversationIds.length === 1 ? "session" : "sessions"
+          }.`
+        );
+      }
+      if (cleanupUnsafeConversationIds.length > 0) {
+        toast.warning(
+          `RalphX refused unsafe local cleanup for ${cleanupUnsafeConversationIds.length} ${
+            cleanupUnsafeConversationIds.length === 1 ? "session" : "sessions"
+          }.`
+        );
+      }
+
+      return {
+        archivedConversationIds,
+        failedConversationIds,
+        cleanupPendingConversationIds,
+        cleanupUnsafeConversationIds,
+      };
     },
     [
       clearAgentConversationSelection,

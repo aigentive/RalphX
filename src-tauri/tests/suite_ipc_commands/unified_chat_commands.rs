@@ -1633,6 +1633,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
@@ -1775,6 +1776,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
@@ -1784,10 +1786,10 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
 
     assert!(branch_exists(&repo_path, unmerged_plan_branch));
     assert!(branch_exists(&repo_path, missing_target_branch));
-    assert!(closed_path.exists());
-    assert!(branch_exists(&repo_path, &closed_branch));
-    assert!(dirty_path.exists());
-    assert!(branch_exists(&repo_path, &dirty_branch));
+    assert!(!closed_path.exists());
+    assert!(!branch_exists(&repo_path, &closed_branch));
+    assert!(!dirty_path.exists());
+    assert!(!branch_exists(&repo_path, &dirty_branch));
 }
 
 #[tokio::test]
@@ -1883,7 +1885,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
 }
 
 #[tokio::test]
-async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
+async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
     let worktree_parent = temp.path().join("worktrees");
@@ -1948,14 +1950,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
 
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            if !workspace_path.exists() {
+            if !workspace_path.exists() && !branch_exists(&repo_path, &workspace_branch) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("poller should clean closed PR worktree");
+    .expect("poller should clean closed PR artifacts");
 
     let updated = state
         .agent_conversation_workspace_repo
@@ -1964,7 +1966,6 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         .expect("workspace lookup should succeed")
         .expect("workspace should remain persisted");
     assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
-    assert!(branch_exists(&repo_path, &workspace_branch));
     assert_eq!(github.check_calls(), 1);
 }
 
