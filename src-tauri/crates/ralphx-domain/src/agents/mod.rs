@@ -11,6 +11,7 @@ pub mod mcp_policy;
 pub mod model_registry;
 pub mod provider_settings;
 pub mod routing_role;
+mod routing_role_descriptions;
 pub mod types;
 
 // Re-export key types

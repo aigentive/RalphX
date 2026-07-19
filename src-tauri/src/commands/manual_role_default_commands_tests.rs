@@ -1,3 +1,6 @@
+use crate::application::manual_role_default_service::{
+    ManualDefaultSource, ResolvedManualRoleDefault,
+};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole};
 use crate::domain::entities::{
@@ -5,10 +8,41 @@ use crate::domain::entities::{
 };
 
 use super::manual_role_default_commands::{
-    control_options, parse_input, reset_agent_conversation_role_default_for_state,
+    catalog_entry, control_options, parse_input, reset_agent_conversation_role_default_for_state,
     update_manual_role_default_for_state, ManualRoleDefaultInput,
     ResetAgentConversationRoleDefaultInput, UpdateManualRoleDefaultInput,
 };
+
+#[test]
+fn catalog_entry_maps_the_backend_owned_role_description() {
+    let role = RoutingRole::WorkspaceChat;
+    let resolved = ResolvedManualRoleDefault {
+        role,
+        value: ManualRoleDefault {
+            harness: AgentHarnessKind::Claude,
+            model: None,
+            effort: None,
+            service_tier: ManualServiceTier::ProviderDefault,
+            coordination_mode: None,
+            persona_id: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        },
+        source: ManualDefaultSource::ProviderDefault,
+        diagnostics: Vec::new(),
+    };
+
+    let entry = catalog_entry(
+        role,
+        None,
+        Ok(resolved),
+        false,
+        &crate::application::agent_capability_gate::AgentCapabilityGate::default(),
+    );
+
+    assert_eq!(entry.description, role.metadata().description);
+    assert!(!entry.description.trim().is_empty());
+}
 
 #[test]
 fn non_workspace_roles_receive_backend_disabled_capability_and_persona_reasons() {
