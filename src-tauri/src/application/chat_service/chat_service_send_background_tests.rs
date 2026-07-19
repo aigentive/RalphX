@@ -54,6 +54,28 @@ fn claude_spawn_permission_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+async fn seed_completed_continuation_runtime(
+    agent_run_repo: &Arc<dyn crate::domain::repositories::AgentRunRepository>,
+    conversation_id: &ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.complete();
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    let model = match harness {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.6-sol",
+    };
+    run.logical_model = Some(model.to_string());
+    run.effective_model_id = Some(model.to_string());
+    agent_run_repo
+        .create(run)
+        .await
+        .expect("seed completed continuation runtime");
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -1193,6 +1215,13 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     );
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
     let unused_path = Path::new(".");
 
@@ -1302,6 +1331,13 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
         .await
         .expect("seed queue conversation");
     let conversation_id = conversation.id;
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1512,6 +1548,14 @@ EOF
         child_id.as_str(),
         "Continue".to_string(),
     );
+    let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1519,7 +1563,7 @@ EOF
             AgentHarnessKind::Claude,
             child_id.as_str(),
             child_id.as_str(),
-            ChatConversationId::new(),
+            conversation_id,
             "session-cli",
             false,
             &message_queue,
@@ -1685,6 +1729,13 @@ async fn process_queue_resume_persona_block(
             .await
             .expect("archive explicit persona between enqueue and flush");
     }
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "queue-resume-session",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1920,6 +1971,13 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     std::fs::write(&unselected_path, "unselected queued attachment").expect("write unselected");
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let selected_attachment = chat_attachment_repo
         .create(ChatAttachment::new(
             conversation_id,

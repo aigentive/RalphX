@@ -5,10 +5,11 @@ use super::{
     compose_codex_prompt_for_profile_with_outcome, configure_spawn, parse_codex_fast_mode_feature,
     parse_codex_fast_mode_supported_models, parse_codex_model_catalog_capabilities,
     probe_codex_cli, redact_persona_from_codex_prompt, resolve_codex_cli_from_candidates,
-    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext, CodexPromptTransport,
 };
 
 use crate::domain::agents::LogicalEffort;
+use crate::infrastructure::agents::claude::{SpawnableCommand, SpawnableStdinTransport};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -1158,7 +1159,7 @@ fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
 
     let mut cmd = tokio::process::Command::new("/usr/bin/env");
     cmd.env("GITHUB_TOKEN", "stale-secret");
-    configure_spawn(&mut cmd, None);
+    configure_spawn(&mut cmd, None, CodexPromptTransport::PositionalArg);
 
     assert!(cmd
         .as_std()
@@ -1191,6 +1192,53 @@ fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
         })
         .expect("RALPHX_AGENT_SCREENSHOT_DIR env");
     assert!(screenshot_dir.to_string_lossy().contains("screenshots"));
+}
+
+#[tokio::test]
+async fn positional_prompt_transport_exposes_immediate_stdin_eof() {
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "payload=$(cat); if [ -n \"$payload\" ]; then printf 'data:%s' \"$payload\"; else printf eof; fi",
+    ]);
+    let transport = configure_spawn(&mut cmd, None, CodexPromptTransport::PositionalArg);
+    let child = SpawnableCommand::new_with_stdin_transport(cmd, None, transport)
+        .spawn()
+        .await
+        .expect("spawn positional transport fixture");
+    let output = child.wait_with_output().await.expect("wait for fixture");
+
+    assert_eq!(transport, SpawnableStdinTransport::Null);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "eof");
+}
+
+#[tokio::test]
+async fn explicit_stdin_prompt_transport_writes_prompt_then_closes_pipe() {
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "payload=$(cat); if [ -n \"$payload\" ]; then printf 'data:%s' \"$payload\"; else printf eof; fi",
+    ]);
+    let transport = configure_spawn(&mut cmd, None, CodexPromptTransport::Stdin);
+    let child = SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        Some("prompt-through-stdin".to_string()),
+        transport,
+    )
+    .spawn()
+    .await
+    .expect("spawn stdin transport fixture");
+    let output = child.wait_with_output().await.expect("wait for fixture");
+
+    assert_eq!(transport, SpawnableStdinTransport::Piped);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "data:prompt-through-stdin"
+    );
 }
 
 #[test]

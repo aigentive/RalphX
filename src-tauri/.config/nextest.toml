@@ -8,6 +8,9 @@ inherits = "default"
 fail-fast = false
 global-timeout = "30m"
 
+[profile.ci.junit]
+path = "junit.xml"
+
 [test-groups.git-heavy]
 max-threads = 2
 
