@@ -3,7 +3,25 @@ use std::sync::Arc;
 use super::agent_lane_resolution::{
     resolve_agent_spawn_settings, resolve_manual_role_spawn_settings, routing_role_for_chat_launch,
     routing_role_for_delegated_launch, routing_role_for_spawner_agent,
+    validate_model_harness_compatibility,
 };
+
+#[test]
+fn model_harness_compatibility_rejects_both_foreign_builtin_directions() {
+    assert!(
+        validate_model_harness_compatibility(AgentHarnessKind::Codex, "opus")
+            .expect_err("Claude model must not launch under Codex")
+            .contains("codex")
+    );
+    assert!(
+        validate_model_harness_compatibility(AgentHarnessKind::Claude, "gpt-5.5")
+            .expect_err("Codex model must not launch under Claude")
+            .contains("claude")
+    );
+    assert!(
+        validate_model_harness_compatibility(AgentHarnessKind::Codex, "custom-codex-model").is_ok()
+    );
+}
 use super::manual_role_default_service::ManualRoleDefaultService;
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort, ManualRoleDefault,
@@ -720,6 +738,112 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
     assert_eq!(resolved.service_tier.as_deref(), Some("standard"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[tokio::test]
+async fn workspace_plan_codex_override_ignores_configured_claude_model() {
+    let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
+    manual_repo
+        .upsert_global(
+            RoutingRole::WorkspacePlan,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Claude,
+                model: Some("opus".to_string()),
+                effort: Some(LogicalEffort::High),
+                service_tier: ManualServiceTier::ProviderDefault,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = ManualRoleDefaultService::new(
+        manual_repo,
+        Arc::new(MemoryAgentLaneSettingsRepository::new()),
+        Arc::new(
+            MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                AgentHarnessKind::Claude,
+            ),
+        ),
+        Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
+        true,
+        config_root.path().join("router.yaml"),
+    );
+
+    let resolved = resolve_manual_role_spawn_settings(
+        "ralphx-ideation",
+        None,
+        None,
+        RoutingRole::WorkspacePlan,
+        Some(AgentHarnessKind::Codex),
+        None,
+        &service,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
+    assert_eq!(resolved.configured_harness, None);
+    assert_eq!(resolved.configured_model, None);
+    assert_eq!(resolved.model, "gpt-5.5");
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
+}
+
+#[tokio::test]
+async fn workspace_plan_claude_override_ignores_configured_codex_model() {
+    let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
+    manual_repo
+        .upsert_global(
+            RoutingRole::WorkspacePlan,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-5.5".to_string()),
+                effort: Some(LogicalEffort::XHigh),
+                service_tier: ManualServiceTier::ProviderDefault,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = ManualRoleDefaultService::new(
+        manual_repo,
+        Arc::new(MemoryAgentLaneSettingsRepository::new()),
+        Arc::new(
+            MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                AgentHarnessKind::Claude,
+            ),
+        ),
+        Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
+        true,
+        config_root.path().join("router.yaml"),
+    );
+
+    let resolved = resolve_manual_role_spawn_settings(
+        "ralphx-ideation",
+        None,
+        None,
+        RoutingRole::WorkspacePlan,
+        Some(AgentHarnessKind::Claude),
+        None,
+        &service,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.effective_harness, AgentHarnessKind::Claude);
+    assert_eq!(resolved.configured_harness, None);
+    assert_eq!(resolved.configured_model, None);
+    assert_eq!(resolved.model, "sonnet");
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
 }
 
 #[test]

@@ -18,7 +18,9 @@ use tracing::warn;
 use crate::domain::agents::{
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
-use crate::infrastructure::agents::claude::SpawnableCommand;
+use crate::infrastructure::agents::claude::{
+    SpawnableCommand, SpawnableStdinTransport,
+};
 use crate::infrastructure::agents::claude::{
     claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
@@ -1092,9 +1094,13 @@ pub fn build_spawnable_codex_exec_command(
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -1115,9 +1121,13 @@ pub fn build_spawnable_codex_resume_command(
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -1216,7 +1226,18 @@ fn run_codex_optional_command(cli_path: &Path, args: &[&str]) -> String {
     run_codex_command(cli_path, args).unwrap_or_default()
 }
 
-fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexPromptTransport {
+    PositionalArg,
+    #[cfg(test)]
+    Stdin,
+}
+
+fn configure_spawn(
+    cmd: &mut tokio::process::Command,
+    cwd: Option<&Path>,
+    prompt_transport: CodexPromptTransport,
+) -> SpawnableStdinTransport {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
@@ -1235,13 +1256,24 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::piped());
+    let stdin_transport = match prompt_transport {
+        CodexPromptTransport::PositionalArg => {
+            cmd.stdin(std::process::Stdio::null());
+            SpawnableStdinTransport::Null
+        }
+        #[cfg(test)]
+        CodexPromptTransport::Stdin => {
+            cmd.stdin(std::process::Stdio::piped());
+            SpawnableStdinTransport::Piped
+        }
+    };
     crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     // Put Codex (and its descendants — MCP server, any subprocesses it
     // spawns) into their own process group so the Tauri exit handler can
     // SIGTERM the whole tree without risking the app itself. See
     // `crate::infrastructure::agents::spawn_isolation`.
     crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec_tokio(cmd);
+    stdin_transport
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

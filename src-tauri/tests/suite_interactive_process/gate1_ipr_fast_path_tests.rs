@@ -307,11 +307,23 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
         provider_session_id: "preserved-provider-session".to_string(),
     });
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("persist bound conversation");
+    let mut completed_run = AgentRun::new(conversation_id);
+    completed_run.complete();
+    completed_run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+    completed_run.provider_session_id = Some("preserved-provider-session".to_string());
+    completed_run.logical_model = Some("sonnet".to_string());
+    completed_run.effective_model_id = Some("sonnet".to_string());
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("seed completed runtime for preserved provider session");
 
     let mut old_process = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())

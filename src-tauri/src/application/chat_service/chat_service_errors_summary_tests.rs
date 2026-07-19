@@ -200,6 +200,54 @@ fn codex_local_diagnostics_without_runtime_error_returns_local_tool_failed() {
 }
 
 #[test]
+fn codex_stdin_notice_is_progress_noise_not_a_terminal_cause() {
+    let result = classify_codex_stream_failure(
+        &["Reading additional input from stdin...".to_string()],
+        &[],
+        Some(1),
+        false,
+    );
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn codex_stdin_notice_does_not_mask_actionable_runtime_error() {
+    let result = classify_codex_stream_failure(
+        &[
+            "Reading additional input from stdin...".to_string(),
+            "fatal: provider process crashed".to_string(),
+        ],
+        &[],
+        Some(1),
+        false,
+    )
+    .expect("actionable runtime failure");
+
+    match result {
+        StreamError::AgentExit { stderr, .. } => {
+            assert_eq!(stderr, "fatal: provider process crashed");
+        }
+        other => panic!("expected agent exit, got {other:?}"),
+    }
+}
+
+#[test]
+fn no_output_error_has_actionable_summary_and_retains_terminal_details() {
+    let error = StreamError::NoOutput {
+        context_type: ChatContextType::Project,
+        exit_code: Some(1),
+        exit_signal: None,
+        stderr: "Reading additional input from stdin...".to_string(),
+    }
+    .to_string();
+
+    assert!(error.starts_with("Codex exited without a response"));
+    assert!(error.contains("code=Some(1)"));
+    assert!(error.contains("Reading additional input from stdin"));
+}
+
+#[test]
 fn timeout_and_agent_exit_status_mapping_remains_failed() {
     let timeout = StreamError::Timeout {
         context_type: ChatContextType::TaskExecution,
