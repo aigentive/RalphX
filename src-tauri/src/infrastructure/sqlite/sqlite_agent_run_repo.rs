@@ -245,6 +245,39 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let harness = harness.to_string();
+        let provider_session_id = provider_session_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            approval_policy, sandbox_mode, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
+                     FROM agent_runs
+                     WHERE conversation_id = ?1
+                       AND harness = ?2
+                       AND provider_session_id = ?3
+                       AND status = 'completed'
+                     ORDER BY started_at DESC LIMIT 1",
+                    rusqlite::params![conversation_id, harness, provider_session_id],
+                    row_to_agent_run,
+                )
+            })
+            .await
+    }
+
     async fn get_active_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
