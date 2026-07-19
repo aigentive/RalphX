@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { toast } from "sonner";
+
 import { ArtifactSelectableRegion } from "./ArtifactSelectableRegion";
 import { ArtifactSelectionProvider } from "./ArtifactSelectionProvider";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 function mockSelection(node: Node, text: string) {
   const range = {
@@ -99,6 +103,129 @@ describe("ArtifactSelectionProvider", () => {
     } as unknown as Selection);
 
     fireEvent.pointerUp(screen.getByText("Second issue"));
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  function renderRegion(onAdd = vi.fn()) {
+    render(
+      <ArtifactSelectionProvider enabled onAddExcerpt={onAdd}>
+        <ArtifactSelectableRegion
+          source={{ sourceKind: "plan", sourceId: "artifact-1", sourceLabel: "Plan" }}
+        >
+          <p>Ship the native selection flow</p>
+        </ArtifactSelectableRegion>
+      </ArtifactSelectionProvider>,
+    );
+    return screen.getByText("Ship the native selection flow");
+  }
+
+  it("does not offer an action when the provider is disabled", () => {
+    render(
+      <ArtifactSelectionProvider enabled={false} onAddExcerpt={vi.fn()}>
+        <ArtifactSelectableRegion
+          source={{ sourceKind: "plan", sourceId: "artifact-1", sourceLabel: "Plan" }}
+        >
+          <p>Ship the native selection flow</p>
+        </ArtifactSelectableRegion>
+      </ArtifactSelectionProvider>,
+    );
+
+    const text = screen.getByText("Ship the native selection flow");
+    mockSelection(text.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(text);
+
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer an action for a collapsed selection", () => {
+    const text = renderRegion();
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      anchorNode: text.firstChild,
+      focusNode: text.firstChild,
+      isCollapsed: true,
+      rangeCount: 1,
+    } as unknown as Selection);
+
+    fireEvent.pointerUp(text);
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer an action when the selection contains interactive content", () => {
+    const text = renderRegion();
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(document.createElement("button"));
+    const range = {
+      cloneContents: () => fragment,
+      getBoundingClientRect: () => ({ bottom: 80, height: 20, left: 40, width: 140 }),
+    } as unknown as Range;
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      anchorNode: text.firstChild,
+      focusNode: text.firstChild,
+      isCollapsed: false,
+      rangeCount: 1,
+      getRangeAt: () => range,
+      toString: () => "Ship the native selection flow",
+    } as unknown as Selection);
+
+    fireEvent.pointerUp(text);
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("rejects and warns when the selection exceeds the byte limit", () => {
+    const text = renderRegion();
+    mockSelection(text.firstChild!, "x".repeat(16 * 1024 + 1));
+    fireEvent.pointerUp(text);
+
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Selection is too large to add as conversation context",
+    );
+  });
+
+  it("dismisses the action on Escape and on viewport scroll", () => {
+    const text = renderRegion();
+    mockSelection(text.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(text);
+    expect(
+      screen.getByRole("button", { name: "Add selection to conversation" }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+
+    mockSelection(text.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(text);
+    expect(
+      screen.getByRole("button", { name: "Add selection to conversation" }),
+    ).toBeInTheDocument();
+
+    fireEvent.scroll(window);
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses the action on an outside pointer press", () => {
+    const text = renderRegion();
+    mockSelection(text.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(text);
+    expect(
+      screen.getByRole("button", { name: "Add selection to conversation" }),
+    ).toBeInTheDocument();
+
+    fireEvent.pointerDown(document.body);
     expect(
       screen.queryByRole("button", { name: "Add selection to conversation" }),
     ).not.toBeInTheDocument();
