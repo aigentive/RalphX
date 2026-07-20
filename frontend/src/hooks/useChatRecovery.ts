@@ -58,7 +58,7 @@ interface UseChatRecoveryProps {
   setAgentRunning: (contextKey: string, isRunning: boolean) => void;
   selectedTaskId: string | undefined;
   ideationSessionId: string | undefined;
-  projectId: string;
+  projectId: string | null;
   /** Effective status for merge watchdog */
   effectiveStatus: string | undefined;
 }
@@ -365,7 +365,9 @@ export function useChatRecovery({
     if (!effectiveStatus || (effectiveStatus !== "approved" && !(MERGE_STATUSES as readonly string[]).includes(effectiveStatus))) return undefined;
 
     const intervalId = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      }
       queryClient.invalidateQueries({ queryKey: taskKeys.detail(selectedTaskId) });
     }, 2000);
 
@@ -378,7 +380,9 @@ export function useChatRecovery({
     if (!selectedTaskId || !isAgentContext) return undefined;
 
     const intervalId = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
+      }
       if (selectedTaskId) {
         queryClient.invalidateQueries({ queryKey: taskKeys.detail(selectedTaskId) });
       }

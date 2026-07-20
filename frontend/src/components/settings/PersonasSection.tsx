@@ -4,11 +4,7 @@ import { useFeatureFlags, useUpdateFeatureFlags } from "@/hooks/useFeatureFlags"
 import { PersonasEnableToggle } from "./PersonasEnableToggle";
 import { PersonasManagementSection } from "./PersonasManagementSection";
 
-export interface PersonasSectionProps {
-  showBuilderEntry?: boolean;
-}
-
-export function PersonasSection({ showBuilderEntry = true }: PersonasSectionProps) {
+export function PersonasSection() {
   const { data: featureFlags } = useFeatureFlags();
   const updateFeatureFlags = useUpdateFeatureFlags();
   const agentPersonasEnabled = featureFlags.agentPersonas ?? false;
@@ -23,7 +19,9 @@ export function PersonasSection({ showBuilderEntry = true }: PersonasSectionProp
       {agentPersonasEnabled && (
         <>
           <Separator />
-          <PersonasManagementSection showBuilderEntry={showBuilderEntry} />
+          <PersonasManagementSection
+            standaloneConversations={featureFlags.standaloneConversations ?? false}
+          />
         </>
       )}
     </section>

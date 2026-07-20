@@ -94,6 +94,24 @@ describe('getAllowedToolNames', () => {
         expect(tools).toContain('fs_read_file');
         expect(tools).toContain('fs_grep');
     });
+    it('grants the canonical PersonaBuilder surface only to the persona extractor', () => {
+        const extractorTools = [
+            'fs_read_file',
+            'fs_list_dir',
+            'fs_grep',
+            'fs_glob',
+            'ask_user_question',
+            'save_persona_draft',
+            'get_persona_draft',
+        ];
+        setAgentType('ralphx-persona-extractor');
+        expect(getAllowedToolNames()).toEqual(extractorTools);
+        expect(isToolAllowed('save_persona_draft')).toBe(true);
+        expect(isToolAllowed('get_persona_draft')).toBe(true);
+        setAgentType(GENERAL_EXPLORER);
+        expect(isToolAllowed('save_persona_draft')).toBe(false);
+        expect(isToolAllowed('get_persona_draft')).toBe(false);
+    });
     it('grants workflow tools only inside Workflow conversations', () => {
         setAgentType(GENERAL_WORKER);
         expect(getAllowedToolNames()).not.toContain('create_agent_workflow_script');

@@ -12,6 +12,8 @@ export const featureFlagsSchema = z.object({
   agentPersonas: z.boolean().default(false),
   agentConversationTeam: z.boolean().default(false),
   agentConversationWorkflows: z.boolean().default(false),
+  composerFolderReferences: z.boolean().default(false),
+  standaloneConversations: z.boolean().default(false),
   agentConversationAutopilot: z.boolean().default(false),
 });
 
@@ -24,10 +26,14 @@ export type FeatureFlags = Omit<
   | "agentPersonas"
   | "agentConversationTeam"
   | "agentConversationWorkflows"
+  | "composerFolderReferences"
+  | "standaloneConversations"
   | "agentConversationAutopilot"
 > & {
   agentPersonas?: boolean;
   agentConversationTeam?: boolean;
   agentConversationWorkflows?: boolean;
+  composerFolderReferences?: boolean;
+  standaloneConversations?: boolean;
   agentConversationAutopilot?: boolean;
 };

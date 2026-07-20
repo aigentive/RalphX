@@ -5,7 +5,7 @@
  * warm orange accent for actions, and smooth animations.
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, type ReactNode } from "react";
 import { toast } from "sonner";
 import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus, GitPullRequestArrow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -96,6 +96,15 @@ export interface PlanDisplayProps {
   planActionHint?: string | null;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
+  /** Domain-specific actions rendered in the shared chromeless action row. */
+  artifactActions?: ReactNode;
+  /** Disable excerpt capture when the artifact has no supported composer reference kind. */
+  excerptSelectionEnabled?: boolean;
+  /** Separates artifact-specific metadata from the Markdown body for every selected version. */
+  prepareContent?: (content: string) => {
+    content: string;
+    preamble?: ReactNode;
+  };
   /**
    * When true, drop the wrapper card (file-icon header + collapsible chrome)
    * and render the markdown body directly. The leading H1 in the plan content
@@ -346,6 +355,34 @@ const markdownComponents = {
   ),
 };
 
+interface ArtifactMarkdownBodyProps {
+  content: string;
+  source: React.ComponentProps<typeof ArtifactSelectableRegion>["source"];
+  excerptSelectionEnabled: boolean;
+  className: string;
+}
+
+function ArtifactMarkdownBody({
+  content,
+  source,
+  excerptSelectionEnabled,
+  className,
+}: ArtifactMarkdownBodyProps) {
+  const markdown = (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+
+  return excerptSelectionEnabled ? (
+    <ArtifactSelectableRegion source={source} className={className}>
+      {markdown}
+    </ArtifactSelectableRegion>
+  ) : (
+    <div className={className}>{markdown}</div>
+  );
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -382,6 +419,9 @@ export function PlanDisplay({
   isPlanActionRecommendationPending = false,
   planActionHint = null,
   showOverflowActions = true,
+  artifactActions,
+  excerptSelectionEnabled = true,
+  prepareContent,
   chromeless = false,
 }: PlanDisplayProps) {
   // Use controlled state if isExpanded prop is provided, otherwise use internal state
@@ -491,6 +531,9 @@ export function PlanDisplay({
 
   const planContent = plan.content.type === "inline" ? plan.content.text : "";
   const displayContent = historicalContent ?? planContent;
+  const preparedContent = prepareContent?.(displayContent);
+  const renderedContent = preparedContent?.content ?? displayContent;
+  const artifactPreamble = preparedContent?.preamble;
   const isViewingHistorical = selectedVersion !== plan.metadata.version;
   const currentBodyMode = bodyMode ?? "plan";
   const bodyModeButtonStyle = (isActive: boolean) => ({
@@ -560,21 +603,23 @@ export function PlanDisplay({
     // Extract the leading H1 from the plan body so we can render it on
     // the same row as the action cluster instead of having the title
     // and actions stack in awkwardly disconnected rows.
-    const headingMatch = displayContent
-      ? displayContent.match(/^[ \t]*#\s+(.+?)\s*\n/)
+    const headingMatch = renderedContent
+      ? renderedContent.match(/^[ \t]*#\s+(.+?)\s*\n/)
       : null;
     const headingTitle = headingMatch?.[1] ?? null;
     const bodyAfterHeading = headingMatch
-      ? (displayContent ?? "").slice(headingMatch[0].length)
-      : displayContent;
+      ? renderedContent.slice(headingMatch[0].length)
+      : renderedContent;
 
     const hasActionCTAs =
-      (showApprove && !isApproved) ||
-      isApproved ||
-      showProposalBodyToggle ||
-      onVerifyPlan ||
-      showCreateProposals ||
-      showImplementDirectly;
+      !isViewingHistorical &&
+      ((showApprove && !isApproved) ||
+        isApproved ||
+        showProposalBodyToggle ||
+        onVerifyPlan ||
+        showCreateProposals ||
+        showImplementDirectly ||
+        Boolean(artifactActions));
 
     return (
       <div data-testid="plan-display-chromeless" className="group">
@@ -763,6 +808,8 @@ export function PlanDisplay({
                   Plan Approved
                 </span>
               )}
+
+              {!isViewingHistorical && artifactActions}
 
               {showProposalBodyToggle && (
                 <>
@@ -966,6 +1013,8 @@ export function PlanDisplay({
           </div>
         )}
 
+        {!isLoadingVersion && artifactPreamble}
+
         {hideBody ? null : isLoadingVersion ? (
           <div className="flex items-center justify-center py-12">
             <Loader2
@@ -973,8 +1022,9 @@ export function PlanDisplay({
               style={{ color: "var(--accent-primary)" }}
             />
           </div>
-        ) : displayContent ? (
-          <ArtifactSelectableRegion
+        ) : renderedContent ? (
+          <ArtifactMarkdownBody
+            content={bodyAfterHeading ?? ""}
             source={{
               sourceKind: artifactLabel === "Review" ? "review" : "plan",
               sourceId: plan.id,
@@ -983,15 +1033,9 @@ export function PlanDisplay({
               artifactId: plan.id,
               version: selectedVersion,
             }}
+            excerptSelectionEnabled={excerptSelectionEnabled}
             className="text-[0.8125rem] leading-relaxed"
-          >
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={markdownComponents}
-            >
-              {bodyAfterHeading ?? ""}
-            </ReactMarkdown>
-          </ArtifactSelectableRegion>
+          />
         ) : (
           <p
             className="text-[0.8125rem] italic py-8 text-center"
@@ -1403,6 +1447,8 @@ export function PlanDisplay({
               </div>
             )}
 
+            {!isLoadingVersion && artifactPreamble}
+
             {/* Loading state / plan content */}
             {isLoadingVersion ? (
                 <div className="flex items-center justify-center py-12">
@@ -1413,8 +1459,9 @@ export function PlanDisplay({
                     </span>
                   </div>
                 </div>
-              ) : displayContent ? (
-                <ArtifactSelectableRegion
+              ) : renderedContent ? (
+                <ArtifactMarkdownBody
+                  content={renderedContent}
                   source={{
                     sourceKind: artifactLabel === "Review" ? "review" : "plan",
                     sourceId: plan.id,
@@ -1423,12 +1470,9 @@ export function PlanDisplay({
                     artifactId: plan.id,
                     version: selectedVersion,
                   }}
+                  excerptSelectionEnabled={excerptSelectionEnabled}
                   className="text-[0.8125rem] leading-relaxed"
-                >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {displayContent}
-                  </ReactMarkdown>
-                </ArtifactSelectableRegion>
+                />
               ) : (
                 <p
                   className="text-[0.8125rem] italic py-8 text-center"
@@ -1442,4 +1486,17 @@ export function PlanDisplay({
       </Collapsible>
     </div>
   );
+}
+
+export interface VersionedArtifactDisplayProps
+  extends Omit<PlanDisplayProps, "plan"> {
+  artifact: Artifact;
+}
+
+/** Shared versioned Markdown artifact surface used by Plan, Review, and Persona. */
+export function VersionedArtifactDisplay({
+  artifact,
+  ...props
+}: VersionedArtifactDisplayProps) {
+  return <PlanDisplay plan={artifact} {...props} />;
 }

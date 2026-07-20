@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+use crate::entities::{ArtifactId, ProjectId};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -63,6 +64,13 @@ pub enum PersonaStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersonaScopeFilter {
+    All,
+    GlobalOnly,
+    GlobalAndProject(ProjectId),
+}
+
 impl fmt::Display for PersonaStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -91,6 +99,8 @@ impl FromStr for PersonaStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Persona {
     pub id: PersonaId,
+    pub artifact_id: Option<ArtifactId>,
+    pub project_id: Option<ProjectId>,
     pub slug: String,
     pub name: String,
     pub description: String,
@@ -109,6 +119,14 @@ pub struct Persona {
 impl Persona {
     pub fn is_bindable(&self) -> bool {
         matches!(self.status, PersonaStatus::Active)
+    }
+
+    pub fn is_bindable_to_project(&self, project_id: &ProjectId) -> bool {
+        self.is_bindable()
+            && self
+                .project_id
+                .as_ref()
+                .is_none_or(|persona_project_id| persona_project_id == project_id)
     }
 }
 

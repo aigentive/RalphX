@@ -85,26 +85,36 @@ export function useAgentSidebarProjectGroup({
   minimumRowCount?: number;
   pageSize?: number;
 }) {
+  const isNoProjectGroup = projectId === "__no_project__";
   return useAgentSidebarGroup({
     groupBy: "project",
     groupKey: projectId ?? "",
-    projectIds: projectId ? [projectId] : [],
+    projectIds: projectId && !isNoProjectGroup ? [projectId] : [],
     archivedOnly,
     search,
     publicationStates,
     pinnedConversationIds,
     priorityConversationIds,
     enabled: enabled && Boolean(projectId),
+    allowEmptyProjectIds: isNoProjectGroup,
     minimumRowCount,
     ...(pageSize !== undefined ? { pageSize } : {}),
-    queryKey: agentSidebarConversationKeys.projectGroup(
-      projectId,
-      archivedOnly,
-      search,
-      publicationStates,
-      pinnedConversationIds,
-      priorityConversationIds
-    ),
+    queryKey: isNoProjectGroup
+      ? agentSidebarConversationKeys.noProjectGroup(
+          archivedOnly,
+          search,
+          publicationStates,
+          pinnedConversationIds,
+          priorityConversationIds,
+        )
+      : agentSidebarConversationKeys.projectGroup(
+          projectId,
+          archivedOnly,
+          search,
+          publicationStates,
+          pinnedConversationIds,
+          priorityConversationIds,
+        ),
   });
 }
 

@@ -70,3 +70,23 @@ fn rejects_provider_native_reserved_server_collision_before_launch() {
     assert!(error.contains("reserved RalphX server ID"));
     assert!(!error.contains("user-owned"));
 }
+
+#[test]
+fn rejects_codex_provider_native_reserved_server_collision_before_launch() {
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "[mcp_servers.ralphx]\ncommand = \"user-owned\"\n",
+    )
+    .unwrap();
+
+    let error = ensure_no_reserved_native_mcp_collision_at(
+        AgentHarnessKind::Codex,
+        codex_home.path(),
+        None,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("reserved RalphX server ID"));
+    assert!(!error.contains("user-owned"));
+}

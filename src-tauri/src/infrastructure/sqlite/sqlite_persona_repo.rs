@@ -5,12 +5,15 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{
+    ArtifactId, Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+};
 use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
-pub(crate) const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
+pub(crate) const PERSONA_COLUMNS: &str = "id, artifact_id, project_id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
+const ACTIVE_SLUG_SCOPED_INDEX: &str = "personas_active_slug_scoped";
 
 pub struct SqlitePersonaRepository {
     db: DbConnection,
@@ -36,21 +39,12 @@ pub(crate) fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona>
         .parse::<PersonaStatus>()
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                5,
+                6,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?;
     let created_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                12,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?
-        .with_timezone(&Utc);
-    let updated_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 13,
@@ -59,9 +53,24 @@ pub(crate) fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona>
             )
         })?
         .with_timezone(&Utc);
+    let updated_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                14,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .with_timezone(&Utc);
 
     Ok(Persona {
         id: PersonaId::from(row.get::<_, String>("id")?),
+        artifact_id: row
+            .get::<_, Option<String>>("artifact_id")?
+            .map(ArtifactId::from_string),
+        project_id: row
+            .get::<_, Option<String>>("project_id")?
+            .map(ProjectId::from_string),
         slug: row.get("slug")?,
         name: row.get("name")?,
         description: row.get("description")?,
@@ -84,7 +93,7 @@ pub(crate) fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppErro
     match error {
         AppError::Database(message)
             if message.contains("UNIQUE constraint failed: personas.slug")
-                || message.contains("idx_personas_slug_live") =>
+                || message.contains(ACTIVE_SLUG_SCOPED_INDEX) =>
         {
             AppError::Validation(format!("Persona slug `{slug}` is already in use"))
         }
@@ -98,12 +107,14 @@ pub(crate) fn persona_create_sync(
 ) -> AppResult<Persona> {
     conn.execute(
         "INSERT INTO personas (
-            id, slug, name, description, content, status, version, content_hash,
+            id, artifact_id, project_id, slug, name, description, content, status, version, content_hash,
             source_session_id, source_persona_id, source_content_hash, source_json,
             created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         rusqlite::params![
             persona.id.as_str(),
+            persona.artifact_id.as_ref().map(ArtifactId::as_str),
+            persona.project_id.as_ref().map(ProjectId::as_str),
             persona.slug,
             persona.name,
             persona.description,
@@ -171,13 +182,18 @@ impl PersonaRepository for SqlitePersonaRepository {
             .await
     }
 
-    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        slug: &str,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
         let slug = slug.to_string();
+        let project_id = project_id.map(ToString::to_string);
         self.db
             .query_optional(move |conn| {
                 conn.query_row(
-                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 AND status = 'active' LIMIT 1"),
-                    [slug],
+                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 AND project_id IS ?2 AND status = 'active' LIMIT 1"),
+                    rusqlite::params![slug, project_id],
                     persona_from_row,
                 )
             })
@@ -200,15 +216,24 @@ impl PersonaRepository for SqlitePersonaRepository {
             .await
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn list(&self, scope: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
         self.db
-            .run(|conn| {
+            .run(move |conn| {
+                let (predicate, project_id) = match scope {
+                    PersonaScopeFilter::All => ("1 = 1", None),
+                    PersonaScopeFilter::GlobalOnly => ("project_id IS NULL", None),
+                    PersonaScopeFilter::GlobalAndProject(project_id) => {
+                        ("project_id IS NULL OR project_id = ?1", Some(project_id.to_string()))
+                    }
+                };
                 let mut statement = conn.prepare(&format!(
-                    "SELECT {PERSONA_COLUMNS} FROM personas ORDER BY created_at DESC"
+                    "SELECT {PERSONA_COLUMNS} FROM personas WHERE {predicate} ORDER BY created_at DESC"
                 ))?;
-                let rows = statement
-                    .query_map([], persona_from_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
+                let rows = if let Some(project_id) = project_id {
+                    statement.query_map([project_id], persona_from_row)?.collect::<Result<Vec<_>, _>>()?
+                } else {
+                    statement.query_map([], persona_from_row)?.collect::<Result<Vec<_>, _>>()?
+                };
                 Ok(rows)
             })
             .await
@@ -225,28 +250,6 @@ impl PersonaRepository for SqlitePersonaRepository {
                     .query_map([status], persona_from_row)?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
-            })
-            .await
-    }
-
-    async fn update_content(
-        &self,
-        id: &PersonaId,
-        content: &str,
-        content_hash: &str,
-    ) -> AppResult<()> {
-        let id = id.as_str().to_string();
-        let content = content.to_string();
-        let content_hash = content_hash.to_string();
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE personas
-                     SET content = ?1, content_hash = ?2, version = version + 1, updated_at = ?3
-                     WHERE id = ?4",
-                    rusqlite::params![content, content_hash, Utc::now().to_rfc3339(), id],
-                )?;
-                Ok(())
             })
             .await
     }

@@ -211,6 +211,7 @@ function renderActions(
     setOptimisticConversationsById: conversations.setter,
     setOptimisticWorkspacesByConversationId: workspaces.setter,
     setFocusedProject: vi.fn(),
+    setStartConversationDraft: vi.fn(),
     setOptimisticSelectedConversationId: selectedConversationId.setter,
     setRuntimeForConversation: vi.fn(),
     ...overrides,
@@ -229,6 +230,49 @@ function renderActions(
 describe("useAgentConversationActions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("opens a project-locked Persona Builder for a project conversation", () => {
+    const { args, result } = renderActions();
+    const conversation = createConversation({
+      contextType: "project",
+      contextId: "project-1",
+    });
+
+    act(() => {
+      result.current.handleStartPersonaBuilder({
+        ...conversation,
+        projectId: "project-1",
+        ideationSessionId: null,
+      });
+    });
+
+    expect(args.setStartConversationDraft).toHaveBeenCalledWith({
+      projectId: "project-1",
+      projectLocked: true,
+      mode: "persona_builder",
+    });
+    expect(args.setFocusedProject).toHaveBeenCalledWith("project-1");
+    expect(args.clearAgentConversationSelection).toHaveBeenCalledOnce();
+  });
+
+  it("does not open Persona Builder from a standalone conversation", () => {
+    const { args, result } = renderActions();
+    const conversation = createConversation({
+      contextType: "standalone",
+      contextId: "standalone-1",
+    });
+
+    act(() => {
+      result.current.handleStartPersonaBuilder({
+        ...conversation,
+        projectId: null,
+        ideationSessionId: null,
+      });
+    });
+
+    expect(args.setStartConversationDraft).not.toHaveBeenCalled();
+    expect(args.clearAgentConversationSelection).not.toHaveBeenCalled();
   });
 
   it("hydrates local state, workspace cache, selection, and runtime after forking", async () => {

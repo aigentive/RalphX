@@ -1,355 +1,135 @@
-import { useState } from "react";
-import { ArrowLeft, Info, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Info } from "lucide-react";
 
-import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useApprovePersona,
   useArchivePersona,
-  useCreatePersonaDraft,
   useDeletePersonaDraft,
   usePersonas,
-  useUpdatePersona,
 } from "@/hooks/usePersonas";
 import { useConfirmation } from "@/hooks/useConfirmation";
-import {
-  isPersonaFeatureDisabledError,
-  isPersonaUnavailableError,
-} from "@/lib/personaErrors";
+import { formatPersonaErrorMessage } from "@/lib/personaErrors";
 import { useProjectStore } from "@/stores/projectStore";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { Persona } from "@/types/persona";
-import { splitPersonaBody } from "@/lib/personaContent";
 
-type EditorState =
-  | { kind: "create" }
-  | { kind: "edit"; persona: Persona };
+import { PersonaEditor, type PersonaEditorState } from "./PersonaEditor";
+import { PersonaBuilderScopeDialog } from "./PersonaBuilderScopeDialog";
+import { PersonaRow } from "./PersonaManagementRows";
 
 export interface PersonasManagementSectionProps {
-  /** Controls whether the builder entry is available in the management UI. */
-  showBuilderEntry?: boolean;
-}
-
-function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (isPersonaUnavailableError(message)) {
-    return "This persona is no longer available.";
-  }
-  if (isPersonaFeatureDisabledError(message)) {
-    return "Personas are disabled.";
-  }
-  return message || "Unable to save persona.";
-}
-
-function relativeUpdatedAt(updatedAt: string): string {
-  const elapsedMs = Date.now() - new Date(updatedAt).getTime();
-  const hours = Math.round(elapsedMs / (60 * 60 * 1000));
-  if (hours < 1) return "Updated just now";
-  if (hours < 24) return `Updated ${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return days === 1 ? "Updated yesterday" : `Updated ${days}d ago`;
-}
-
-function StatusChip({ status }: { status: Persona["status"] }) {
-  const active = status === "active";
-  return (
-    <span
-      className={
-        active
-          ? "rounded-sm border border-[var(--accent-border)] bg-[var(--accent-muted)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--accent-primary)]"
-          : "rounded-sm border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--text-muted)]"
-      }
-    >
-      {status.toUpperCase()}
-    </span>
-  );
-}
-
-function kebabCasePersonaName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[\s_]+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function PersonaEditor({
-  editor,
-  onBack,
-}: {
-  editor: EditorState;
-  onBack: () => void;
-}) {
-  const editingDraft = editor.kind === "edit" && editor.persona.status === "draft";
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState(editor.kind === "create" ? "" : editor.persona.slug);
-  const [slugTouched, setSlugTouched] = useState(false);
-  const [description, setDescription] = useState(
-    editor.kind === "create" ? "" : editor.persona.description,
-  );
-  const [instructions, setInstructions] = useState(
-    editor.kind === "create" ? "" : splitPersonaBody(editor.persona.content),
-  );
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const createDraft = useCreatePersonaDraft();
-  const updatePersona = useUpdatePersona();
-  const isSaving = createDraft.isPending || updatePersona.isPending;
-  const pastedPersonaDocument = instructions.startsWith("---");
-  const requiredFieldsMissing =
-    !slug.trim() ||
-    !instructions.trim() ||
-    (!pastedPersonaDocument && !description.trim());
-
-  const handleSave = async () => {
-    setSaveError(null);
-    try {
-      if (editor.kind === "create") {
-        await createDraft.mutateAsync(
-          pastedPersonaDocument
-            ? { slug, content: instructions }
-            : { slug, description, body: instructions },
-        );
-      } else {
-        await updatePersona.mutateAsync(
-          pastedPersonaDocument
-            ? { id: editor.persona.id, content: instructions }
-            : { id: editor.persona.id, description, body: instructions },
-        );
-      }
-      onBack();
-    } catch (error) {
-      setSaveError(errorMessage(error));
-    }
-  };
-
-  return (
-    <section aria-label="Persona editor" className="space-y-5">
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Back to personas"
-          onClick={onBack}
-          className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
-          <ArrowLeft aria-hidden="true" />
-        </Button>
-        <div>
-          <h3 className="text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
-            {editor.kind === "create" ? "New persona" : `Edit persona: ${editor.persona.name}`}
-          </h3>
-          {editor.kind === "edit" && (
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Name/slug: {editor.persona.slug} <span>(immutable once created)</span>
-            </p>
-          )}
-        </div>
-      </div>
-
-      {editor.kind === "create" && (
-        <>
-          <div className="space-y-1.5">
-            <Label htmlFor="persona-name" className="text-xs text-[var(--text-secondary)]">
-              Name
-            </Label>
-            <Input
-              id="persona-name"
-              value={name}
-              onChange={(event) => {
-                const nextName = event.target.value;
-                setName(nextName);
-                if (!slugTouched) setSlug(kebabCasePersonaName(nextName));
-              }}
-              placeholder="Design voice"
-              disabled={isSaving}
-              className="settings-input max-w-md"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="persona-slug" className="text-xs text-[var(--text-secondary)]">
-              Slug
-            </Label>
-            <Input
-              id="persona-slug"
-              value={slug}
-              onChange={(event) => {
-                setSlugTouched(true);
-                setSlug(event.target.value);
-              }}
-              placeholder="design-voice"
-              disabled={isSaving}
-              className="settings-input max-w-md"
-            />
-            <p className="text-xs text-[var(--text-muted)]">
-              Generated from Name until you edit it directly.
-            </p>
-          </div>
-        </>
-      )}
-
-      {editingDraft && (
-        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-          Drafts are iterated with the builder agent
-        </div>
-      )}
-
-      <div className="space-y-1.5">
-        <Label htmlFor="persona-description" className="text-xs text-[var(--text-secondary)]">
-          Description
-        </Label>
-        <Input
-          id="persona-description"
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          placeholder="Opinionated product-design voice"
-          disabled={editingDraft || isSaving}
-          className="settings-input max-w-md"
-        />
-      </div>
-
-      <div className="space-y-1.5">
-        <Label htmlFor="persona-instructions" className="text-xs text-[var(--text-secondary)]">
-          Instructions
-        </Label>
-        <textarea
-          id="persona-instructions"
-          value={instructions}
-          onChange={(event) => setInstructions(event.target.value)}
-          disabled={editingDraft || isSaving}
-          placeholder="Plain Markdown. How should the agent behave, what tone should it use, and what should it avoid? No YAML needed."
-          className="min-h-64 w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
-        />
-      </div>
-
-      {saveError && (
-        <div
-          role="alert"
-          className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]"
-        >
-          Save failed: {saveError}
-        </div>
-      )}
-
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onBack} disabled={isSaving}>
-          Cancel
-        </Button>
-        {!editingDraft && (
-          <Button
-            type="button"
-            onClick={() => void handleSave()}
-            disabled={isSaving || requiredFieldsMissing}
-            className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
-          >
-            Save
-          </Button>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function PersonaRow({
-  persona,
-  onEdit,
-  onActivate,
-  onRemove,
-}: {
-  persona: Persona;
-  onEdit: (persona: Persona) => void;
-  onActivate: (persona: Persona) => void;
-  onRemove: (persona: Persona) => void;
-}) {
-  const active = persona.status === "active";
-  const actionLabel = active ? "Archive" : "Delete";
-  return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-      <span
-        aria-label={active ? "Active persona" : "Draft persona"}
-        className={
-          active
-            ? "h-2.5 w-2.5 rounded-full bg-[var(--accent-primary)]"
-            : "h-2.5 w-2.5 rounded-full border border-[var(--text-muted)]"
-        }
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium text-[var(--text-primary)]">{persona.name}</span>
-          <code className="text-xs text-[var(--text-muted)]">{persona.slug}</code>
-          <StatusChip status={persona.status} />
-          <span className="text-xs text-[var(--text-muted)]">v{persona.version}</span>
-        </div>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">{relativeUpdatedAt(persona.updatedAt)}</p>
-      </div>
-      <div className="flex items-center gap-1">
-        {!active && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={`Activate ${persona.name}`}
-            onClick={() => onActivate(persona)}
-            className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-          >
-            Activate
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label={`Edit ${persona.name}`}
-          onClick={() => onEdit(persona)}
-          className="text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
-          Edit
-        </Button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`${actionLabel} ${persona.name}`}
-              onClick={() => onRemove(persona)}
-              className="text-[var(--text-muted)] hover:bg-[var(--status-error-muted)] hover:text-[var(--status-error)]"
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{actionLabel} {persona.name}</TooltipContent>
-        </Tooltip>
-      </div>
-    </li>
-  );
+  standaloneConversations?: boolean;
 }
 
 export function PersonasManagementSection({
-  showBuilderEntry = true,
+  standaloneConversations = true,
 }: PersonasManagementSectionProps) {
-  const [editor, setEditor] = useState<EditorState | null>(null);
-  const [showBuilder, setShowBuilder] = useState(false);
-  const [builderEntryError, setBuilderEntryError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<PersonaEditorState | null>(null);
+  const [scopeFilter, setScopeFilter] = useState("all");
+  const [showScopeChooser, setShowScopeChooser] = useState(false);
+  const handledDeepLinkKeyRef = useRef<string | null>(null);
   const activeProjectId = useProjectStore((state) => state.activeProjectId);
-  const { data: personas = [], error, isLoading } = usePersonas();
+  const projectsById = useProjectStore((state) => state.projects);
+  const projects = useMemo(
+    () =>
+      Object.values(projectsById)
+        .map(({ id, name }) => ({ id, name }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [projectsById],
+  );
+  const projectNames = useMemo(
+    () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
+    [projects],
+  );
+  const {
+    data: personas = [],
+    error,
+    isFetching,
+    isLoading,
+  } = usePersonas({ type: "all" });
   const approvePersona = useApprovePersona();
   const archivePersona = useArchivePersona();
   const deleteDraft = useDeletePersonaDraft();
+  const setStartConversationDraft = useAgentSessionStore((state) => state.setStartConversationDraft);
+  const setFocusedProject = useAgentSessionStore((state) => state.setFocusedProject);
+  const clearSelection = useAgentSessionStore((state) => state.clearSelection);
+  const closeModal = useUiStore((state) => state.closeModal);
+  const modalContext = useUiStore((state) => state.modalContext);
+  const setCurrentView = useUiStore((state) => state.setCurrentView);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
-  const visiblePersonas = personas.filter((persona) => persona.status !== "archived");
+  const visiblePersonas = personas.filter(
+    (persona) =>
+      persona.status !== "archived" &&
+      (scopeFilter === "all" ||
+        (scopeFilter === "global"
+          ? persona.projectId === null
+          : persona.projectId === scopeFilter)),
+  );
 
-  if (showBuilder && activeProjectId) {
-    return (
-      <PersonaBuilderView
-        projectId={activeProjectId}
-        onBack={() => setShowBuilder(false)}
-      />
+  useEffect(() => {
+    const requestedPersonaId =
+      modalContext?.["section"] === "personas" &&
+      typeof modalContext["personaId"] === "string"
+        ? modalContext["personaId"]
+        : null;
+    const requestedConversationId =
+      typeof modalContext?.["conversationId"] === "string"
+        ? modalContext["conversationId"]
+        : null;
+    if (!requestedPersonaId) {
+      handledDeepLinkKeyRef.current = null;
+      return;
+    }
+    const requestedDeepLinkKey = `${requestedPersonaId}:${requestedConversationId ?? ""}`;
+    if (
+      error ||
+      isFetching ||
+      handledDeepLinkKeyRef.current === requestedDeepLinkKey
+    ) {
+      return;
+    }
+
+    handledDeepLinkKeyRef.current = requestedDeepLinkKey;
+    const requestedPersona = personas.find(
+      (persona) => persona.id === requestedPersonaId,
     );
-  }
+    if (
+      requestedPersona?.status === "draft" ||
+      requestedPersona?.status === "active"
+    ) {
+      setEditor({
+        kind: "edit",
+        persona: requestedPersona,
+        ...(requestedConversationId && {
+          conversationId: requestedConversationId,
+        }),
+      });
+    }
+  }, [error, isFetching, modalContext, personas]);
+
+  const openBuilderComposer = (
+    projectId: string | null,
+    sourcePersona?: Persona,
+  ) => {
+    setStartConversationDraft({
+      projectId,
+      projectLocked: true,
+      mode: "persona_builder",
+      ...(sourcePersona
+        ? {
+            sourcePersonaId: sourcePersona.id,
+            sourcePersonaName: sourcePersona.name,
+          }
+        : {}),
+    });
+    closeModal();
+    setFocusedProject(projectId ?? null);
+    clearSelection();
+    setCurrentView("agents");
+  };
 
   const handleEdit = (persona: Persona) => {
     if (persona.status === "draft") {
@@ -383,8 +163,22 @@ export function PersonasManagementSection({
   };
 
   if (editor) {
-    return <PersonaEditor editor={editor} onBack={() => setEditor(null)} />;
+    return (
+      <PersonaEditor
+        editor={editor}
+        projects={projects}
+        projectNames={projectNames}
+        onBack={() => setEditor(null)}
+      />
+    );
   }
+
+  const emptyCaption =
+    scopeFilter === "all"
+      ? "No personas yet. Create a draft to get started."
+      : scopeFilter === "global"
+        ? "No global personas."
+        : `No personas for ${projectNames[scopeFilter] ?? scopeFilter}.`;
 
   return (
     <section aria-labelledby="personas-heading" className="space-y-4">
@@ -398,23 +192,16 @@ export function PersonasManagementSection({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {showBuilderEntry && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (!activeProjectId) {
-                  setBuilderEntryError("Select a project before building a persona.");
-                  return;
-                }
-                setBuilderEntryError(null);
-                setShowBuilder(true);
-              }}
-            >
-              Build with agent
-            </Button>
-          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setShowScopeChooser(true);
+            }}
+          >
+            Build with Agent
+          </Button>
           <Button
             type="button"
             size="sm"
@@ -427,15 +214,36 @@ export function PersonasManagementSection({
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <Label htmlFor="persona-scope-filter" className="text-xs text-[var(--text-secondary)]">
+          Scope:
+        </Label>
+        <select
+          id="persona-scope-filter"
+          aria-label="Scope filter"
+          value={scopeFilter}
+          onChange={(event) => setScopeFilter(event.target.value)}
+          className="settings-input h-8 rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 text-xs text-[var(--text-primary)]"
+        >
+          <option value="all">All</option>
+          <option value="global">Global</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {error ? (
         <div role="alert" className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]">
-          {errorMessage(error)}
+          {formatPersonaErrorMessage(error)}
         </div>
       ) : isLoading ? (
         <div className="h-28 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]" aria-label="Loading personas" />
       ) : visiblePersonas.length === 0 ? (
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-6 text-sm text-[var(--text-muted)]">
-          No personas yet. Create a draft to get started.
+          {emptyCaption}
         </div>
       ) : (
         <ul className="divide-y divide-[var(--border-subtle)] rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
@@ -443,21 +251,20 @@ export function PersonasManagementSection({
             <PersonaRow
               key={persona.id}
               persona={persona}
+              projectNames={projectNames}
               onEdit={handleEdit}
               onActivate={(selected) => void approvePersona.mutateAsync(selected.id)}
               onRemove={(selected) => void handleRemove(selected)}
+              onRefine={(selected) => openBuilderComposer(selected.projectId, selected)}
+              {...(persona.projectId === null && !standaloneConversations
+                ? {
+                    refineDisabledReason:
+                      "Global persona refinement requires standalone conversations",
+                  }
+                : {})}
             />
           ))}
         </ul>
-      )}
-
-      {builderEntryError && (
-        <div
-          role="alert"
-          className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]"
-        >
-          {builderEntryError}
-        </div>
       )}
 
       <div className="flex gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-3 text-xs leading-relaxed text-[var(--text-muted)]">
@@ -467,6 +274,14 @@ export function PersonasManagementSection({
         </p>
       </div>
       <ConfirmationDialog {...confirmationDialogProps} />
+      <PersonaBuilderScopeDialog
+        open={showScopeChooser}
+        projects={projects}
+        initialProjectId={activeProjectId ?? (!standaloneConversations ? projects[0]?.id ?? null : null)}
+        standaloneConversations={standaloneConversations}
+        onClose={() => setShowScopeChooser(false)}
+        onStart={openBuilderComposer}
+      />
     </section>
   );
 }

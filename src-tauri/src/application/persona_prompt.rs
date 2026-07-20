@@ -15,6 +15,7 @@ pub struct ResolvedPersona {
     pub version: i64,
     pub content_hash: String,
     pub block: String,
+    pub skipped_reason: Option<&'static str>,
 }
 
 /// A body-independent reason why an existing persona cannot be rendered.
@@ -54,5 +55,6 @@ pub fn render_persona_block(persona: &Persona) -> Result<ResolvedPersona, Person
         version: persona.version,
         content_hash: persona.content_hash.clone(),
         block,
+        skipped_reason: None,
     })
 }

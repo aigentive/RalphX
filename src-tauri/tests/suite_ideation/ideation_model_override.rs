@@ -426,6 +426,8 @@ async fn test_verification_turn_uses_active_ideation_subagent() {
         ChatContextType::Ideation,
         session_id.as_str(),
         CoordinationMode::Solo,
+        "ideation-model-override-conversation",
+        None,
         "verify plan",
         None,
         None,

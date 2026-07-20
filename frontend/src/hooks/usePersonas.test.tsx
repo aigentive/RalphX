@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { personaArtifactKeys } from "./personaArtifactQueries";
 import { chatKeys } from "./useChat";
 import {
   fetchPersonas,
   fetchPersona,
-  ingestPersonaContext,
   personaKeys,
   useApprovePersona,
   useArchivePersona,
@@ -15,6 +15,7 @@ import {
   useDeletePersonaDraft,
   useSwitchConversationPersona,
   useUpdatePersona,
+  useUpdatePersonaDraft,
 } from "./usePersonas";
 
 const personaResponse = {
@@ -25,6 +26,7 @@ const personaResponse = {
   content: "---\nname: focused-reviewer\n---",
   status: "draft",
   version: 1,
+  project_id: null,
   content_hash: "hash-1",
   source_session_id: null,
   created_at: "2026-07-12T10:00:00Z",
@@ -52,11 +54,6 @@ describe("personaKeys", () => {
       "detail",
       "persona-1",
     ]);
-    expect(personaKeys.ingestManifest("conversation-1")).toEqual([
-      "personas",
-      "ingest-manifest",
-      "conversation-1",
-    ]);
   });
 });
 
@@ -67,10 +64,28 @@ describe("persona fetchers", () => {
     await expect(fetchPersonas()).resolves.toEqual([
       expect.objectContaining({
         contentHash: "hash-1",
+        projectId: null,
         sourceSessionId: null,
       }),
     ]);
     expect(invoke).toHaveBeenCalledWith("list_personas", { input: {} });
+  });
+
+  it.each([
+    ["all", { type: "all" }],
+    ["global only", { type: "globalOnly" }],
+    [
+      "global and project",
+      { type: "globalAndProject", projectId: "project-1" },
+    ],
+  ] as const)("passes the exact %s scope DTO to list_personas", async (_label, scope) => {
+    vi.mocked(invoke).mockResolvedValue([personaResponse]);
+
+    await fetchPersonas(scope);
+
+    expect(invoke).toHaveBeenCalledWith("list_personas", {
+      input: { scope },
+    });
   });
 
   it("wraps get_persona input and parses its response", async () => {
@@ -84,26 +99,6 @@ describe("persona fetchers", () => {
     });
   });
 
-  it("uses the batched picked-paths ingest contract", async () => {
-    vi.mocked(invoke).mockResolvedValue({
-      copied: [{ path: "notes.md" }],
-      skipped: [],
-      rejected: [],
-    });
-
-    await expect(
-      ingestPersonaContext({
-        conversationId: "conversation-1",
-        pickedPaths: ["/picked/one.md", "/picked/context"],
-      }),
-    ).resolves.toHaveProperty("copied.0.path", "notes.md");
-    expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
-      input: {
-        conversationId: "conversation-1",
-        pickedPaths: ["/picked/one.md", "/picked/context"],
-      },
-    });
-  });
 });
 
 describe("persona mutations", () => {
@@ -127,6 +122,24 @@ describe("persona mutations", () => {
       input: { id: "persona-1", content: "updated content" },
       command: "update_persona",
       args: { input: { id: "persona-1", content: "updated content" } },
+      response: personaResponse,
+    },
+    {
+      name: "update draft",
+      useHook: useUpdatePersonaDraft,
+      input: {
+        id: "persona-1",
+        content: "updated draft content",
+        expectedContentHash: "hash-1",
+      },
+      command: "update_persona_draft",
+      args: {
+        input: {
+          id: "persona-1",
+          content: "updated draft content",
+          expectedContentHash: "hash-1",
+        },
+      },
       response: personaResponse,
     },
     {
@@ -176,6 +189,48 @@ describe("persona mutations", () => {
       );
     });
   }
+
+  it.each([
+    [
+      "active",
+      useUpdatePersona,
+      { id: "persona-1", content: "updated content" },
+    ],
+    [
+      "draft",
+      useUpdatePersonaDraft,
+      {
+        id: "persona-1",
+        content: "updated draft content",
+        expectedContentHash: "hash-1",
+      },
+    ],
+  ] as const)(
+    "invalidates the current artifact after a successful %s Persona update",
+    async (_kind, useHook, input) => {
+      const queryClient = createQueryClient();
+      const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+      vi.mocked(invoke).mockResolvedValue({
+        ...personaResponse,
+        artifact_id: "artifact-1",
+      });
+      const { result } = renderHook(() => useHook(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await act(async () => {
+        await result.current.mutateAsync(input);
+      });
+
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: personaArtifactKeys.detail("artifact-1"),
+      });
+      expect(queryClient.getQueryData(personaKeys.detail("persona-1"))).toMatchObject({
+        id: "persona-1",
+        artifactId: "artifact-1",
+      });
+    },
+  );
 });
 
 describe("useSwitchConversationPersona", () => {
