@@ -2046,7 +2046,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
-        (workspace.mode, target.kind),
+        (workspace.mode, &target.kind),
         (
             AgentConversationWorkspaceMode::Edit,
             AgentWorkspacePrAutofixTargetKind::DirectWorkspace
