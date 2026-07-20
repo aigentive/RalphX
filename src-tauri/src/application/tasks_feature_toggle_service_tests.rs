@@ -14,7 +14,7 @@ use crate::domain::entities::{
 use crate::domain::ideation::TasksFeatureState;
 use crate::domain::repositories::{
     BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
-    ProjectRepository, TaskRepository,
+    ProjectRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryBranchUpdateRepository;
