@@ -1262,9 +1262,10 @@ impl AppState {
 
         let state = Self {
             task_repo: Arc::clone(&task_repo),
-            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            branch_update_repo: Arc::new(
+                SqliteBranchUpdateRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
             task_step_repo: Arc::new(
                 SqliteTaskStepRepository::from_shared(Arc::clone(&shared_conn))
                     .with_tasks_feature_policy(),
