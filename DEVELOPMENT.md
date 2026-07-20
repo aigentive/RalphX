@@ -398,11 +398,10 @@ rustup install stable
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Register the RalphX MCP server with Claude:
-
-```bash
-claude mcp add ralphx node plugins/app/ralphx-mcp-server/build/index.js
-```
+RalphX injects its required Claude MCP server per launch. Do not register a
+user-scoped server named `ralphx` or `ralphx_internal`; those IDs are reserved
+for RalphX transports. Add unrelated third-party servers through the provider's
+native MCP configuration.
 
 Install MCP server dependencies:
 

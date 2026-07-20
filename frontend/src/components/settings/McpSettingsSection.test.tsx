@@ -33,6 +33,7 @@ const testState = vi.hoisted(() => ({
   updateServer: vi.fn().mockResolvedValue(undefined),
   updateTool: vi.fn().mockResolvedValue(undefined),
   refreshProvider: vi.fn().mockResolvedValue(undefined),
+  retryLegacyRepair: vi.fn().mockResolvedValue(undefined),
   hookCalls: [] as Array<[string | null, string | null, boolean]>,
   activeProject: null as { id: string; name: string } | null,
   modalContext: undefined as Record<string, unknown> | undefined,
@@ -68,6 +69,7 @@ vi.mock("@/hooks/useMcpPolicy", () => ({
       updateServer: testState.updateServer,
       updateTool: testState.updateTool,
       refreshProvider: testState.refreshProvider,
+      retryLegacyRepair: testState.retryLegacyRepair,
     };
   },
 }));
@@ -119,6 +121,8 @@ function server(providerName: string, serverId: string, locked = false) {
     locked,
     lockedReason: locked ? "Required by RalphX" : null,
     diagnostic: null,
+    conflictKind: null,
+    repairStatus: null,
   };
 }
 
@@ -295,5 +299,45 @@ describe("McpSettingsSection", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("RalphX external bridge")).toHaveFocus(),
     );
+  });
+
+  it("deep-links to a reserved conflict and retries only proven legacy cleanup", async () => {
+    const user = userEvent.setup();
+    testState.modalContext = {
+      section: "mcp",
+      provider: "claude",
+      serverId: "ralphx",
+      scope: "user",
+    };
+    testState.providers = [provider("claude", true, true)];
+    testState.defaultProvider = "claude";
+    testState.catalog = {
+      eligibleProviders: ["claude"],
+      eligibleDefaultProvider: "claude",
+      providerDiagnostics: {},
+      policyDiagnostics: [],
+      probeStale: false,
+      servers: [
+        {
+          ...server("claude", "ralphx", true),
+          effectiveEnabled: false,
+          lockedReason: "Native provider configuration already defines reserved server ID 'ralphx'",
+          diagnostic: "RalphX can safely remove its obsolete user registration.",
+          conflictKind: "legacy_registration",
+          repairStatus: "repairable",
+        },
+      ],
+    };
+
+    render(<McpSettingsSection />);
+
+    expect(await screen.findByText("Reserved ID conflict")).toBeInTheDocument();
+    expect(document.querySelector('[data-mcp-server-id="ralphx"]')).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Retry safe cleanup" }));
+    expect(testState.retryLegacyRepair).toHaveBeenCalledWith({
+      provider: "claude",
+      serverId: "ralphx",
+      scope: "user",
+    });
   });
 });

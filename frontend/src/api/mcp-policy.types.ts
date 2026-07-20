@@ -5,11 +5,15 @@ import type {
   McpOverrideStateSchema,
   McpPolicySourceSchema,
   NativeMcpStateSchema,
+  McpConflictKindSchema,
+  McpRepairStatusSchema,
 } from "./mcp-policy.schemas";
 
 export type McpOverrideState = z.infer<typeof McpOverrideStateSchema>;
 export type McpPolicySource = z.infer<typeof McpPolicySourceSchema>;
 export type NativeMcpState = z.infer<typeof NativeMcpStateSchema>;
+export type McpConflictKind = z.infer<typeof McpConflictKindSchema>;
+export type McpRepairStatus = z.infer<typeof McpRepairStatusSchema>;
 
 export interface McpTool {
   toolName: string;
@@ -32,6 +36,8 @@ export interface McpServer {
   locked: boolean;
   lockedReason: string | null;
   diagnostic: string | null;
+  conflictKind: McpConflictKind | null;
+  repairStatus: McpRepairStatus | null;
 }
 
 export interface McpCatalog {
@@ -57,4 +63,10 @@ export interface McpServerOverrideInput extends McpScopeInput {
 
 export interface McpToolOverrideInput extends McpServerOverrideInput {
   toolName: string;
+}
+
+export interface RetryLegacyMcpRepairInput {
+  provider: "claude";
+  serverId: "ralphx";
+  scope: "user";
 }
