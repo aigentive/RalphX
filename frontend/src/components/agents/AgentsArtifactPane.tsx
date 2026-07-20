@@ -14,6 +14,7 @@ import {
   Sparkles,
   Square,
   Ticket,
+  UserRound,
   Workflow,
   X,
 } from "lucide-react";
@@ -128,6 +129,7 @@ import {
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
+import { isPersonaArtifactConversation } from "./personaArtifactTab";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -351,6 +353,15 @@ const LazyAgentsAutomationPanel = lazy(() =>
     default: module.AgentsAutomationPanel,
   })),
 );
+const LazyPersonaArtifactPanel = lazy(() =>
+  import("@/components/agents/PersonaArtifactPanel").then((module) => ({
+    default: module.PersonaArtifactPanel,
+  })),
+);
+
+function PersonaArtifactSkeletonFallback() {
+  return <ArtifactLoadingState title="Loading persona..." />;
+}
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -372,6 +383,12 @@ const AUTOMATION_TAB = {
   id: "automation" as const,
   label: "Automation",
   icon: Workflow,
+};
+
+const PERSONA_TAB = {
+  id: "persona" as const,
+  label: "Persona",
+  icon: UserRound,
 };
 
 const PUBLISH_TAB = {
@@ -413,6 +430,7 @@ const PR_TAB = {
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
+  PERSONA_TAB,
   PR_TAB,
   JIRA_TAB,
   LINEAR_TAB,
@@ -428,6 +446,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
+  persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
   jira: "Appears when Jira is connected and a ticket is attached.",
   linear: "Appears when Linear is connected and a ticket is attached.",
@@ -458,6 +477,7 @@ function baseTabDefinition(
     ...ARTIFACT_TABS,
     REVIEW_TAB,
     AUTOMATION_TAB,
+    PERSONA_TAB,
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
@@ -1219,11 +1239,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
+  const personaArtifactOnly = isPersonaArtifactConversation(conversation);
   const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
-      isAutomationRunConversation
-        ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
-        : [
+      personaArtifactOnly
+        ? [visibleTab(PERSONA_TAB)]
+        : isAutomationRunConversation
+          ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
+          : [
             ...ARTIFACT_TABS.filter((tab) =>
               availableArtifactTabIds.includes(tab.id),
             ).map(visibleTab),
@@ -1243,6 +1266,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
+      personaArtifactOnly,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,
@@ -1252,8 +1276,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const shownTabs = useMemo(
-    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
-    [availableTabs, hiddenTabs],
+    () =>
+      personaArtifactOnly
+        ? availableTabs
+        : availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs, personaArtifactOnly],
   );
   const shownEnabledTabs = useMemo(
     () => shownTabs.filter((tab) => tab.enabled),
@@ -1616,6 +1643,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const artifactSelectionEnabled = Boolean(
     conversationId &&
+    effectiveActiveTab !== "persona" &&
     (!isAutomationRunConversation ||
       (focusedAutomationRun &&
         !isAutomationRunComposerReadOnly(focusedAutomationRun))),
@@ -1743,6 +1771,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     </Tooltip>
                   );
                 }
+                if (personaArtifactOnly) {
+                  return tabButton;
+                }
                 return (
                   <ContextMenu key={id}>
                     <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
@@ -1767,7 +1798,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           </div>
 
           <div className="ml-auto flex items-center gap-1">
-            {availableTabs.length > 0 ? (
+            {availableTabs.length > 0 && !personaArtifactOnly ? (
               <AgentsArtifactTabCustomizer
                 tabs={customizerTabs}
                 hiddenTabs={hiddenTabs}
@@ -1863,6 +1894,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         </div>
 
         <div
+          key={
+            personaArtifactOnly
+              ? (conversationId ?? "no-conversation")
+              : "artifact-content"
+          }
           className="flex-1 min-h-0 overflow-y-auto"
           data-testid={
             allAvailableTabsHidden
@@ -1904,6 +1940,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 activeTab={effectiveActiveTab}
                 tasksEnabled={tasksEnabled}
                 tasksSurfaceCapabilities={tasksSurfaceCapabilities}
+                conversation={conversation}
                 workspace={scopedWorkspace}
                 conversationId={conversationId}
                 activeWorkspaceFreshness={activeWorkspaceFreshness}
@@ -2038,6 +2075,7 @@ type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   tasksEnabled: boolean;
   tasksSurfaceCapabilities: TasksSurfaceCapabilities;
+  conversation: AgentConversation | null;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -2122,6 +2160,7 @@ function ArtifactContent({
   activeTab,
   tasksEnabled,
   tasksSurfaceCapabilities,
+  conversation,
   workspace,
   conversationId,
   activeWorkspaceFreshness,
@@ -2182,6 +2221,21 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
+  if (
+    activeTab === "persona" &&
+    conversation &&
+    isPersonaArtifactConversation(conversation)
+  ) {
+    return (
+      <Suspense fallback={<PersonaArtifactSkeletonFallback />}>
+        <LazyPersonaArtifactPanel
+          key={conversation.id}
+          conversation={conversation}
+        />
+      </Suspense>
+    );
+  }
+
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense
