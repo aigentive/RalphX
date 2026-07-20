@@ -202,6 +202,9 @@ export function useAgentsViewController({
   const setVisibleAgentScope = useAgentSessionStore(
     (state) => state.setVisibleAgentScope,
   );
+  const setStartConversationDraft = useAgentSessionStore(
+    (state) => state.setStartConversationDraft,
+  );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
@@ -1249,6 +1252,7 @@ export function useAgentsViewController({
     handleSidebarCreateAgent,
     handleSidebarFocusProject,
     handleSidebarSelectConversation,
+    handleStartPersonaBuilder,
   } = useAgentConversationActions({
     activeProjectId,
     clearAgentConversationSelection,
@@ -1266,11 +1270,17 @@ export function useAgentsViewController({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
+    setStartConversationDraft,
     setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
   });
+  const handleStartActivePersonaBuilder = useCallback(() => {
+    if (activeConversation) {
+      handleStartPersonaBuilder(activeConversation);
+    }
+  }, [activeConversation, handleStartPersonaBuilder]);
   const handleSidebarForkConversation = useCallback(
     async (conversation: AgentConversation) => {
       await handleForkConversation(conversation.id);
@@ -1544,6 +1554,7 @@ export function useAgentsViewController({
       onRuntimePreferenceChange: handleStartRuntimePreferenceChange,
       onSelectArtifact: handleSelectArtifactWithChatFocus,
       onStartAgentConversation: handleStartAgentConversation,
+      onStartPersonaBuilder: handleStartActivePersonaBuilder,
       onToggleArtifacts: toggleArtifactPaneVisibility,
       onSelectChatFocus: handleSelectChatFocus,
       projects,

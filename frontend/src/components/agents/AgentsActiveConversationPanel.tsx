@@ -879,6 +879,7 @@ interface AgentsActiveConversationPanelProps {
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   onToggleArtifacts: (conversationId: string) => void;
   onSelectChatFocus: (type: AgentsChatFocusType) => void;
+  onStartPersonaBuilder: () => void;
   publishShortcutLabel: string;
   promotePublishShortcut?: boolean;
   publishingConversationId: string | null;
@@ -930,6 +931,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onSelectArtifact,
   onToggleArtifacts,
   onSelectChatFocus,
+  onStartPersonaBuilder,
   publishShortcutLabel,
   promotePublishShortcut = false,
   publishingConversationId,
@@ -2748,6 +2750,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             onUserMessageSent={onAgentUserMessageSent}
             onQuestionAnswered={handleQuestionAnswered}
             onChildSessionNavigate={onFocusIdeationSession}
+            onBuildPersona={onStartPersonaBuilder}
             hideHeaderSessionControls
             hideSessionToolbar
             surfaceBackground="transparent"

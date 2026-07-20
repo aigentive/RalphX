@@ -8,6 +8,7 @@ Agent Personas are reusable, prompt-only behavior profiles for Agent conversatio
 
 - **Manual:** Open **Settings → Personas**, choose **New**, select Global or a project, edit the draft, then approve it.
 - **Build with Agent:** In **Settings → Personas**, choose **Build with Agent**, select Global or a project, and RalphX opens the standard Agents composer with **Persona** mode locked.
+- **From a project conversation:** Open the conversation's persona chip and choose **Create persona for this project** to open a new project-locked **Persona** builder without returning to Settings.
 - **Refine with Agent:** Use a persona's Refine action to open a scope-locked Persona conversation seeded from that persona.
 
 Persona building now uses the normal Agents conversation. Add text files or folder references from the composer, describe and name the desired persona, and answer the builder's questions. The builder saves the result directly to the conversation-bound draft; a Markdown-only chat response is not a completed build. The Persona tab opens with the conversation, shows the saved draft, and provides **Approve persona**. There is no copy/paste step or separate Settings ingestion screen.

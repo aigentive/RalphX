@@ -130,6 +130,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     headerContent,
     planApprovalAction,
     onQuestionAnswered,
+    onBuildPersona,
     renderComposer,
     sendOptions,
     storeContextKeyOverride,
@@ -149,6 +150,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       response: Record<string, unknown>,
       result: Record<string, unknown>,
     ) => void | Promise<void>;
+    onBuildPersona?: () => void;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
     sendOptions?: {
       conversationId?: string;
@@ -307,6 +309,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         </>
       )}
       {headerContent}
+      {onBuildPersona && (
+        <button type="button" onClick={onBuildPersona}>
+          Create persona for this project
+        </button>
+      )}
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
@@ -1027,6 +1034,7 @@ function renderPanel(
     onSelectArtifact: vi.fn(),
     onToggleArtifacts: vi.fn(),
     onSelectChatFocus: vi.fn(),
+    onStartPersonaBuilder: vi.fn(),
     publishShortcutLabel: "P",
     publishingConversationId: null,
     selectedConversationId: "conversation-1",
@@ -1171,6 +1179,17 @@ describe("AgentsActiveConversationPanel", () => {
         name: "Switch conversation persona",
       }),
     ).toHaveTextContent("design-voice");
+  });
+
+  it("routes the active project Persona Builder action through the Chat surface", () => {
+    const onStartPersonaBuilder = vi.fn();
+    renderPanel({ onStartPersonaBuilder });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create persona for this project" }),
+    );
+
+    expect(onStartPersonaBuilder).toHaveBeenCalledOnce();
   });
 
   it("renders the mapped not-applied persona affordance in the Agents composer", async () => {

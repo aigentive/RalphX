@@ -259,6 +259,8 @@ interface IntegratedChatPanelProps {
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+  /** Opens a project-locked Persona Builder from the current project conversation. */
+  onBuildPersona?: () => void;
   renderComposer?: (
     props: IntegratedChatComposerRenderProps,
   ) => React.ReactNode;
@@ -338,6 +340,7 @@ export function IntegratedChatPanel({
   agentProcessContextIdOverride,
   sendOptions,
   onChildSessionNavigate,
+  onBuildPersona,
   renderComposer,
   onUserMessageSent,
   onQuestionAnswered,
@@ -1570,6 +1573,7 @@ export function IntegratedChatPanel({
         conversationId={effectiveConversationId}
         personaId={activeConversationMeta?.personaId}
         isAgentRunning={isAgentRunning}
+        {...(onBuildPersona ? { onBuildPersona } : {})}
         lastRunPersonaId={
           personaAttributedRun?.personaId ??
           activeConversationMeta?.lastRunPersonaId ??

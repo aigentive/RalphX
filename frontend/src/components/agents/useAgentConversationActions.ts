@@ -15,7 +15,10 @@ import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
 import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
 import type { Project } from "@/types/project";
-import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import type {
+  AgentRuntimeSelection,
+  AgentStartConversationDraft,
+} from "@/stores/agentSessionStore";
 
 import {
   getAgentConversationStoreKey,
@@ -55,6 +58,7 @@ interface UseAgentConversationActionsArgs {
     SetStateAction<Record<string, AgentConversationWorkspace>>
   >;
   setFocusedProject: (projectId: string | null) => void;
+  setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
   setRuntimeForConversation: (
     conversationId: string,
@@ -105,6 +109,7 @@ export function useAgentConversationActions({
   setOptimisticConversationsById,
   setOptimisticWorkspacesByConversationId,
   setFocusedProject,
+  setStartConversationDraft,
   setOptimisticSelectedConversationId,
   setRuntimeForConversation,
 }: UseAgentConversationActionsArgs) {
@@ -210,6 +215,21 @@ export function useAgentConversationActions({
       closeSidebarOverlay();
     }
   }, [closeSidebarOverlay, isSidebarOverlayOpen, showStarterComposer]);
+
+  const handleStartPersonaBuilder = useCallback(
+    (conversation: AgentConversation) => {
+      if (conversation.contextType !== "project" || !conversation.projectId) {
+        return;
+      }
+      setStartConversationDraft({
+        projectId: conversation.projectId,
+        projectLocked: true,
+        mode: "persona_builder",
+      });
+      showStarterComposer(conversation.projectId);
+    },
+    [setStartConversationDraft, showStarterComposer],
+  );
 
   const handleForkConversation = useCallback(
     async (conversationId: string) => {
@@ -524,6 +544,7 @@ export function useAgentConversationActions({
     handleRestoreConversation,
     handleForkConversation,
     handleSidebarCreateAgent,
+    handleStartPersonaBuilder,
     handleSidebarFocusProject,
     handleSidebarSelectConversation,
   };

@@ -73,6 +73,7 @@ function mainRegionProps(
     onRuntimePreferenceChange: vi.fn(),
     onSelectArtifact: vi.fn(),
     onStartAgentConversation: vi.fn(),
+    onStartPersonaBuilder: vi.fn(),
     onToggleArtifacts: vi.fn(),
     onSelectChatFocus: vi.fn(),
     projects: [agentProjectFixture],
