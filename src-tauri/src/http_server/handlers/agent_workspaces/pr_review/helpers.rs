@@ -1,6 +1,8 @@
 use super::*;
 
-pub(super) fn review_pr_number(workspace: &AgentConversationWorkspace) -> Option<i64> {
+pub(in crate::http_server::handlers::agent_workspaces) fn review_pr_number(
+    workspace: &AgentConversationWorkspace,
+) -> Option<i64> {
     workspace
         .source_pull_request
         .as_ref()
@@ -8,7 +10,9 @@ pub(super) fn review_pr_number(workspace: &AgentConversationWorkspace) -> Option
         .or(workspace.publication_pr_number)
 }
 
-pub(super) fn review_pr_url(workspace: &AgentConversationWorkspace) -> Option<String> {
+pub(in crate::http_server::handlers::agent_workspaces) fn review_pr_url(
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
     workspace
         .source_pull_request
         .as_ref()
@@ -16,14 +20,16 @@ pub(super) fn review_pr_url(workspace: &AgentConversationWorkspace) -> Option<St
         .or_else(|| workspace.publication_pr_url.clone())
 }
 
-pub(super) fn review_pr_head_sha(workspace: &AgentConversationWorkspace) -> Option<String> {
+pub(in crate::http_server::handlers::agent_workspaces) fn review_pr_head_sha(
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
     workspace
         .source_pull_request
         .as_ref()
         .and_then(|pull_request| pull_request.head_ref_oid.clone())
 }
 
-pub(super) async fn maybe_start_pr_review_monitor_polling(
+pub(in crate::http_server::handlers::agent_workspaces) async fn maybe_start_pr_review_monitor_polling(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspacePrReviewMonitor,
@@ -109,7 +115,7 @@ pub(super) async fn maybe_start_pr_review_monitor_polling(
     );
 }
 
-pub(super) async fn fetch_review_pr_remote_context(
+pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_review_pr_remote_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
@@ -137,7 +143,7 @@ pub(super) async fn fetch_review_pr_remote_context(
     Ok((health, review_feedback))
 }
 
-pub(super) async fn fetch_current_review_pr_head_sha(
+pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_current_review_pr_head_sha(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
@@ -168,7 +174,7 @@ pub(super) async fn fetch_current_review_pr_head_sha(
     Ok(head_sha)
 }
 
-pub(super) async fn load_or_create_pr_review_monitor(
+pub(in crate::http_server::handlers::agent_workspaces) async fn load_or_create_pr_review_monitor(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
@@ -212,7 +218,7 @@ pub(in crate::http_server::handlers::agent_workspaces) fn ensure_review_artifact
     ))
 }
 
-pub(super) fn pr_review_submission_event(
+pub(in crate::http_server::handlers::agent_workspaces) fn pr_review_submission_event(
     action_kind: AgentWorkspacePrReviewActionKind,
 ) -> PrReviewSubmissionEvent {
     match action_kind {
@@ -222,7 +228,7 @@ pub(super) fn pr_review_submission_event(
     }
 }
 
-pub(super) fn monitor_for_retryable_submission_failure(
+pub(in crate::http_server::handlers::agent_workspaces) fn monitor_for_retryable_submission_failure(
     mut monitor: AgentWorkspacePrReviewMonitor,
     error: String,
 ) -> AgentWorkspacePrReviewMonitor {
