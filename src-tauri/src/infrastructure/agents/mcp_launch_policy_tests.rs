@@ -130,6 +130,9 @@ fn rejects_codex_provider_native_reserved_server_collision_before_launch() {
     )
     .unwrap_err();
 
-    assert!(error.contains("reserved RalphX server ID"));
-    assert!(!error.contains("user-owned"));
+    let collision = error.collision().expect("typed collision");
+    assert_eq!(collision.provider, AgentHarnessKind::Codex);
+    assert_eq!(collision.server_id, "ralphx");
+    assert_eq!(collision.native_scope.as_deref(), Some("user"));
+    assert!(!error.safe_message().contains("user-owned"));
 }
