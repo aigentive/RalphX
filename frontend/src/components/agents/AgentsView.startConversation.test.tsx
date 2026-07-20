@@ -803,9 +803,12 @@ describe("AgentsView start conversation", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-capability")).toBeInTheDocument(),
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByTestId("agents-start-capability"));
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Capabilities,/ }),
+    );
     await userEvent.click(
       screen.getByTestId("agents-start-capability-rx_native_team"),
     );
@@ -1854,11 +1857,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await user.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
@@ -1906,11 +1904,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await userEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
     await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
@@ -1977,11 +1970,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await user.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await user.click(screen.getByRole("button", { name: /^Model,/ }));
@@ -2000,11 +1988,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
 
     expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
