@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tokio::time::timeout;
 
 const SLOW_GIT_COMMAND_MS: u64 = 500;
@@ -779,13 +779,9 @@ async fn acquire_git_admission(
             let background = GIT_BACKGROUND_PERMITS.acquire().await.map_err(|_| {
                 AppError::GitOperation("git background admission closed".to_string())
             })?;
-            while GIT_FOREGROUND_IN_FLIGHT.load(Ordering::SeqCst) > 0 {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            let global = GIT_PROCESS_PERMITS
-                .acquire()
-                .await
-                .map_err(|_| AppError::GitOperation("git global admission closed".to_string()))?;
+            let global =
+                acquire_background_global_permit(&GIT_PROCESS_PERMITS, &GIT_FOREGROUND_IN_FLIGHT)
+                    .await?;
             queue_guard.admitted();
             log_git_admission_wait(operation, lane, args, cwd, started);
             Ok(GitAdmissionGuard {
@@ -794,6 +790,48 @@ async fn acquire_git_admission(
                 _background: Some(background),
             })
         }
+    }
+}
+
+async fn acquire_background_global_permit<'a>(
+    process_permits: &'a Semaphore,
+    foreground_in_flight: &AtomicUsize,
+) -> AppResult<SemaphorePermit<'a>> {
+    acquire_background_global_permit_with_wait_hook(process_permits, foreground_in_flight, || {})
+        .await
+}
+
+async fn acquire_background_global_permit_with_wait_hook<'a, F>(
+    process_permits: &'a Semaphore,
+    foreground_in_flight: &AtomicUsize,
+    on_wait: F,
+) -> AppResult<SemaphorePermit<'a>>
+where
+    F: Fn(),
+{
+    loop {
+        while foreground_in_flight.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        match process_permits.try_acquire() {
+            Ok(permit) => {
+                if foreground_in_flight.load(Ordering::SeqCst) == 0 {
+                    return Ok(permit);
+                }
+                drop(permit);
+            }
+            Err(TryAcquireError::NoPermits) => on_wait(),
+            Err(TryAcquireError::Closed) => {
+                return Err(AppError::GitOperation(
+                    "git global admission closed".to_string(),
+                ));
+            }
+        }
+
+        // Do not wait in the fair global semaphore queue: a foreground command
+        // registered after this check must be able to queue and acquire first.
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
