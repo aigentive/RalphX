@@ -259,7 +259,7 @@ describe("PersonaArtifactPanel", () => {
     );
 
     expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refine with Agent" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
 
     vi.mocked(invoke).mockImplementation(async (command) => {
@@ -274,7 +274,7 @@ describe("PersonaArtifactPanel", () => {
     );
 
     expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refine with Agent" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
   });
 
@@ -353,15 +353,32 @@ describe("PersonaArtifactPanel", () => {
     });
   });
 
-  it("reuses Settings and refine deep links for an approved persona", async () => {
-    const user = userEvent.setup();
+  it("uses the current Persona Builder conversation as the refinement surface", async () => {
     mockPersonaQueries(rawApproved);
     renderPanel(conversation({ builderResultPersonaId: "persona-1" }));
+
+    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
+  });
+
+  it("reuses Settings and refine deep links outside a Persona Builder conversation", async () => {
+    const user = userEvent.setup();
+    mockPersonaQueries(rawApproved);
+    renderPanel(
+      conversation({
+        agentMode: "edit",
+        builderResultPersonaId: "persona-1",
+      }),
+    );
 
     await user.click(await screen.findByRole("button", { name: "Open in Settings" }));
     expect(useUiStore.getState()).toMatchObject({
       activeModal: "settings",
-      modalContext: { section: "personas" },
+      modalContext: {
+        section: "personas",
+        personaId: "persona-1",
+        conversationId: "conversation-1",
+      },
     });
 
     const refine = screen.getByRole("button", { name: "Refine with Agent" });
@@ -384,7 +401,7 @@ describe("PersonaArtifactPanel", () => {
     );
     mockPersonaQueries(rawApproved);
     renderPanel(
-      conversation({ builderResultPersonaId: "persona-1" }),
+      conversation({ agentMode: "edit", builderResultPersonaId: "persona-1" }),
       createQueryClient(),
       false,
     );
@@ -404,7 +421,7 @@ describe("PersonaArtifactPanel", () => {
     const user = userEvent.setup();
     mockPersonaQueries({ ...rawApproved, project_id: "project-1" });
     renderPanel(
-      conversation({ builderResultPersonaId: "persona-1" }),
+      conversation({ agentMode: "edit", builderResultPersonaId: "persona-1" }),
       createQueryClient(),
       false,
     );

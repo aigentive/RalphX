@@ -1311,34 +1311,34 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
+  const personaArtifactOnly = isPersonaArtifactConversation(conversation);
   const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
-      isAutomationRunConversation
-        ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
-        : [
-            ...ARTIFACT_TABS.filter((tab) =>
-              availableArtifactTabIds.includes(tab.id),
-            ).map(visibleTab),
-            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
-            ...(isPersonaArtifactConversation(conversation)
-              ? [visibleTab(PERSONA_TAB)]
-              : []),
-            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
-            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
-            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
-            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
-            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-            ...(availableArtifactTabIds.includes("review")
-              ? [visibleTab(REVIEW_TAB)]
-              : []),
-            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
-          ],
+      personaArtifactOnly
+        ? [visibleTab(PERSONA_TAB)]
+        : isAutomationRunConversation
+          ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
+          : [
+              ...ARTIFACT_TABS.filter((tab) =>
+                availableArtifactTabIds.includes(tab.id),
+              ).map(visibleTab),
+              ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+              ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+              ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+              ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+              ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
+              ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+              ...(availableArtifactTabIds.includes("review")
+                ? [visibleTab(REVIEW_TAB)]
+                : []),
+              ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+            ],
     [
       availableArtifactTabIds,
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
-      conversation,
+      personaArtifactOnly,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,
@@ -1348,8 +1348,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const shownTabs = useMemo(
-    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
-    [availableTabs, hiddenTabs],
+    () =>
+      personaArtifactOnly
+        ? availableTabs
+        : availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs, personaArtifactOnly],
   );
   const shownEnabledTabs = useMemo(
     () => shownTabs.filter((tab) => tab.enabled),
@@ -1377,32 +1380,29 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
-  const requestedFallbackActiveTab =
-    isAutomationRunConversation
-      ? automationRunTabPolicy.defaultTab
-      : automationId && conversation?.agentMode === "automation"
-      ? "automation"
-      : isPersonaArtifactConversation(conversation)
-        ? "persona"
-      : isReviewPrWorkspace || workspaceReviewContext?.shouldShowTab || reviewArtifactId
-        ? "review"
-        : showPullRequestTab
-          ? "pr"
-          : showJiraTab
-            ? "jira"
-            : showLinearTab
-              ? "linear"
-              : showClickUpTab
-                ? "clickup"
-              : showGranolaTab
-                ? "granola"
-                : shownTabs.some((tab) => tab.id === "plan")
-                  ? "plan"
-                  : shownTabs.some((tab) => tab.id === "issues")
-                    ? "issues"
-                    : shownTabs.some((tab) => tab.id === "review")
-                      ? "review"
-                      : "plan";
+  const requestedFallbackActiveTab = ((): AgentArtifactTab => {
+    if (personaArtifactOnly) return "persona";
+    if (isAutomationRunConversation) return automationRunTabPolicy.defaultTab;
+    if (automationId && conversation?.agentMode === "automation") {
+      return "automation";
+    }
+    if (
+      isReviewPrWorkspace ||
+      workspaceReviewContext?.shouldShowTab ||
+      reviewArtifactId
+    ) {
+      return "review";
+    }
+    if (showPullRequestTab) return "pr";
+    if (showJiraTab) return "jira";
+    if (showLinearTab) return "linear";
+    if (showClickUpTab) return "clickup";
+    if (showGranolaTab) return "granola";
+    if (shownTabs.some((tab) => tab.id === "plan")) return "plan";
+    if (shownTabs.some((tab) => tab.id === "issues")) return "issues";
+    if (shownTabs.some((tab) => tab.id === "review")) return "review";
+    return "plan";
+  })();
   const fallbackActiveTab =
     shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
@@ -1860,6 +1860,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 </Tooltip>
               );
             }
+            if (personaArtifactOnly) {
+              return tabButton;
+            }
             return (
               <ContextMenu key={id}>
                 <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
@@ -1883,7 +1886,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         </div>
 
         <div className="ml-auto flex items-center gap-1">
-          {availableTabs.length > 0 ? (
+          {availableTabs.length > 0 && !personaArtifactOnly ? (
             <AgentsArtifactTabCustomizer
               tabs={customizerTabs}
               hiddenTabs={hiddenTabs}

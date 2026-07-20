@@ -4,7 +4,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { personaArtifactKeys } from "@/hooks/usePersonaArtifact";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import { EventProvider } from "@/providers/EventProvider";
 
 import { usePersonaDraftEvents } from "./usePersonaDraftEvents";
@@ -105,7 +105,7 @@ describe("usePersonaDraftEvents", () => {
 
     await waitFor(() => {
       expect(invalidate).toHaveBeenCalledWith({
-        queryKey: personaArtifactKeys.history("artifact-1"),
+        queryKey: personaArtifactKeys.detail("artifact-1"),
       });
     });
   });

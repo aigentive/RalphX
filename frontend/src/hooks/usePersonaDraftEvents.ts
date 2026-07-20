@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { fetchPersona, personaKeys } from "@/hooks/usePersonas";
-import { personaArtifactKeys } from "@/hooks/usePersonaArtifact";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import { useEventBus } from "@/providers/EventProvider";
 import { PersonaDraftUpdatedEventSchema } from "@/types/persona";
 
@@ -38,7 +38,7 @@ export function usePersonaDraftEvents(conversationId: string): string | null {
       });
       if (parsed.data.artifact_id) {
         void queryClient.invalidateQueries({
-          queryKey: personaArtifactKeys.history(parsed.data.artifact_id),
+          queryKey: personaArtifactKeys.detail(parsed.data.artifact_id),
         });
       }
     });

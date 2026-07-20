@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { personaArtifactKeys } from "./personaArtifactQueries";
 import { chatKeys } from "./useChat";
 import {
   fetchPersonas,
@@ -188,6 +189,44 @@ describe("persona mutations", () => {
       );
     });
   }
+
+  it.each([
+    [
+      "active",
+      useUpdatePersona,
+      { id: "persona-1", content: "updated content" },
+    ],
+    [
+      "draft",
+      useUpdatePersonaDraft,
+      {
+        id: "persona-1",
+        content: "updated draft content",
+        expectedContentHash: "hash-1",
+      },
+    ],
+  ] as const)(
+    "invalidates the current artifact after a successful %s Persona update",
+    async (_kind, useHook, input) => {
+      const queryClient = createQueryClient();
+      const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+      vi.mocked(invoke).mockResolvedValue({
+        ...personaResponse,
+        artifact_id: "artifact-1",
+      });
+      const { result } = renderHook(() => useHook(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await act(async () => {
+        await result.current.mutateAsync(input);
+      });
+
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: personaArtifactKeys.detail("artifact-1"),
+      });
+    },
+  );
 });
 
 describe("useSwitchConversationPersona", () => {

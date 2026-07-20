@@ -500,24 +500,3 @@ export const ArtifactVersionSummarySchema = z.object({
 });
 
 export type ArtifactVersionSummary = z.infer<typeof ArtifactVersionSummarySchema>;
-
-export const PersonaArtifactCreatedBySchema = z.enum([
-  "user",
-  "agent",
-  "system",
-  "backfill",
-]);
-
-export const PersonaArtifactVersionSummarySchema = ArtifactVersionSummarySchema.extend({
-  created_by: PersonaArtifactCreatedBySchema,
-  metadata: z
-    .object({
-      persona_version: z.number().int().positive(),
-      created_by: PersonaArtifactCreatedBySchema,
-    })
-    .nullable(),
-});
-
-export type PersonaArtifactVersionSummary = z.infer<
-  typeof PersonaArtifactVersionSummarySchema
->;

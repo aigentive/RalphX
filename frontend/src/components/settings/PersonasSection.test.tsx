@@ -182,7 +182,11 @@ function mockPersonaCommands(personas: RawPersona[]) {
 describe("PersonasManagementSection", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    useUiStore.setState({ modal: null, currentView: "agents" });
+    useUiStore.setState({
+      activeModal: null,
+      modalContext: undefined,
+      currentView: "agents",
+    });
     useAgentSessionStore.setState({
       focusedProjectId: null,
       selectedProjectId: null,
@@ -293,6 +297,15 @@ describe("PersonasManagementSection", () => {
     useUiStore.getState().openModal("settings", { section: "personas" });
     const sessionState = useAgentSessionStore.getState();
     const uiState = useUiStore.getState();
+    const originalSessionActions = {
+      setStartConversationDraft: sessionState.setStartConversationDraft,
+      setFocusedProject: sessionState.setFocusedProject,
+      clearSelection: sessionState.clearSelection,
+    };
+    const originalUiActions = {
+      closeModal: uiState.closeModal,
+      setCurrentView: uiState.setCurrentView,
+    };
     vi.spyOn(sessionState, "setStartConversationDraft").mockImplementation((draft) => {
       calls.push("draft");
       useAgentSessionStore.setState({ startConversationDraft: draft });
@@ -326,6 +339,8 @@ describe("PersonasManagementSection", () => {
       mode: "persona_builder",
     });
     expect(calls).toEqual(["draft", "close", "focus", "clear", "view"]);
+    useAgentSessionStore.setState(originalSessionActions);
+    useUiStore.setState(originalUiActions);
   });
 
   it.each([
@@ -526,6 +541,56 @@ describe("PersonasManagementSection", () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
+  it("opens a deep-linked persona directly in the existing editor and keeps Back on the list", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    useUiStore.getState().openModal("settings", {
+      section: "personas",
+      personaId: "persona-active",
+      conversationId: "originating-conversation",
+    });
+
+    renderSection();
+
+    expect(await screen.findByText("Edit persona: Reviewer Voice")).toBeInTheDocument();
+    expect(screen.getByLabelText("Description")).toHaveValue("A careful reviewer.");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Review carefully.");
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_agent_conversation_summary", {
+        conversationId: "originating-conversation",
+      }),
+    );
+    const openInAgent = screen.getByRole("button", { name: "Open in Agent" });
+    await waitFor(() => expect(openInAgent).toBeEnabled());
+    await user.click(openInAgent);
+    expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+      "originating-conversation",
+    );
+    expect(useUiStore.getState().activeModal).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Back to personas" }));
+
+    expect(await screen.findByText("Reviewer Voice")).toBeInTheDocument();
+    expect(screen.queryByText("Edit persona: Reviewer Voice")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["missing", "persona-missing"],
+    ["archived", "persona-archived"],
+  ])("leaves the personas list visible for a %s deep-link target", async (_case, personaId) => {
+    mockPersonaCommands([activePersona, archivedPersona]);
+    useUiStore.getState().openModal("settings", {
+      section: "personas",
+      personaId,
+    });
+
+    renderSection();
+
+    expect(await screen.findByText("Reviewer Voice")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Persona editor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old Voice")).not.toBeInTheDocument();
+  });
+
   it("updates an active persona with the hook input contract", async () => {
     const user = userEvent.setup();
     mockPersonaCommands([activePersona]);
@@ -657,7 +722,7 @@ describe("PersonasManagementSection", () => {
     expect(screen.queryByText("This draft changed since you loaded it.")).not.toBeInTheDocument();
   });
 
-  it("shows the builder-conversation link only for drafts with a source session", async () => {
+  it("reopens a source-linked Persona Builder conversation in its project", async () => {
     const user = userEvent.setup();
     const builderDraft: RawPersona = {
       ...draftPersona,
@@ -675,16 +740,16 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Terse Architect");
     await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
-    expect(screen.getByText("Draft — building with agent")).toBeInTheDocument();
+    expect(screen.getByText("Persona Builder conversation")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Open builder conversation/ }),
+      screen.getByRole("button", { name: "Open in Agent" }),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("get_agent_conversation_summary", {
         conversationId: "builder-conversation",
       }),
     );
-    await user.click(screen.getByRole("button", { name: /Open builder conversation/ }));
+    await user.click(screen.getByRole("button", { name: "Open in Agent" }));
     await waitFor(() =>
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
         "builder-conversation",
@@ -693,8 +758,59 @@ describe("PersonasManagementSection", () => {
 
     await user.click(screen.getByRole("button", { name: "Back to personas" }));
     await user.click(screen.getByRole("button", { name: "Edit Manual Draft" }));
-    expect(screen.queryByRole("button", { name: /Open builder conversation/ })).not.toBeInTheDocument();
-    expect(screen.queryByText("Draft — building with agent")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open in Agent" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Persona Builder conversation")).not.toBeInTheDocument();
+  });
+
+  it("reopens a standalone Persona Builder conversation without borrowing the active project", async () => {
+    const user = userEvent.setup();
+    const standalonePersona: RawPersona = {
+      ...activePersona,
+      source_session_id: "standalone-builder-conversation",
+    };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_personas") return [standalonePersona];
+      if (command === "get_agent_conversation_summary") {
+        return {
+          id: "standalone-builder-conversation",
+          context_type: "standalone",
+          context_id: "standalone-builder-conversation",
+          claude_session_id: null,
+          title: "Global Persona builder",
+          message_count: 1,
+          last_message_at: null,
+          created_at: "2026-07-10T10:00:00Z",
+          updated_at: "2026-07-10T10:00:00Z",
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    useProjectStore.getState().selectProject("project-atlas");
+    renderSection();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Reviewer Voice" }),
+    );
+    const openInAgent = screen.getByRole("button", { name: "Open in Agent" });
+    await waitFor(() => expect(openInAgent).toBeEnabled());
+    await user.click(openInAgent);
+
+    expect(useAgentSessionStore.getState()).toMatchObject({
+      selectedProjectId: null,
+      selectedConversationId: "standalone-builder-conversation",
+    });
+  });
+
+  it("gives the Markdown instructions editor meaningful modal height", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Reviewer Voice" }),
+    );
+
+    expect(screen.getByLabelText("Instructions")).toHaveClass("min-h-[50vh]");
   });
 
   it("archives active personas and hard-deletes drafts through confirmation", async () => {

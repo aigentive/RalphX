@@ -7,16 +7,17 @@ import {
   EmptyArtifactState,
 } from "@/components/agents/AgentsArtifactEmptyState";
 import { VersionedArtifactDisplay } from "@/components/Ideation/PlanDisplay";
+import { preparePersonaArtifactContent } from "@/components/personas/personaArtifactContent";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import { usePersonaDraftEvents } from "@/hooks/usePersonaDraftEvents";
 import {
   useApprovePersona,
   useApprovePersonaAsNew,
   usePersona,
 } from "@/hooks/usePersonas";
-import { parsePersonaDocument } from "@/lib/personaContent";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { Artifact } from "@/types/artifact";
@@ -31,70 +32,6 @@ export function PersonaArtifactSkeleton() {
   return <ArtifactLoadingState title="Loading persona..." />;
 }
 
-function PersonaFrontmatter({
-  name,
-  kind,
-  description,
-}: {
-  name: string;
-  kind: string;
-  description: string;
-}) {
-  return (
-    <dl
-      data-testid="persona-frontmatter"
-      className="mb-4 grid gap-3 rounded-md px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]"
-      style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: 1,
-      }}
-    >
-      <div className="min-w-0 sm:col-span-2">
-        <dt className="text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
-          Description
-        </dt>
-        <dd className="mt-1 text-[0.8125rem] leading-relaxed text-[var(--text-secondary)]">
-          {description}
-        </dd>
-      </div>
-      <div className="min-w-0">
-        <dt className="text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
-          Name
-        </dt>
-        <dd className="mt-1 truncate font-mono text-[0.75rem] text-[var(--text-primary)]">
-          {name}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
-          Kind
-        </dt>
-        <dd className="mt-1 text-[0.75rem] capitalize text-[var(--text-primary)]">
-          {kind}
-        </dd>
-      </div>
-    </dl>
-  );
-}
-
-function preparePersonaContent(content: string) {
-  const document = parsePersonaDocument(content);
-  if (!document) return { content };
-
-  return {
-    content: document.body,
-    preamble: (
-      <PersonaFrontmatter
-        name={document.name}
-        kind={document.kind}
-        description={document.description}
-      />
-    ),
-  };
-}
-
 export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps) {
   const eventDraftId = usePersonaDraftEvents(conversation.id);
   const [approvedPersona, setApprovedPersona] = useState<Persona | null>(null);
@@ -105,7 +42,7 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
   const persona = approvedPersona ?? personaQuery.data ?? null;
   const artifactId = persona?.artifactId ?? "";
   const artifactQuery = useQuery({
-    queryKey: ["persona-artifact", artifactId],
+    queryKey: personaArtifactKeys.detail(artifactId),
     queryFn: () => artifactApi.get(artifactId),
     enabled: Boolean(artifactId),
     staleTime: 30_000,
@@ -129,6 +66,7 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
   const mutationError = approve.error ?? approveAsNew.error;
   const isMutating = approve.isPending || approveAsNew.isPending;
   const seededDraft = Boolean(persona?.sourcePersonaId);
+  const isPersonaBuilderConversation = conversation.agentMode === "persona_builder";
 
   if (!boundPersonaId) {
     return (
@@ -230,24 +168,31 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
         type="button"
         size="sm"
         variant="outline"
-        onClick={() => openModal("settings", { section: "personas" })}
+        onClick={() =>
+          openModal("settings", {
+            section: "personas",
+            personaId: persona.id,
+            conversationId: conversation.id,
+          })
+        }
       >
         Open in Settings
       </Button>
-      {globalRefineDisabled ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex" tabIndex={0}>
-              {refineButton}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>
-            Global persona refinement requires standalone conversations
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        refineButton
-      )}
+      {!isPersonaBuilderConversation &&
+        (globalRefineDisabled ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex" tabIndex={0}>
+                {refineButton}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              Global persona refinement requires standalone conversations
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          refineButton
+        ))}
     </>
   );
 
@@ -262,7 +207,7 @@ export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps
         approveLabel="Approve Persona"
         artifactActions={artifactActions}
         excerptSelectionEnabled={false}
-        prepareContent={preparePersonaContent}
+        prepareContent={preparePersonaArtifactContent}
         linkedProposalsCount={0}
         chromeless
       />

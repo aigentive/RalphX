@@ -1967,7 +1967,7 @@ describe("AgentsArtifactPane", () => {
       );
       const { rerender } = render(pane(fromId));
       const approveButton = await screen.findByRole("button", {
-        name: "Approve persona",
+        name: "Approve Persona",
       });
       const oldScrollContainer = approveButton.closest(".overflow-y-auto");
       expect(oldScrollContainer).not.toBeNull();
@@ -1984,7 +1984,7 @@ describe("AgentsArtifactPane", () => {
       expect(await screen.findByText(`${toId.toUpperCase()} persona content`))
         .toBeInTheDocument();
       const incomingApprove = screen.getByRole("button", {
-        name: "Approve persona",
+        name: "Approve Persona",
       });
       const newScrollContainer = incomingApprove.closest(".overflow-y-auto");
       expect(newScrollContainer).not.toBe(oldScrollContainer);
@@ -2001,7 +2001,7 @@ describe("AgentsArtifactPane", () => {
       expect(
         screen.queryByText(`${fromId.toUpperCase()} persona content`),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve persona" }))
+      expect(screen.getByRole("button", { name: "Approve Persona" }))
         .toBeInTheDocument();
     },
   );
@@ -2023,6 +2023,30 @@ describe("AgentsArtifactPane", () => {
     fireEvent.contextMenu(planTab);
     await userEvent.click(await screen.findByText("Hide “Plan”"));
     expect(onHideTab).toHaveBeenCalledWith("plan", expect.any(Array));
+  });
+
+  it("keeps Persona Builder conversations focused on the Persona artifact", async () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "persona_builder",
+        builderDraftId: null,
+        builderResultPersonaId: null,
+      },
+      { hiddenTabs: ["persona"] },
+    );
+
+    const tabRow = screen.getByTestId("agents-artifact-tab-row");
+    expect(artifactTabIds(tabRow)).toEqual(["agents-artifact-tab-persona"]);
+    expect(screen.getByTestId("agents-artifact-content-persona")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Customize artifact tabs")).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId("agents-artifact-tab-persona"));
+    expect(screen.queryByText("Hide “Persona”")).not.toBeInTheDocument();
   });
 
   it("shows a recoverable empty state when every available tab is hidden", async () => {

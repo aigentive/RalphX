@@ -25,14 +25,14 @@ import {
 import { navigateToAgentConversation } from "@/lib/navigation";
 import { composePersonaContent, splitPersonaBody } from "@/lib/personaContent";
 import { formatPersonaErrorMessage } from "@/lib/personaErrors";
-import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { Persona } from "@/types/persona";
 
 import { ScopeBadge } from "./PersonaManagementRows";
 
 export type PersonaEditorState =
   | { kind: "create" }
-  | { kind: "edit"; persona: Persona };
+  | { kind: "edit"; persona: Persona; conversationId?: string };
 
 type ProjectOption = { id: string; name: string };
 
@@ -75,12 +75,15 @@ export function PersonaEditor({
   const [draftConflict, setDraftConflict] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [selectedHistoryVersion, setSelectedHistoryVersion] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const createDraft = useCreatePersonaDraft();
   const updatePersona = useUpdatePersona();
   const updateDraft = useUpdatePersonaDraft();
-  const builderConversationId = currentPersona?.sourceSessionId ?? null;
+  const closeModal = useUiStore((state) => state.closeModal);
+  const builderConversationId =
+    (editor.kind === "edit" ? editor.conversationId : undefined) ??
+    currentPersona?.sourceSessionId ??
+    null;
   const builderConversation = useConversationSummary(builderConversationId);
   const isSaving = createDraft.isPending || updatePersona.isPending || updateDraft.isPending;
   const pastedPersonaDocument = instructions.startsWith("---");
@@ -149,15 +152,26 @@ export function PersonaEditor({
   };
 
   const handleOpenBuilderConversation = () => {
-    if (!builderConversationId) return;
-    const conversationProjectId =
-      builderConversation.data?.contextType === "project"
-        ? builderConversation.data.contextId
-        : currentPersona?.projectId ?? useProjectStore.getState().activeProjectId;
-    if (conversationProjectId) {
-      navigateToAgentConversation(conversationProjectId, builderConversationId);
+    if (!builderConversationId || !builderConversation.data) return;
+    if (builderConversation.data.contextType === "project") {
+      closeModal();
+      navigateToAgentConversation(
+        builderConversation.data.contextId,
+        builderConversationId,
+      );
+      return;
+    }
+    if (builderConversation.data.contextType === "standalone") {
+      closeModal();
+      navigateToAgentConversation(null, builderConversationId);
     }
   };
+  const canOpenBuilderConversation = Boolean(
+    builderConversation.data &&
+      (builderConversation.data.contextType === "standalone" ||
+        (builderConversation.data.contextType === "project" &&
+          builderConversation.data.contextId)),
+  );
 
   return (
     <section aria-label="Persona editor" className="space-y-5">
@@ -272,16 +286,24 @@ export function PersonaEditor({
       )}
 
       {builderConversationId && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-muted)]">
-          <span>Draft — building with agent</span>
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-muted)]"
+          style={{
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: 1,
+          }}
+        >
+          <span>Persona Builder conversation</span>
           <Button
             type="button"
             variant="link"
             size="sm"
             onClick={handleOpenBuilderConversation}
+            disabled={!canOpenBuilderConversation}
             className="h-auto p-0 text-xs text-[var(--text-secondary)]"
           >
-            Open builder conversation ↗
+            Open in Agent
           </Button>
         </div>
       )}
@@ -310,7 +332,7 @@ export function PersonaEditor({
           onChange={(event) => setInstructions(event.target.value)}
           disabled={isSaving}
           placeholder="Plain Markdown. How should the agent behave, what tone should it use, and what should it avoid? No YAML needed."
-          className="min-h-64 w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
+          className="min-h-[50vh] w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
         />
       </div>
 
@@ -358,12 +380,9 @@ export function PersonaEditor({
       {currentPersona?.artifactId && (
         <Dialog
           open={historyOpen}
-          onOpenChange={(open) => {
-            setHistoryOpen(open);
-            if (!open) setSelectedHistoryVersion(null);
-          }}
+          onOpenChange={setHistoryOpen}
         >
-          <DialogContent className="max-w-2xl" aria-describedby="persona-history-description">
+          <DialogContent className="max-w-4xl" aria-describedby="persona-history-description">
             <DialogHeader>
               <div>
                 <DialogTitle>Version history</DialogTitle>
@@ -372,14 +391,8 @@ export function PersonaEditor({
                 </DialogDescription>
               </div>
             </DialogHeader>
-            <div className="max-h-[70vh] overflow-y-auto px-6 py-5">
-              <PersonaVersionHistory
-                artifactId={currentPersona.artifactId}
-                currentContent={currentPersona.content}
-                selectedVersion={selectedHistoryVersion}
-                onSelectedVersionChange={setSelectedHistoryVersion}
-                selectId="persona-editor-history-version"
-              />
+            <div className="max-h-[76vh] overflow-y-auto px-6 py-5">
+              <PersonaVersionHistory artifactId={currentPersona.artifactId} />
             </div>
           </DialogContent>
         </Dialog>

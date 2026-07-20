@@ -1,17 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  usePersonaArtifactHistory,
-  usePersonaArtifactVersion,
-} from "@/hooks/usePersonaArtifact";
-
 import { PersonaVersionHistory } from "./PersonaVersionHistory";
-
-vi.mock("@/hooks/usePersonaArtifact", () => ({
-  usePersonaArtifactHistory: vi.fn(),
-  usePersonaArtifactVersion: vi.fn(),
-}));
 
 const history = [
   {
@@ -32,93 +26,112 @@ const history = [
   },
 ];
 
-function renderHistory(selectedVersion: number | null = null) {
+const currentDocument = `---
+name: support-voice
+kind: persona
+description: Calm customer support.
+---
+# Support Voice
+
+Current guidance.`;
+
+const historicalDocument = `---
+name: support-voice
+kind: persona
+description: Original support guidance.
+---
+# Support Voice
+
+Original agent draft.`;
+
+function renderHistory() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+  }
   return render(
-    <PersonaVersionHistory
-      artifactId="artifact-current"
-      currentContent="Current content"
-      selectedVersion={selectedVersion}
-      onSelectedVersionChange={vi.fn()}
-    />,
+    <PersonaVersionHistory artifactId="artifact-current" />,
+    { wrapper: Wrapper },
   );
 }
 
 describe("PersonaVersionHistory", () => {
   beforeEach(() => {
-    vi.mocked(usePersonaArtifactHistory).mockReturnValue({
-      data: history,
-      isError: false,
-    } as ReturnType<typeof usePersonaArtifactHistory>);
-    vi.mocked(usePersonaArtifactVersion).mockReturnValue({
-      data: undefined,
-      isPending: false,
-      isError: false,
-    } as ReturnType<typeof usePersonaArtifactVersion>);
-  });
-
-  it("shows a history error instead of hiding the version control as empty", () => {
-    vi.mocked(usePersonaArtifactHistory).mockReturnValue({
-      data: undefined,
-      isError: true,
-    } as ReturnType<typeof usePersonaArtifactHistory>);
-
-    renderHistory();
-
-    expect(screen.getByText("Couldn't load version history.")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Persona version")).not.toBeInTheDocument();
-    expect(screen.getByText("Current content")).toBeInTheDocument();
-  });
-
-  it("keeps an empty successful history distinct from a history error", () => {
-    vi.mocked(usePersonaArtifactHistory).mockReturnValue({
-      data: [],
-      isError: false,
-    } as ReturnType<typeof usePersonaArtifactHistory>);
-
-    renderHistory();
-
-    expect(screen.queryByText("Couldn't load version history.")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Persona version")).not.toBeInTheDocument();
-  });
-
-  it("shows a version-content error instead of no-inline-content", () => {
-    vi.mocked(usePersonaArtifactVersion).mockReturnValue({
-      data: undefined,
-      isPending: false,
-      isError: true,
-    } as ReturnType<typeof usePersonaArtifactVersion>);
-
-    renderHistory(1);
-
-    expect(screen.getByText("Couldn't load this persona version.")).toBeInTheDocument();
-    expect(screen.queryByText("This version has no inline content.")).not.toBeInTheDocument();
-  });
-
-  it("keeps successful non-inline content distinct from a version error", () => {
-    vi.mocked(usePersonaArtifactVersion).mockReturnValue({
-      data: {
-        id: "artifact-old",
-        name: "Support Voice",
-        artifact_type: "persona",
-        content: { type: "file", path: "/artifact/content.md" },
-        created_at: "2026-07-17T09:00:00Z",
-        created_by: "agent",
-        version: 1,
-        bucket_id: "persona-library",
-        task_id: null,
-        process_id: null,
-        derived_from: [],
-      },
-      isPending: false,
-      isError: false,
-    } as ReturnType<typeof usePersonaArtifactVersion>);
-
-    renderHistory(1);
-
-    expect(screen.getByText("This version has no inline content.")).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't load this persona version.")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Persona version"), {
-      target: { value: "current" },
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_artifact") {
+        return {
+          id: "artifact-current",
+          name: "Support Voice",
+          artifact_type: "persona",
+          content_type: "inline",
+          content: currentDocument,
+          created_at: "2026-07-17T10:00:00Z",
+          created_by: "user",
+          version: 2,
+          bucket_id: "persona-library",
+          task_id: null,
+          process_id: null,
+          derived_from: [],
+        };
+      }
+      if (command === "get_artifact_version_history") return history;
+      if (command === "get_artifact_at_version") {
+        return {
+          id: "artifact-current",
+          name: "Support Voice",
+          artifact_type: "persona",
+          content_type: "inline",
+          content: historicalDocument,
+          created_at: "2026-07-17T09:00:00Z",
+          created_by: "agent",
+          version: 1,
+          bucket_id: "persona-library",
+          task_id: null,
+          process_id: null,
+          derived_from: [],
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
     });
+  });
+
+  it("renders current Persona metadata and Markdown through the shared artifact surface", async () => {
+    renderHistory();
+
+    expect(await screen.findByText("Calm customer support.")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-frontmatter")).toBeInTheDocument();
+    expect(screen.getByText("Current guidance.")).toBeInTheDocument();
+    expect(screen.queryByText(/name: support-voice/)).not.toBeInTheDocument();
+    expect(screen.getByTitle("View version history")).toBeInTheDocument();
+  });
+
+  it("uses the shared version picker and structured rendering for historical content", async () => {
+    const user = userEvent.setup();
+    renderHistory();
+
+    await user.click(await screen.findByTitle("View version history"));
+    await user.click(screen.getByText(/^v1/));
+
+    expect(await screen.findByText("Original support guidance.")).toBeInTheDocument();
+    expect(screen.getByText("Original agent draft.")).toBeInTheDocument();
+    expect(screen.getByText("Viewing version 1 of 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to latest" })).toBeInTheDocument();
+  });
+
+  it("shows an explicit failure when the current artifact cannot be loaded", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_artifact") throw new Error("offline");
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    renderHistory();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Persona artifact unavailable",
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Info } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ export function PersonasManagementSection({
   const [editor, setEditor] = useState<PersonaEditorState | null>(null);
   const [scopeFilter, setScopeFilter] = useState("all");
   const [showScopeChooser, setShowScopeChooser] = useState(false);
+  const handledDeepLinkKeyRef = useRef<string | null>(null);
   const activeProjectId = useProjectStore((state) => state.activeProjectId);
   const projectsById = useProjectStore((state) => state.projects);
   const projects = useMemo(
@@ -43,7 +44,12 @@ export function PersonasManagementSection({
     () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
     [projects],
   );
-  const { data: personas = [], error, isLoading } = usePersonas({ type: "all" });
+  const {
+    data: personas = [],
+    error,
+    isFetching,
+    isLoading,
+  } = usePersonas({ type: "all" });
   const approvePersona = useApprovePersona();
   const archivePersona = useArchivePersona();
   const deleteDraft = useDeletePersonaDraft();
@@ -51,6 +57,7 @@ export function PersonasManagementSection({
   const setFocusedProject = useAgentSessionStore((state) => state.setFocusedProject);
   const clearSelection = useAgentSessionStore((state) => state.clearSelection);
   const closeModal = useUiStore((state) => state.closeModal);
+  const modalContext = useUiStore((state) => state.modalContext);
   const setCurrentView = useUiStore((state) => state.setCurrentView);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const visiblePersonas = personas.filter(
@@ -61,6 +68,47 @@ export function PersonasManagementSection({
           ? persona.projectId === null
           : persona.projectId === scopeFilter)),
   );
+
+  useEffect(() => {
+    const requestedPersonaId =
+      modalContext?.["section"] === "personas" &&
+      typeof modalContext["personaId"] === "string"
+        ? modalContext["personaId"]
+        : null;
+    const requestedConversationId =
+      typeof modalContext?.["conversationId"] === "string"
+        ? modalContext["conversationId"]
+        : null;
+    if (!requestedPersonaId) {
+      handledDeepLinkKeyRef.current = null;
+      return;
+    }
+    const requestedDeepLinkKey = `${requestedPersonaId}:${requestedConversationId ?? ""}`;
+    if (
+      error ||
+      isFetching ||
+      handledDeepLinkKeyRef.current === requestedDeepLinkKey
+    ) {
+      return;
+    }
+
+    handledDeepLinkKeyRef.current = requestedDeepLinkKey;
+    const requestedPersona = personas.find(
+      (persona) => persona.id === requestedPersonaId,
+    );
+    if (
+      requestedPersona?.status === "draft" ||
+      requestedPersona?.status === "active"
+    ) {
+      setEditor({
+        kind: "edit",
+        persona: requestedPersona,
+        ...(requestedConversationId && {
+          conversationId: requestedConversationId,
+        }),
+      });
+    }
+  }, [error, isFetching, modalContext, personas]);
 
   const openBuilderComposer = (
     projectId: string | null,

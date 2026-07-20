@@ -1,8 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
-import { personaArtifactKeys } from "@/hooks/usePersonaArtifact";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import {
   PersonaResponseSchema,
   transformPersona,
@@ -151,6 +156,16 @@ function usePersonaListInvalidation() {
   };
 }
 
+function invalidatePersonaArtifact(
+  queryClient: QueryClient,
+  persona: Persona,
+) {
+  if (!persona.artifactId) return;
+  void queryClient.invalidateQueries({
+    queryKey: personaArtifactKeys.detail(persona.artifactId),
+  });
+}
+
 export function useCreatePersonaDraft() {
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, CreatePersonaDraftInput>({
@@ -160,18 +175,26 @@ export function useCreatePersonaDraft() {
 }
 
 export function useUpdatePersona() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, UpdatePersonaInput>({
     mutationFn: updatePersona,
-    onSuccess: invalidateList,
+    onSuccess: (persona) => {
+      invalidateList();
+      invalidatePersonaArtifact(queryClient, persona);
+    },
   });
 }
 
 export function useUpdatePersonaDraft() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, UpdatePersonaDraftInput>({
     mutationFn: updatePersonaDraft,
-    onSuccess: invalidateList,
+    onSuccess: (persona) => {
+      invalidateList();
+      invalidatePersonaArtifact(queryClient, persona);
+    },
   });
 }
 
@@ -184,11 +207,7 @@ export function useApprovePersona() {
       queryClient.setQueryData(personaKeys.detail(persona.id), persona);
       invalidateList();
       void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
-      if (persona.artifactId) {
-        void queryClient.invalidateQueries({
-          queryKey: personaArtifactKeys.history(persona.artifactId),
-        });
-      }
+      invalidatePersonaArtifact(queryClient, persona);
     },
   });
 }
@@ -202,11 +221,7 @@ export function useApprovePersonaAsNew() {
       queryClient.setQueryData(personaKeys.detail(persona.id), persona);
       invalidateList();
       void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
-      if (persona.artifactId) {
-        void queryClient.invalidateQueries({
-          queryKey: personaArtifactKeys.history(persona.artifactId),
-        });
-      }
+      invalidatePersonaArtifact(queryClient, persona);
     },
   });
 }

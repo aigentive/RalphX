@@ -1,116 +1,48 @@
-import { useMemo } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useQuery } from "@tanstack/react-query";
 
-import {
-  usePersonaArtifactHistory,
-  usePersonaArtifactVersion,
-} from "@/hooks/usePersonaArtifact";
-import type { PersonaArtifactVersionSummary } from "@/types/artifact";
+import { artifactApi } from "@/api/artifact";
+import { ArtifactLoadingState } from "@/components/agents/AgentsArtifactEmptyState";
+import { VersionedArtifactDisplay } from "@/components/Ideation/PlanDisplay";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 
-function attributionLabel(version: PersonaArtifactVersionSummary): string {
-  const author = version.metadata?.created_by ?? version.created_by;
-  const attribution =
-    author === "user"
-      ? "you (manual edit)"
-      : author === "agent"
-        ? "agent"
-        : author;
-  const personaVersion = version.metadata?.persona_version ?? version.version;
-  const timestamp = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(version.created_at));
-  return `v${personaVersion} ${attribution} · ${timestamp}`;
-}
+import { preparePersonaArtifactContent } from "./personaArtifactContent";
 
-export function PersonaVersionHistory({
-  artifactId,
-  currentContent,
-  selectedVersion,
-  onSelectedVersionChange,
-  selectId = "persona-artifact-version",
-}: {
-  artifactId: string;
-  currentContent: string | null | undefined;
-  selectedVersion: number | null;
-  onSelectedVersionChange: (version: number | null) => void;
-  selectId?: string;
-}) {
-  const historyQuery = usePersonaArtifactHistory(artifactId);
-  const historicalQuery = usePersonaArtifactVersion(artifactId, selectedVersion);
-  const orderedHistory = useMemo(
-    () => [...(historyQuery.data ?? [])].sort((left, right) => right.version - left.version),
-    [historyQuery.data],
-  );
-  const historicalContent =
-    historicalQuery.data?.content.type === "inline"
-      ? historicalQuery.data.content.text
-      : null;
-  const content = selectedVersion == null ? currentContent : historicalContent;
-  const isHistorical = selectedVersion != null;
+export function PersonaVersionHistory({ artifactId }: { artifactId: string }) {
+  const artifactQuery = useQuery({
+    queryKey: personaArtifactKeys.detail(artifactId),
+    queryFn: () => artifactApi.get(artifactId),
+    enabled: Boolean(artifactId),
+    staleTime: 30_000,
+  });
+
+  if (artifactQuery.isPending) {
+    return <ArtifactLoadingState title="Loading persona history..." />;
+  }
+
+  if (artifactQuery.error || !artifactQuery.data) {
+    return (
+      <div
+        role="alert"
+        className="rounded-md px-3 py-2 text-sm text-[var(--status-error)]"
+        style={{
+          borderColor: "var(--status-error-border)",
+          borderStyle: "solid",
+          borderWidth: 1,
+        }}
+      >
+        Persona artifact unavailable
+      </div>
+    );
+  }
 
   return (
-    <>
-      {historyQuery.isError ? (
-        <p className="text-xs text-[var(--status-error)]">
-          Couldn't load version history.
-        </p>
-      ) : orderedHistory.length > 0 && (
-        <div>
-          <label
-            htmlFor={selectId}
-            className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]"
-          >
-            Version
-          </label>
-          <select
-            id={selectId}
-            aria-label="Persona version"
-            value={selectedVersion?.toString() ?? "current"}
-            onChange={(event) => {
-              onSelectedVersionChange(
-                event.target.value === "current" ? null : Number(event.target.value),
-              );
-            }}
-            className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 text-xs text-[var(--text-primary)] outline-none"
-          >
-            <option value="current">
-              Current · {attributionLabel(orderedHistory[0]!)}
-            </option>
-            {orderedHistory.slice(1).map((version) => (
-              <option key={version.id} value={version.version}>
-                {attributionLabel(version)}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {isHistorical && (
-        <p className="mt-3 text-xs font-medium text-[var(--text-muted)]">
-          Historical version · read-only
-        </p>
-      )}
-
-      <article className="prose prose-sm mt-5 max-w-none text-[var(--text-primary)] prose-headings:text-[var(--text-primary)] prose-p:text-[var(--text-secondary)]">
-        {isHistorical && historicalQuery.isPending ? (
-          <div
-            className="h-28 animate-pulse rounded bg-[var(--bg-elevated)]"
-            aria-label="Loading historical persona"
-          />
-        ) : isHistorical && historicalQuery.isError ? (
-          <p className="text-sm text-[var(--status-error)]">
-            Couldn't load this persona version.
-          </p>
-        ) : content ? (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        ) : (
-          <p className="text-sm text-[var(--text-muted)]">
-            This version has no inline content.
-          </p>
-        )}
-      </article>
-    </>
+    <VersionedArtifactDisplay
+      artifact={artifactQuery.data}
+      artifactLabel="Persona"
+      excerptSelectionEnabled={false}
+      prepareContent={preparePersonaArtifactContent}
+      linkedProposalsCount={0}
+      chromeless
+    />
   );
 }

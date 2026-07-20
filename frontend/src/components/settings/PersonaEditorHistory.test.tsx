@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -47,6 +47,24 @@ const rawHistory = [
   },
 ];
 
+const currentDocument = `---
+name: support-voice
+kind: persona
+description: Calm customer support.
+---
+# Support Voice
+
+Empathetic, direct.`;
+
+const historicalDocument = `---
+name: support-voice
+kind: persona
+description: Original support guidance.
+---
+# Support Voice
+
+Original agent draft.`;
+
 function renderEditor(value: Persona) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -72,6 +90,22 @@ function renderEditor(value: Persona) {
 describe("PersonaEditor version history", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_artifact") {
+        return {
+          id: "artifact-3",
+          name: "Support Voice",
+          artifact_type: "persona",
+          content_type: "inline",
+          content: currentDocument,
+          created_at: "2026-07-17T10:00:00Z",
+          created_by: "user",
+          version: 3,
+          bucket_id: "persona-library",
+          task_id: null,
+          process_id: null,
+          derived_from: [],
+        };
+      }
       if (command === "get_artifact_version_history") return rawHistory;
       if (command === "get_artifact_at_version") {
         return {
@@ -79,7 +113,7 @@ describe("PersonaEditor version history", () => {
           name: "Support Voice",
           artifact_type: "persona",
           content_type: "inline",
-          content: "## Voice\n\nOriginal agent draft.",
+          content: historicalDocument,
           created_at: "2026-07-17T09:00:00Z",
           created_by: "agent",
           version: 2,
@@ -112,13 +146,13 @@ describe("PersonaEditor version history", () => {
 
     await user.click(screen.getByRole("button", { name: "Version history" }));
     expect(screen.getByRole("dialog", { name: "Version history" })).toBeInTheDocument();
-    const versions = await screen.findByLabelText("Persona version");
-    expect(screen.getByRole("option", { name: /v3 you \(manual edit\)/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /v2 agent/ })).toBeInTheDocument();
-
-    fireEvent.change(versions, { target: { value: "2" } });
+    expect(await screen.findByText("Calm customer support.")).toBeInTheDocument();
+    await user.click(screen.getByTitle("View version history"));
+    await user.click(screen.getByText(/^v2/));
     expect(await screen.findByText("Original agent draft.")).toBeInTheDocument();
-    expect(screen.getByText("Historical version · read-only")).toBeInTheDocument();
+    expect(screen.getByText("Original support guidance.")).toBeInTheDocument();
+    expect(screen.getByText("Viewing version 2 of 3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to latest" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Instructions" })).not.toBeInTheDocument();
   });
 });
