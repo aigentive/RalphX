@@ -72,6 +72,8 @@ pub async fn start_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is Pending
     if step.status != TaskStepStatus::Pending {
         return Err(StatusCode::BAD_REQUEST.into());
@@ -121,6 +123,8 @@ pub async fn complete_step_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+
+    authorize_step_mutation(&state, &step.task_id).await?;
 
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
@@ -221,6 +225,8 @@ pub async fn skip_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is Pending or InProgress
     if step.status != TaskStepStatus::Pending && step.status != TaskStepStatus::InProgress {
         return Err(StatusCode::BAD_REQUEST.into());
@@ -320,6 +326,8 @@ pub async fn fail_step_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    authorize_step_mutation(&state, &step.task_id).await?;
+
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
         return Err(StatusCode::BAD_REQUEST.into());
@@ -358,6 +366,8 @@ pub async fn add_step_http(
     Json(req): Json<AddStepRequest>,
 ) -> Result<Json<StepResponse>, HttpError> {
     let task_id = TaskId::from_string(req.task_id);
+
+    authorize_step_mutation(&state, &task_id).await?;
 
     // Determine sort_order
     let sort_order = if let Some(after_step_id_str) = req.after_step_id {
@@ -425,6 +435,27 @@ fn step_mutation_http_error(error: AppError, operation: &str) -> HttpError {
         },
         _ => HttpError::from(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+async fn authorize_step_mutation(
+    state: &HttpServerState,
+    task_id: &TaskId,
+) -> Result<(), HttpError> {
+    let task = state
+        .app_state
+        .task_repo
+        .get_by_id(task_id)
+        .await
+        .map_err(|error| step_mutation_http_error(error, "load task"))?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| step_mutation_http_error(error, "authorize"))
 }
 
 pub async fn get_step_progress_http(

@@ -1639,6 +1639,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
@@ -2219,6 +2220,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
