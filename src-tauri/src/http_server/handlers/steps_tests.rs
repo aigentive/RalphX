@@ -3,7 +3,6 @@ use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{Project, ProjectId, Task, TaskStep, ValidationCacheMetadata};
 use crate::domain::ideation::TasksFeatureState;
-use crate::domain::repositories::{IdeationSettingsRepository, TaskRepository, TaskStepRepository};
 use crate::http_server::types::{
     ExecutionCompleteRequest, HttpServerState, StartStepRequest, TestResultInput,
 };
@@ -149,7 +148,7 @@ async fn start_step_preserves_tasks_disabled_error() {
         .unwrap();
 
     let error = start_step_http(
-        State(test_http_state(app_state)),
+        State(test_http_state(Arc::clone(&app_state))),
         Json(StartStepRequest {
             step_id: step.id.to_string(),
         }),
