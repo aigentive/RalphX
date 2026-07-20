@@ -4,9 +4,9 @@ use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     get_agent_workspace_review_context, AgentWorkspaceReviewContextQuery,
@@ -127,20 +127,29 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     let review_conversation_id = ChatConversationId::new();
     let run = AgentRun::new(review_conversation_id);
     let run_id = run.id;
-    let mut monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .get_workspace_review_monitor(&conversation_id)
-        .await
-        .expect("load monitor")
-        .expect("monitor exists");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id.clone());
     let target_scope: AgentWorkspaceReviewTargetScope =
         target.scope.parse().expect("valid target scope");
     monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
     monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
     monitor.current_target_scope = Some(target_scope);
-    monitor.current_diff_fingerprint = Some(target.diff_fingerprint);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    match target_scope {
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
+            monitor.workspace_base_ref = Some(target.base_ref.clone());
+            monitor.workspace_base_sha = target.base_sha.clone();
+            monitor.workspace_head_ref = Some(target.head_ref.clone());
+            monitor.workspace_head_sha = target.head_sha.clone();
+        }
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_base_ref = Some(target.base_ref.clone());
+            monitor.selected_source_base_sha = target.base_sha.clone();
+            monitor.selected_source_head_ref = Some(target.head_ref.clone());
+            monitor.selected_source_head_sha = target.head_sha.clone();
+            monitor.selected_source_pull_request_number = target.source_pull_request_number;
+        }
+    }
     monitor.reviewed_target_scope = Some(target_scope);
     monitor.reviewed_diff_fingerprint = Some("historical-fingerprint".to_string());
     monitor.review_artifact_id = Some(ArtifactId::from_string("historical-review"));
@@ -185,4 +194,65 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     assert!(!context.review_artifact_is_current);
     assert!(context.can_mutate_review_state);
     assert_eq!(context.review_runtime_state, "active_owned");
+}
+
+#[tokio::test]
+async fn presentation_context_get_does_not_create_a_review_monitor() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let worktree = tempfile::TempDir::new().expect("worktree tempdir");
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let project = Project::new(
+        "Read-only Review context".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed conversation");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/test/read-only-review-context".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let axum::Json(context) = get_agent_workspace_review_context(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load presentation context");
+
+    assert_eq!(context.monitor.status, "idle");
+    assert!(state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("read monitor")
+        .is_none());
 }

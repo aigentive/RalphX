@@ -32,6 +32,9 @@ use crate::application::agent_workspace_review_auto_merge::{
     start_guarded_agent_workspace_review, WorkspaceReviewStartConfirmation,
     WorkspaceReviewStartOrigin,
 };
+use crate::application::agent_workspace_review_context::{
+    load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
+};
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
 };
@@ -686,6 +689,7 @@ pub struct AgentWorkspaceReviewContextResponse {
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct AgentWorkspaceReviewContextQuery {
     pub include_review_packet: Option<bool>,
+    pub refresh_target: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1522,9 +1526,21 @@ pub async fn get_agent_workspace_review_context(
             .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
-    let mut context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
-        .await
-        .map_err(workspace_review_action_error)?;
+    let include_review_packet = query.include_review_packet.unwrap_or(false);
+    let read_mode = if include_review_packet {
+        AgentWorkspaceReviewContextReadMode::FullPacket
+    } else if query.refresh_target.unwrap_or(false) {
+        AgentWorkspaceReviewContextReadMode::FullTarget
+    } else {
+        AgentWorkspaceReviewContextReadMode::StatusSnapshot
+    };
+    let mut context = load_agent_workspace_review_presentation_context(
+        state.app_state.as_ref(),
+        &workspace,
+        read_mode,
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
     let caller_run_id = workspace_review_runtime_header(&headers, "x-ralphx-agent-run-id");
     let caller_conversation_id =
         workspace_review_runtime_header(&headers, "x-ralphx-conversation-id");
@@ -1567,10 +1583,7 @@ pub async fn get_agent_workspace_review_context(
         workspace: workspace_response,
         events,
         target: context.target.map(|target| {
-            AgentWorkspaceReviewTargetResponse::from_target(
-                target,
-                query.include_review_packet.unwrap_or(false),
-            )
+            AgentWorkspaceReviewTargetResponse::from_target(target, include_review_packet)
         }),
         monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
         goal_context: context.goal_context,

@@ -63,6 +63,7 @@ import {
   invalidateWorkspaceQueries,
   preflightAgentWorkspaceFreshness,
   prReviewContextForConversation,
+  refreshWorkspaceReviewAfterSignal,
   resolveWorkspaceReviewOwnerConversationId,
   workspaceReviewContextForConversation,
 } from "./agentWorkspaceQueries";
@@ -666,8 +667,10 @@ export function useAgentsViewController({
   const shouldLoadWorkspaceReviewContext = Boolean(workspaceReviewConversationId);
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(workspaceReviewConversationId ?? ""),
-    queryFn: () =>
-      chatApi.getAgentWorkspaceReviewContext(workspaceReviewConversationId!),
+    queryFn: ({ signal }) =>
+      chatApi.getAgentWorkspaceReviewContext(workspaceReviewConversationId!, {
+        signal,
+      }),
     enabled: shouldLoadWorkspaceReviewContext,
     staleTime: 5_000,
     refetchInterval: (query) =>
@@ -1062,16 +1065,13 @@ export function useAgentsViewController({
     [seedArtifactTab],
   );
   useEffect(() => {
-    const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
+    const invalidatePrReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
       if (!conversationId) {
         return;
       }
       void queryClient.invalidateQueries({
         queryKey: agentWorkspaceKeys.prReview(conversationId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
       });
       void queryClient.invalidateQueries({
         queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
@@ -1084,10 +1084,29 @@ export function useAgentsViewController({
       }
     };
 
+    const refreshWorkspaceReviewArtifact = (
+      payload: PrReviewArtifactEventPayload,
+    ) => {
+      const conversationId = payload.conversationId ?? payload.conversation_id;
+      if (!conversationId) {
+        return;
+      }
+      void refreshWorkspaceReviewAfterSignal(
+        queryClient,
+        conversationId,
+      ).catch(() => undefined);
+      const artifactId = payload.artifact?.id;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    };
+
     const unsubscribeCreated = eventBus.subscribe<PrReviewArtifactEventPayload>(
       "pr_review_artifact:created",
       (payload) => {
-        invalidateReviewArtifact(payload);
+        invalidatePrReviewArtifact(payload);
         const conversationId = payload.conversationId ?? payload.conversation_id;
         if (conversationId && conversationId === selectedConversationId) {
           openArtifactTab(conversationId, "review");
@@ -1096,13 +1115,13 @@ export function useAgentsViewController({
     );
     const unsubscribeUpdated = eventBus.subscribe<PrReviewArtifactEventPayload>(
       "pr_review_artifact:updated",
-      invalidateReviewArtifact,
+      invalidatePrReviewArtifact,
     );
     const unsubscribeWorkspaceCreated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
         "workspace_review_artifact:created",
         (payload) => {
-          invalidateReviewArtifact(payload);
+          refreshWorkspaceReviewArtifact(payload);
           const conversationId = payload.conversationId ?? payload.conversation_id;
           if (conversationId && conversationId === selectedConversationId) {
             openArtifactTab(conversationId, "review");
@@ -1112,7 +1131,7 @@ export function useAgentsViewController({
     const unsubscribeWorkspaceUpdated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
         "workspace_review_artifact:updated",
-        invalidateReviewArtifact,
+        refreshWorkspaceReviewArtifact,
       );
 
     return () => {
@@ -1134,17 +1153,18 @@ export function useAgentsViewController({
         });
       }
       if (
-        selectedConversationId &&
+        workspaceReviewConversationId &&
         activeConversation?.contextType === "project" &&
         lifecyclePayloadOwnsWorkspaceReviewQuery(
           payload,
-          selectedConversationId,
+          workspaceReviewConversationId,
           workspaceReviewChildConversationId,
         )
       ) {
-        void queryClient.invalidateQueries({
-          queryKey: agentWorkspaceKeys.workspaceReview(selectedConversationId),
-        });
+        void refreshWorkspaceReviewAfterSignal(
+          queryClient,
+          workspaceReviewConversationId,
+        ).catch(() => undefined);
       }
     };
 
@@ -1173,7 +1193,7 @@ export function useAgentsViewController({
     activeConversation?.contextType,
     eventBus,
     queryClient,
-    selectedConversationId,
+    workspaceReviewConversationId,
     workspaceReviewChildConversationId,
   ]);
 

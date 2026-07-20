@@ -3064,6 +3064,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
         "conversation-1",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
     await screen.findByTestId("agents-artifact-tab-review");
@@ -3224,6 +3225,39 @@ describe("AgentsArtifactPane", () => {
     expect(toastMessageMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the parent Review owner while a reviewer child conversation is selected", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        conversationId: "parent-conversation",
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "parent-conversation",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalledWith(
+      "review-child-conversation",
+      expect.anything(),
+    );
   });
 
   it("keeps a failed Review start visible after the mutation settles", async () => {
@@ -3943,7 +3977,7 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("polls the Review context while the background review is preparing", async () => {
+  it("keeps the artifact pane as a passive Review observer", async () => {
     vi.useFakeTimers();
     try {
       getWorkspaceReviewContextMock.mockResolvedValue(
@@ -3974,7 +4008,7 @@ describe("AgentsArtifactPane", () => {
         await vi.advanceTimersByTimeAsync(2_000);
       });
 
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(2);
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

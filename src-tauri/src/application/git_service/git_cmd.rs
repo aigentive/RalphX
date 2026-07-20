@@ -32,6 +32,8 @@ const GIT_ADMISSION_WAIT_LOG_MS: u128 = 50;
 static GIT_PROCESS_PERMITS: Semaphore = Semaphore::const_new(GIT_PROCESS_CONCURRENCY);
 static GIT_BACKGROUND_PERMITS: Semaphore = Semaphore::const_new(GIT_BACKGROUND_CONCURRENCY);
 static GIT_FOREGROUND_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static GIT_COMMANDS_QUEUED: AtomicUsize = AtomicUsize::new(0);
+static GIT_COMMANDS_EXECUTING: AtomicUsize = AtomicUsize::new(0);
 
 tokio::task_local! {
     static GIT_COMMAND_LANE_OVERRIDE: GitCommandLane;
@@ -105,7 +107,49 @@ struct GitAdmissionGuard {
 
 impl Drop for GitAdmissionGuard {
     fn drop(&mut self) {
+        GIT_COMMANDS_EXECUTING.fetch_sub(1, Ordering::SeqCst);
         if self.lane == GitCommandLane::Foreground {
+            GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+struct GitAdmissionQueueGuard {
+    queued: bool,
+    foreground_registered: bool,
+}
+
+impl GitAdmissionQueueGuard {
+    fn new() -> Self {
+        GIT_COMMANDS_QUEUED.fetch_add(1, Ordering::SeqCst);
+        Self {
+            queued: true,
+            foreground_registered: false,
+        }
+    }
+
+    fn register_foreground(&mut self) {
+        GIT_FOREGROUND_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        self.foreground_registered = true;
+    }
+
+    fn admitted(&mut self) {
+        if self.queued {
+            GIT_COMMANDS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+            GIT_COMMANDS_EXECUTING.fetch_add(1, Ordering::SeqCst);
+            self.queued = false;
+        }
+        // The admitted command guard now owns the foreground registration.
+        self.foreground_registered = false;
+    }
+}
+
+impl Drop for GitAdmissionQueueGuard {
+    fn drop(&mut self) {
+        if self.queued {
+            GIT_COMMANDS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+        }
+        if self.foreground_registered {
             GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         }
     }
@@ -711,18 +755,19 @@ async fn acquire_git_admission(
     cwd: &Path,
 ) -> AppResult<GitAdmissionGuard> {
     let started = Instant::now();
+    let mut queue_guard = GitAdmissionQueueGuard::new();
     match lane {
         GitCommandLane::Foreground => {
-            GIT_FOREGROUND_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            queue_guard.register_foreground();
             let global = match GIT_PROCESS_PERMITS.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => {
-                    GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                     return Err(AppError::GitOperation(
                         "git foreground admission closed".to_string(),
                     ));
                 }
             };
+            queue_guard.admitted();
             log_git_admission_wait(operation, lane, args, cwd, started);
             Ok(GitAdmissionGuard {
                 lane,
@@ -741,6 +786,7 @@ async fn acquire_git_admission(
                 .acquire()
                 .await
                 .map_err(|_| AppError::GitOperation("git global admission closed".to_string()))?;
+            queue_guard.admitted();
             log_git_admission_wait(operation, lane, args, cwd, started);
             Ok(GitAdmissionGuard {
                 lane,
@@ -766,6 +812,8 @@ fn log_git_admission_wait(
             command = %args.join(" "),
             cwd = %cwd.display(),
             admission_wait_ms = elapsed_ms as u64,
+            queued = GIT_COMMANDS_QUEUED.load(Ordering::SeqCst),
+            in_flight = GIT_COMMANDS_EXECUTING.load(Ordering::SeqCst),
             "Git command admission waited"
         );
     }
