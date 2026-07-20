@@ -2052,7 +2052,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
             AgentWorkspacePrAutofixTargetKind::DirectWorkspace
         ) | (
             AgentConversationWorkspaceMode::Ideation,
-            AgentWorkspacePrAutofixTargetKind::IdeationPlan
+            AgentWorkspacePrAutofixTargetKind::IdeationPlan { .. }
         )
     );
     if !workspace.allows_owned_pr_mutation() || !target_matches_workspace_mode {
