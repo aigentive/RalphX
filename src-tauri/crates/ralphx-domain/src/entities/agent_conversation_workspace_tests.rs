@@ -1,9 +1,10 @@
 use super::{
-    AgentConversationWorkspaceMode, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
-    ArtifactId, ChatConversationId, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewMonitor,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use chrono::Utc;
 use std::str::FromStr;
@@ -23,6 +24,41 @@ fn workspace_modes_round_trip_tasks_autopilot_and_legacy_ideation() {
             mode
         );
     }
+}
+
+#[test]
+fn owned_pr_mutation_eligibility_is_positive_and_shape_aware() {
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::new(),
+        ProjectId::new(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/test".to_string(),
+        "/tmp/ralphx-test".to_string(),
+    );
+
+    assert!(workspace.allows_owned_pr_mutation());
+
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1"));
+    assert!(!workspace.allows_owned_pr_mutation());
+
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string("session-1"));
+    assert!(workspace.allows_owned_pr_mutation());
+
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    assert!(!workspace.allows_owned_pr_mutation());
+
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    assert!(!workspace.allows_owned_pr_mutation());
+
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    workspace.linked_plan_branch_id = None;
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    assert!(!workspace.allows_owned_pr_mutation());
 }
 
 #[test]

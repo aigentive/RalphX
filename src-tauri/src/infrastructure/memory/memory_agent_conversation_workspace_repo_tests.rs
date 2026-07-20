@@ -6,8 +6,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::repositories::AgentWorkspaceLocalCleanupClaim;
@@ -118,6 +119,39 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project-memory/agent".to_string(),
         "/tmp/ralphx/project-memory/agent".to_string(),
     )
+}
+
+#[tokio::test]
+async fn pr_poller_recovery_includes_review_pr_without_owned_automation_flags() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("review-pr-recovery-no-automation");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 779,
+        url: Some("https://github.com/owner/repo/pull/779".to_string()),
+        title: Some("External review target".to_string()),
+        head_ref_name: "external/head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("review-head".to_string()),
+    });
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    workspace.publication_push_status = None;
+    workspace.auto_publish_enabled = true;
+    repo.create_or_update(workspace)
+        .await
+        .expect("Review PR workspace should persist");
+
+    let recovered = repo
+        .list_active_pr_poller_recovery_workspaces()
+        .await
+        .expect("recovery query should succeed");
+
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].conversation_id, conversation_id);
+    assert!(!recovered[0].pr_autofix_enabled);
+    assert!(!recovered[0].pr_auto_merge_desired);
 }
 
 #[tokio::test]
