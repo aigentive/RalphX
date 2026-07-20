@@ -3561,6 +3561,40 @@ describe("getConversationActiveState", () => {
     expect(result.reviewRuntimeState).toBe("missing_runtime_identity");
   });
 
+  it("forwards cancellation and full-target refresh options for workspace review context", async () => {
+    const controller = new AbortController();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [],
+          target: rawWorkspaceReviewTarget(),
+          monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: false,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
+          is_current: false,
+          is_outdated: false,
+          should_show_tab: true,
+        }),
+    });
+
+    await getAgentWorkspaceReviewContext("conversation/1", {
+      signal: controller.signal,
+      refreshTarget: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-context?refresh_target=true",
+      ),
+      { signal: controller.signal },
+    );
+  });
+
   it("starts a general workspace review run through the encoded REST endpoint", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

@@ -408,6 +408,33 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
+  it("hydrates an initial terminal Review snapshot once", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        status: "ready",
+        isCurrent: true,
+        isOutdated: false,
+        shouldShowTab: true,
+      }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ refreshTarget: true }),
+      ),
+    );
+    expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(2);
+  });
+
   it("does not refresh an outdated Review from the UI when related runtimes become idle", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -422,7 +449,10 @@ describe("AgentsView artifact pane", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
 
@@ -458,7 +488,10 @@ describe("AgentsView artifact pane", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     invalidateQueriesSpy.mockClear();
 
@@ -490,7 +523,10 @@ describe("AgentsView artifact pane", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
