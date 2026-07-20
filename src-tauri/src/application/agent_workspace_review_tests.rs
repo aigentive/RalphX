@@ -3642,7 +3642,7 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
         .expect("persisted monitor should exist");
     assert_eq!(
         persisted.reviewed_target_scope,
-        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
     );
     assert_eq!(
         persisted.review_gate_status,
@@ -3661,6 +3661,21 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
     assert!(!start.started);
     assert_eq!(start.skipped_reason.as_deref(), Some("current"));
     assert_eq!(chat_service.get_sent_messages().await.len(), 0);
+
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("persisted monitor read should succeed")
+        .expect("persisted monitor should exist");
+    assert_eq!(
+        persisted.reviewed_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+    );
+    assert_eq!(
+        persisted.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
 }
 
 #[tokio::test]

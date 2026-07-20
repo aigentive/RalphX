@@ -475,16 +475,30 @@ pub async fn load_agent_workspace_review_context(
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
     let target = resolve_review_target(workspace, &project).await?;
     let mut monitor = load_or_create_monitor(state, workspace).await?;
+    if target.is_none()
+        && (matches!(
+            monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Reviewing
+                | AgentWorkspaceReviewMonitorStatus::Blocked
+        ) || matches!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Required
+                | AgentWorkspaceReviewGateStatus::Reviewing
+                | AgentWorkspaceReviewGateStatus::Blocking
+                | AgentWorkspaceReviewGateStatus::Failed
+        ))
+    {
+        return Err(AppError::Conflict(
+            "Workspace Review target resolution is unavailable for the current enforced state"
+                .to_string(),
+        ));
+    }
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
     if target.is_none() && monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
     }
     carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
     apply_review_gate_to_monitor(&mut monitor, target.as_ref());
-    let monitor = state
-        .agent_conversation_workspace_repo
-        .upsert_workspace_review_monitor(monitor)
-        .await?;
     let inherited_references =
         collect_workspace_review_inherited_references(state, workspace).await?;
     let goal_context = build_workspace_review_goal_context(&inherited_references);
@@ -2712,7 +2726,7 @@ fn carry_forward_existing_merged_pr_review_if_current(
     true
 }
 
-fn build_context(
+pub(crate) fn build_context(
     workspace: &AgentConversationWorkspace,
     mut monitor: AgentWorkspaceReviewMonitor,
     target: Option<AgentWorkspaceReviewTarget>,
@@ -3238,11 +3252,14 @@ pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    ensure_workspace_review_supported_mode(workspace)?;
-    if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
-        return Ok(Some(workspace_target));
-    }
-    resolve_selected_source_target(workspace, project).await
+    git_cmd::with_git_command_lane(GitCommandLane::Background, async {
+        ensure_workspace_review_supported_mode(workspace)?;
+        if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
+            return Ok(Some(workspace_target));
+        }
+        resolve_selected_source_target(workspace, project).await
+    })
+    .await
 }
 
 pub(crate) fn ensure_workspace_review_supported_mode(
