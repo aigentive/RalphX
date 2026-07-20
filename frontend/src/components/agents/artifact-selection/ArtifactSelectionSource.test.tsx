@@ -14,17 +14,17 @@ describe("ArtifactSelectionSource", () => {
       <ArtifactSelectionSource
         conversationId="conversation-1"
         source={{
-          sourceType: "artifact",
-          sourceKind: "plan",
-          sourceId: "artifact-version-2",
-          sourceTitle: "Implementation Plan",
-          artifactVersion: 2,
+          sourceType: "ticket",
+          sourceKind: "jira",
+          sourceId: "issue-2",
+          sourceKey: "ENG-2",
+          provider: "jira",
         }}
         content={"first\r\nsecond\r\nthird\n"}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Select plan lines" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select ticket lines" }));
     fireEvent.click(await screen.findByRole("button", { name: "Line 2: second" }));
     fireEvent.click(await screen.findByRole("button", { name: "Line 3: third" }), {
       shiftKey: true,
@@ -33,11 +33,11 @@ describe("ArtifactSelectionSource", () => {
     expect(
       useArtifactSelectionStore.getState().selections["conversation-1"],
     ).toEqual({
-      sourceType: "artifact",
-      sourceKind: "plan",
-      sourceId: "artifact-version-2",
-      sourceTitle: "Implementation Plan",
-      artifactVersion: 2,
+      sourceType: "ticket",
+      sourceKind: "jira",
+      sourceId: "issue-2",
+      sourceKey: "ENG-2",
+      provider: "jira",
       startLine: 2,
       endLine: 3,
       content: "second\nthird",
@@ -86,15 +86,17 @@ describe("ArtifactSelectionSource", () => {
       <ArtifactSelectionSource
         conversationId="conversation-1"
         source={{
-          sourceType: "artifact",
-          sourceKind: "plan",
-          sourceId: "plan-1",
+          sourceType: "ticket",
+          sourceKind: "linear",
+          sourceId: "issue-1",
+          sourceKey: "ENG-1",
+          provider: "linear",
         }}
         content={"first\nsecond\n\n"}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Select plan lines" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select ticket lines" }));
 
     expect(
       await screen.findByRole("button", { name: "Line 2: second" }),
