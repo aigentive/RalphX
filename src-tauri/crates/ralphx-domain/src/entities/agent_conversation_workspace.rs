@@ -920,6 +920,24 @@ impl AgentConversationWorkspace {
         self.linked_plan_branch_id.is_some()
     }
 
+    /// Whether this active workspace owns a publication PR mutation surface.
+    ///
+    /// Keep this positive and shape-aware: direct Edit workspaces and linked
+    /// Ideation workspaces are the only established owned-PR mutation modes.
+    pub fn allows_owned_pr_mutation(&self) -> bool {
+        if self.status != AgentConversationWorkspaceStatus::Active {
+            return false;
+        }
+
+        match self.mode {
+            AgentConversationWorkspaceMode::Edit => self.linked_plan_branch_id.is_none(),
+            AgentConversationWorkspaceMode::Ideation => {
+                self.linked_plan_branch_id.is_some() && self.linked_ideation_session_id.is_some()
+            }
+            _ => false,
+        }
+    }
+
     pub fn has_terminal_publication_pr_status(&self) -> bool {
         is_terminal_publication_pr_status(self.publication_pr_status.as_deref())
     }
