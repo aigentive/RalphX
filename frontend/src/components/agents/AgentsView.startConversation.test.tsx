@@ -1066,6 +1066,49 @@ describe("AgentsView start conversation", () => {
     });
   });
 
+  it("retries recognized legacy Claude MCP cleanup and keeps the draft ready to start", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await screen.findByTestId("agents-start-mcp-setup-error");
+    expect(screen.getByRole("button", { name: "Retry cleanup" })).toBeEnabled();
+
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce({ changed: true });
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        {
+          input: {
+            provider: "claude",
+            serverId: "ralphx",
+            scope: "user",
+          },
+        },
+      ),
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this cleanup draft",
+    );
+    expect(
+      await screen.findByText("Claude MCP cleanup completed. Start the agent again."),
+    ).toBeInTheDocument();
+    expect(useAgentSessionStore.getState().startConversationFailure).toBeNull();
+  });
+
   it("forces isolated branch mode when starting from the current project branch", async () => {
     mockAgentViewData();
     const currentBranchOptions: BranchBaseOption[] = [

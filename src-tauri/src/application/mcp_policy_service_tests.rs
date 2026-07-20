@@ -323,7 +323,7 @@ async fn provider_native_reserved_id_collision_fails_closed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn launch_policy_retires_exact_legacy_claude_registration_once() {
+async fn retry_retires_exact_legacy_claude_registration_once_before_launch() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
@@ -389,7 +389,7 @@ async fn launch_policy_retires_exact_legacy_claude_registration_once() {
     .with_legacy_claude_mcp_cleanup_cli_for_test(fake_cli);
 
     service
-        .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
+        .retry_legacy_claude_registration_repair()
         .await
         .unwrap();
     service
@@ -401,6 +401,49 @@ async fn launch_policy_retires_exact_legacy_claude_registration_once() {
     let remaining: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
     assert_eq!(remaining, cleaned);
+}
+
+#[tokio::test]
+async fn retry_rejects_an_ambiguous_legacy_claude_registration_without_running_cleanup() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    fs::write(
+        home.path().join(".claude.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [app_data.path().join("custom/ralphx-mcp-server.js")]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+
+    let error = service
+        .retry_legacy_claude_registration_repair()
+        .await
+        .expect_err("ambiguous registrations must require manual cleanup")
+        .to_string();
+
+    assert!(error.contains("[ralphx:mcp_setup_preflight]"));
+    assert!(error.contains("ambiguous_reserved_id"));
+    assert!(home.path().join(".claude.json").exists());
 }
 
 #[cfg(unix)]
