@@ -292,28 +292,24 @@ impl<'a> TasksFeatureToggleService<'a> {
             };
 
             for task in tasks {
-                let has_unpaused_branch_update = if task.internal_status == InternalStatus::Paused {
-                    false
-                } else {
-                    match self
-                        .state
-                        .branch_update_repo
-                        .get_active_operation(&task.id)
-                        .await
-                    {
-                        Ok(operation) => operation.is_some(),
-                        Err(error) => {
-                            tracing::error!(
-                                task_id = task.id.as_str(),
-                                error = %error,
-                                "Failed to inspect branch-update authority during Tasks OFF drain"
-                            );
-                            failures.push(task.id.as_str().to_string());
-                            continue;
-                        }
+                let has_active_branch_update = match self
+                    .state
+                    .branch_update_repo
+                    .get_active_operation(&task.id)
+                    .await
+                {
+                    Ok(operation) => operation.is_some(),
+                    Err(error) => {
+                        tracing::error!(
+                            task_id = task.id.as_str(),
+                            error = %error,
+                            "Failed to inspect branch-update authority during Tasks OFF drain"
+                        );
+                        failures.push(task.id.as_str().to_string());
+                        continue;
                     }
                 };
-                if !is_agent_active_status(task.internal_status) && !has_unpaused_branch_update {
+                if !is_agent_active_status(task.internal_status) && !has_active_branch_update {
                     continue;
                 }
                 if self
@@ -344,7 +340,7 @@ impl<'a> TasksFeatureToggleService<'a> {
                 .get_active_operation(&current.id)
                 .await?
                 .is_some();
-            if !has_active_branch_update || current.internal_status == InternalStatus::Paused {
+            if !has_active_branch_update {
                 return Ok(());
             }
         }

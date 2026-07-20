@@ -407,6 +407,72 @@ async fn disabling_tasks_pauses_plan_and_task_branch_updates_without_auto_resumi
 }
 
 #[tokio::test]
+async fn disabling_tasks_fences_an_active_branch_update_for_an_already_paused_task() {
+    let mut state = AppState::new_test();
+    let branch_repo = Arc::new(
+        MemoryBranchUpdateRepository::new().with_task_repository(Arc::clone(&state.task_repo)),
+    );
+    state.branch_update_repo = branch_repo.clone();
+    enable_tasks(&state).await;
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Paused branch drain project".to_string(),
+            "/tmp/paused-branch-drain-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Paused branch update".to_string());
+    task.internal_status = InternalStatus::Paused;
+    let task = state.task_repo.create(task).await.unwrap();
+    let operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "paused-branch-drain-history",
+        "main",
+        "ralphx/paused-branch-drain",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        GitTargetIdentity::new(
+            PathBuf::from("/tmp/paused-branch-drain-project/.git"),
+            "refs/heads/ralphx/paused-branch-drain",
+        )
+        .unwrap(),
+        Utc::now(),
+    );
+    assert!(matches!(
+        branch_repo
+            .activate(BranchUpdateActivation {
+                operation,
+                expected_status: InternalStatus::Paused,
+                update_status: InternalStatus::Paused,
+                trigger: "tasks-off-paused-test".to_string(),
+            })
+            .await
+            .unwrap(),
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+
+    let settings = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect("an active branch update on a paused task must be fenced before disabling");
+
+    assert_eq!(settings.tasks_feature_state, TasksFeatureState::Disabled);
+    let paused_task = state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(paused_task.internal_status, InternalStatus::Paused);
+    assert!(
+        paused_task
+            .metadata
+            .as_deref()
+            .is_some_and(|metadata| metadata.contains("tasks_feature_disabled")),
+        "the active operation must pass through the branch-update pause fence"
+    );
+}
+
+#[tokio::test]
 async fn disabling_tasks_keeps_off_when_drain_cannot_enumerate_projects() {
     let mut state = AppState::new_test();
     enable_tasks(&state).await;
