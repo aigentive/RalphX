@@ -50,6 +50,8 @@ interface ComposerRuntimeTriggerProps
   effortLabel: string;
   effortOptions: readonly ComposerRuntimeOption[];
   runtimeSummary: string;
+  visibleLabel?: string;
+  includesCapabilities?: boolean;
   compact: boolean;
   fastMode: boolean;
   className?: string;
@@ -66,6 +68,8 @@ export const ComposerRuntimeTrigger = forwardRef<
     effortLabel,
     effortOptions,
     runtimeSummary,
+    visibleLabel,
+    includesCapabilities = false,
     compact,
     fastMode,
     className,
@@ -80,7 +84,7 @@ export const ComposerRuntimeTrigger = forwardRef<
       type="button"
       {...buttonProps}
       data-testid="agent-composer-runtime-pill"
-      aria-label={`Runtime: ${runtimeSummary}. Choose provider, model, and effort. Shortcut Control Shift M.`}
+      aria-label={`Runtime: ${runtimeSummary}. Choose provider, model, effort${includesCapabilities ? ", and capabilities" : ""}. Shortcut Control Shift M.`}
       aria-keyshortcuts="Control+Shift+M"
       className={cn(
         "group flex min-w-0 items-center gap-2 rounded-md border outline-none transition-[height,padding,background-color,border-color] duration-150 ease-out hover:bg-[var(--bg-hover)] focus-visible:border-[var(--accent-border)] focus-visible:bg-[var(--bg-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent-muted)]",
@@ -96,7 +100,7 @@ export const ComposerRuntimeTrigger = forwardRef<
     >
       <ProviderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
       <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
-        {modelLabel}
+        {visibleLabel ?? modelLabel}
       </span>
       {effortOptions.length > 0 && (
         <span
