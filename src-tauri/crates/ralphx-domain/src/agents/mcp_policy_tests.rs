@@ -104,4 +104,6 @@ fn setup_conflict_and_repair_statuses_serialize_to_protocol_values() {
     );
     assert_eq!(McpRepairStatus::Repairable.to_string(), "repairable");
     assert_eq!(McpRepairStatus::Repaired.to_string(), "repaired");
+    assert_eq!(McpRepairStatus::Failed.to_string(), "failed");
+    assert_eq!(McpRepairStatus::ManualOnly.to_string(), "manual_only");
 }

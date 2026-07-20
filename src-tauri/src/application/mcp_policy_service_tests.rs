@@ -446,6 +446,64 @@ async fn retry_rejects_an_ambiguous_legacy_claude_registration_without_running_c
     assert!(home.path().join(".claude.json").exists());
 }
 
+#[tokio::test]
+async fn launch_preflight_preserves_an_ambiguous_legacy_registration_for_manual_remediation() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"ralphx":{"command":"user-owned"}}}"#,
+    )
+    .unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+
+    let error = service
+        .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
+        .await
+        .expect_err("ambiguous registrations must never be removed automatically")
+        .to_string();
+
+    assert!(error.contains("[ralphx:mcp_setup_preflight]"));
+    assert!(error.contains("ambiguous_reserved_id"));
+    assert!(home.path().join(".claude.json").exists());
+}
+
+#[tokio::test]
+async fn retry_without_a_legacy_registration_is_a_safe_noop() {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+
+    assert!(!service
+        .retry_legacy_claude_registration_repair()
+        .await
+        .unwrap());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn failed_legacy_cleanup_stays_typed_and_fail_closed() {

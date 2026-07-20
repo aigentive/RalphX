@@ -1237,6 +1237,39 @@ describe("AgentsView start conversation", () => {
     expect(useAgentSessionStore.getState().startConversationFailure).toBeNull();
   });
 
+  it("keeps the MCP recovery actionable when cleanup retry fails", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this failed cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await screen.findByTestId("agents-start-mcp-setup-error");
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("cleanup unavailable"));
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByTestId("agents-start-mcp-setup-error")).toHaveTextContent(
+      "Retry cleanup",
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this failed cleanup draft",
+    );
+  });
+
   it("forces isolated branch mode when starting from the current project branch", async () => {
     mockAgentViewData();
     const currentBranchOptions: BranchBaseOption[] = [

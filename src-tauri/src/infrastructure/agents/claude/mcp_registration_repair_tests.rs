@@ -60,6 +60,47 @@ async fn successful_cli_without_absence_fails_the_postcondition() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn missing_legacy_registration_is_a_safe_noop_without_invoking_cli() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let cli = home.path().join("fake-claude");
+    write_executable(&cli, "#!/bin/sh\nexit 7\n");
+
+    let changed = retire_exact_legacy_user_registration_for_test(
+        &cli,
+        home.path(),
+        app_data.path(),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+
+    assert!(!changed);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_legacy_config_fails_before_invoking_cli() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::write(home.path().join(".claude.json"), "not json").unwrap();
+    let cli = home.path().join("fake-claude");
+    write_executable(&cli, "#!/bin/sh\nexit 7\n");
+
+    let error = retire_exact_legacy_user_registration_for_test(
+        &cli,
+        home.path(),
+        app_data.path(),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error, LegacyMcpRepairFailureCode::ConfigRead);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn ambiguous_and_failed_cleanup_are_distinguished_without_mutating_config() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
