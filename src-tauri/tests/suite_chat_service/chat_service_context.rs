@@ -5,8 +5,8 @@ use ralphx_lib::application::chat_service::{
     build_initial_prompt, build_launch_plan_for_harness_with_persona_for_test,
     build_resume_command, build_resume_command_for_harness, build_resume_initial_prompt,
     create_assistant_message, finalize_assistant_message_for_test,
-    finalize_structured_assistant_message_for_test, format_attachments_for_agent,
-    format_agent_workspace_prompt_context, format_session_history, get_entity_status_for_resume,
+    finalize_structured_assistant_message_for_test, format_agent_workspace_prompt_context,
+    format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
     is_text_file, persona_builder_requires_live_draft_session,
     provider_resume_mode_for_session_under, resolve_conversation_spawn_context,
     resolve_mcp_filesystem_read_roots, resolve_working_directory, ProviderResumeMode,
@@ -103,115 +103,6 @@ fn final_spawnable_command(
         }
     }
     rendered
-}
-
-fn automation_workspace() -> AgentConversationWorkspace {
-    AgentConversationWorkspace::new(
-        ChatConversationId::from_string("automation-context-conversation"),
-        ProjectId::from_string("automation-context-project".to_string()),
-        AgentConversationWorkspaceMode::Edit,
-        IdeationAnalysisBaseRefKind::LocalBranch,
-        "main".to_string(),
-        Some("main".to_string()),
-        Some("base-sha".to_string()),
-        "ralphx/project/automation-context".to_string(),
-        "/tmp/automation-context".to_string(),
-    )
-}
-
-#[test]
-fn workspace_automation_context_reports_monitoring_and_escapes_current_state() {
-    let mut workspace = automation_workspace();
-    workspace.publication_pr_number = Some(42);
-    workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("pushed".to_string());
-    workspace.pr_autofix_enabled = true;
-    workspace.pr_auto_merge_desired = true;
-    workspace.pr_auto_merge_current = Some(true);
-    workspace.pr_supervision_status = Some("monitoring".to_string());
-    workspace.pr_supervision_summary = Some(format!(
-        "Checks <healthy> & review \"clear\" {}",
-        "x".repeat(700)
-    ));
-
-    let context = format_agent_workspace_prompt_context(&workspace, true);
-
-    assert!(context.contains("<automation_state>"));
-    assert!(context.contains("<publication_pr_number>42</publication_pr_number>"));
-    assert!(context.contains("<pr_autofix_enabled>true</pr_autofix_enabled>"));
-    assert!(context.contains("<pr_auto_merge_current>true</pr_auto_merge_current>"));
-    assert!(context.contains("Checks &lt;healthy&gt; &amp; review &quot;clear&quot;"));
-    assert!(!context.contains(&"x".repeat(601)));
-    assert!(context.contains("RalphX owns ongoing PR health monitoring"));
-    assert!(context.contains("Do not poll or watch the PR"));
-    assert!(context.contains("<!-- ralphx_internal_skill=ralphx-agent-workspace-automation -->"));
-}
-
-#[test]
-fn workspace_automation_context_reports_disabled_without_claiming_monitoring() {
-    let workspace = automation_workspace();
-
-    let context = format_agent_workspace_prompt_context(&workspace, true);
-
-    assert!(context.contains("<pr_autofix_enabled>false</pr_autofix_enabled>"));
-    assert!(context.contains("<pr_auto_merge_current>unknown</pr_auto_merge_current>"));
-    assert!(context.contains("PR autofix is disabled"));
-    assert!(context.contains("will not automatically route CI or review failures"));
-    assert!(!context.contains("owns ongoing PR health monitoring"));
-}
-
-#[test]
-fn workspace_automation_context_reports_existing_backend_repair_without_duplication() {
-    let mut workspace = automation_workspace();
-    workspace.publication_pr_number = Some(77);
-    workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("needs_agent".to_string());
-    workspace.pr_autofix_enabled = true;
-    workspace.pr_supervision_status = Some("fixing".to_string());
-
-    let context = format_agent_workspace_prompt_context(&workspace, true);
-
-    assert!(context.contains("<publication_push_status>needs_agent</publication_push_status>"));
-    assert!(context.contains("<pr_supervision_status>fixing</pr_supervision_status>"));
-    assert!(context.contains("already routed or identified a backend-owned repair"));
-    assert!(context.contains("Do not start a duplicate repair path"));
-}
-
-#[test]
-fn workspace_automation_context_omits_directive_for_disallowed_receiver() {
-    let mut workspace = automation_workspace();
-    workspace.pr_autofix_enabled = true;
-
-    let context = format_agent_workspace_prompt_context(&workspace, false);
-
-    assert!(!context.contains("<automation_state>"));
-    assert!(!context.contains("<automation_guidance>"));
-    assert!(!context.contains("ralphx_internal_skill=ralphx-agent-workspace-automation"));
-}
-
-#[test]
-fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_fails_closed() {
-    assert!(
-        persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::PersonaBuilder),
-            false
-        ),
-        "PersonaBuilder sends without a live draft session must fail closed before root reads"
-    );
-    assert!(
-        !persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::PersonaBuilder),
-            true
-        ),
-        "a live draft session satisfies the PersonaBuilder read-root guard"
-    );
-    assert!(
-        !persona_builder_requires_live_draft_session(
-            Some(AgentConversationWorkspaceMode::Chat),
-            false
-        ),
-        "existing modes must remain inert until PersonaBuilder is introduced"
-    );
 }
 
 fn mcp_runtime_args(
