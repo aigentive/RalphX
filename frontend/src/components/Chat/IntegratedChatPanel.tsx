@@ -54,6 +54,7 @@ import {
   type TeamIntent,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
+import type { MessageFolderReference } from "./MessageReferences.parse";
 import { api } from "@/lib/tauri";
 import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
@@ -152,6 +153,7 @@ type PersonaRetryAttempt = {
   message: string;
   options:
     | {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
@@ -276,6 +278,7 @@ export interface IntegratedChatComposerRenderProps {
   onSend: (
     message: string,
     options?: {
+      folderReferences?: MessageFolderReference[];
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
       artifactReferences?: ComposerArtifactReference[];
@@ -1249,6 +1252,7 @@ export function IntegratedChatPanel({
     async (
       message: string,
       options?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];

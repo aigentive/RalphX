@@ -12,6 +12,7 @@
 // - ExecutionChatService (task_execution context)
 
 mod chat_service_composer_references;
+mod chat_service_folder_reference_metadata;
 pub(crate) mod chat_service_context;
 mod chat_service_errors;
 mod chat_service_handlers;
@@ -4573,7 +4574,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         message: &str,
-        options: SendMessageOptions,
+        mut options: SendMessageOptions,
     ) -> Result<SendResult, ChatServiceError> {
         if let Some(snapshot) = options.composer_selection_snapshot.as_ref() {
             chat_service_selection_snapshot::validate_selection_snapshot(snapshot)
@@ -4602,6 +4603,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.conversation_id_override.as_ref(),
         )
         .await?;
+        if let Some(conversation_id) = options.conversation_id_override.clone() {
+            options.metadata =
+                chat_service_folder_reference_metadata::snapshot_live_folder_references_in_metadata(
+                    options.metadata,
+                    &conversation_id,
+                    self.conversation_folder_reference_repo.as_ref().map(Arc::clone),
+                    self.folder_reference_app_data_dir.as_deref(),
+                    crate::infrastructure::agents::composer_folder_references_enabled(),
+                )
+                .await;
+        }
         if runtime_context_id != context_id {
             tracing::info!(
                 %context_type,
@@ -9407,6 +9419,8 @@ mod bulk_running_state_tests {
 
 #[cfg(test)]
 mod chat_service_composer_references_tests;
+#[cfg(test)]
+mod chat_service_folder_reference_metadata_tests;
 #[cfg(test)]
 mod chat_service_context_tests;
 #[cfg(test)]

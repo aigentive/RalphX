@@ -21,7 +21,10 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
-import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
+import {
+  serializeComposerReferencesMetadata,
+  type MessageFolderReference,
+} from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isPersonaUnavailableError } from "@/lib/personaErrors";
@@ -174,6 +177,7 @@ export function useChatActions({
       attachmentIds?: string[],
       target?: string,
       composerOptions?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
@@ -206,6 +210,7 @@ export function useChatActions({
           try {
             if (activeConversationId && !target) {
               const referenceMetadata = serializeComposerReferencesMetadata({
+                folderReferences: composerOptions?.folderReferences,
                 projectReferences: composerOptions?.projectReferences,
                 integrationReferences: composerOptions?.integrationReferences,
                 artifactReferences: composerOptions?.artifactReferences,
@@ -313,6 +318,7 @@ export function useChatActions({
         } else {
           const params: {
             content: string;
+            composerFolderReferences?: MessageFolderReference[];
             attachmentIds?: string[];
             target?: string;
             composerArtifactReferences?: ComposerArtifactReference[];
@@ -323,6 +329,9 @@ export function useChatActions({
             composerSelectionSnapshot?: ComposerSelectionSnapshot;
             teamIntent?: TeamIntent | null;
           } = { content };
+          if (composerOptions?.folderReferences?.length) {
+            params.composerFolderReferences = composerOptions.folderReferences;
+          }
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
           }

@@ -258,6 +258,43 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => expect(screen.queryByText("brand-kit")).not.toBeInTheDocument());
   });
 
+  it("snapshots hydrated folder references when sending", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") {
+        return Promise.resolve([
+          {
+            id: "folder-1",
+            conversationId: "conversation-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    await waitFor(() => expect(screen.getByText("brand-kit")).toBeInTheDocument());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith("Review this folder", {
+        folderReferences: [
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ],
+      }),
+    );
+  });
+
   it("shows a retryable folder-reference warning instead of treating a failed list as empty", async () => {
     vi.mocked(invoke)
       .mockRejectedValueOnce(new Error("folder list unavailable"))

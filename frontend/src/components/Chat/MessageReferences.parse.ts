@@ -7,6 +7,7 @@ import type {
 } from "@/api/chat";
 
 export interface MessageComposerReferences {
+  folderReferences?: MessageFolderReference[];
   projectReferences: ComposerProjectReference[];
   integrationReferences: ComposerIntegrationReference[];
   artifactReferences: ComposerArtifactReference[];
@@ -14,19 +15,28 @@ export interface MessageComposerReferences {
   excerptReferences?: ComposerExcerptReference[];
 }
 
+export interface MessageFolderReference {
+  id?: string;
+  folderPath: string;
+  displayName: string;
+}
+
 export function serializeComposerReferencesMetadata({
+  folderReferences,
   projectReferences,
   integrationReferences,
   artifactReferences,
   selectionSnapshot,
   excerptReferences,
 }: {
+  folderReferences?: MessageFolderReference[] | null | undefined;
   projectReferences?: ComposerProjectReference[] | null | undefined;
   integrationReferences?: ComposerIntegrationReference[] | null | undefined;
   artifactReferences?: ComposerArtifactReference[] | null | undefined;
   selectionSnapshot?: ComposerSelectionSnapshot | null | undefined;
   excerptReferences?: ComposerExcerptReference[] | null | undefined;
 }): string | null {
+  const normalizedFolderReferences = parseFolderReferences(folderReferences);
   const normalizedProjectReferences = parseProjectReferences(projectReferences);
   const normalizedIntegrationReferences = parseIntegrationReferences(
     integrationReferences,
@@ -37,6 +47,7 @@ export function serializeComposerReferencesMetadata({
   const normalizedExcerptReferences = parseExcerptReferences(excerptReferences);
 
   if (
+    normalizedFolderReferences.length === 0 &&
     normalizedProjectReferences.length === 0 &&
     normalizedIntegrationReferences.length === 0 &&
     normalizedArtifactReferences.length === 0 &&
@@ -47,6 +58,9 @@ export function serializeComposerReferencesMetadata({
   }
 
   return JSON.stringify({
+    ...(normalizedFolderReferences.length > 0
+      ? { composer_folder_references: normalizedFolderReferences }
+      : {}),
     ...(normalizedProjectReferences.length > 0
       ? { composer_project_references: normalizedProjectReferences }
       : {}),
@@ -72,6 +86,9 @@ export function parseComposerReferencesFromMetadata(
     return null;
   }
 
+  const folderReferences = parseFolderReferences(
+    metadata.composer_folder_references ?? metadata.composerFolderReferences,
+  );
   const projectReferences = parseProjectReferences(
     metadata.composer_project_references ?? metadata.composerProjectReferences,
   );
@@ -91,6 +108,7 @@ export function parseComposerReferencesFromMetadata(
   );
 
   if (
+    folderReferences.length === 0 &&
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
     artifactReferences.length === 0 &&
@@ -101,12 +119,46 @@ export function parseComposerReferencesFromMetadata(
   }
 
   return {
+    ...(folderReferences.length > 0 ? { folderReferences } : {}),
     projectReferences,
     integrationReferences,
     artifactReferences,
     ...(selectionSnapshot ? { selectionSnapshot } : {}),
     ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
   };
+}
+
+function parseFolderReferences(raw: unknown): MessageFolderReference[] {
+  if (!Array.isArray(raw)) return [];
+  const references: MessageFolderReference[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (references.length >= 6) break;
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const folderPath = record.folderPath ?? record.folder_path;
+    const displayName = record.displayName ?? record.display_name;
+    const id = record.id;
+    if (
+      typeof folderPath !== "string" ||
+      !folderPath.trim() ||
+      folderPath.includes("\0") ||
+      typeof displayName !== "string" ||
+      !displayName.trim() ||
+      displayName.includes("\0")
+    ) {
+      continue;
+    }
+    const key = typeof id === "string" && id.trim() ? id : folderPath;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push({
+      ...(typeof id === "string" && id.trim() ? { id } : {}),
+      folderPath,
+      displayName,
+    });
+  }
+  return references;
 }
 
 const EXCERPT_SOURCE_KINDS = new Set([

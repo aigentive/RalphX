@@ -38,7 +38,10 @@ import {
   removeMessageFromConversationHistory,
   type ConversationHistoryCacheData,
 } from "./chat-cache";
-import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
+import {
+  serializeComposerReferencesMetadata,
+  type MessageFolderReference,
+} from "@/components/Chat/MessageReferences.parse";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun, ContextType } from "@/types/chat-conversation";
 import { useChatStore } from "@/stores/chatStore";
@@ -81,6 +84,7 @@ export type ConversationQueryData = {
 
 type SendMessageVariables = {
   content: string;
+  composerFolderReferences?: MessageFolderReference[];
   attachmentIds?: string[];
   target?: string;
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -1263,6 +1267,7 @@ export function useChat(
         variables.content,
         {
           metadata: serializeComposerReferencesMetadata({
+            folderReferences: variables.composerFolderReferences,
             projectReferences: variables.composerProjectReferences,
             integrationReferences: variables.composerIntegrationReferences,
             artifactReferences: variables.composerArtifactReferences,

@@ -82,6 +82,13 @@ describe("parseComposerReferencesFromMetadata", () => {
 
   it("serializes selected composer references for optimistic messages", () => {
     const metadata = serializeComposerReferencesMetadata({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -118,6 +125,13 @@ describe("parseComposerReferencesFromMetadata", () => {
 
     expect(metadata).toBeTruthy();
     expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -250,6 +264,28 @@ describe("parseComposerReferencesFromMetadata", () => {
 });
 
 describe("MessageReferences", () => {
+  it("renders an immutable folder snapshot with its full path", () => {
+    render(
+      <MessageReferences
+        folderReferences={[
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ]}
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const chip = screen.getByTestId("message-reference-folder:folder-1");
+    expect(chip).toHaveTextContent("Folder");
+    expect(chip).toHaveTextContent("brand-kit");
+    expect(chip).toHaveTextContent("/work/brand-kit");
+  });
+
   it("renders a compact frozen selection and views its saved content without fetching", () => {
     render(
       <MessageReferences

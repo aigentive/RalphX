@@ -51,6 +51,7 @@ import type { AgentStatus } from "@/stores/chatStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
+import type { MessageFolderReference } from "@/components/Chat/MessageReferences.parse";
 import {
   ChatAttachmentGallery,
   type ChatAttachment as ComposerAttachment,
@@ -246,6 +247,7 @@ export interface AgentComposerQuestionMode {
 }
 
 export interface AgentComposerSendOptions {
+  folderReferences?: MessageFolderReference[];
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
@@ -1324,11 +1326,27 @@ export function AgentComposerSurface({
     (
       message: string,
     ): { message: string; options?: AgentComposerSendOptions } => {
+      const folderReferenceSnapshots = (
+        conversationId ? folderReferences.data ?? [] : folders
+      ).map(
+        (reference): MessageFolderReference => ({
+          ...(reference.id ? { id: reference.id } : {}),
+          folderPath: reference.folderPath,
+          displayName: reference.displayName,
+        }),
+      );
       if (questionMode) {
         return {
           message,
-          ...(selectionSnapshot
-            ? { options: { selectionSnapshot } }
+          ...(selectionSnapshot || folderReferenceSnapshots.length > 0
+            ? {
+                options: {
+                  ...(folderReferenceSnapshots.length > 0
+                    ? { folderReferences: folderReferenceSnapshots }
+                    : {}),
+                  ...(selectionSnapshot ? { selectionSnapshot } : {}),
+                },
+              }
             : {}),
         };
       }
@@ -1394,15 +1412,19 @@ export function AgentComposerSurface({
         : null;
       return {
         message: withInternalSkillDirectives,
-        ...(projectReferences.length > 0 ||
-        normalizedIntegrationReferences.length > 0 ||
-        normalizedArtifactReferences.length > 0 ||
-        selectionSnapshot ||
-        excerptReferences.length > 0 ||
-        capabilityIntent ||
-        teamIntent
+        ...(folderReferenceSnapshots.length > 0 ||
+          projectReferences.length > 0 ||
+          normalizedIntegrationReferences.length > 0 ||
+          normalizedArtifactReferences.length > 0 ||
+          selectionSnapshot ||
+          excerptReferences.length > 0 ||
+          capabilityIntent ||
+          teamIntent
           ? {
               options: {
+                ...(folderReferenceSnapshots.length > 0
+                  ? { folderReferences: folderReferenceSnapshots }
+                  : {}),
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
                 ...(normalizedIntegrationReferences.length > 0
                   ? { integrationReferences: normalizedIntegrationReferences }
@@ -1420,6 +1442,9 @@ export function AgentComposerSurface({
       };
     },
     [
+      conversationId,
+      folderReferences.data,
+      folders,
       questionMode,
       selectedArtifactReferenceList,
       selectedIntegrationReferenceList,

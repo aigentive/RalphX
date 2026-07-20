@@ -2488,7 +2488,24 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("stores selected references on the first optimistic message before a conversation exists", async () => {
+  it("stores selected references on the seeded optimistic folder message", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "add_conversation_folder_reference") {
+        const input = (args as {
+          input: {
+            conversationId: string;
+            folderPath: string;
+            displayName: string;
+          };
+        }).input;
+        return Promise.resolve({
+          id: "folder-1",
+          ...input,
+          createdAt: "2026-07-20T07:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: Infinity },
@@ -2500,6 +2517,7 @@ describe("AgentsView start conversation", () => {
       contextId: "project-1",
       title: null,
     });
+    createConversationMock.mockResolvedValue(seededConversation);
     let resolveStart:
       | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
       | null = null;
@@ -2540,6 +2558,7 @@ describe("AgentsView start conversation", () => {
       mode: "edit",
       base: null,
       files: [],
+      folders: [{ folderPath: "/work/brand-kit", displayName: "brand-kit" }],
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
         {
@@ -2562,12 +2581,25 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
     );
-    const optimisticConversationId =
-      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-seeded-references",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      }),
+    );
     const optimisticMessage = queryClient.getQueryData<{
       messages: Array<{ metadata: string | null }>;
-    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+    }>(["chat", "conversations", "conversation-seeded-references"])?.messages[0];
     expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+      composer_folder_references: [
+        {
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       composer_project_references: [{ path: "src/main.ts", kind: "file" }],
       composer_integration_references: [
         {
@@ -2587,7 +2619,7 @@ describe("AgentsView start conversation", () => {
       ],
     });
 
-    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(createConversationMock).toHaveBeenCalledWith("project", "project-1");
     resolveStart?.({
       conversation: seededConversation,
       workspace: conversationWorkspace({

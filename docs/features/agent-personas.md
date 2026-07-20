@@ -21,7 +21,7 @@ Folder references are default-off during rollout. Enable **Settings → Capabili
 | Global build | Runs as a standalone conversation in a private app-owned workspace. |
 | Project build | Runs with the selected project's repository plus its private builder workspace. |
 | Attached text file | Materialized into the private workspace and exposed to the builder by path. |
-| Attached folder | Stored as a live folder reference; contents are read in place and are never copied. |
+| Attached folder | Stored as a live folder reference; contents are read in place and are never copied. Each send records the effective folder as an immutable message-history reference. |
 | Persona picker | Offers global personas plus personas scoped to the current project. |
 | Refine | Keeps the source persona's scope; approval updates the source lineage. |
 

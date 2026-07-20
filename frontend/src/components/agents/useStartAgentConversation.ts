@@ -322,6 +322,7 @@ export function useStartAgentConversation({
 
       const now = new Date().toISOString();
       const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
+        folderReferences: effectiveFolders,
         projectReferences: effectiveProjectReferences,
         integrationReferences: composerIntegrationReferences,
         artifactReferences: composerArtifactReferences,
