@@ -662,6 +662,15 @@ pub async fn execution_complete_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| step_mutation_http_error(error, "authorize execution completion"))?;
+
     let project = state
         .app_state
         .project_repo

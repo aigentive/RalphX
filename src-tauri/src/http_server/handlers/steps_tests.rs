@@ -176,6 +176,70 @@ async fn start_step_preserves_tasks_disabled_error() {
     );
 }
 
+async fn assert_execution_complete_rejects_tasks_feature_state(state: TasksFeatureState) {
+    let app_state = Arc::new(AppState::new_test());
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let task = Task::new(
+        ProjectId::from_string(format!("tasks-{state:?}-execution-complete")),
+        "Task".to_string(),
+    );
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(TasksFeatureState::Enabled, state)
+        .await
+        .unwrap();
+
+    let error = execution_complete_http(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off execution completion must be rejected before side effects");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert!(
+        app_state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "rejection must preserve the task"
+    );
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_while_tasks_disabled_before_side_effects() {
+    assert_execution_complete_rejects_tasks_feature_state(TasksFeatureState::Disabled).await;
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_while_tasks_draining_before_side_effects() {
+    assert_execution_complete_rejects_tasks_feature_state(TasksFeatureState::Draining).await;
+}
+
 #[tokio::test]
 async fn execution_complete_rejects_dirty_worktree() {
     let tmp_dir = create_temp_git_repo();
