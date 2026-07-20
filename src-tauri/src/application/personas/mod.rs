@@ -36,6 +36,13 @@ pub fn draft_updated_payload(persona: &Persona) -> Value {
     })
 }
 
+/// Draft-update payload scoped to the PersonaBuilder conversation that owns the save.
+pub fn builder_draft_updated_payload(persona: &Persona, conversation_id: &str) -> Value {
+    let mut payload = draft_updated_payload(persona);
+    payload["builder_conversation_id"] = json!(conversation_id);
+    payload
+}
+
 #[derive(Debug, Clone)]
 pub struct SavePersonaDraftInput {
     pub project_id: Option<ProjectId>,

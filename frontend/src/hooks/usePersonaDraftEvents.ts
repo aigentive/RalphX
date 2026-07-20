@@ -7,10 +7,13 @@ import { useEventBus } from "@/providers/EventProvider";
 import { PersonaDraftUpdatedEventSchema } from "@/types/persona";
 
 /** Refreshes the authoritative draft row after a persona-builder event. */
-export function usePersonaDraftEvents(): string | null {
+export function usePersonaDraftEvents(conversationId: string): string | null {
   const bus = useEventBus();
   const queryClient = useQueryClient();
-  const [draftId, setDraftId] = useState<string | null>(null);
+  const [eventBinding, setEventBinding] = useState<{
+    conversationId: string;
+    draftId: string;
+  } | null>(null);
 
   useEffect(() => {
     return bus.subscribe<unknown>("persona:draft_updated", (payload) => {
@@ -20,7 +23,9 @@ export function usePersonaDraftEvents(): string | null {
       }
 
       const nextDraftId = parsed.data.draft_id;
-      setDraftId(nextDraftId);
+      if (parsed.data.builder_conversation_id === conversationId) {
+        setEventBinding({ conversationId, draftId: nextDraftId });
+      }
       void queryClient.invalidateQueries({ queryKey: personaKeys.detail(nextDraftId) });
       void queryClient.fetchQuery({
         queryKey: personaKeys.detail(nextDraftId),
@@ -37,7 +42,9 @@ export function usePersonaDraftEvents(): string | null {
         });
       }
     });
-  }, [bus, queryClient]);
+  }, [bus, conversationId, queryClient]);
 
-  return draftId;
+  return eventBinding?.conversationId === conversationId
+    ? eventBinding.draftId
+    : null;
 }

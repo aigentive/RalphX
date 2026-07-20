@@ -735,6 +735,30 @@ fn persona_extractor_prompt_requires_distilled_persona_output() {
 }
 
 #[test]
+fn persona_extractor_prompt_requires_in_conversation_persistence() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for required_contract_text in [
+            "one Persona lineage",
+            "separate Persona Builder conversation",
+            "`save_persona_draft` succeeds",
+            "Markdown-only response is not successful completion",
+            "Do not present paste-ready persona content",
+            "Persona tab",
+            "Approve persona",
+        ] {
+            assert!(
+                prompt.contains(required_contract_text),
+                "persona extractor {harness:?} prompt should require `{required_contract_text}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn persona_extractor_codex_prompt_has_no_claude_syntax() {
     let prompt = load_harness_agent_prompt(
         &project_root(),

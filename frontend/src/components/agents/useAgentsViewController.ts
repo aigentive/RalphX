@@ -713,9 +713,12 @@ export function useAgentsViewController({
   const hasAutomationArtifact =
     activeConversation?.agentMode === "automation" &&
     Boolean(activeConversation.automationId);
+  const hasPersonaArtifact =
+    activeConversation?.agentMode === "persona_builder";
   const hasAutoOpenArtifactsWithReview =
     hasAutoOpenArtifacts ||
     hasAutomationArtifact ||
+    hasPersonaArtifact ||
     Boolean(reviewArtifactId) ||
     shouldShowWorkspaceReviewTab;
   const knownFocusIdeationSessionId =
@@ -1010,6 +1013,15 @@ export function useAgentsViewController({
     seedArtifactTab,
     selectedConversationId,
   ]);
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      activeConversation?.agentMode !== "persona_builder"
+    ) {
+      return;
+    }
+    seedArtifactTab(selectedConversationId, "persona");
+  }, [activeConversation?.agentMode, seedArtifactTab, selectedConversationId]);
   useEffect(() => {
     if (!externalTaskArtifactFocusRequest || !selectedConversationId) {
       return;

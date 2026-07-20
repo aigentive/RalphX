@@ -10,7 +10,9 @@ Agent Personas are reusable, prompt-only behavior profiles for Agent conversatio
 - **Build with Agent:** In **Settings → Personas**, choose **Build with Agent**, select Global or a project, and RalphX opens the standard Agents composer with **Persona** mode locked.
 - **Refine with Agent:** Use a persona's Refine action to open a scope-locked Persona conversation seeded from that persona.
 
-Persona building now uses the normal Agents conversation. Add text files or folder references from the composer, describe the desired persona, and answer the builder's questions. The Persona tab shows the conversation-bound draft and approval actions; there is no separate Settings ingestion screen.
+Persona building now uses the normal Agents conversation. Add text files or folder references from the composer, describe and name the desired persona, and answer the builder's questions. The builder saves the result directly to the conversation-bound draft; a Markdown-only chat response is not a completed build. The Persona tab opens with the conversation, shows the saved draft, and provides **Approve persona**. There is no copy/paste step or separate Settings ingestion screen.
+
+Each Persona conversation owns one persona lineage. If a request describes several personas, choose one to build first and start a separate Persona conversation for each additional persona.
 
 Folder references are default-off during rollout. Enable **Settings → Capabilities → Folder context** to show **Add folder** directly below **Add files** in supported Agent composers. Standalone conversations remain controlled by the `standalone_conversations` config/env flag.
 

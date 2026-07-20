@@ -881,7 +881,8 @@ async fn save_draft_handler_emits_body_free_event_payload() {
     let _persona_flag = enable_personas(true).await;
     let event_sink = RecordingEventSink::new();
     let state = setup_state(Some(event_sink.clone()));
-    let (_conversation, headers) = persona_builder_headers(&state).await;
+    let (conversation, headers) = persona_builder_headers(&state).await;
+    let conversation_id = conversation.id.as_str();
 
     let draft = save_persona_draft(
         State(state),
@@ -902,7 +903,7 @@ async fn save_draft_handler_emits_body_free_event_payload() {
         .payload
         .as_object()
         .expect("payload should be object");
-    assert_eq!(payload.len(), 4);
+    assert_eq!(payload.len(), 5);
     assert_eq!(
         payload.get("draft_id").and_then(serde_json::Value::as_str),
         Some(draft.id.as_str())
@@ -922,6 +923,12 @@ async fn save_draft_handler_emits_body_free_event_payload() {
             .get("artifact_id")
             .and_then(serde_json::Value::as_str),
         draft.artifact_id.as_ref().map(|id| id.as_str())
+    );
+    assert_eq!(
+        payload
+            .get("builder_conversation_id")
+            .and_then(serde_json::Value::as_str),
+        Some(conversation_id.as_str())
     );
     assert!(!payload.contains_key("content"));
     assert!(!payload.contains_key("body"));

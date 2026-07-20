@@ -32,7 +32,13 @@ describe("PersonaDraftUpdatedEventSchema", () => {
         draft_id: "persona-1",
         version: 2,
         content_hash: "hash-2",
+        builder_conversation_id: "conversation-1",
       }),
-    ).toEqual({ draft_id: "persona-1", version: 2, content_hash: "hash-2" });
+    ).toEqual({
+      draft_id: "persona-1",
+      version: 2,
+      content_hash: "hash-2",
+      builder_conversation_id: "conversation-1",
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -182,6 +182,25 @@ describe("PersonaArtifactPanel", () => {
     expect(screen.getByRole("button", { name: "Approve persona" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open in Settings" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
+  });
+
+  it("reveals the conversation-owned draft immediately after the first agent save", async () => {
+    mockPersonaQueries();
+    renderPanel(conversation());
+
+    await waitFor(() => expect(window.__eventBus).toBeDefined());
+    act(() => {
+      window.__eventBus?.emit("persona:draft_updated", {
+        draft_id: "draft-1",
+        version: 3,
+        content_hash: "hash-3",
+        artifact_id: "artifact-1",
+        builder_conversation_id: "conversation-1",
+      });
+    });
+
+    expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve persona" })).toBeInTheDocument();
   });
 
   it("renders approved and archived states with the correct action availability", async () => {

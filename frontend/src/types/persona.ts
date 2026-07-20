@@ -70,6 +70,7 @@ export const PersonaDraftUpdatedEventSchema = z.object({
   version: z.number().int(),
   content_hash: z.string().min(1),
   artifact_id: z.string().min(1).nullable().optional(),
+  builder_conversation_id: z.string().min(1).optional(),
 });
 
 export type PersonaDraftUpdatedEvent = z.infer<

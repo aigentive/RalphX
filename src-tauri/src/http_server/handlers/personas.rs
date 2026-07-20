@@ -7,7 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::application::personas::{
-    draft_updated_payload, PersonaService, SavePersonaDraftInput, PERSONA_FEATURE_DISABLED_PREFIX,
+    builder_draft_updated_payload, PersonaService, SavePersonaDraftInput,
+    PERSONA_FEATURE_DISABLED_PREFIX,
 };
 use crate::domain::entities::{ChatContextType, ChatConversationId, Persona, PersonaId, ProjectId};
 use crate::error::AppError;
@@ -112,10 +113,11 @@ pub async fn save_persona_draft(
         }
     }
     .map_err(map_app_error)?;
-    state
-        .app_state
-        .events
-        .emit("persona:draft_updated", draft_updated_payload(&persona));
+    let builder_conversation_id = conversation.id.as_str();
+    state.app_state.events.emit(
+        "persona:draft_updated",
+        builder_draft_updated_payload(&persona, &builder_conversation_id),
+    );
     Ok(Json(persona))
 }
 

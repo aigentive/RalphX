@@ -68,10 +68,10 @@ function StatusPill({ status }: { status: Persona["status"] }) {
 }
 
 export function PersonaArtifactPanel({ conversation }: PersonaArtifactPanelProps) {
-  usePersonaDraftEvents();
+  const eventDraftId = usePersonaDraftEvents(conversation.id);
   const [approvedPersona, setApprovedPersona] = useState<Persona | null>(null);
   const [selectedArtifactVersion, setSelectedArtifactVersion] = useState<number | null>(null);
-  const draftId = conversation.builderDraftId ?? null;
+  const draftId = conversation.builderDraftId ?? eventDraftId;
   const resultId = conversation.builderResultPersonaId ?? null;
   const boundPersonaId = approvedPersona?.id ?? draftId ?? resultId;
   const personaQuery = usePersona(boundPersonaId ?? "");
