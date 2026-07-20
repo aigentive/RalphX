@@ -75,14 +75,14 @@ async fn active_review_fixture() -> (
         .expect("seed project");
     let conversation_id = ChatConversationId::new();
     let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.id = conversation_id.clone();
+    conversation.id = conversation_id;
     app_state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("seed conversation");
     let workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id,
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -102,8 +102,8 @@ async fn active_review_fixture() -> (
         .expect("load review context");
     let target = context.target.expect("review target");
     let review_conversation_id = ChatConversationId::new();
-    let run = AgentRun::new(review_conversation_id.clone());
-    let run_id = run.id.clone();
+    let run = AgentRun::new(review_conversation_id);
+    let run_id = run.id;
     app_state
         .agent_run_repo
         .create(run)
@@ -115,7 +115,7 @@ async fn active_review_fixture() -> (
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
     monitor.current_target_scope = Some(target.scope);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint);
-    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.review_conversation_id = Some(review_conversation_id);
     monitor.last_run_id = Some(run_id.to_string());
     app_state
         .agent_conversation_workspace_repo
