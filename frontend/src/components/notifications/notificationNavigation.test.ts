@@ -1,7 +1,9 @@
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { automationsApi } from "@/api/automations";
+import { permissionApi } from "@/api/permission";
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
@@ -12,20 +14,28 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 
-import { navigateNotification } from "./notificationNavigation";
+import {
+  navigateNotification,
+  performNotificationPrimaryAction,
+} from "./notificationNavigation";
 
-const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+const { toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
 
 vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
+vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
+vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
   navigateToAgentPlan: vi.fn(),
   navigateToIdeationSession: vi.fn(),
 }));
-vi.mock("sonner", () => ({ toast: { error: toastError } }));
+vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 
 const target = {
   kind: "automation_run" as const,
@@ -45,6 +55,8 @@ describe("navigateNotification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(tasksApi.get).mockResolvedValue({ id: "task-1" } as never);
+    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
+    vi.mocked(requestAutomationRunOpen).mockResolvedValue({ applied: true });
     vi.spyOn(useUiStore, "getState").mockReturnValue({ navigateToTask, setCurrentView, viewByProject: {}, selectedTaskByProject: {} } as ReturnType<typeof useUiStore.getState>);
     vi.spyOn(useUiStore, "setState").mockImplementation(setState);
     vi.spyOn(useProjectStore, "getState").mockReturnValue({ activeProjectId: "project-1", selectProject } as ReturnType<typeof useProjectStore.getState>);
@@ -56,8 +68,8 @@ describe("navigateNotification", () => {
     ["automation_plan_approval", "plan"],
     ["automation_run_failed", "automation"],
     ["automation_run_completed", "pr"],
-  ] as const)("maps %s to the %s automation tab intent", (category, tabHint) => {
-    navigateNotification(
+  ] as const)("maps %s to the %s automation tab intent", async (category, tabHint) => {
+    await navigateNotification(
       { id: "notification-1", category, target },
       {} as QueryClient,
     );
@@ -69,11 +81,53 @@ describe("navigateNotification", () => {
     );
   });
 
-  it("keeps a supplied automation detail callback when opening a complete run", () => {
+  it("resumes a paused automation as the notification primary action", async () => {
+    vi.mocked(automationsApi.resume).mockResolvedValue({} as never);
+    const queryClient = new QueryClient();
+    const onClose = vi.fn();
+
+    const acted = await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-1",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      queryClient,
+      { onClose },
+    );
+
+    expect(acted).toBe(true);
+    expect(automationsApi.resume).toHaveBeenCalledWith("automation-1");
+    expect(toastSuccess).toHaveBeenCalledWith("Automation resumed");
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(requestAutomationRunOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stale paused notification open when resume is rejected", async () => {
+    vi.mocked(automationsApi.resume).mockRejectedValue(new Error("not paused"));
+    const onClose = vi.fn();
+
+    const acted = await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-stale",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      new QueryClient(),
+      { onClose },
+    );
+
+    expect(acted).toBe(false);
+    expect(toastError).toHaveBeenCalledWith("Automation is no longer resumable");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(requestAutomationRunOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps a supplied automation detail callback when opening a complete run", async () => {
     const onClose = vi.fn();
     const onOpenAutomationDetail = vi.fn();
 
-    navigateNotification(
+    await navigateNotification(
       { id: "automation-complete", category: "automation_run_failed", target },
       {} as QueryClient,
       { onClose, onOpenAutomationDetail },
@@ -87,21 +141,43 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens the selected permission request and closes the notification surface", () => {
+  it("opens a pending durable permission request from its correlation key", async () => {
     const onClose = vi.fn();
     const listener = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", listener);
+    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+      { request_id: "request-1", tool_name: "Bash", tool_input: {} },
+    ]);
 
-    navigateNotification(
-      { id: "perm:request-1", category: "permission_request", target: { kind: "none" } },
+    const navigated = await navigateNotification(
+      {
+        id: "durable-notification-uuid",
+        dedupeKey: "perm:request-1",
+        category: "permission_request",
+        target: { kind: "none" },
+      },
       {} as QueryClient,
       { onClose },
     );
 
+    expect(navigated).toBe(true);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(navigateToTask).not.toHaveBeenCalled();
     window.removeEventListener("ralphx:open-permission-dialog", listener);
+  });
+
+  it("settles a stale permission notification but fails closed on request-state read errors", async () => {
+    const item = {
+      id: "durable-notification-uuid",
+      dedupeKey: "perm:request-1",
+      category: "permission_request" as const,
+      target: { kind: "none" as const },
+    };
+
+    await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(true);
+    vi.mocked(permissionApi.getPendingPermissions).mockRejectedValueOnce(new Error("offline"));
+    await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(false);
   });
 
   it("keeps same-project task routing on the fast path", async () => {
@@ -191,33 +267,63 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it.each(["plan_approval", "team_plan_approval"] as const)(
-    "opens %s targets in the conversation Plan artifact",
-    (category) => {
-      const onClose = vi.fn();
+  it("opens artifact plan approval in the conversation Plan artifact", () => {
+    const onClose = vi.fn();
 
-      navigateNotification(
-        {
-          id: `${category}-1`,
-          category,
-          target: {
-            kind: "agent_conversation",
-            projectId: "project-2",
-            conversationId: "conversation-1",
-          },
+    navigateNotification(
+      {
+        id: "plan-approval-1",
+        category: "plan_approval",
+        target: {
+          kind: "agent_conversation",
+          projectId: "project-2",
+          conversationId: "conversation-1",
         },
-        {} as QueryClient,
-        { onClose },
-      );
+      },
+      {} as QueryClient,
+      { onClose },
+    );
 
-      expect(navigateToAgentPlan).toHaveBeenCalledWith(
-        "project-2",
-        "conversation-1",
-      );
-      expect(navigateToAgentConversation).not.toHaveBeenCalled();
-      expect(onClose).toHaveBeenCalledOnce();
-    },
-  );
+    expect(navigateToAgentPlan).toHaveBeenCalledWith("project-2", "conversation-1");
+    expect(navigateToAgentConversation).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("opens team-plan approval in its inline Agent conversation", () => {
+    const onClose = vi.fn();
+
+    navigateNotification(
+      {
+        id: "team-plan-1",
+        category: "team_plan_approval",
+        target: {
+          kind: "agent_conversation",
+          projectId: "project-2",
+          conversationId: "conversation-1",
+        },
+      },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(navigateToAgentConversation).toHaveBeenCalledWith("project-2", "conversation-1");
+    expect(navigateToAgentPlan).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("reports automation navigation success only after exact run focus applies", async () => {
+    vi.mocked(requestAutomationRunOpen).mockResolvedValueOnce({
+      applied: false,
+      reason: "stale",
+    });
+
+    const result = await navigateNotification(
+      { id: "automation-1", category: "automation_plan_approval", target },
+      {} as QueryClient,
+    );
+
+    expect(result).toBe(false);
+  });
 
   it("keeps the legacy setup-conversation fallback and closes malformed targets", () => {
     const onClose = vi.fn();

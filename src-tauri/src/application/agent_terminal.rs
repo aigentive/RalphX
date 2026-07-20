@@ -816,6 +816,8 @@ fn build_terminal_command(cwd: &Path) -> CommandBuilder {
     command.env("SHELL", shell);
     command.env("PWD", cwd.as_os_str());
     command.env("PATH", terminal_env_path());
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_terminal_command(&mut command);
     command
 }
 

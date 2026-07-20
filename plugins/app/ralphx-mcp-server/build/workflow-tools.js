@@ -2,6 +2,62 @@
  * Workflow and coordination MCP tool definitions
  */
 export const WORKFLOW_TOOLS = [
+    {
+        name: "create_agent_workflow_script",
+        description: "Store a generated RalphX Agent Workflow JavaScript program for user review. This never launches the program or grants approval.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                script: { type: "string" },
+                meta: {
+                    type: "object",
+                    properties: {
+                        name: { type: "string" },
+                        description: { type: "string" },
+                        phases: { type: "array", items: { type: "string" } },
+                        maxConcurrency: { type: "integer", minimum: 1, maximum: 16 },
+                        maxInvocations: { type: "integer", minimum: 1, maximum: 1000 },
+                    },
+                    required: ["name", "maxConcurrency", "maxInvocations"],
+                },
+                permission_summary: { type: "object" },
+                estimated_fanout: { type: "integer", minimum: 0, maximum: 1000 },
+            },
+            required: ["script", "meta", "permission_summary", "estimated_fanout"],
+        },
+    },
+    {
+        name: "start_agent_workflow_run",
+        description: "Launch a previously user-approved Agent Workflow. The exact script and permission hashes must still match; this tool cannot approve its own script.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                script_id: { type: "string" },
+                script_hash: { type: "string" },
+                permission_hash: { type: "string" },
+                launch_id: {
+                    type: "string",
+                    description: "Optional UUID idempotency key for retrying the same launch.",
+                },
+                args: { type: "object" },
+                harness: {
+                    type: "string",
+                    enum: ["claude", "codex"],
+                    description: "Optional provider override; defaults to the parent conversation runtime.",
+                },
+            },
+            required: ["script_id", "script_hash", "permission_hash"],
+        },
+    },
+    ...["get", "pause", "resume", "cancel"].map((action) => ({
+        name: `${action}_agent_workflow_run`,
+        description: `${action[0].toUpperCase()}${action.slice(1)} a durable Agent Workflow run.`,
+        inputSchema: {
+            type: "object",
+            properties: { run_id: { type: "string" } },
+            required: ["run_id"],
+        },
+    })),
     // ========================================================================
     // TEAM TOOLS (team lead agents)
     // ========================================================================
@@ -104,23 +160,21 @@ export const WORKFLOW_TOOLS = [
         description: "Create a team artifact documenting research findings, analysis, or summary. " +
             "Automatically sets bucket_id='team-findings' and populates metadata with team info. " +
             "Use for documenting specialist findings, debate analyses, or lead-synthesized summaries. " +
-            "Verification specialists should target the PARENT ideation session_id. If a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
-            "If a caller is retrying after an incomplete run, reuse the same parent session_id and publish a partial artifact rather than omitting the artifact entirely. " +
-            "This is the general team-artifact path, not the typed verification-finding path.",
+            "If a caller is retrying after an incomplete run, reuse the same session_id and publish a partial artifact rather than omitting the artifact entirely.",
         inputSchema: {
             type: "object",
             examples: [
                 {
                     session_id: "parent-session-id",
-                    title: "Completeness: Round 1 cold boot coverage",
-                    content: "{\"status\":\"partial\",\"critic\":\"completeness\",\"round\":1,\"coverage\":\"affected_files\",\"summary\":\"Need one more pass on recovery edge cases\",\"gaps\":[]}",
+                    title: "Cold boot coverage review",
+                    content: "Reviewed recovery paths and identified one remaining cold-boot edge case.",
                     artifact_type: "TeamResearch",
                 },
             ],
             properties: {
                 session_id: {
                     type: "string",
-                    description: "The ideation or execution session ID. For verification critics/specialists the PARENT ideation session ID is canonical; verification child session IDs are auto-remapped to that parent.",
+                    description: "The ideation or execution session ID that owns this team artifact.",
                 },
                 title: {
                     type: "string",
@@ -144,87 +198,9 @@ export const WORKFLOW_TOOLS = [
         },
     },
     {
-        name: "publish_verification_finding",
-        description: "Publish a typed verification finding for the current verification round. " +
-            "Use this for verification-path specialists and required plan critics so the backend can aggregate gaps directly from structured metadata. " +
-            "If session_id is omitted, the backend uses the current session context and remaps verification child sessions plus delegated verification specialists/critics to the parent ideation session automatically.",
-        inputSchema: {
-            type: "object",
-            examples: [
-                {
-                    critic: "completeness",
-                    round: 1,
-                    status: "partial",
-                    coverage: "affected_files",
-                    summary: "Migration needs an explicit backfill step.",
-                    gaps: [
-                        {
-                            severity: "high",
-                            category: "completeness",
-                            description: "Existing projects are not covered by a concrete backfill step.",
-                            why_it_matters: "Persisted rows can retain the old mode.",
-                        },
-                    ],
-                },
-            ],
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "Optional parent ideation session ID. Omit this in normal verifier-critic flows and let the backend resolve the correct parent session automatically, including delegated verification specialists and critics.",
-                },
-                critic: {
-                    type: "string",
-                    description: "Critic identifier, for example 'completeness', 'feasibility', 'intent', 'code-quality', 'ux', 'prompt-quality', 'pipeline-safety', or 'state-machine'.",
-                },
-                round: {
-                    type: "integer",
-                    description: "Verification round number (1-based).",
-                },
-                status: {
-                    type: "string",
-                    enum: ["complete", "partial", "error"],
-                    description: "Whether the critic finished fully, partially, or hit an infrastructure error.",
-                },
-                coverage: {
-                    type: "string",
-                    description: "Optional coverage scope such as 'plan_only', 'affected_files', or 'affected_files_plus_adjacent'.",
-                },
-                summary: {
-                    type: "string",
-                    description: "One-sentence synthesis of the critic result.",
-                },
-                gaps: {
-                    type: "array",
-                    description: "Structured verification gaps identified by the critic.",
-                    items: {
-                        type: "object",
-                        properties: {
-                            severity: {
-                                type: "string",
-                                enum: ["critical", "high", "medium", "low"],
-                            },
-                            category: { type: "string" },
-                            description: { type: "string" },
-                            why_it_matters: { type: "string" },
-                            source: { type: "string" },
-                            lens: { type: "string" },
-                        },
-                        required: ["severity", "category", "description"],
-                    },
-                },
-                title_suffix: {
-                    type: "string",
-                    description: "Optional short human-readable suffix appended to the generated artifact title.",
-                },
-            },
-            required: ["critic", "round", "status", "summary", "gaps"],
-        },
-    },
-    {
         name: "get_team_artifacts",
         description: "Retrieve all team artifacts for a session. " +
             "Returns artifacts from the 'team-findings' bucket filtered by session ID. " +
-            "Use the PARENT ideation session_id for verification flows; if a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
             "This is the raw artifact listing surface for cases where you genuinely need the full unfiltered team-artifact list.",
         inputSchema: {
             type: "object",
@@ -487,11 +463,11 @@ export const WORKFLOW_TOOLS = [
                 },
                 source_conversation_id: {
                     type: "string",
-                    description: "Optional source conversation ID for traceability.",
+                    description: "Source conversation ID. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
                 },
                 source_message_id: {
                     type: "string",
-                    description: "Optional source message ID for traceability.",
+                    description: "Exact user message ID authorizing the follow-up. Required when the target is owned by a native Tasks pipeline; optional for legacy/external sessions.",
                 },
             },
             required: ["project_id", "session_id", "title", "steps", "acceptance_criteria"],

@@ -68,6 +68,7 @@ fn automation(id: &str) -> Automation {
         first_run_prompt: Some("Build the first PR".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -320,7 +321,7 @@ fn automation_run_start_request_maps_to_manual_start_input() {
 
     let input = request.into_start_input().unwrap();
 
-    assert_eq!(input.project_id, "project-1");
+    assert_eq!(input.project_id.as_deref(), Some("project-1"));
     assert_eq!(
         input.content,
         format!("{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\nBuild the first PR")

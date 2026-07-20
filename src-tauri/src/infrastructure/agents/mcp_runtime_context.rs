@@ -5,12 +5,14 @@ pub struct McpRuntimeContext {
     pub context_type: Option<String>,
     pub context_id: Option<String>,
     pub conversation_id: Option<String>,
+    pub coordination_mode: Option<String>,
     pub agent_run_id: Option<String>,
     pub task_id: Option<String>,
     pub task_state: Option<String>,
     pub project_id: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub filesystem_read_roots: Vec<PathBuf>,
+    pub enforce_filesystem_roots: bool,
     pub lead_session_id: Option<String>,
     pub parent_conversation_id: Option<String>,
 }
@@ -29,6 +31,9 @@ pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRu
     }
     if let Some(conversation_id) = runtime_context.conversation_id.as_deref() {
         params.push(("conversation_id", conversation_id));
+    }
+    if let Some(coordination_mode) = runtime_context.coordination_mode.as_deref() {
+        params.push(("coordination_mode", coordination_mode));
     }
     if let Some(agent_run_id) = runtime_context.agent_run_id.as_deref() {
         params.push(("agent_run_id", agent_run_id));
@@ -78,6 +83,10 @@ pub fn append_mcp_runtime_args(
         args.push("--conversation-id".to_string());
         args.push(conversation_id.to_string());
     }
+    if let Some(coordination_mode) = runtime_context.coordination_mode.as_deref() {
+        args.push("--coordination-mode".to_string());
+        args.push(coordination_mode.to_string());
+    }
     if let Some(agent_run_id) = runtime_context.agent_run_id.as_deref() {
         args.push("--agent-run-id".to_string());
         args.push(agent_run_id.to_string());
@@ -101,6 +110,10 @@ pub fn append_mcp_runtime_args(
     for filesystem_read_root in &runtime_context.filesystem_read_roots {
         args.push("--filesystem-read-root".to_string());
         args.push(filesystem_read_root.to_string_lossy().into_owned());
+    }
+    if runtime_context.enforce_filesystem_roots {
+        args.push("--filesystem-enforced".to_string());
+        args.push("1".to_string());
     }
     if let Some(lead_session_id) = runtime_context.lead_session_id.as_deref() {
         args.push("--lead-session-id".to_string());

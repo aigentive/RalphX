@@ -12,26 +12,33 @@ use crate::application::{
     chat_service::{ClaudeChatService, ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, ProviderSessionRef};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentProviderSettings, McpOverrideState, McpServerKey, ProviderSessionRef,
+};
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
-    IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
-    NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, ProjectSkill,
-    ProjectSkillId, ProjectSkillLifecycleStatus, Task, TaskOutcomeStatus, VerificationStatus,
+    app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
+    AgentRunStatus, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
+    ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
+    NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, Task, TaskOutcomeStatus,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, SkillUsageListOptions,
-    StateHistoryMetadata, StatusTransition, TaskDependencyRepository, TaskOutcomeListOptions,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentRunRepository,
+    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, ExecutionSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, SkillUsageListOptions, StateHistoryMetadata, StatusTransition,
+    TaskDependencyRepository, TaskOutcomeListOptions, TaskProposalRepository, TaskRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
+use crate::infrastructure::memory::MemoryValidationRunRepository;
 use tauri::{AppHandle, Runtime};
 
 #[allow(clippy::too_many_arguments)]
@@ -66,6 +73,11 @@ async fn handle_stream_success<R: Runtime>(
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
     super::handle_stream_success(
         agent_run_id,
         context_type,
@@ -91,6 +103,9 @@ async fn handle_stream_success<R: Runtime>(
         agent_conversation_workspace_repo,
         plan_branch_repo,
         task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
         execution_settings_repo,
         &None,
         &None,
@@ -149,6 +164,11 @@ async fn handle_stream_error<R: Runtime + 'static>(
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) -> bool {
+    let validation_run_repo = app_handle.as_ref().and_then(|handle| {
+        handle
+            .try_state::<AppState>()
+            .map(|state| Arc::clone(&state.validation_run_repo))
+    });
     super::handle_stream_error(
         error,
         stream_error,
@@ -197,6 +217,9 @@ async fn handle_stream_error<R: Runtime + 'static>(
         interactive_process_registry,
         review_repo,
         task_step_repo,
+        &validation_run_repo,
+        &None,
+        &None,
         verification_child_registry,
         &None,
     )
@@ -474,6 +497,8 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -485,20 +510,55 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
 }
 
 #[tokio::test]
-async fn recovery_retry_spawnable_gate_allows_non_execution_without_provider_repo() {
+async fn recovery_retry_spawnable_gate_blocks_non_execution_without_app_state() {
     let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
         &None,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
 
     assert!(
-        spawnable.is_some(),
-        "non-execution recovery retry can preserve the legacy no-provider path"
+        spawnable.is_none(),
+        "non-execution recovery retry must not bypass MCP policy without app state"
     );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_policy_without_provider_repo() {
+    let app_state = AppState::new_test();
+    let key = McpServerKey::new(AgentHarnessKind::Claude, "github").unwrap();
+    app_state
+        .mcp_policy_repo
+        .set_server_state(None, &key, McpOverrideState::Disabled)
+        .await
+        .expect("save global MCP deny");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .expect("app state can resolve policy without provider settings");
+
+    assert!(spawnable
+        .get_args_for_test()
+        .windows(2)
+        .any(|args| args == ["--disallowedTools", "mcp__github__*"]));
 }
 
 #[tokio::test]
@@ -518,6 +578,8 @@ async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await;
@@ -545,12 +607,19 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
         .await
         .expect("save enabled provider settings");
     let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
 
-    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
-        &None,
+    let spawnable = recovery_retry_spawnable_with_provider_gate(
+        &handle,
         &provider_repo,
         AgentHarnessKind::Claude,
         ChatContextType::Review,
+        None,
+        std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
     .await
@@ -564,11 +633,18 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
 
 #[tokio::test]
 async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
     let provider_gate = RecoveryRetryProviderGate::new(
-        &None,
+        &app_handle,
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
@@ -590,6 +666,8 @@ async fn resolve_recovery_retry_spawnable_drops_build_errors() {
         &None,
         AgentHarnessKind::Claude,
         ChatContextType::Project,
+        None,
+        std::path::Path::new("/tmp"),
     );
 
     let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
@@ -629,6 +707,98 @@ fn recovery_retry_app_repos_read_required_app_state_repos() {
     assert!(repos.delegated_session_repo.is_some());
 }
 
+#[tokio::test]
+async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("temp directory");
+    let app_data = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("app-data"),
+        "recovery retry folder reference app data",
+    )
+    .expect("safe app data");
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("project"),
+        "recovery retry project root",
+    )
+    .expect("safe project root");
+    let folder = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("folder"),
+        "recovery retry folder root",
+    )
+    .expect("safe folder root");
+    std::fs::create_dir(&app_data).expect("create app data");
+    std::fs::create_dir(&project_root).expect("create project root");
+    std::fs::create_dir(&folder).expect("create folder root");
+
+    let mut state = AppState::new_test();
+    state.app_paths = crate::application::AppPaths::new(app_data.clone(), None);
+    let project = Project::new(
+        "Recovery folder refs".to_string(),
+        project_root.to_string_lossy().into_owned(),
+    );
+    let project_id = project.id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let conversation = ChatConversation::new_project(project_id.clone());
+    crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+        Arc::clone(&state.conversation_folder_reference_repo),
+        app_data,
+        5,
+    )
+    .add(conversation.id, &folder, "Recovery Folder".to_string())
+    .await
+    .expect("seed folder reference");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let (block, roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &conversation,
+        Some(project_id.as_str()),
+        &project_root,
+        true,
+    )
+    .await
+    .expect("resolve recovery retry folder refs");
+
+    assert!(block
+        .expect("folder block")
+        .contains(&folder.to_string_lossy().to_string()));
+    assert!(roots.contains(&folder));
+
+    let (disabled_block, disabled_roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &conversation,
+        Some(project_id.as_str()),
+        &project_root,
+        false,
+    )
+    .await
+    .expect("disabled folder refs preserve legacy retry inputs");
+    assert!(disabled_block.is_none());
+    assert!(disabled_roots.is_empty());
+
+    let mut builder = conversation;
+    builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &builder,
+        Some(project_id.as_str()),
+        &project_root,
+        true,
+    )
+    .await
+    .expect("builder folder refs are skipped");
+    assert!(builder_block.is_none());
+    assert!(!builder_roots.contains(&folder));
+}
+
 #[test]
 fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_handle() {
     let app_state = AppState::new_test();
@@ -639,6 +809,8 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
         &execution_settings_repo,
         &agent_lane_settings_repo,
         &agent_provider_settings_repo,
+        &None,
+        &None,
         &None,
         &None,
     );
@@ -670,8 +842,15 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
 fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
     let app_state = AppState::new_test();
     let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
-    let runtime_support =
-        RuntimeSupportRepos::new(&execution_settings_repo, &None, &None, &None, &None);
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
     let app = mock_builder()
         .manage(app_state.clone())
         .build(mock_context(noop_assets()))
@@ -1363,6 +1542,73 @@ fn validation_cache_fixture_at(
         test_summary: None,
         captured_at,
         captured_by: "execution_complete".to_string(),
+    }
+}
+
+fn validation_run_fixture(
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    promoted_sha: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationRun {
+    ValidationRun {
+        id: "validation-current".to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("test".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::ReuseOrRun,
+        policy_enabled: true,
+        head_sha: Some(promoted_sha.to_string()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: None,
+        promoted_commit_sha: Some(promoted_sha.to_string()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: episode_entered_at + chrono::Duration::milliseconds(1),
+        completed_at: Some(episode_entered_at + chrono::Duration::seconds(1)),
+    }
+}
+
+fn validation_command_fixture(
+    run_id: &str,
+    task_id: &TaskId,
+    project_id: &ProjectId,
+    head_sha: &str,
+    cwd: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationCommandResult {
+    ValidationCommandResult {
+        id: "validation-command".to_string(),
+        validation_run_id: run_id.to_string(),
+        task_id: task_id.clone(),
+        project_id: project_id.clone(),
+        command_source: ValidationCommandSource::ProjectAnalysisRef,
+        command_ref: Some("tests".to_string()),
+        command: "cargo test".to_string(),
+        cwd: cwd.to_string(),
+        label: Some("Tests".to_string()),
+        category: ValidationCommandCategory::Test,
+        reason: None,
+        related_files: Vec::new(),
+        cache_key: "validation-cache".to_string(),
+        cache_decision: ValidationCacheDecision::Ran,
+        status: ValidationCommandStatus::Passed,
+        exit_code: Some(0),
+        duration_ms: Some(1),
+        stdout_snippet: None,
+        stderr_snippet: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
+        launcher_kind: None,
+        resolved_shell_path: None,
+        head_sha: Some(head_sha.to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        created_at: episode_entered_at + chrono::Duration::seconds(1),
     }
 }
 
@@ -2294,14 +2540,22 @@ fn test_fetch_step_completion_state_returns_unknown_on_err_and_none() {
 #[test]
 fn test_validated_completion_override_false_when_no_metadata() {
     let task = Task::new(ProjectId::new(), "no metadata".into());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
 fn test_validated_completion_override_false_when_no_validation_cache_key() {
     let mut task = Task::new(ProjectId::new(), "other metadata".into());
     task.metadata = Some(r#"{"some_other_key": true}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2309,7 +2563,11 @@ fn test_validated_completion_override_false_on_malformed_validation_cache() {
     let mut task = Task::new(ProjectId::new(), "malformed cache".into());
     // validation_cache present but not a valid ValidationCacheMetadata shape → parse error path.
     task.metadata = Some(r#"{"validation_cache": {"version": "not-a-number"}}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2322,7 +2580,11 @@ fn test_validated_completion_override_false_when_worktree_path_missing() {
             .unwrap(),
     );
     task.worktree_path = None;
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2336,10 +2598,18 @@ fn test_validated_completion_override_false_for_unsafe_worktree_path() {
     );
 
     task.worktree_path = Some("relative/worktree".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 
     task.worktree_path = Some("/tmp/../escape".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
 }
 
 #[test]
@@ -2354,7 +2624,69 @@ fn test_validated_completion_override_false_when_head_sha_unresolvable() {
     // A temp dir that is not a git repo → get_head_sha errors → fail-safe false.
     let tmp = tempfile::tempdir().unwrap();
     task.worktree_path = Some(tmp.path().to_string_lossy().to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+    assert!(!run(validated_completion_override(
+        &task,
+        Utc::now(),
+        &None,
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_accepts_current_validation_run() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let project_id = ProjectId::new();
+    let task_id = TaskId::new();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let repo = Arc::new(MemoryValidationRunRepository::new());
+    let run_record = validation_run_fixture(&task_id, &project_id, &head_sha, episode_entered_at);
+    let command = validation_command_fixture(
+        &run_record.id,
+        &task_id,
+        &project_id,
+        &head_sha,
+        &worktree.path().to_string_lossy(),
+        episode_entered_at,
+    );
+    run(repo.create_run(&run_record)).unwrap();
+    run(repo.add_command_result(&command)).unwrap();
+
+    let mut task = Task::new(project_id, "first-class validation".into());
+    task.id = task_id;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> = repo;
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
+    )));
+}
+
+#[test]
+fn test_validated_completion_override_uses_legacy_cache_when_no_run_exists() {
+    let (worktree, _base_sha, head_sha) = git_worktree_with_base_and_change();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(5);
+    let cache = validation_cache_fixture_at(
+        &head_sha,
+        true,
+        true,
+        episode_entered_at + chrono::Duration::seconds(1),
+    );
+    let mut task = Task::new(ProjectId::new(), "legacy validation cache".into());
+    task.metadata = Some(
+        cache
+            .update_task_metadata(task.metadata.as_deref())
+            .unwrap(),
+    );
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Arc<dyn crate::domain::repositories::ValidationRunRepository> =
+        Arc::new(MemoryValidationRunRepository::new());
+
+    assert!(run(validated_completion_override(
+        &task,
+        episode_entered_at,
+        &Some(validation_run_repo),
+    )));
 }
 
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
@@ -2775,6 +3107,11 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     handle_stream_success::<MockRuntime>(
         agent_run_id.as_str(),
@@ -2802,7 +3139,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         &None,
         &None,
         &None,
@@ -3192,6 +3529,9 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         false,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &Some(Arc::clone(&state.validation_run_repo)),
+        &Some(Arc::clone(&state.external_events_repo)),
+        &None,
         &interactive_process_registry,
         &verification_child_registry,
     );
@@ -3250,6 +3590,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     let mut conversation = ChatConversation::new_project(project_id.clone());
     let persona = Persona {
         id: PersonaId::from("handler-recovery-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "handler-recovery-persona".to_string(),
         name: "Handler Recovery Persona".to_string(),
         description: "handler recovery attribution fixture".to_string(),
@@ -3258,6 +3601,8 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
         version: 5,
         content_hash: "handler-recovery-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -3352,6 +3697,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
         &None,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &None,
+        &None,
+        &None,
         &None,
         &None,
     )
@@ -5469,6 +5817,9 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         &None,
         &None,
         &None,
+        &None,
+        &None,
+        &None,
         &Some(Arc::clone(&notification_service)),
     )
     .await;
@@ -5664,6 +6015,9 @@ async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from("retry-bound-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "retry-bound-persona".to_string(),
         name: "Retry Bound Persona".to_string(),
         description: "Retry persona fixture".to_string(),
@@ -5672,6 +6026,8 @@ async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
         version: 1,
         content_hash: "retry-bound-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,

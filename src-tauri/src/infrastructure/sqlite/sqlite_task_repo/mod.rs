@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::entities::{
     ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
@@ -24,6 +24,7 @@ use crate::infrastructure::sqlite::DbConnection;
 /// Uses a mutex-protected connection for thread-safe access
 pub struct SqliteTaskRepository {
     db: DbConnection,
+    enforce_tasks_feature_policy: bool,
 }
 
 impl SqliteTaskRepository {
@@ -31,6 +32,7 @@ impl SqliteTaskRepository {
     pub fn new(conn: Connection) -> Self {
         Self {
             db: DbConnection::new(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
 
@@ -38,15 +40,46 @@ impl SqliteTaskRepository {
     pub fn from_shared(conn: Arc<Mutex<Connection>>) -> Self {
         Self {
             db: DbConnection::from_shared(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
+
+    /// Enforce the global Tasks policy atomically with task insertion.
+    pub(crate) fn with_tasks_feature_policy(mut self) -> Self {
+        self.enforce_tasks_feature_policy = true;
+        self
+    }
+}
+
+fn authorize_task_progress_sync(conn: &Connection, task_id: &TaskId) -> AppResult<()> {
+    let session_id = conn
+        .query_row(
+            "SELECT ideation_session_id FROM tasks WHERE id = ?1",
+            [task_id.as_str()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    if let Some(session_id) = session_id {
+        crate::infrastructure::sqlite::sqlite_ideation_settings_repo::authorize_tasks_session_sync(
+            conn,
+            session_id.as_deref(),
+        )?;
+    }
+    Ok(())
 }
 
 #[async_trait]
 impl TaskRepository for SqliteTaskRepository {
     async fn create(&self, task: Task) -> AppResult<Task> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    crate::infrastructure::sqlite::sqlite_ideation_settings_repo::authorize_tasks_session_sync(
+                        conn,
+                        task.ideation_session_id.as_ref().map(|id| id.as_str()),
+                    )?;
+                }
                 conn.execute(
                     "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
@@ -149,8 +182,19 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn update(&self, task: &Task) -> AppResult<()> {
         let task = task.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy
+                    && !matches!(
+                        task.internal_status,
+                        InternalStatus::Paused
+                            | InternalStatus::Stopped
+                            | InternalStatus::Cancelled
+                    )
+                {
+                    authorize_task_progress_sync(conn, &task.id)?;
+                }
                 let rows_affected = conn.execute(
                     "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
                      WHERE id = ?1 AND (
@@ -201,8 +245,19 @@ impl TaskRepository for SqliteTaskRepository {
         expected_status: InternalStatus,
     ) -> AppResult<bool> {
         let task = task.clone();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy
+                    && !matches!(
+                        task.internal_status,
+                        InternalStatus::Paused
+                            | InternalStatus::Stopped
+                            | InternalStatus::Cancelled
+                    )
+                {
+                    authorize_task_progress_sync(conn, &task.id)?;
+                }
                 let rows_affected = conn.execute(
                     "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
                      WHERE id = ?1 AND internal_status = ?23 AND (
@@ -402,8 +457,19 @@ impl TaskRepository for SqliteTaskRepository {
     ) -> AppResult<String> {
         let id = id.clone();
         let trigger = trigger.to_string();
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy
+                    && !matches!(
+                        to,
+                        InternalStatus::Paused
+                            | InternalStatus::Stopped
+                            | InternalStatus::Cancelled
+                    )
+                {
+                    authorize_task_progress_sync(conn, &id)?;
+                }
                 let now = Utc::now();
                 helpers::persist_status_change(conn, &id, from, to, &trigger, now)
             })

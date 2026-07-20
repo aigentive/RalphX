@@ -39,6 +39,8 @@ pub struct MockChatService {
     running_agents: Mutex<HashMap<String, bool>>,
     /// Records each (context_type, context_id) pair passed to stop_agent.
     stop_agent_calls: Mutex<Vec<(ChatContextType, String)>>,
+    /// Number of upcoming stop_agent calls that should fail.
+    stop_agent_failures_remaining: Mutex<u32>,
     /// Records each message string passed to send_message (for content assertions in tests).
     sent_messages: Mutex<Vec<String>>,
     /// Records the send options passed to send_message for replay/resume assertions.
@@ -47,6 +49,8 @@ pub struct MockChatService {
     delete_queued_message_calls: Mutex<Vec<(ChatContextType, String, String)>>,
     /// When set, the next delete_queued_message call returns an error.
     fail_next_delete_queued_message: Mutex<bool>,
+    /// When set, the next successful send reports a different conversation identity.
+    mismatch_next_send_result_identity: Mutex<bool>,
 }
 
 pub struct MockChatResponse {
@@ -67,10 +71,12 @@ impl MockChatService {
             already_running_after: Mutex::new(None),
             running_agents: Mutex::new(HashMap::new()),
             stop_agent_calls: Mutex::new(Vec::new()),
+            stop_agent_failures_remaining: Mutex::new(0),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
@@ -85,16 +91,22 @@ impl MockChatService {
             already_running_after: Mutex::new(None),
             running_agents: Mutex::new(HashMap::new()),
             stop_agent_calls: Mutex::new(Vec::new()),
+            stop_agent_failures_remaining: Mutex::new(0),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            mismatch_next_send_result_identity: Mutex::new(false),
         }
     }
 
     /// Returns a snapshot of all (context_type, context_id) pairs passed to stop_agent.
     pub async fn get_stop_agent_calls(&self) -> Vec<(ChatContextType, String)> {
         self.stop_agent_calls.lock().await.clone()
+    }
+
+    pub async fn fail_next_stop_agent_calls(&self, count: u32) {
+        *self.stop_agent_failures_remaining.lock().await = count;
     }
 
     /// Returns a snapshot of all message strings passed to send_message.
@@ -113,6 +125,10 @@ impl MockChatService {
 
     pub async fn fail_next_delete_queued_message(&self) {
         *self.fail_next_delete_queued_message.lock().await = true;
+    }
+
+    pub async fn mismatch_next_send_result_identity(&self) {
+        *self.mismatch_next_send_result_identity.lock().await = true;
     }
 
     /// Set the agent running state for a specific context.
@@ -176,7 +192,7 @@ impl ChatService for MockChatService {
         options: SendMessageOptions,
     ) -> Result<SendResult, ChatServiceError> {
         self.sent_messages.lock().await.push(message.to_string());
-        self.sent_options.lock().await.push(options);
+        self.sent_options.lock().await.push(options.clone());
 
         let current = self
             .call_count
@@ -185,6 +201,11 @@ impl ChatService for MockChatService {
 
         if let Some(threshold) = *self.already_running_after.lock().await {
             if current > threshold {
+                if options.queue_policy == super::SendQueuePolicy::RequireImmediateStart {
+                    return Err(ChatServiceError::SpawnFailed(
+                        "immediate start required, but another agent run is active".to_string(),
+                    ));
+                }
                 return Ok(SendResult {
                     was_queued: true,
                     queued_message_id: Some("mock-queued-id".to_string()),
@@ -199,13 +220,27 @@ impl ChatService for MockChatService {
             ));
         }
 
-        let (conversation, _) = self
+        let (mut conversation, _) = self
             .get_or_create_conversation(context_type, context_id)
             .await?;
-        let agent_run = AgentRun::new(conversation.id);
+        if let Some(conversation_id_override) = options.conversation_id_override.clone() {
+            conversation.id = conversation_id_override;
+        }
+        let mut agent_run = AgentRun::new(conversation.id);
+        if let Some(preallocated_agent_run_id) = options.preallocated_agent_run_id {
+            agent_run.id = preallocated_agent_run_id;
+        }
+
+        let mismatch_result_identity =
+            std::mem::take(&mut *self.mismatch_next_send_result_identity.lock().await);
+        let conversation_id = if mismatch_result_identity {
+            ChatConversationId::new().as_str().to_string()
+        } else {
+            conversation.id.as_str().to_string()
+        };
 
         Ok(SendResult {
-            conversation_id: conversation.id.as_str().to_string(),
+            conversation_id,
             agent_run_id: agent_run.id.as_str().to_string(),
             is_new_conversation: conversation.provider_session_ref().is_none(),
             ..Default::default()
@@ -293,6 +328,8 @@ impl ChatService for MockChatService {
                 composer_project_references: queued_msg.composer_project_references.clone(),
                 composer_integration_references: queued_msg.composer_integration_references.clone(),
                 composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+                composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
+                composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
                 attachment_ids: queued_msg.attachment_ids.clone(),
                 ..Default::default()
             },
@@ -339,6 +376,18 @@ impl ChatService for MockChatService {
             }
             ChatContextType::BranchUpdate => {
                 ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
+            }
+            ChatContextType::Standalone => {
+                // Mirrors chat_service_repository.rs::get_or_create_conversation:
+                // standalone conversations are always explicitly created, never
+                // lazily auto-vivified from a bare context_id. Tests that need a
+                // standalone conversation row insert it directly into the fixture
+                // repository instead of going through this mock's
+                // get_or_create_conversation.
+                return Err(ChatServiceError::ContextNotFound(format!(
+                    "Standalone conversation {context_id} is not active; standalone conversations \
+                     cannot be lazily created from a bare context_id"
+                )));
             }
         };
 
@@ -395,6 +444,13 @@ impl ChatService for MockChatService {
             .lock()
             .await
             .push((context_type, context_id.to_string()));
+        let mut failures_remaining = self.stop_agent_failures_remaining.lock().await;
+        if *failures_remaining > 0 {
+            *failures_remaining -= 1;
+            return Err(ChatServiceError::RepositoryError(
+                "mock stop_agent failure".to_string(),
+            ));
+        }
         Ok(false)
     }
 

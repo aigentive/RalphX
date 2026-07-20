@@ -39,13 +39,13 @@ describe("getVisibleIdeationArtifactTabs", () => {
     ).toEqual(["plan"]);
   });
 
-  it("adds verification only when the session has verification evidence", () => {
+  it("does not add a dedicated verification tab", () => {
     expect(
       getVisibleIdeationArtifactTabs({
         ...baseAvailability,
         hasVerificationEvidence: true,
       }),
-    ).toEqual(["plan", "verification"]);
+    ).toEqual(["plan"]);
   });
 
   it("adds tasks only after the plan has execution tasks", () => {
@@ -55,7 +55,7 @@ describe("getVisibleIdeationArtifactTabs", () => {
       hasExecutionTasks: true,
     });
 
-    expect(tabs).toEqual(["plan", "verification", "tasks"]);
+    expect(tabs).toEqual(["plan", "tasks"]);
     expect(tabs as readonly string[]).not.toContain("proposal");
   });
 });

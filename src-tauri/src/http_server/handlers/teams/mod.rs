@@ -8,9 +8,7 @@
 // - GET  /api/team/plan/pending/:context_id — get_pending_plan (frontend reconciliation)
 // - POST /api/team/spawn          — request_teammate_spawn (validates, spawns, registers, streams)
 // - POST /api/team/artifact       — create_team_artifact
-// - POST /api/team/verification_finding — publish_verification_finding
 // - GET  /api/team/artifacts/:session_id — get_team_artifacts
-// - GET  /api/team/verification-findings/:session_id — get_verification_findings
 // - GET  /api/team/session_state/:session_id — get_team_session_state
 // - POST /api/team/session_state  — save_team_session_state
 
@@ -24,14 +22,15 @@ use axum::{
 use chrono::Utc;
 use tracing::{error, info, warn};
 
-use super::HttpServerState;
+use super::{trusted_conversation_id, HttpServerState};
 use crate::application::team_state_tracker::{
-    PendingTeamPlan, PendingTeammate, PlanDecision, PlanDecisionTeammate, TeammateHandle,
-    TeammateStatus,
+    PendingTeamPlan, PendingTeamPlanRemovalReason, PendingTeammate, PlanDecision,
+    PlanDecisionTeammate, TeammateHandle, TeammateStatus,
 };
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactRelation, ArtifactRelationId,
-    ArtifactRelationType, ArtifactType, TaskId,
+    ArtifactRelationType, ArtifactType, NotificationTargetKind, TaskId,
 };
 use crate::http_server::types::{
     ApproveTeamPlanRequest, ApproveTeamPlanResponse, CreateTeamArtifactRequest,

@@ -475,12 +475,13 @@ export const mockIdeationApi = {
   settings: {
     get: async (): Promise<IdeationSettings> => {
       return {
+        tasksEnabled: false,
+        autoVerifyPlans: false,
         requireAcceptForFinalize: false,
         requireVerificationForAccept: false,
-        requireVerificationForProposals: false,
         externalOverrides: {
+          autoVerifyPlans: null,
           requireVerificationForAccept: null,
-          requireVerificationForProposals: null,
           requireAcceptForFinalize: null,
         },
       };

@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use crate::application::chat_service::{
-    uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
+    decode_pending_initial_prompt, uses_execution_slot, ChatService, SendCallerContext,
+    SendMessageOptions,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -146,14 +147,16 @@ impl PendingSessionDrainService {
             // Step 3: Start the agent by sending the deferred prompt.
             // map_err converts AppError (contains Box<dyn StdError>, non-Send) to String
             // (Send) so the match arm can safely cross the .await in the error path.
+            let (message, metadata) = decode_pending_initial_prompt(&prompt);
             match self
                 .chat_service
                 .send_message(
                     ChatContextType::Ideation,
                     &session_id,
-                    &prompt,
+                    &message,
                     SendMessageOptions {
                         caller_context: SendCallerContext::DrainService,
+                        metadata,
                         ..Default::default()
                     },
                 )
@@ -330,7 +333,11 @@ impl PendingSessionDrainService {
                         return true;
                     }
                 }
-                _ => {}
+                ChatContextType::Standalone
+                | ChatContextType::Ideation
+                | ChatContextType::Delegation
+                | ChatContextType::Task
+                | ChatContextType::BranchUpdate => {}
             }
         }
 

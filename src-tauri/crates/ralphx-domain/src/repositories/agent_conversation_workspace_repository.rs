@@ -6,10 +6,18 @@ use crate::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspaceLocalCleanupClaim {
+    Claimed,
+    AlreadyInProgress,
+    AlreadyCleaned,
+}
 
 #[async_trait]
 pub trait AgentConversationWorkspaceRepository: Send + Sync {
@@ -24,6 +32,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Option<AgentConversationWorkspace>>;
 
     async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
+    async fn get_by_task_pipeline_session_id(
         &self,
         _ideation_session_id: &IdeationSessionId,
     ) -> AppResult<Option<AgentConversationWorkspace>> {
@@ -114,6 +129,30 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _checked_at: DateTime<Utc>,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        _stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        self.mark_local_cleanup_status(conversation_id, "cleaning", claimed_at)
+            .await?;
+        Ok(AgentWorkspaceLocalCleanupClaim::Claimed)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let _ = claimed_at;
+        self.mark_local_cleanup_status(conversation_id, status, checked_at)
+            .await?;
+        Ok(true)
     }
 
     async fn get_local_cleanup_status(
@@ -357,8 +396,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _head_sha: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
     }
 
     async fn mark_pr_review_first_action_resolved(
@@ -386,7 +425,58 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically records a reviewer launch failure only while the exact reserved launch still
+    /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_target_scope: crate::entities::AgentWorkspaceReviewTargetScope,
+        _expected_diff_fingerprint: &str,
+        _expected_review_conversation_id: &ChatConversationId,
+        _expected_run_id: &str,
+        _error: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        _approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Err(crate::error::AppError::Infrastructure(
+            "Workspace Review approval is unsupported by this repository".to_string(),
+        ))
+    }
+
     async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Atomically changes the guard only when the expected guard still owns the monitor.
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        _next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically records a confirmed restoration only while the captured guard still owns the
+    /// monitor and the user still wants GitHub auto-merge enabled.
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())

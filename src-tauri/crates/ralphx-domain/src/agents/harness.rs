@@ -416,6 +416,39 @@ pub fn generic_harness_lane_defaults(
     }
 }
 
+/// Provider-keyed defaults for semantic roles that do not have a legacy lane.
+pub fn generic_harness_role_defaults(
+    harness: AgentHarnessKind,
+    role: super::routing_role::RoutingRole,
+) -> AgentLaneSettings {
+    if let Some(lane) = role.legacy_lane() {
+        return generic_harness_lane_defaults(harness, lane);
+    }
+
+    if matches!(
+        role,
+        super::routing_role::RoutingRole::ExecutionQaPrep
+            | super::routing_role::RoutingRole::ExecutionQaRefiner
+            | super::routing_role::RoutingRole::ExecutionQaTester
+    ) {
+        return generic_harness_lane_defaults(harness, AgentLane::ExecutionWorker);
+    }
+
+    let mut settings = AgentLaneSettings::new(harness);
+    if role.metadata().family == super::routing_role::RoutingRoleFamily::Utility {
+        settings.model =
+            Some(super::model_registry::lightweight_model_for_provider(harness).to_string());
+        settings.effort = Some(LogicalEffort::Medium);
+    } else {
+        settings.model =
+            Some(super::model_registry::default_model_for_provider(harness).to_string());
+        settings.effort = Some(super::model_registry::default_effort_for_provider(harness));
+    }
+    settings.approval_policy = default_approval_policy_for_harness(harness).map(str::to_string);
+    settings.sandbox_mode = default_sandbox_mode_for_harness(harness).map(str::to_string);
+    settings
+}
+
 pub fn standard_agent_lane_defaults() -> HashMap<AgentLane, AgentLaneSettings> {
     HashMap::from([
         (

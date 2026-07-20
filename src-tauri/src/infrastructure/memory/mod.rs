@@ -9,6 +9,8 @@ pub mod memory_agent_conversation_jira_issue_repo;
 pub mod memory_agent_conversation_linear_issue_repo;
 pub mod memory_agent_conversation_workspace_repo;
 pub mod memory_agent_lane_settings_repo;
+pub mod memory_manual_role_default_repo;
+pub mod memory_mcp_policy_repo;
 pub mod memory_agent_model_registry_repo;
 pub mod memory_agent_profile_repo;
 pub mod memory_agent_provider_settings_repo;
@@ -26,6 +28,7 @@ pub mod memory_branch_update_repo;
 pub mod memory_atlassian_integration_settings_repo;
 pub mod memory_chat_attachment_repo;
 pub mod memory_chat_conversation_repo;
+pub mod memory_conversation_folder_reference_repo;
 pub mod memory_chat_message_repo;
 pub mod memory_chat_timeline_repo;
 pub mod memory_persona_repo;
@@ -93,6 +96,11 @@ pub use memory_agent_conversation_jira_issue_repo::MemoryAgentConversationJiraIs
 pub use memory_agent_conversation_linear_issue_repo::MemoryAgentConversationLinearIssueRepository;
 pub use memory_agent_conversation_workspace_repo::MemoryAgentConversationWorkspaceRepository;
 pub use memory_agent_lane_settings_repo::MemoryAgentLaneSettingsRepository;
+pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;
+pub use memory_mcp_policy_repo::MemoryMcpPolicyRepository;
+
+#[cfg(test)]
+mod memory_mcp_policy_repo_tests;
 pub use memory_agent_model_registry_repo::MemoryAgentModelRegistryRepository;
 pub use memory_agent_profile_repo::MemoryAgentProfileRepository;
 pub use memory_agent_provider_settings_repo::MemoryAgentProviderSettingsRepository;
@@ -107,6 +115,7 @@ pub use memory_artifact_repo::MemoryArtifactRepository;
 pub use memory_branch_update_repo::MemoryBranchUpdateRepository;
 pub use memory_atlassian_integration_settings_repo::MemoryAtlassianIntegrationSettingsRepository;
 pub use memory_chat_attachment_repo::MemoryChatAttachmentRepository;
+pub use memory_conversation_folder_reference_repo::MemoryConversationFolderReferenceRepository;
 pub use memory_chat_conversation_repo::MemoryChatConversationRepository;
 pub use memory_chat_message_repo::MemoryChatMessageRepository;
 pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;

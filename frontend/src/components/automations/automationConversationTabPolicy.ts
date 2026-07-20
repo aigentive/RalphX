@@ -24,6 +24,7 @@ export interface AutomationConversationPolicyTab {
 export interface AutomationConversationTabAvailability {
   hasPlanArtifact: boolean;
   hasPullRequest: boolean;
+  hasPublishWorkspace?: boolean | undefined;
   hasIssues?: boolean | undefined;
   hasVerification?: boolean | undefined;
   hasTasks?: boolean | undefined;
@@ -76,7 +77,7 @@ function setupTabs(
     ...(availability.hasLinear ? [enabledTab("linear")] : []),
     ...(availability.hasGranola ? [enabledTab("granola")] : []),
     ...(availability.hasReview ? [enabledTab("review")] : []),
-    enabledTab("publish"),
+    ...(availability.hasPublishWorkspace ? [enabledTab("publish")] : []),
   ];
 }
 
@@ -126,6 +127,7 @@ function runTabs(
       ? enabledTab("plan")
       : disabledTab("plan", "No run plan has been authored yet."),
     ...(availability.hasPullRequest ? [enabledTab("pr")] : []),
+    ...(availability.hasPublishWorkspace ? [enabledTab("publish")] : []),
   ];
 }
 

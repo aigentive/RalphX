@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 
 import {
-  useGhAuthStatus,
+  isTransientGitHubConnectionState,
+  requiresGitHubCredentialRepair,
+  type GitHubConnectionStatus,
+} from "@/api/github";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
+import {
   useGitAuthDiagnostics,
   useResumeDeferredGitStartup,
 } from "@/hooks/useGithubSettings";
@@ -16,7 +21,7 @@ function isGithubHttpsRemote(url: string | null | undefined) {
 export function hasStartupGitAuthIssue(
   project: Project | null,
   diagnostics: GitAuthDiagnostics | undefined,
-  ghAuthenticated: boolean | undefined,
+  ghStatus: GitHubConnectionStatus | undefined,
   diagnosticsFailed = false,
 ) {
   if (!project) {
@@ -40,16 +45,19 @@ export function hasStartupGitAuthIssue(
   ) {
     return true;
   }
-  if (project.githubPrEnabled && ghAuthenticated === false) {
+  if (isTransientGitHubConnectionState(ghStatus)) {
+    return project.githubPrEnabled || hasGithubHttpsRemote;
+  }
+  if (project.githubPrEnabled && requiresGitHubCredentialRepair(ghStatus)) {
     return true;
   }
-  return ghAuthenticated === false && hasGithubHttpsRemote;
+  return requiresGitHubCredentialRepair(ghStatus) && hasGithubHttpsRemote;
 }
 
 export function useGitAuthStartupNotification() {
   const project = useProjectStore(selectActiveProject);
   const diagnosticsQuery = useGitAuthDiagnostics(project?.id ?? null);
-  const ghAuthQuery = useGhAuthStatus();
+  const ghStatusQuery = useGitHubConnectionStatus();
   const resumeDeferredGitStartup = useResumeDeferredGitStartup();
   const previouslyBlockedProjects = useRef(new Set<string>());
   const resumeAttemptedProjects = useRef(new Set<string>());
@@ -57,7 +65,7 @@ export function useGitAuthStartupNotification() {
   const hasIssue = hasStartupGitAuthIssue(
     project,
     diagnosticsQuery.data,
-    ghAuthQuery.data,
+    ghStatusQuery.data,
     diagnosticsQuery.isError,
   );
 
@@ -75,7 +83,7 @@ export function useGitAuthStartupNotification() {
     if (!project) {
       return;
     }
-    if (diagnosticsQuery.isLoading || ghAuthQuery.isLoading || hasIssue) {
+    if (diagnosticsQuery.isLoading || ghStatusQuery.isLoading || hasIssue) {
       return;
     }
     if (!previouslyBlockedProjects.current.has(project.id)) {
@@ -93,7 +101,7 @@ export function useGitAuthStartupNotification() {
     });
   }, [
     diagnosticsQuery.isLoading,
-    ghAuthQuery.isLoading,
+    ghStatusQuery.isLoading,
     hasIssue,
     project,
     resumeDeferredGitStartup,

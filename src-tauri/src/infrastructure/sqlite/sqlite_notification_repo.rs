@@ -11,6 +11,38 @@ use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::error::{AppError, AppResult};
 
 const MAX_LIMIT: u32 = 100;
+const VISIBLE_NOTIFICATION_PREDICATE: &str = r#"
+    NOT EXISTS (
+        SELECT 1
+        FROM chat_conversations AS conversation
+        WHERE conversation.archived_at IS NOT NULL
+          AND conversation.id IN (
+              json_extract(
+                  CASE WHEN json_valid(notifications.target_json) THEN notifications.target_json END,
+                  '$.conversationId'
+              ),
+              json_extract(
+                  CASE WHEN json_valid(notifications.target_json) THEN notifications.target_json END,
+                  '$.setupConversationId'
+              )
+          )
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM agent_conversation_workspaces AS workspace
+        WHERE workspace.status = 'archived'
+          AND workspace.conversation_id IN (
+              json_extract(
+                  CASE WHEN json_valid(notifications.target_json) THEN notifications.target_json END,
+                  '$.conversationId'
+              ),
+              json_extract(
+                  CASE WHEN json_valid(notifications.target_json) THEN notifications.target_json END,
+                  '$.setupConversationId'
+              )
+          )
+    )
+"#;
 
 pub struct SqliteNotificationRepository {
     db: DbConnection,
@@ -148,7 +180,7 @@ impl NotificationRepository for SqliteNotificationRepository {
         let cursor = cursor.and_then(Self::parse_cursor);
         let limit = limit.clamp(1, MAX_LIMIT);
         self.db.run(move |conn| {
-            let mut where_parts = Vec::new();
+            let mut where_parts = vec![VISIBLE_NOTIFICATION_PREDICATE.to_string()];
             let mut values = Vec::new();
             if let Some(project_id) = project_id {
                 where_parts.push("project_id = ?".to_string()); values.push(project_id);
@@ -182,8 +214,16 @@ impl NotificationRepository for SqliteNotificationRepository {
         let project_id = project_id.map(str::to_owned);
         self.db.run(move |conn| {
             let count: i64 = match project_id {
-                Some(project_id) => conn.query_row("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL AND project_id = ?1", [project_id], |row| row.get(0))?,
-                None => conn.query_row("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL", [], |row| row.get(0))?,
+                Some(project_id) => conn.query_row(
+                    &format!("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL AND project_id = ?1 AND {VISIBLE_NOTIFICATION_PREDICATE}"),
+                    [project_id],
+                    |row| row.get(0),
+                )?,
+                None => conn.query_row(
+                    &format!("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL AND {VISIBLE_NOTIFICATION_PREDICATE}"),
+                    [],
+                    |row| row.get(0),
+                )?,
             };
             Ok(count as u64)
         }).await
@@ -226,6 +266,47 @@ impl NotificationRepository for SqliteNotificationRepository {
             .await
     }
 
+    async fn mark_read_by_dedupe_key(
+        &self,
+        dedupe_key: &str,
+        read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        let dedupe_key = dedupe_key.to_owned();
+        self.db
+            .run(move |conn| {
+                if conn.execute(
+                    "UPDATE notifications SET read_at = ?1 WHERE dedupe_key = ?2 AND read_at IS NULL",
+                    params![read_at.to_rfc3339(), dedupe_key],
+                )? == 0
+                {
+                    return Ok(None);
+                }
+                let raw = conn.query_row(
+                    &format!(
+                        "SELECT {} FROM notifications WHERE dedupe_key = ?1",
+                        Self::select_columns()
+                    ),
+                    [dedupe_key],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                            row.get(9)?,
+                        ))
+                    },
+                )?;
+                Self::parse_row(raw).map(Some)
+            })
+            .await
+    }
+
     async fn mark_all_read(
         &self,
         project_id: Option<&str>,
@@ -234,8 +315,14 @@ impl NotificationRepository for SqliteNotificationRepository {
         let project_id = project_id.map(str::to_owned);
         self.db.run(move |conn| {
             let changed = match project_id {
-                Some(project_id) => conn.execute("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL AND project_id = ?2", params![read_at.to_rfc3339(), project_id])?,
-                None => conn.execute("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL", [read_at.to_rfc3339()])?,
+                Some(project_id) => conn.execute(
+                    &format!("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL AND project_id = ?2 AND {VISIBLE_NOTIFICATION_PREDICATE}"),
+                    params![read_at.to_rfc3339(), project_id],
+                )?,
+                None => conn.execute(
+                    &format!("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL AND {VISIBLE_NOTIFICATION_PREDICATE}"),
+                    [read_at.to_rfc3339()],
+                )?,
             };
             Ok(changed as u64)
         }).await

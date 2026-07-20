@@ -1,6 +1,7 @@
 use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
+use ralphx_lib::application::interactive_notification_producer::question_notification_key;
 use ralphx_lib::application::{
     AppState, QuestionAnswer, QuestionOption, QuestionState, TeamService, TeamStateTracker,
 };
@@ -10,7 +11,8 @@ use ralphx_lib::commands::question_commands::{
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationSessionFlow, Project,
+    IdeationSessionFlow, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, Project,
 };
 use serde_json::json;
 use std::path::Path;
@@ -167,6 +169,65 @@ fn build_question_command_app(state: AppState) -> tauri::App<tauri::test::MockRu
 }
 
 #[tokio::test]
+async fn resolving_question_marks_its_durable_notification_read() {
+    let state = AppState::new_test();
+    state
+        .question_state
+        .register(
+            "question-notification".to_string(),
+            "session-question".to_string(),
+            "Continue?".to_string(),
+            None,
+            vec![QuestionOption {
+                value: "yes".to_string(),
+                label: "Yes".to_string(),
+                description: None,
+            }],
+            false,
+        )
+        .await;
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: None,
+            category: NotificationCategory::AgentQuestion,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Question".to_string(),
+            body: None,
+            target: NotificationTarget::none(),
+            dedupe_key: Some(question_notification_key("question-notification")),
+        })
+        .await;
+
+    let app = build_question_command_app(state);
+    let response = resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<Arc<TeamService>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "question-notification".to_string(),
+            selected_options: vec!["yes".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await
+    .expect("question should resolve");
+
+    assert!(response.success);
+    let notifications = app
+        .state::<AppState>()
+        .notification_repo
+        .list(None, None, 10)
+        .await
+        .expect("notifications should load")
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert!(notifications[0].read_at.is_some());
+}
+
+#[tokio::test]
 async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_continuation() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -202,7 +263,7 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,

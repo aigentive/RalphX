@@ -850,6 +850,7 @@ function renderSidebar(
         onAutoRenameConversation={vi.fn()}
         onRenameConversation={vi.fn()}
         onArchiveConversation={vi.fn()}
+        onBulkArchiveConversations={vi.fn()}
         onRestoreConversation={vi.fn()}
         onForkConversation={vi.fn()}
         showArchived={false}
@@ -960,6 +961,44 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-new-agent")).toHaveTextContent("New");
     expect(screen.getByTestId("agents-new-agent").className).toContain("h-7");
     expect(screen.getByTestId("agents-add-project").className).toContain("rounded-[6px]");
+  });
+
+  it("renders the data-driven No project group and selects its standalone row without a project id", async () => {
+    const standalone = conversation({
+      id: "standalone-1",
+      contextType: "standalone",
+      contextId: "standalone-1",
+      projectId: null,
+      title: "Private exploration",
+    });
+    conversationsByProject.set("__no_project__", {
+      data: [standalone],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    const onSelectConversation = vi.fn();
+
+    renderSidebar([], { onSelectConversation });
+
+    expect(screen.getByTestId("agents-project-__no_project__")).toHaveTextContent(
+      "No project",
+    );
+    expect(screen.getByText("Private exploration")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Private exploration"));
+    expect(onSelectConversation).toHaveBeenCalledWith(null, standalone);
+    expect(runningStatesHook).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "standalone-1", contextType: "standalone" })],
+      true,
+    );
+  });
+
+  it("omits the No project group when its backend group has no rows", () => {
+    renderSidebar([project()]);
+
+    expect(screen.queryByTestId("agents-project-__no_project__")).not.toBeInTheDocument();
   });
 
   it("orders sessions by created time and shows created time instead of provider", () => {
@@ -1867,7 +1906,11 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByRole("button", { name: "Select fallback" }));
 
     await waitFor(() =>
-      expect(projectConversationCalls.at(-1)).toEqual(
+      expect(
+        projectConversationCalls
+          .filter((call) => call.projectId === depthProject.id)
+          .at(-1)
+      ).toEqual(
         expect.objectContaining({
           projectId: depthProject.id,
           minimumRowCount: 16,
@@ -1875,6 +1918,88 @@ describe("AgentsSidebar", () => {
           priorityConversationIds: [selectedFallback.id],
         })
       )
+    );
+  });
+
+  it("skips the No project pseudo-group when selected fallback priority changes", async () => {
+    const user = userEvent.setup();
+    const realProject = project({ id: "project-fallback-real", name: "Real project" });
+    const selectedFallback = conversation({
+      id: "conversation-fallback-real",
+      title: "Real project fallback",
+      projectId: realProject.id,
+      contextId: realProject.id,
+    });
+    conversationsByProject.set(realProject.id, {
+      data: [selectedFallback],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("__no_project__", {
+      data: [conversation({ id: "standalone-fallback-decoy", projectId: null })],
+      isLoading: false,
+      total: 1,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    function StatefulSidebar() {
+      const [selectedConversation, setSelectedConversation] =
+        useState<AgentConversation | null>(null);
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setSelectedConversation(selectedFallback)}
+          >
+            Change fallback priority
+          </button>
+          <AgentsSidebar
+            projects={[realProject]}
+            focusedProjectId={realProject.id}
+            selectedConversationId={selectedConversation?.id ?? null}
+            pinnedConversation={selectedConversation}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulSidebar />);
+    projectConversationCalls.length = 0;
+    await user.click(
+      screen.getByRole("button", { name: "Change fallback priority" })
+    );
+
+    await waitFor(() =>
+      expect(projectConversationCalls).toContainEqual(
+        expect.objectContaining({
+          projectId: realProject.id,
+          priorityConversationIds: [selectedFallback.id],
+        })
+      )
+    );
+    expect(projectConversationCalls).not.toContainEqual(
+      expect.objectContaining({
+        projectId: "__no_project__",
+        priorityConversationIds: [selectedFallback.id],
+      })
     );
   });
 
@@ -2426,6 +2551,9 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Group");
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
+    expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveAccessibleName(
+      "Bulk archive sessions"
+    );
     expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
       "aria-label",
       "Sort projects: Latest"
@@ -2440,6 +2568,14 @@ describe("AgentsSidebar", () => {
         screen.getByTestId("agents-sort-trigger")
       )
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      screen.getByTestId("agents-sort-trigger").compareDocumentPosition(
+        screen.getByTestId("agents-bulk-archive-trigger")
+      )
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveClass("ml-auto");
+    await user.hover(screen.getByTestId("agents-bulk-archive-trigger"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Bulk archive sessions");
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
@@ -2482,6 +2618,249 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-publication-state-active")).toHaveTextContent(
       "Active"
     );
+  });
+
+  it("bulk archives open pull-request rows while leaving remote pull requests open", async () => {
+    const user = userEvent.setup();
+    const eligibleConversation = conversation({
+      id: "conversation-bulk-eligible",
+      title: "Eligible session",
+    });
+    const blockedConversation = conversation({
+      id: "conversation-bulk-blocked",
+      title: "Open PR session",
+    });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: eligibleConversation.id }),
+      workspace({
+        conversationId: blockedConversation.id,
+        publicationPrNumber: 91,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    conversationsByProject.set("project-1", {
+      data: [eligibleConversation, blockedConversation],
+      total: 2,
+      isLoading: false,
+    });
+    let settleArchive: ((result: {
+      archivedConversationIds: string[];
+      failedConversationIds: string[];
+      cleanupPendingConversationIds: string[];
+      cleanupUnsafeConversationIds: string[];
+    }) => void) | undefined;
+    const onBulkArchiveConversations = vi.fn(
+      () =>
+        new Promise<{
+          archivedConversationIds: string[];
+          failedConversationIds: string[];
+          cleanupPendingConversationIds: string[];
+          cleanupUnsafeConversationIds: string[];
+        }>((resolve) => {
+          settleArchive = resolve;
+        })
+    );
+
+    renderSidebar([project()], { onBulkArchiveConversations });
+
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    const eligibleCheckbox = screen.getByRole("checkbox", {
+      name: "Select Eligible session for bulk archive",
+    });
+    const blockedCheckbox = screen.getByRole("checkbox", {
+      name: "Select Open PR session for bulk archive",
+    });
+    expect(eligibleCheckbox).not.toBeChecked();
+    expect(blockedCheckbox).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Archive selected" })).toBeDisabled();
+
+    await user.click(eligibleCheckbox);
+    await user.click(blockedCheckbox);
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Archive selected" })).toBeEnabled();
+
+    const blockedRow = screen.getByTestId(`agents-session-${blockedConversation.id}`);
+    await user.click(within(blockedRow).getByRole("button", { name: "Session actions" }));
+    expect(screen.getByText("Archive session")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
+    expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+    expect(screen.getByText(/Remote pull requests remain open/)).toBeVisible();
+    expect(screen.getByText(/including uncommitted changes/)).toBeVisible();
+    expect(onBulkArchiveConversations).not.toHaveBeenCalled();
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Archive selected",
+      })
+    );
+
+    expect(onBulkArchiveConversations).toHaveBeenCalledWith([
+      {
+        conversation: eligibleConversation,
+        workspace: expect.objectContaining({ conversationId: eligibleConversation.id }),
+      },
+      {
+        conversation: blockedConversation,
+        workspace: expect.objectContaining({ conversationId: blockedConversation.id }),
+      },
+    ]);
+    expect(screen.getByRole("button", { name: "Archiving selected..." })).toBeDisabled();
+
+    settleArchive?.({
+      archivedConversationIds: [eligibleConversation.id, blockedConversation.id],
+      failedConversationIds: [],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Archive selected sessions?")).not.toBeInTheDocument()
+    );
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select Eligible session for bulk archive",
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("retains only failed rows after a partial bulk archive result", async () => {
+    const user = userEvent.setup();
+    const archivedConversation = conversation({
+      id: "conversation-bulk-success",
+      title: "Archived session",
+    });
+    const failedConversation = conversation({
+      id: "conversation-bulk-failure",
+      title: "Retry session",
+    });
+    conversationsByProject.set("project-1", {
+      data: [archivedConversation, failedConversation],
+      total: 2,
+      isLoading: false,
+    });
+    const onBulkArchiveConversations = vi.fn().mockResolvedValue({
+      archivedConversationIds: [archivedConversation.id],
+      failedConversationIds: [failedConversation.id],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
+    });
+
+    renderSidebar([project()], { onBulkArchiveConversations });
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Archived session for bulk archive",
+        hidden: true,
+      })
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Retry session for bulk archive",
+        hidden: true,
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Archive selected",
+      })
+    );
+
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select Archived session for bulk archive",
+        hidden: true,
+      })
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select Retry session for bulk archive",
+        hidden: true,
+      })
+    ).toBeChecked();
+    expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+  });
+
+  it("prunes a selected row when it leaves the loaded filter result", async () => {
+    const user = userEvent.setup();
+    const selectedConversation = conversation({
+      id: "conversation-bulk-stale",
+      title: "Stale selection",
+    });
+    const remainingConversation = conversation({
+      id: "conversation-bulk-current",
+      title: "Current selection",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selectedConversation, remainingConversation],
+      total: 2,
+      isLoading: false,
+    });
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Stale selection for bulk archive",
+      })
+    );
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    conversationsByProject.set("project-1", {
+      data: [remainingConversation],
+      total: 1,
+      isLoading: false,
+    });
+    useAgentSessionStore.getState().setProjectSort("az");
+
+    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select Stale selection for bulk archive",
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a selected row eligible when refreshed workspace data reports an open PR", async () => {
+    const user = userEvent.setup();
+    const selectedConversation = conversation({
+      id: "conversation-bulk-open-pr-refresh",
+      title: "PR changed session",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selectedConversation],
+      total: 1,
+      isLoading: false,
+    });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: selectedConversation.id }),
+    ]);
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select PR changed session for bulk archive",
+      })
+    );
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: selectedConversation.id,
+        publicationPrNumber: 92,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    useAgentSessionStore.getState().setProjectSort("az");
+
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select PR changed session for bulk archive",
+      })
+    ).not.toBeDisabled();
   });
 
   it("uses a soft wrapper border for sidebar search focus", async () => {
@@ -3038,6 +3417,9 @@ describe("AgentsSidebar", () => {
     expect(onArchiveConversation).not.toHaveBeenCalled();
     expect(
       screen.getByText("Archiving leaves this pull request open unless you choose to close it.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/including uncommitted changes and ignored build or test artifacts/)
     ).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Close pull request" })).not.toBeChecked();
 

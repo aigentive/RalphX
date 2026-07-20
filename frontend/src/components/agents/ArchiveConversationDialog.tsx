@@ -17,6 +17,7 @@ import type {
   AgentConversation,
   AgentConversationArchiveOptions,
 } from "./agentConversations";
+import { hasPotentialOpenPullRequest } from "./bulkConversationArchive";
 
 export interface ArchiveConversationDialogTarget {
   conversation: AgentConversation;
@@ -30,20 +31,6 @@ interface ArchiveConversationDialogProps {
     options: AgentConversationArchiveOptions
   ) => void;
   onClose: () => void;
-}
-
-function hasPotentialOpenPullRequest(workspace: AgentConversationWorkspace | null): boolean {
-  if (!workspace) {
-    return false;
-  }
-  if (workspace.linkedPlanBranchId) {
-    return true;
-  }
-  if (workspace.publicationPrNumber == null) {
-    return false;
-  }
-  const status = workspace.publicationPrStatus?.trim().toLowerCase();
-  return status !== "closed" && status !== "merged";
 }
 
 export function ArchiveConversationDialog({
@@ -82,6 +69,13 @@ export function ArchiveConversationDialog({
                 from the active conversation list. You can restore it later from archived
                 sessions.
               </p>
+              {target?.workspace && (
+                <p className="mt-2 text-text-primary">
+                  Archiving permanently deletes the local RalphX workspace and local branch,
+                  including uncommitted changes and ignored build or test artifacts. These local
+                  files cannot be restored.
+                </p>
+              )}
               {canClosePullRequest && (
                 <>
                   <p className="mt-2 text-text-muted">
@@ -100,11 +94,6 @@ export function ArchiveConversationDialog({
               {isReviewPr && (
                 <p className="mt-2 text-text-muted">
                   The reviewed pull request will remain open.
-                </p>
-              )}
-              {target?.workspace && !isReviewPr && (
-                <p className="mt-2 text-text-muted">
-                  The local workspace branch will be cleaned up on next app restart.
                 </p>
               )}
             </div>

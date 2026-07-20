@@ -8,6 +8,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use crate::application::agent_conversation_workspace::{
     expand_worktree_parent_public, resolve_agent_conversation_project_workspace_dir,
 };
+use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::git_service::GitService;
 use crate::domain::entities::{Project, ProjectId};
 use crate::domain::repositories::{
@@ -124,11 +125,6 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
     for project in projects {
         stats.projects_seen += 1;
 
-        if should_pause(&running_agent_registry).await {
-            stats.log_summary(started_at, true);
-            return;
-        }
-
         if blocked_git_project_ids.contains(&project.id) {
             stats.projects_skipped_blocked += 1;
             continue;
@@ -145,6 +141,60 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
     }
 
     stats.log_summary(started_at, false);
+}
+
+pub(crate) async fn run_periodic_orphan_agent_worktree_cleanup(
+    project_repo: Arc<dyn ProjectRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    run_orphan_agent_worktree_cleanup_pass(
+        Arc::clone(&project_repo),
+        Arc::clone(&workspace_repo),
+        Arc::clone(&marker_repo),
+        Arc::clone(&blocked_git_project_ids),
+        Arc::clone(&running_agent_registry),
+    )
+    .await;
+
+    let interval_secs = git_runtime_config().orphan_worktree_cleanup_interval_secs;
+    if interval_secs == 0 {
+        return;
+    }
+    let interval = std::time::Duration::from_secs(interval_secs);
+    loop {
+        tokio::time::sleep(interval).await;
+        run_orphan_agent_worktree_cleanup_pass(
+            Arc::clone(&project_repo),
+            Arc::clone(&workspace_repo),
+            Arc::clone(&marker_repo),
+            Arc::clone(&blocked_git_project_ids),
+            Arc::clone(&running_agent_registry),
+        )
+        .await;
+    }
+}
+
+pub(super) async fn run_orphan_agent_worktree_cleanup_pass(
+    project_repo: Arc<dyn ProjectRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
+        cleanup_orphan_agent_worktrees_on_startup(
+            project_repo,
+            workspace_repo,
+            marker_repo,
+            blocked_git_project_ids,
+            running_agent_registry,
+        )
+        .await;
+    })
+    .await;
 }
 
 pub(super) async fn cleanup_project_orphan_worktrees(
@@ -218,27 +268,27 @@ pub(super) async fn cleanup_project_orphan_worktrees(
     let target_ref = resolve_target_ref_for_orphan(repo_path).await;
     let mut processed_candidate_paths = HashSet::new();
 
-    let known_workspace_paths = match workspace_repo
+    let known_workspace_paths: HashSet<String> = match workspace_repo
         .list_worktree_paths_by_project_id(&project.id)
         .await
     {
-        Ok(paths) => paths,
+        Ok(paths) => paths
+            .into_iter()
+            .map(PathBuf::from)
+            .map(|path| candidate_path_key(&path))
+            .collect(),
         Err(error) => {
             tracing::debug!(
                 project_id = project.id.as_str(),
                 error = %error,
                 "Orphan cleanup: failed to list workspace paths from DB"
             );
-            HashSet::new()
+            return;
         }
     };
 
     for worktree in &worktrees {
         stats.worktrees_scanned += 1;
-
-        if should_pause(running_agent_registry).await {
-            return;
-        }
 
         let Some(branch) = worktree.branch.as_deref() else {
             continue;
@@ -250,12 +300,15 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
 
         let worktree_path = PathBuf::from(&worktree.path);
+        if candidate_is_busy(running_agent_registry, &worktree_path).await {
+            continue;
+        }
         if !is_current_project_agent_conversation_worktree(&worktree_path, &project_dir) {
             stats.non_ralphx_skips += 1;
             continue;
         }
 
-        if known_workspace_paths.contains(&worktree.path) {
+        if known_workspace_paths.contains(&candidate_path_key(&worktree_path)) {
             stats.db_matches += 1;
             continue;
         }
@@ -408,12 +461,10 @@ async fn scan_canonical_directories_with_seen(
 
         stats.directories_scanned += 1;
 
-        if should_pause(running_agent_registry).await {
-            return;
+        if candidate_is_busy(running_agent_registry, &conv_path).await {
+            continue;
         }
-
-        let conv_path_str = conv_path.to_string_lossy().to_string();
-        if known_workspace_paths.contains(&conv_path_str) {
+        if known_workspace_paths.contains(&candidate_path_key(&conv_path)) {
             stats.db_matches += 1;
             continue;
         }
@@ -771,6 +822,19 @@ pub(super) fn is_under_worktree_parent(path: &Path, worktree_parent: &Path) -> b
     path.starts_with(worktree_parent)
 }
 
-pub(super) async fn should_pause(registry: &Arc<dyn RunningAgentRegistry>) -> bool {
-    !registry.list_all().await.is_empty()
+pub(super) async fn candidate_is_busy(
+    registry: &Arc<dyn RunningAgentRegistry>,
+    candidate_path: &Path,
+) -> bool {
+    let candidate = candidate_path
+        .canonicalize()
+        .unwrap_or_else(|_| candidate_path.to_path_buf());
+    registry
+        .list_all()
+        .await
+        .into_iter()
+        .filter_map(|(_, info)| info.worktree_path)
+        .map(PathBuf::from)
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .any(|path| path == candidate)
 }

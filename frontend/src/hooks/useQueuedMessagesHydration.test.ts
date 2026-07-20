@@ -47,6 +47,15 @@ describe("useQueuedMessagesHydration", () => {
         content: "Continue this run",
         createdAt: "2026-06-19T10:00:00Z",
         isEditing: false,
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "plan-v2",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 10,
+          content: "Frozen plan line",
+        },
         attachmentIds: ["att-1"],
       },
     ]);
@@ -66,6 +75,15 @@ describe("useQueuedMessagesHydration", () => {
           content: "Continue this run",
           createdAt: "2026-06-19T10:00:00Z",
           isEditing: false,
+          composerSelectionSnapshot: {
+            sourceType: "artifact",
+            sourceKind: "plan",
+            sourceId: "plan-v2",
+            artifactVersion: 2,
+            startLine: 10,
+            endLine: 10,
+            content: "Frozen plan line",
+          },
           attachmentIds: ["att-1"],
         },
       ]);

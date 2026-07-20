@@ -39,7 +39,11 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
+
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
+import { buildTicketSelectionContent } from "./artifact-selection/ticketSelectionContent";
 
 type RefreshJiraIssueOptions = {
   silent?: boolean;
@@ -201,6 +205,29 @@ export function AgentsJiraIssuePanel({
     staleTime: 5_000,
   });
   const issue = issueQuery.data ?? null;
+  const selectionContent = useMemo(
+    () =>
+      issue
+        ? buildTicketSelectionContent({
+            key: issue.issueKey,
+            title: issue.title,
+            status: issue.status,
+            assignees: issue.assignee ? [issue.assignee] : [],
+            reporter: issue.reporter,
+            description:
+              issue.descriptionMarkdown ?? issue.descriptionText ?? null,
+            acceptanceCriteria:
+              issue.acceptanceCriteriaMarkdown ??
+              issue.acceptanceCriteriaText ??
+              null,
+            comments: issue.comments.map((comment) => ({
+              author: comment.author,
+              body: comment.bodyMarkdown || comment.bodyText,
+            })),
+          })
+        : null,
+    [issue],
+  );
   const showSearch = !issue || isReassigning;
   const searchQuery = useQuery({
     queryKey: ["agent-conversation-jira-issue", "search", normalizedSearchQuery],
@@ -399,6 +426,22 @@ export function AgentsJiraIssuePanel({
         )}
       </div>
 
+      {issue && selectionContent ? (
+        <ArtifactSelectionSource
+          conversationId={conversationId}
+          source={{
+            sourceType: "ticket",
+            sourceKind: "jira",
+            sourceId: issue.issueId ?? issue.issueKey,
+            sourceKey: issue.issueKey,
+            ...(issue.title ? { sourceTitle: issue.title } : {}),
+            provider: "atlassian",
+            sourceRevision: issue.updatedAtRemote ?? issue.updatedAt,
+          }}
+          content={selectionContent}
+        />
+      ) : null}
+
       <div className="flex-1 space-y-4 px-4 py-4">
         {!conversationId && (
           <PanelNotice title="No conversation selected" detail="Select an agent conversation." />
@@ -555,7 +598,16 @@ function JiraIssueDetails({
   );
 
   return (
-    <div className="space-y-4">
+    <ArtifactSelectableRegion
+      className="space-y-4"
+      source={{
+        sourceKind: "jira",
+        sourceId: issue.issueId ?? issue.issueKey,
+        sourceLabel: `Jira ${issue.issueKey}`,
+        ...(issue.title ? { title: issue.title } : {}),
+        ...(issue.issueUrl ? { url: issue.issueUrl } : {}),
+      }}
+    >
       {issue.refreshStatus === "error" && issue.refreshError && (
         <PanelNotice title="Refresh failed" detail={issue.refreshError} tone="warning" />
       )}
@@ -638,7 +690,7 @@ function JiraIssueDetails({
           </div>
         </section>
       )}
-    </div>
+    </ArtifactSelectableRegion>
   );
 }
 

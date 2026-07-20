@@ -1272,6 +1272,8 @@ pub struct ArtifactVersionSummaryResponse {
     pub version: u32,
     pub name: String,
     pub created_at: String,
+    pub created_by: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersionSummaryResponse {
@@ -1281,6 +1283,8 @@ impl From<crate::domain::repositories::ArtifactVersionSummary> for ArtifactVersi
             version: summary.version,
             name: summary.name,
             created_at: summary.created_at.to_rfc3339(),
+            created_by: summary.created_by,
+            metadata: summary.metadata,
         }
     }
 }
@@ -2982,14 +2986,10 @@ pub struct RevertAndSkipRequest {
 // Request/Response Types - Verification Confirmation (Wave 2)
 // ============================================================================
 
-/// POST /api/verification/confirm — trigger verification with optional specialist exclusions.
+/// POST /api/verification/confirm — queue a model-native Verify Plan action.
 #[derive(Debug, Deserialize)]
 pub struct ConfirmVerificationRequest {
     pub session_id: String,
-    /// Agent names to exclude from this verification run (e.g. ["ralphx-ideation-specialist-ux"]).
-    /// Empty list = all specialists enabled.
-    #[serde(default)]
-    pub disabled_specialists: Vec<String>,
 }
 
 /// POST /api/verification/dismiss — remove a pending verification entry.

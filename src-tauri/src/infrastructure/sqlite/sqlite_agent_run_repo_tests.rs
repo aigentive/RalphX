@@ -486,6 +486,46 @@ async fn test_get_latest_for_conversation_empty() {
 }
 
 #[tokio::test]
+async fn test_latest_completed_provider_session_ignores_newer_failed_and_foreign_runs() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let mut owning_run = AgentRun::new(conv.id);
+    owning_run.status = AgentRunStatus::Completed;
+    owning_run.started_at = Utc::now() - chrono::Duration::minutes(4);
+    owning_run.harness = Some(AgentHarnessKind::Codex);
+    owning_run.provider_session_id = Some("codex-session".to_string());
+    owning_run.effective_model_id = Some("gpt-5.6-sol".to_string());
+    let owning_id = owning_run.id;
+    repo.create(owning_run).await.unwrap();
+
+    let mut failed = AgentRun::new(conv.id);
+    failed.status = AgentRunStatus::Failed;
+    failed.started_at = Utc::now();
+    failed.harness = Some(AgentHarnessKind::Codex);
+    repo.create(failed).await.unwrap();
+
+    let mut foreign = AgentRun::new(conv.id);
+    foreign.status = AgentRunStatus::Completed;
+    foreign.started_at = Utc::now() - chrono::Duration::minutes(1);
+    foreign.harness = Some(AgentHarnessKind::Claude);
+    foreign.provider_session_id = Some("codex-session".to_string());
+    repo.create(foreign).await.unwrap();
+
+    let found = repo
+        .get_latest_completed_for_provider_session(
+            &conv.id,
+            AgentHarnessKind::Codex,
+            "codex-session",
+        )
+        .await
+        .unwrap()
+        .expect("owning completed provider run");
+
+    assert_eq!(found.id, owning_id);
+    assert_eq!(found.effective_model_id.as_deref(), Some("gpt-5.6-sol"));
+}
+
+#[tokio::test]
 async fn test_get_active_for_conversation() {
     let (db, repo) = setup_repo();
     let conv = db.seed_ideation_conversation();

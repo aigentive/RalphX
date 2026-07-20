@@ -46,6 +46,8 @@ function workspaceReviewContext(overrides: {
   shouldShowTab?: boolean;
 } = {}) {
   const conversationId = overrides.conversationId ?? "conversation-1";
+  const reviewArtifactIsCurrent = overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated = overrides.isOutdated ?? true;
   return {
     success: true,
     workspace: conversationWorkspace({ conversationId, mode: "edit" }),
@@ -65,6 +67,11 @@ function workspaceReviewContext(overrides: {
       reviewArtifactId: "review-artifact-1",
       reviewArtifactVersion: 1,
       reviewArtifactUpdatedAt: "2026-04-23T09:30:00Z",
+      reviewGateBypassedAt: null,
+      reviewGateBypassedTargetScope: null,
+      reviewGateBypassedDiffFingerprint: null,
+      reviewGateBypassedArtifactId: null,
+      reviewGateBypassedArtifactVersion: null,
       reviewedHeadSha: "previous-head-sha",
       reviewedDiffFingerprint: "previous-fingerprint",
       selectedSourceBaseRef: null,
@@ -83,8 +90,12 @@ function workspaceReviewContext(overrides: {
       createdAt: "2026-04-23T09:00:00Z",
       updatedAt: "2026-04-23T09:30:00Z",
     },
-    isCurrent: overrides.isCurrent ?? false,
-    isOutdated: overrides.isOutdated ?? true,
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
+    isCurrent: reviewArtifactIsCurrent,
+    isOutdated: reviewArtifactIsOutdated,
     shouldShowTab: overrides.shouldShowTab ?? true,
   };
 }
@@ -258,6 +269,30 @@ describe("AgentsView artifact pane", () => {
       expect(pane).toHaveAttribute("data-active-tab", "automation"),
     );
     expect(pane).toHaveAttribute("data-automation-id", "automation-1");
+  });
+
+  it("auto-opens the Persona artifact tab for persona builder chats", async () => {
+    mockAgentViewData(
+      conversation({
+        agentMode: "persona_builder",
+        builderDraftId: null,
+        builderResultPersonaId: null,
+      }),
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    await waitFor(() =>
+      expect(pane).toHaveAttribute("data-active-tab", "persona"),
+    );
   });
 
   it("forwards automation-owned conversations to the automation artifact pane action", async () => {

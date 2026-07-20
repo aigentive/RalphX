@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import ignore from "ignore";
 import picomatch from "picomatch";
-import { getPrimaryFilesystemRoot, normalizePathLike, } from "./path-policy.js";
+import { getPrimaryFilesystemRoot, normalizePathLike, resolveEnforcedFilesystemPath, } from "./path-policy.js";
 const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 const MAX_READ_BYTES_CAP = 256 * 1024;
 const DEFAULT_MAX_LIST_ENTRIES = 200;
@@ -219,12 +219,14 @@ function clampNonNegative(value, fallback) {
     const normalized = Number.isFinite(value) && value >= 0 ? Math.trunc(value) : fallback;
     return normalized;
 }
-async function resolveReadOnlyExistingPath(inputPath, basePath) {
+async function resolveReadOnlyExistingPath(inputPath, filesystemEnforced, basePath) {
     const baseRoot = normalizePathLike(basePath ?? getPrimaryFilesystemRoot());
     const displayPath = path.isAbsolute(inputPath) || inputPath.startsWith("~")
         ? normalizePathLike(inputPath)
         : path.resolve(baseRoot, inputPath);
-    const safePath = await fs.realpath(displayPath);
+    const safePath = filesystemEnforced
+        ? await resolveEnforcedFilesystemPath(inputPath, displayPath)
+        : await fs.realpath(displayPath);
     return {
         displayPath,
         safePath,
@@ -414,13 +416,13 @@ function formatByteSize(bytes) {
         return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-async function handleReadFile(args) {
+async function handleReadFile(args, filesystemEnforced) {
     const requestedPath = getStringArg(args, "path");
     if (!requestedPath) {
         throw new Error("fs_read_file requires a non-empty path.");
     }
     const maxBytes = clampPositive(getIntegerArg(args, "max_bytes", DEFAULT_MAX_READ_BYTES), DEFAULT_MAX_READ_BYTES, MAX_READ_BYTES_CAP);
-    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath, filesystemEnforced);
     const stat = await fs.stat(safePath);
     if (!stat.isFile()) {
         throw new Error(`Path "${requestedPath}" is not a file.`);
@@ -446,9 +448,9 @@ async function handleReadFile(args) {
         content: [{ type: "text", text: response }],
     };
 }
-async function handleListDir(args) {
+async function handleListDir(args, filesystemEnforced) {
     const requestedPath = getStringArg(args, "path") ?? ".";
-    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
+    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath, filesystemEnforced);
     const stat = await fs.stat(safePath);
     if (!stat.isDirectory()) {
         throw new Error(`Path "${requestedPath}" is not a directory.`);
@@ -490,13 +492,13 @@ async function handleListDir(args) {
         content: [{ type: "text", text: response }],
     };
 }
-async function handleGlob(args) {
+async function handleGlob(args, filesystemEnforced) {
     const pattern = getStringArg(args, "pattern");
     if (!pattern) {
         throw new Error("fs_glob requires a non-empty pattern.");
     }
     const basePath = getStringArg(args, "base_path") ?? ".";
-    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath);
+    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
     const rootStat = await fs.stat(safeRoot);
     if (!rootStat.isDirectory()) {
         throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -529,7 +531,7 @@ async function handleGlob(args) {
         content: [{ type: "text", text: response }],
     };
 }
-async function handleGrep(args) {
+async function handleGrep(args, filesystemEnforced) {
     const pattern = getStringArg(args, "pattern");
     if (!pattern) {
         throw new Error("fs_grep requires a non-empty pattern.");
@@ -541,7 +543,7 @@ async function handleGrep(args) {
     const options = readOnlyTraversalOptions(args);
     const maxResults = clampPositive(getIntegerArg(args, "max_results", DEFAULT_MAX_GREP_RESULTS), DEFAULT_MAX_GREP_RESULTS, MAX_GREP_RESULTS_CAP);
     const maxFileBytes = clampPositive(getIntegerArg(args, "max_file_bytes", DEFAULT_MAX_FILE_BYTES_FOR_SEARCH), DEFAULT_MAX_FILE_BYTES_FOR_SEARCH, MAX_FILE_BYTES_FOR_SEARCH_CAP);
-    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath);
+    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath, filesystemEnforced);
     const rootStat = await fs.stat(safeRoot);
     if (!rootStat.isDirectory()) {
         throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -599,7 +601,7 @@ async function handleGrep(args) {
         content: [{ type: "text", text: response }],
     };
 }
-export async function handleFilesystemToolCall(name, rawArgs) {
+export async function handleFilesystemToolCall(name, rawArgs, runtimeContext) {
     if (!isFilesystemToolName(name)) {
         throw new Error(`Unknown filesystem tool "${name}".`);
     }
@@ -608,13 +610,13 @@ export async function handleFilesystemToolCall(name, rawArgs) {
         : {};
     switch (name) {
         case "fs_read_file":
-            return handleReadFile(args);
+            return handleReadFile(args, runtimeContext.filesystemEnforced);
         case "fs_list_dir":
-            return handleListDir(args);
+            return handleListDir(args, runtimeContext.filesystemEnforced);
         case "fs_grep":
-            return handleGrep(args);
+            return handleGrep(args, runtimeContext.filesystemEnforced);
         case "fs_glob":
-            return handleGlob(args);
+            return handleGlob(args, runtimeContext.filesystemEnforced);
     }
 }
 export function formatFilesystemToolError(error) {

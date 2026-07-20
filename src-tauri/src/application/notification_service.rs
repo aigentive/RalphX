@@ -60,6 +60,10 @@ impl WindowFocusState {
 
 pub trait DesktopNotifier: Send + Sync {
     fn send(&self, title: &str, body: Option<&str>) -> AppResult<()>;
+
+    fn send_notification(&self, notification: &Notification) -> AppResult<()> {
+        self.send(&notification.title, notification.body.as_deref())
+    }
 }
 
 pub struct TauriDesktopNotifier {
@@ -70,10 +74,8 @@ impl TauriDesktopNotifier {
     pub fn new(app_handle: AppHandle) -> Self {
         Self { app_handle }
     }
-}
 
-impl DesktopNotifier for TauriDesktopNotifier {
-    fn send(&self, title: &str, body: Option<&str>) -> AppResult<()> {
+    fn ensure_permission(&self) -> AppResult<()> {
         let notification = self.app_handle.notification();
         if notification
             .permission_state()
@@ -93,7 +95,14 @@ impl DesktopNotifier for TauriDesktopNotifier {
                 "Desktop notification permission was not granted".to_string(),
             ));
         }
+        Ok(())
+    }
+}
 
+impl DesktopNotifier for TauriDesktopNotifier {
+    fn send(&self, title: &str, body: Option<&str>) -> AppResult<()> {
+        self.ensure_permission()?;
+        let notification = self.app_handle.notification();
         let mut builder = notification.builder().title(title);
         if let Some(body) = body {
             builder = builder.body(body);
@@ -101,6 +110,17 @@ impl DesktopNotifier for TauriDesktopNotifier {
         builder
             .show()
             .map_err(|error| AppError::Infrastructure(error.to_string()))
+    }
+
+    fn send_notification(&self, notification: &Notification) -> AppResult<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.ensure_permission()?;
+            super::desktop_notification::send_actionable(&self.app_handle, notification)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        self.send(&notification.title, notification.body.as_deref())
     }
 }
 
@@ -174,7 +194,13 @@ impl DesktopNotificationCoalescer {
             return;
         }
         for notification in notifications {
-            self.send(&notification.title, notification.body.as_deref());
+            if let Err(error) = self.notifier.send_notification(&notification) {
+                tracing::warn!(
+                    error = %error,
+                    notification_id = %notification.id,
+                    "Failed to dispatch desktop notification"
+                );
+            }
         }
     }
 
@@ -374,6 +400,24 @@ impl NotificationService {
             Err(error) => return Err(error),
         }
         Ok(())
+    }
+    /// Best-effort settlement after workflow authority commits.
+    pub async fn resolve_workflow_notification(&self, dedupe_key: &str) {
+        match self
+            .repo
+            .mark_read_by_dedupe_key(dedupe_key, Utc::now())
+            .await
+        {
+            Ok(Some(notification)) => {
+                if let Err(error) = self.emitter.emit_updated(Some(&notification)) {
+                    tracing::warn!(error = %error, notification_id = %notification.id, dedupe_key, "Failed to emit workflow notification settlement");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(error = %error, dedupe_key, "Failed to settle workflow notification")
+            }
+        }
     }
     pub async fn mark_all_read(&self, project_id: Option<&str>) -> AppResult<()> {
         match self.repo.mark_all_read(project_id, Utc::now()).await {

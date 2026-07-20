@@ -314,7 +314,8 @@ async fn test_request_team_plan_register_rejects_codex_ideation_context() {
         lead_session_id: None,
     };
 
-    let result = request_team_plan_register(State(state), Json(request)).await;
+    let result =
+        request_team_plan_register(State(state), axum::http::HeaderMap::new(), Json(request)).await;
     let (status, message) = result.expect_err("Codex ideation should reject team plans");
     assert_eq!(status, axum::http::StatusCode::CONFLICT);
     assert!(message.contains("solo mode"));

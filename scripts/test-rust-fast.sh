@@ -9,6 +9,21 @@ else
 fi
 MANIFEST_PATH="${REPO_ROOT}/src-tauri/Cargo.toml"
 FAST_TARGET_ROOT="${REPO_ROOT}/src-tauri/target/rust-fast"
+FULL_INTEGRATION_TESTS=(
+  suite_agent_workspace
+  suite_chat_service
+  suite_commands
+  suite_http_handlers
+  suite_ideation
+  suite_interactive_process
+  suite_ipc_commands
+  suite_metrics
+  suite_pr_github
+  suite_sqlite_flows
+  suite_sqlite_repos
+  suite_transition_git
+  plan_selector_performance
+)
 
 CURRENT_TOPLEVEL="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
 
@@ -33,12 +48,14 @@ Modes:
   lib-2         Run lib shard 2/2.
   lib           Run both lib shards sequentially against the shared target dir.
   lib-parallel  Run both lib shards in parallel with isolated target dirs.
-  pr            Reproduce PR Rust CI locally: layering + IPC + lib shards.
-  pr-parallel   Reproduce PR Rust CI locally with isolated per-lane target dirs.
+  pr            Run the fast Rust CI subset: layering + IPC + lib shards.
+  pr-parallel   Run the fast Rust CI subset with isolated per-lane target dirs.
   doc           Run doctests.
   full-integration
-                Run the push-only full Rust integration sweep.
-  main          Reproduce push-to-main Rust CI locally: PR stack + doctests + full integration.
+                Run the full Rust integration sweep.
+  full-integration-archive <archive-file>
+                Build the explicit full integration targets into a Nextest archive.
+  main          Run the broad Rust CI aggregate: fast subset + doctests + full integration.
   help          Show this message.
 
 Notes:
@@ -89,11 +106,30 @@ doc_cmd() {
   cargo test --manifest-path "${MANIFEST_PATH}" --workspace --doc
 }
 
-full_integration_cmd() {
-  cargo nextest run \
+full_integration_nextest_cmd() {
+  local nextest_subcommand="$1"
+  shift
+  local test_args=()
+  local test_name
+  for test_name in "${FULL_INTEGRATION_TESTS[@]}"; do
+    test_args+=(--test "${test_name}")
+  done
+
+  cargo nextest "${nextest_subcommand}" \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
-    --features test-utils
+    "${test_args[@]}" \
+    --features test-utils \
+    "$@"
+}
+
+full_integration_cmd() {
+  full_integration_nextest_cmd run
+}
+
+full_integration_archive_cmd() {
+  local archive_file="$1"
+  full_integration_nextest_cmd archive --archive-file "${archive_file}"
 }
 
 run_ipc() {
@@ -115,6 +151,11 @@ run_docs() {
 
 run_full_integration() {
   run_cmd "full-integration" full_integration_cmd
+}
+
+run_full_integration_archive() {
+  local archive_file="$1"
+  run_cmd "full-integration-archive" full_integration_archive_cmd "${archive_file}"
 }
 
 run_isolated_ipc() {
@@ -220,6 +261,14 @@ case "${mode}" in
     ;;
   full-integration)
     run_full_integration
+    ;;
+  full-integration-archive)
+    archive_file="${2:-}"
+    if [[ -z "${archive_file}" ]]; then
+      printf '[rust-fast] full-integration-archive requires an output file.\n' >&2
+      exit 1
+    fi
+    run_full_integration_archive "${archive_file}"
     ;;
   main)
     run_layering

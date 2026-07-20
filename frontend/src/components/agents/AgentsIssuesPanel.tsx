@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 import {
   agentConversationIssueKeys,
   useAgentConversationIssues,
@@ -188,6 +189,15 @@ function IssueCard({
         borderWidth: 1,
       }}
     >
+      <ArtifactSelectableRegion
+        source={{
+          sourceKind: "issue",
+          sourceId: issue.id,
+          sourceLabel: "Issue",
+          title: issue.title,
+        }}
+        className="contents"
+      >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -320,6 +330,7 @@ function IssueCard({
           Dismiss
         </Button>
       </div>
+      </ArtifactSelectableRegion>
     </article>
   );
 }

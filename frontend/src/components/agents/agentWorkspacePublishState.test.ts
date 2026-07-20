@@ -318,9 +318,12 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
     expect(
       shouldShowAgentWorkspacePublishSurface(workspace({ mode: "review_pr" })),
     ).toBe(false);
+  });
+
+  it("shows the existing publish surface for automation setup workspaces", () => {
     expect(
       shouldShowAgentWorkspacePublishSurface(workspace({ mode: "automation" })),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

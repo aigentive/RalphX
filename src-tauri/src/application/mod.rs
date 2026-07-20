@@ -16,14 +16,29 @@ pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
+pub mod mcp_policy_config;
+pub mod mcp_policy_agent_client;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+#[cfg(test)]
+mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
+pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
+pub(crate) mod agent_workspace_terminal_cleanup;
+#[cfg(test)]
+mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review_base;
@@ -32,21 +47,36 @@ mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
+pub mod agent_workspace_review_auto_merge;
+#[cfg(test)]
+mod agent_workspace_review_auto_merge_tests;
+#[cfg(test)]
+mod agent_workspace_review_run_guard_tests;
+pub(crate) mod agent_workspace_review_approval;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
+#[cfg(test)]
+mod app_paths_tests;
 pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
+pub mod builder_attachment_materializer;
+pub mod conversation_folder_reference_service;
+#[cfg(test)]
+mod conversation_folder_reference_service_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
 pub mod clickup_git_association;
 pub mod dependency_service;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
 pub mod diff_service;
@@ -99,14 +129,15 @@ pub mod persona_prompt;
 pub mod persona_resolver;
 pub mod permission_state;
 #[cfg(test)]
-mod persona_ingest_tests;
-#[cfg(test)]
 mod persona_prompt_tests;
 #[cfg(test)]
 mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
+pub mod plan_verification_service;
+#[cfg(test)]
+mod plan_verification_service_tests;
 pub mod plan_ranking;
 pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;
@@ -115,6 +146,11 @@ pub mod project_pr_template;
 pub mod project_skill_export_service;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
+pub(crate) mod provider_management_eligibility;
+#[cfg(test)]
+mod provider_onboarding_gate_tests;
+#[cfg(test)]
+mod provider_management_eligibility_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -136,9 +172,17 @@ pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
+#[cfg(test)]
+mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
+pub mod seeded_agent_conversation_abort;
+pub mod standalone_workspace;
+#[cfg(test)]
+mod standalone_workspace_path_safety_tests;
+#[cfg(test)]
+mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;
@@ -158,11 +202,23 @@ mod task_diff_base_tests;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
+pub(crate) mod tasks_feature_policy;
+#[cfg(test)]
+mod tasks_feature_policy_tests;
+pub(crate) mod tasks_feature_toggle_service;
+#[cfg(test)]
+mod tasks_feature_toggle_service_tests;
 pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod throttled_emitter;
+pub mod ticket_attachment;
+pub mod ticket_attachment_runtime_store;
+#[cfg(test)]
+mod ticket_attachment_runtime_store_tests;
+#[cfg(test)]
+mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
@@ -170,7 +226,6 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
-pub mod verification_child_session;
 pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
@@ -201,6 +256,9 @@ pub use atlassian_integration_service::{
     AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
 };
+pub use jira_agile_types::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+};
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
 pub use clickup_integration_service::{
@@ -230,8 +288,8 @@ pub use granola_integration_service::{
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
-    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    resolve_lane_harness_config, resolve_primary_ideation_harness_availability_for_state,
+    team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
     IDEATION_LANES,
 };
@@ -325,6 +383,10 @@ mod agent_issue_report_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
 #[cfg(test)]
+mod manual_role_default_service_tests;
+#[cfg(test)]
+mod manual_router_config_tests;
+#[cfg(test)]
 mod agent_planning_session_titles_tests;
 #[cfg(test)]
 mod agent_terminal_tests;
@@ -391,6 +453,8 @@ mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
 #[cfg(test)]
+mod task_cleanup_service_tests;
+#[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
@@ -400,8 +464,6 @@ mod ticketing_cache_invalidator_tests;
 mod ticketing_pr_summary_tests;
 #[cfg(test)]
 mod validation_service_tests;
-#[cfg(test)]
-mod verification_child_session_tests;
 #[cfg(test)]
 mod verification_event_emitters_tests;
 #[cfg(test)]
@@ -416,3 +478,10 @@ pub use chat_service::{
     TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
     TeamTeammateSpawnedPayload, AGENT_MESSAGE_QUEUED,
 };
+pub mod agent_capability_gate;
+#[cfg(test)]
+mod agent_capability_gate_tests;
+pub mod agent_capability_validation;
+pub mod agent_workflow_runner;
+#[cfg(test)]
+mod agent_capability_validation_tests;

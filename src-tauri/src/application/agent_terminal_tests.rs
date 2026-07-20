@@ -220,6 +220,14 @@ fn terminal_command_sets_real_pty_environment() {
     assert_eq!(command.get_env("TERM"), Some(OsStr::new("xterm-256color")));
     assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
     assert_eq!(command.get_env("PWD"), Some(OsStr::new("/tmp/project")));
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert_eq!(command.get_env(key), None, "{key} must not reach the PTY");
+    }
 }
 
 #[cfg(target_os = "macos")]

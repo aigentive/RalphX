@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { act } from "react";
 
+import type { GitHubConnectionStatus } from "@/api/github";
 import type { Project } from "@/types/project";
 
 // ---------------------------------------------------------------------------
@@ -43,8 +44,11 @@ vi.mock("@/stores/projectStore", () => ({
 
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitAuthDiagnostics: () => mocks.diagnostics,
-  useGhAuthStatus: () => mocks.ghAuth,
   useResumeDeferredGitStartup: () => ({ mutate: mockResumeMutate }),
+}));
+
+vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
+  useGitHubConnectionStatus: () => mocks.ghAuth,
 }));
 
 import { useGitAuthStartupNotification } from "./useGitAuthStartupNotification";
@@ -99,6 +103,24 @@ function diagnosticsSsh() {
   };
 }
 
+function ghStatus(
+  state: GitHubConnectionStatus["state"],
+): GitHubConnectionStatus {
+  return {
+    state,
+    diagnostic:
+      state === "authenticated"
+        ? null
+        : state === "provider_unavailable"
+          ? "http5xx"
+          : "missing_credentials",
+    ghInstalled: state !== "cli_unavailable",
+    authenticated: state === "authenticated",
+    host: state === "cli_unavailable" ? null : "github.com",
+    account: state === "authenticated" ? "octocat" : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 
 describe("useGitAuthStartupNotification (hook)", () => {
@@ -122,7 +144,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
   it("leaves the startup Git auth alert to its durable notification-center row", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: diagnosticsHttps(), isLoading: false, isError: false };
-    mocks.ghAuth = { data: false, isLoading: false };
+    mocks.ghAuth = { data: ghStatus("unauthenticated"), isLoading: false };
 
     renderHook(() => useGitAuthStartupNotification());
     expect(toastFn).not.toHaveBeenCalled();
@@ -131,7 +153,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
   it("does not add a bespoke toast when the durable startup condition re-renders", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: diagnosticsHttps(), isLoading: false, isError: false };
-    mocks.ghAuth = { data: false, isLoading: false };
+    mocks.ghAuth = { data: ghStatus("unauthenticated"), isLoading: false };
 
     const { rerender } = renderHook(() => useGitAuthStartupNotification());
     rerender();
@@ -142,7 +164,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
   it("resumes deferred startup when a previously blocked project becomes healthy", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: diagnosticsHttps(), isLoading: false, isError: false };
-    mocks.ghAuth = { data: false, isLoading: false };
+    mocks.ghAuth = { data: ghStatus("unauthenticated"), isLoading: false };
 
     const { rerender } = renderHook(() => useGitAuthStartupNotification());
     expect(toastFn).not.toHaveBeenCalled();
@@ -150,7 +172,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
     // Project recovers — gh now authenticated, fetch/push back on SSH.
     act(() => {
       mocks.diagnostics = { data: diagnosticsSsh(), isLoading: false, isError: false };
-      mocks.ghAuth = { data: true, isLoading: false };
+      mocks.ghAuth = { data: ghStatus("authenticated"), isLoading: false };
     });
     rerender();
     expect(mockResumeMutate).toHaveBeenCalledTimes(1);
@@ -167,7 +189,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
   it("does not add a bespoke toast when diagnostics fail", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: undefined, isLoading: false, isError: true };
-    mocks.ghAuth = { data: false, isLoading: false };
+    mocks.ghAuth = { data: ghStatus("provider_unavailable"), isLoading: false };
 
     renderHook(() => useGitAuthStartupNotification());
     expect(toastFn).not.toHaveBeenCalled();

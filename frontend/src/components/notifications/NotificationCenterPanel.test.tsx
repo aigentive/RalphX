@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NotificationCenterPanel, type NotificationCenterPanelProps } from "./NotificationCenterPanel";
+import { automationsApi } from "@/api/automations";
+import { permissionApi } from "@/api/permission";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { useNotificationReadActions } from "@/hooks/useNotificationHistory";
@@ -40,6 +42,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   };
 });
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
+vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
+vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
 vi.mock("@/hooks/useNotificationHistory", () => ({ useNotificationReadActions: vi.fn() }));
 vi.mock("@/hooks/useReviews", () => ({ useTasksAwaitingReview: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({ api: { tasks: { get: vi.fn() } } }));
@@ -175,9 +179,12 @@ describe("NotificationCenterPanel first-paint behavior", () => {
       animationFrameCallbacks.delete(id);
     });
     vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
-    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markReadBatch: vi.fn(), markAllRead });
+    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markAllRead });
     vi.mocked(useTasksAwaitingReview).mockReturnValue(awaitingReviewTasks());
     vi.mocked(api.tasks.get).mockRejectedValue(new Error("Task not found"));
+    vi.mocked(automationsApi.resume).mockReset();
+    vi.mocked(permissionApi.getPendingPermissions).mockReset();
+    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
     useTaskStore.setState({ tasks: {} });
     useProjectStore.setState({ activeProjectId: "project-1" });
   });
@@ -215,6 +222,36 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     await renderPanel(true);
     await revealDeferredContent();
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
+  });
+
+  it("resumes a still-paused automation directly from its notification action", async () => {
+    const pausedItem: AttentionItem = {
+      id: "automation:automation-1:paused",
+      category: "automation_paused",
+      title: "Automation paused: Release pipeline",
+      detail: "Signal verification failed",
+      projectId: "project-1",
+      createdAt: "2026-07-10T10:00:00Z",
+      target: {
+        kind: "automation_run",
+        projectId: "project-1",
+        automationId: "automation-1",
+      },
+    };
+    vi.mocked(useAttentionItems).mockReturnValue({
+      data: [pausedItem],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(automationsApi.resume).mockResolvedValue({} as never);
+
+    await renderPanel(true);
+    await revealDeferredContent();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await act(async () => Promise.resolve());
+
+    expect(automationsApi.resume).toHaveBeenCalledWith("automation-1");
   });
 
   it("uses the global attention query and labels an item from another project by name", async () => {
@@ -521,10 +558,16 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     const onClose = vi.fn();
     const reopen = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", reopen);
+    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+      { request_id: "request-1", tool_name: "Bash", tool_input: {} },
+    ]);
     vi.mocked(useAttentionItems).mockReturnValue({ data: [permissionItem], isLoading: false } as ReturnType<typeof useAttentionItems>);
     await renderPanel(true, onClose);
     await revealDeferredContent();
-    fireEvent.click(screen.getByTestId(`attention-item-${permissionItem.id}`));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(`attention-item-${permissionItem.id}`));
+      await Promise.resolve();
+    });
     expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
     window.removeEventListener("ralphx:open-permission-dialog", reopen);
@@ -558,6 +601,9 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     const onClose = vi.fn();
     const reopen = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", reopen);
+    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+      { request_id: "request-keyboard", tool_name: "Bash", tool_input: {} },
+    ]);
     vi.mocked(useAttentionItems).mockReturnValue({
       data: [permissionItem], isLoading: false, isError: false, refetch: vi.fn(),
     } as ReturnType<typeof useAttentionItems>);
@@ -565,13 +611,19 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     await revealDeferredContent();
 
     const row = screen.getByTestId(`attention-item-${permissionItem.id}`);
-    fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+      await Promise.resolve();
+    });
     expect(reopen).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledOnce();
 
     fireEvent.keyDown(row, { key: "ArrowDown" });
     expect(reopen).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(row, { key: "Enter" });
+    await act(async () => {
+      fireEvent.keyDown(row, { key: "Enter" });
+      await Promise.resolve();
+    });
 
     expect(reopen).toHaveBeenLastCalledWith(expect.objectContaining({
       detail: { requestId: "request-keyboard" },

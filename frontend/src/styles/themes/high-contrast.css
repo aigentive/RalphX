@@ -228,6 +228,23 @@ html[data-theme="high-contrast"] main {
   --sidebar-ring:               #FF6A35;
 }
 
+[data-theme="high-contrast"] [data-sonner-toaster] {
+  --normal-text: #FFFFFF;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] {
+  color: #FFFFFF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-description] {
+  color: #BFBFBF !important;
+}
+
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-title],
+[data-theme="high-contrast"] [data-sonner-toast][data-styled="true"] [data-content] {
+  color: #FFFFFF !important;
+}
+
 [data-theme="high-contrast"] [data-testid="kanban-toolbar"] {
   border-bottom-color: #555555 !important;
 }
@@ -429,7 +446,7 @@ html[data-theme="high-contrast"] main {
   border-radius: 0;
 }
 
-/* Execution Agents tab list — TabsList has an explicit border on the
+/* Agents tab list — TabsList has an explicit border on the
    wrapper that makes "Global Defaults / Project Overrides" read as a
    pill inside the flat-section context. Drop the wrapper border and
    bg so only the active trigger's accent fill signals selection. */
@@ -438,19 +455,19 @@ html[data-theme="high-contrast"] main {
   background: transparent !important;
 }
 
-/* Execution Agents collapsible rows — the toggle button sits at the
-   top of each lane block. Our global HC button-border rule (Phase 1)
+/* Agents disclosure rows — the toggle button sits at the top of each
+   family or role block. Our global HC button-border rule (Phase 1)
    strokes it as if it were a button, which reads as double-borders
    inside the bordered lane block. Strip the stroke for aria-controls
    headers (collapsible-section buttons). Exclude comboboxes and other
    buttons that legitimately show aria-expanded (Radix SelectTrigger). */
-[data-theme="high-contrast"] [data-testid="settings-dialog"] button[aria-controls^="harness-body"],
+[data-theme="high-contrast"] [data-testid="settings-dialog"] .agents-family__summary,
 [data-theme="high-contrast"] [data-testid="settings-dialog"] button[aria-expanded][aria-controls]:not([role="combobox"]) {
   border: none !important;
   cursor: pointer;
 }
 
-/* Execution Agents tabs — once the tablist wrapper chrome is stripped
+/* Agents tabs — once the tablist wrapper chrome is stripped
    (above), "Global Defaults" and "Project Overrides" butt up against
    each other with no visible gap. Add 8px between them so each tab
    reads as its own target on HC. Scoped to the dialog so the default

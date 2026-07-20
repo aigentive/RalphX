@@ -25,6 +25,8 @@ impl Default for IdeationPlanMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ExternalIdeationOverrides {
+    /// Override for `auto_verify_plans` for external sessions.
+    pub auto_verify_plans: Option<bool>,
     /// Override for `require_verification_for_accept` for external sessions.
     pub require_verification_for_accept: Option<bool>,
     /// Override for `require_verification_for_proposals` for external sessions.
@@ -36,6 +38,9 @@ pub struct ExternalIdeationOverrides {
 /// Ideation-specific settings (separate from QA settings)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdeationSettings {
+    /// Master switch for the product Tasks/Kanban/Autopilot feature.
+    #[serde(default)]
+    pub tasks_enabled: bool,
     /// How implementation plans are created in ideation flow
     pub plan_mode: IdeationPlanMode,
     /// In Required mode, whether explicit approval is needed before proposals
@@ -44,7 +49,10 @@ pub struct IdeationSettings {
     pub suggest_plans_for_complex: bool,
     /// Auto-link proposals to session plan when created
     pub auto_link_proposals: bool,
-    /// If true, plans must be verified (or skipped) before accepting proposals
+    /// Queue model-native verification when required acceptance lacks exact proof.
+    #[serde(default)]
+    pub auto_verify_plans: bool,
+    /// If true, the exact current plan must be verified before accepting proposals.
     #[serde(default)]
     pub require_verification_for_accept: bool,
     /// If true, plans must be verified (or skipped) before proposals can be created
@@ -61,13 +69,15 @@ pub struct IdeationSettings {
 impl Default for IdeationSettings {
     fn default() -> Self {
         Self {
+            tasks_enabled: false,
             plan_mode: IdeationPlanMode::Optional,
             require_plan_approval: false, // Plan existence is sufficient by default
             suggest_plans_for_complex: true,
             auto_link_proposals: true,
+            auto_verify_plans: false,
             require_verification_for_accept: false, // Opt-in feature
             require_verification_for_proposals: false, // Opt-in feature
-            require_accept_for_finalize: false, // Opt-in feature
+            require_accept_for_finalize: false,     // Opt-in feature
             external_overrides: ExternalIdeationOverrides::default(),
         }
     }

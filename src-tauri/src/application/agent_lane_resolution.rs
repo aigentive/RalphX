@@ -1,13 +1,189 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
-    generic_harness_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
+    generic_harness_lane_defaults, generic_harness_role_defaults, AgentHarnessKind, AgentLane,
+    AgentLaneSettings, LogicalEffort, ManualServiceTier, RoutingRole, RoutingRoleFamily,
     StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::ChatContextType;
+use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
 use crate::domain::repositories::AgentLaneSettingsRepository;
+use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{canonical_short_agent_name, resolve_model};
+
+use super::manual_role_default_service::{ManualDefaultSource, ManualRoleDefaultService};
+
+/// Map a provider-backed chat launch to the backend-owned semantic routing role.
+///
+/// Canonical agent identity handles specialist launches while typed context,
+/// workspace mode, and ideation purpose disambiguate agents reused by more than
+/// one workflow. Model or frontend input never supplies this value.
+pub fn routing_role_for_chat_launch(
+    agent_name: &str,
+    context_type: ChatContextType,
+    entity_status: Option<&str>,
+    workspace_mode: Option<AgentConversationWorkspaceMode>,
+    ideation_verification: bool,
+) -> RoutingRole {
+    let agent_name = canonical_short_agent_name(agent_name);
+    let specialist = match agent_name {
+        "ralphx-automation-plan-judge" => Some(RoutingRole::AutomationPlanJudge),
+        "ralphx-automation-judge" | "ralphx-automation-decomposition-verifier" => {
+            Some(RoutingRole::AutomationResultJudge)
+        }
+        "ralphx-workspace-reviewer" | "ralphx-review-chat" | "ralphx-review-history" => {
+            Some(RoutingRole::WorkspaceReviewer)
+        }
+        "ralphx-agent-workspace-repair" if context_type == ChatContextType::Merge => {
+            Some(RoutingRole::WorkspaceMergeRepair)
+        }
+        "ralphx-agent-workspace-repair" | "ralphx-execution-branch-updater" => {
+            Some(RoutingRole::WorkspaceRepair)
+        }
+        "ralphx-agent-workspace-pr-fixer" => Some(RoutingRole::WorkspacePrFixer),
+        "ralphx-execution-coder" | "ralphx-research-deep-researcher" => {
+            Some(RoutingRole::DelegatedSubagent)
+        }
+        "ralphx-qa-prep" => Some(RoutingRole::ExecutionQaPrep),
+        "qa-refiner" => Some(RoutingRole::ExecutionQaRefiner),
+        "qa-tester" | "ralphx-qa-executor" => Some(RoutingRole::ExecutionQaTester),
+        "ralphx-utility-pr-describer" => Some(RoutingRole::UtilityPrDescriber),
+        "ralphx-project-analyzer" => Some(RoutingRole::UtilityProjectAnalyzer),
+        "ralphx-memory-capture" => Some(RoutingRole::MemoryCapture),
+        "ralphx-memory-maintainer" => Some(RoutingRole::MemoryMaintainer),
+        "ralphx-utility-session-namer"
+        | "ralphx-utility-plan-complexity"
+        | "ralphx-persona-extractor" => Some(RoutingRole::UtilityLightweight),
+        _ => None,
+    };
+    if let Some(role) = specialist {
+        return role;
+    }
+
+    match context_type {
+        ChatContextType::Project => match workspace_mode {
+            Some(AgentConversationWorkspaceMode::Chat) => RoutingRole::WorkspaceChat,
+            Some(AgentConversationWorkspaceMode::Edit) => RoutingRole::WorkspaceEdit,
+            Some(AgentConversationWorkspaceMode::Plan) => RoutingRole::WorkspacePlan,
+            Some(AgentConversationWorkspaceMode::Tasks) => RoutingRole::UtilityLightweight,
+            Some(AgentConversationWorkspaceMode::Autopilot) => RoutingRole::WorkspaceIdeation,
+            Some(AgentConversationWorkspaceMode::Ideation) => RoutingRole::WorkspaceIdeation,
+            Some(AgentConversationWorkspaceMode::ReviewPr) => RoutingRole::WorkspaceReviewPr,
+            Some(AgentConversationWorkspaceMode::Automation) => RoutingRole::WorkspaceAutomation,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder) => RoutingRole::UtilityLightweight,
+            None => match agent_name {
+                "ralphx-general-worker" => RoutingRole::WorkspaceEdit,
+                "ralphx-ideation" | "ralphx-ideation-readonly" => RoutingRole::WorkspacePlan,
+                "ralphx-pr-reviewer" => RoutingRole::WorkspaceReviewPr,
+                "ralphx-automation-setup" => RoutingRole::WorkspaceAutomation,
+                _ => RoutingRole::WorkspaceChat,
+            },
+        },
+        ChatContextType::Standalone => match workspace_mode {
+            Some(AgentConversationWorkspaceMode::PersonaBuilder) => RoutingRole::UtilityLightweight,
+            _ => RoutingRole::WorkspaceChat,
+        },
+        ChatContextType::Ideation => {
+            if ideation_verification {
+                RoutingRole::IdeationVerifier
+            } else {
+                RoutingRole::IdeationPrimary
+            }
+        }
+        ChatContextType::Delegation => RoutingRole::DelegatedSubagent,
+        ChatContextType::Task => RoutingRole::UtilityLightweight,
+        ChatContextType::TaskExecution => {
+            if matches!(entity_status, Some("re_executing")) {
+                RoutingRole::ExecutionReexecutor
+            } else {
+                RoutingRole::ExecutionWorker
+            }
+        }
+        ChatContextType::Review => RoutingRole::ExecutionReviewer,
+        ChatContextType::Merge => RoutingRole::ExecutionMerger,
+        ChatContextType::BranchUpdate => RoutingRole::WorkspaceRepair,
+    }
+}
+
+/// Map a delegated chat launch using its backend-owned parent context.
+pub fn routing_role_for_delegated_launch(
+    agent_name: &str,
+    parent_context_type: ChatContextType,
+    ideation_verification: bool,
+) -> RoutingRole {
+    if parent_context_type == ChatContextType::Ideation {
+        if ideation_verification {
+            RoutingRole::IdeationVerifierSubagent
+        } else {
+            RoutingRole::IdeationSubagent
+        }
+    } else {
+        routing_role_for_chat_launch(agent_name, ChatContextType::Delegation, None, None, false)
+    }
+}
+
+/// Map state-machine spawner identifiers to semantic roles.
+pub fn routing_role_for_spawner_agent(
+    agent_type: &str,
+    entity_status: Option<&str>,
+) -> Option<RoutingRole> {
+    match agent_type {
+        "worker" | "ralphx-execution-worker" => {
+            if matches!(entity_status, Some("re_executing")) {
+                Some(RoutingRole::ExecutionReexecutor)
+            } else {
+                Some(RoutingRole::ExecutionWorker)
+            }
+        }
+        "coder" | "ralphx-execution-coder" => Some(RoutingRole::DelegatedSubagent),
+        "qa-prep" => Some(RoutingRole::ExecutionQaPrep),
+        "qa-refiner" => Some(RoutingRole::ExecutionQaRefiner),
+        "qa-tester" => Some(RoutingRole::ExecutionQaTester),
+        "reviewer" | "ralphx-execution-reviewer" => Some(RoutingRole::ExecutionReviewer),
+        "merger" | "ralphx-execution-merger" => Some(RoutingRole::ExecutionMerger),
+        "branch-updater" | "ralphx-execution-branch-updater" => Some(RoutingRole::WorkspaceRepair),
+        _ => None,
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for ManualRoleDefaultService {
+    async fn resolve_state_machine_role(
+        &self,
+        agent_name: &str,
+        agent_type: &str,
+        entity_status: Option<&str>,
+        project_id: Option<&str>,
+        project_root: Option<&Path>,
+    ) -> Result<Option<crate::infrastructure::agents::spawner::StateMachineRoleSettings>, String>
+    {
+        let Some(role) = routing_role_for_spawner_agent(agent_type, entity_status) else {
+            return Ok(None);
+        };
+        let resolved = resolve_manual_role_spawn_settings(
+            agent_name,
+            project_id,
+            project_root,
+            role,
+            None,
+            None,
+            self,
+        )
+        .await
+        .map_err(|error| format!("Failed to resolve manual default for {role}: {error}"))?;
+        Ok(Some(
+            crate::infrastructure::agents::spawner::StateMachineRoleSettings {
+                harness: resolved.effective_harness,
+                model: resolved.model,
+                logical_effort: resolved.logical_effort,
+                approval_policy: resolved.approval_policy,
+                sandbox_mode: resolved.sandbox_mode,
+                service_tier: resolved.service_tier,
+            },
+        ))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
@@ -62,7 +238,14 @@ pub async fn resolve_agent_spawn_settings(
                         .as_ref()
                         .and_then(|settings| settings.model.clone())
                 })
-                .unwrap_or_else(|| resolve_model(Some(agent_name))),
+                .unwrap_or_else(|| {
+                    if effective_harness == AgentHarnessKind::Claude {
+                        resolve_model(Some(agent_name))
+                    } else {
+                        crate::domain::agents::default_model_for_provider(effective_harness)
+                            .to_string()
+                    }
+                }),
             logical_effort: None,
             claude_effort: None,
             approval_policy: default_approval_policy_for_harness(effective_harness)
@@ -214,33 +397,175 @@ pub async fn resolve_agent_spawn_settings(
     }
 }
 
-pub(crate) async fn resolve_agent_subagent_harness(
+/// Resolve one exact semantic role default for a production provider launch.
+///
+/// Unlike the legacy lane compatibility function, repository and config errors
+/// are returned to the caller so an explicit broken default cannot degrade into
+/// a guessed provider launch.
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_manual_role_spawn_settings(
     agent_name: &str,
     project_id: Option<&str>,
-    context_type: ChatContextType,
-    entity_status: Option<&str>,
-    agent_lane_settings_repo: Option<&Arc<dyn AgentLaneSettingsRepository>>,
-) -> AgentHarnessKind {
-    let primary = resolve_agent_spawn_settings(
-        agent_name,
-        project_id,
-        context_type,
-        entity_status,
-        None,
-        None,
-        agent_lane_settings_repo,
-    )
-    .await;
+    project_root: Option<&Path>,
+    role: RoutingRole,
+    harness_override: Option<AgentHarnessKind>,
+    model_override: Option<&str>,
+    service: &ManualRoleDefaultService,
+) -> AppResult<ResolvedAgentSpawnSettings> {
+    let resolved = service.resolve(project_id, project_root, role).await?;
+    let effective_harness = harness_override.unwrap_or(resolved.value.harness);
+    let settings_match_effective_harness = resolved.value.harness == effective_harness;
+    let utility_legacy_harness_only = resolved.source == ManualDefaultSource::LegacyLane
+        && role.metadata().family == RoutingRoleFamily::Utility;
+    let configured = settings_match_effective_harness
+        .then_some(&resolved.value)
+        .filter(|_| {
+            resolved.source != ManualDefaultSource::ProviderDefault && !utility_legacy_harness_only
+        });
+    let selected = settings_match_effective_harness.then_some(&resolved.value);
+    let harness_defaults = manual_role_harness_defaults(role, effective_harness);
 
-    let Some(subagent_lane) = subagent_lane_for_context(agent_name, context_type) else {
-        return primary.effective_harness;
+    let model = model_override
+        .map(str::to_string)
+        .or_else(|| configured.and_then(|value| value.model.clone()))
+        .or_else(|| {
+            harness_defaults
+                .as_ref()
+                .and_then(|settings| settings.model.clone())
+        })
+        .unwrap_or_else(|| resolve_model(Some(agent_name)));
+    let logical_effort = configured.and_then(|value| value.effort).or_else(|| {
+        harness_defaults
+            .as_ref()
+            .and_then(|settings| settings.effort)
+    });
+    let service_tier = selected.and_then(|value| manual_service_tier(value.service_tier));
+    let (configured_subagent_model_cap, subagent_model_cap) =
+        resolve_manual_subagent_model(project_id, project_root, role, effective_harness, service)
+            .await?;
+
+    Ok(ResolvedAgentSpawnSettings {
+        configured_harness: configured.map(|value| value.harness),
+        effective_harness,
+        configured_model: configured.and_then(|value| value.model.clone()),
+        configured_logical_effort: configured.and_then(|value| value.effort),
+        configured_approval_policy: configured.and_then(|value| value.approval_policy.clone()),
+        configured_sandbox_mode: configured.and_then(|value| value.sandbox_mode.clone()),
+        configured_service_tier: configured
+            .and_then(|value| manual_service_tier(value.service_tier)),
+        model,
+        logical_effort,
+        claude_effort: logical_effort.map(|effort| effort.to_legacy_claude_effort().to_string()),
+        approval_policy: default_approval_policy_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| selected.and_then(|value| value.approval_policy.clone()))
+            .or_else(|| {
+                harness_defaults
+                    .as_ref()
+                    .and_then(|settings| settings.approval_policy.clone())
+            }),
+        sandbox_mode: default_sandbox_mode_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| selected.and_then(|value| value.sandbox_mode.clone()))
+            .or_else(|| {
+                harness_defaults
+                    .as_ref()
+                    .and_then(|settings| settings.sandbox_mode.clone())
+            }),
+        service_tier,
+        configured_subagent_model_cap,
+        subagent_model_cap,
+    })
+}
+
+fn manual_role_harness_defaults(
+    role: RoutingRole,
+    harness: AgentHarnessKind,
+) -> Option<AgentLaneSettings> {
+    if role == RoutingRole::WorkspacePlan || role.metadata().family == RoutingRoleFamily::Utility {
+        return Some(generic_harness_role_defaults(harness, role));
+    }
+
+    let lane = role.legacy_lane().or(match role {
+        RoutingRole::ExecutionQaPrep
+        | RoutingRole::ExecutionQaRefiner
+        | RoutingRole::ExecutionQaTester => Some(AgentLane::ExecutionWorker),
+        _ => None,
+    });
+    if let Some(lane) = lane {
+        return nondefault_harness_lane_settings(lane, harness);
+    }
+
+    (harness != DEFAULT_AGENT_HARNESS).then(|| generic_harness_role_defaults(harness, role))
+}
+
+/// Reject a model only when the built-in catalog positively assigns it to a
+/// different harness. Unknown/custom aliases remain eligible for provider-side
+/// validation.
+#[doc(hidden)]
+pub fn validate_model_harness_compatibility(
+    harness: AgentHarnessKind,
+    model: &str,
+) -> Result<(), String> {
+    let owners = crate::domain::agents::built_in_agent_models()
+        .into_iter()
+        .filter(|definition| definition.model_id == model)
+        .map(|definition| definition.provider)
+        .collect::<std::collections::HashSet<_>>();
+    if owners.is_empty() || owners.contains(&harness) {
+        return Ok(());
+    }
+
+    let owner = owners
+        .iter()
+        .next()
+        .copied()
+        .expect("non-empty model owner set");
+    Err(format!(
+        "Model '{model}' belongs to the {owner} harness and cannot launch with {harness}"
+    ))
+}
+
+async fn resolve_manual_subagent_model(
+    project_id: Option<&str>,
+    project_root: Option<&Path>,
+    role: RoutingRole,
+    primary_harness: AgentHarnessKind,
+    service: &ManualRoleDefaultService,
+) -> AppResult<(Option<String>, Option<String>)> {
+    let subagent_role = match role {
+        RoutingRole::IdeationPrimary => RoutingRole::IdeationSubagent,
+        RoutingRole::IdeationVerifier => RoutingRole::IdeationVerifierSubagent,
+        _ => return Ok((None, None)),
     };
+    let resolved = service
+        .resolve(project_id, project_root, subagent_role)
+        .await?;
+    let compatible = resolved.value.harness == primary_harness;
+    let configured = (compatible && resolved.source != ManualDefaultSource::ProviderDefault)
+        .then(|| resolved.value.model.clone())
+        .flatten();
+    let effective = if compatible && resolved.source != ManualDefaultSource::ProviderDefault {
+        resolved.value.model
+    } else {
+        nondefault_harness_lane_settings(
+            subagent_role
+                .legacy_lane()
+                .expect("ideation subagent roles have legacy compatibility lanes"),
+            primary_harness,
+        )
+        .and_then(|settings| settings.model)
+        .or_else(|| Some("haiku".to_string()))
+    };
+    Ok((configured, effective))
+}
 
-    let (subagent_project_row, subagent_global_row) =
-        load_lane_rows(agent_lane_settings_repo, project_id, Some(subagent_lane)).await;
-
-    lane_harness(subagent_project_row.as_ref(), subagent_global_row.as_ref())
-        .unwrap_or(primary.effective_harness)
+fn manual_service_tier(tier: ManualServiceTier) -> Option<String> {
+    match tier {
+        ManualServiceTier::ProviderDefault => None,
+        ManualServiceTier::Standard => Some("standard".to_string()),
+        ManualServiceTier::Fast => Some("fast".to_string()),
+    }
 }
 
 fn ideation_lane_for_agent(agent_name: &str) -> Option<AgentLane> {
@@ -250,7 +575,6 @@ fn ideation_lane_for_agent(agent_name: &str) -> Option<AgentLane> {
         | "ralphx-ideation-team-lead"
         | "ideation-team-member"
         | "ralphx-ideation-readonly" => Some(AgentLane::IdeationPrimary),
-        "ralphx-plan-verifier" => Some(AgentLane::IdeationVerifier),
         _ => None,
     }
 }
@@ -273,7 +597,8 @@ fn execution_lane_for_context(
         ChatContextType::Ideation
         | ChatContextType::Delegation
         | ChatContextType::Task
-        | ChatContextType::Project => None,
+        | ChatContextType::Project
+        | ChatContextType::Standalone => None,
     }
 }
 

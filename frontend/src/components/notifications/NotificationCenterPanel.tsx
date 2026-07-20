@@ -27,7 +27,10 @@ import type { AttentionItem, Notification } from "@/types/notifications";
 
 import { ATTENTION_CATEGORY_MAPPING, type AttentionGroup } from "./categoryMapping";
 import { NotificationHistoryTab } from "./NotificationHistoryTab";
-import { navigateNotification } from "./notificationNavigation";
+import {
+  navigateNotification,
+  performNotificationPrimaryAction,
+} from "./notificationNavigation";
 
 const GROUP_ORDER: AttentionGroup[] = ["Agent requests", "Reviews", "Tasks", "Automations", "Git"];
 
@@ -87,11 +90,13 @@ function permissionExpiry(createdAt: string | undefined, now: number): string | 
 
 function AttentionItemRow({
   item,
+  onAction,
   onOpen,
   projectName,
   now,
 }: {
   item: AttentionItem;
+  onAction: (item: AttentionItem) => void;
   onOpen: (item: AttentionItem) => void;
   projectName: string | undefined;
   now: number;
@@ -133,7 +138,7 @@ function AttentionItemRow({
             <span className="min-w-0 flex-1 truncate">{[metaTime, projectName].filter(Boolean).join(" · ")}</span>
             {presentation.action && <Button variant="ghost" size="sm" disabled={expired} className="h-6 max-w-full shrink-0 px-2 text-xs text-[var(--accent-primary)]" onClick={(event) => {
               event.stopPropagation();
-              open();
+              onAction(item);
             }}>{expired ? "Expired" : presentation.action}</Button>}
           </div>
         </div>
@@ -222,6 +227,13 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
     });
   }, [onClose, onOpenAutomationDetail, queryClient]);
 
+  const actOnItem = useCallback((item: AttentionItem) => {
+    void performNotificationPrimaryAction(item, queryClient, {
+      onClose,
+      ...(onOpenAutomationDetail && { onOpenAutomationDetail }),
+    });
+  }, [onClose, onOpenAutomationDetail, queryClient]);
+
   const openHistoryNotification = useCallback((notification: Notification) => {
     void navigateNotification(notification, queryClient, {
       onClose,
@@ -258,7 +270,7 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
           const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId
             ? reviewTasksById[taskId] ?? awaitingReviewTasksById[taskId] ?? tasks[taskId]
             : undefined;
-          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} presentation="panel" /> : <AttentionItemRow key={item.id} item={item} now={now} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name : undefined} />;
+          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} presentation="panel" /> : <AttentionItemRow key={item.id} item={item} now={now} onAction={actOnItem} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name : undefined} />;
         })}</div></div>)}</div>}</>}
       </ScrollArea>
     </section>

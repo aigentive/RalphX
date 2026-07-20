@@ -8,7 +8,7 @@ use super::{
     parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
     parse_codex_model_catalog_capabilities, probe_codex_cli, redact_persona_from_codex_prompt,
     resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
-    CodexMcpRuntimeContext,
+    CodexMcpRuntimeContext, CodexPromptTransport,
 };
 
 use crate::domain::agents::LogicalEffort;
@@ -16,6 +16,7 @@ use crate::domain::services::learned_skill_adapters::{
     LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
     LearnedSkillStatus,
 };
+use crate::infrastructure::agents::claude::{SpawnableCommand, SpawnableStdinTransport};
 use crate::infrastructure::agents::internal_skills::{
     PreExecutionLearnedSkillContext, PRE_EXECUTION_LEARNED_SKILLS_ENV,
 };
@@ -132,6 +133,7 @@ fn full_codex_capabilities() -> CodexCliCapabilities {
                 "xhigh".to_string(),
             ],
         )]),
+        ultra_supported_models: Vec::new(),
     }
 }
 
@@ -218,7 +220,6 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ]
     );
     assert_eq!(
@@ -229,7 +230,6 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
     assert_eq!(
@@ -241,6 +241,10 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
         ])
     );
     assert!(!catalog.model_supported_efforts.contains_key("hidden-model"));
+    assert_eq!(
+        catalog.ultra_supported_models,
+        vec!["gpt-5.6-sol".to_string()]
+    );
 }
 
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
@@ -301,6 +305,25 @@ fn project_root() -> PathBuf {
 
 #[test]
 fn build_codex_exec_command_sets_agent_tool_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let seeded_path = dirs::home_dir()
+        .map(|home| {
+            std::env::join_paths([
+                home.join(".cargo").join("bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ])
+            .expect("seed test PATH")
+        })
+        .unwrap_or_else(|| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"));
+    let _path = EnvGuard::set_os("PATH", seeded_path);
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
     let spawnable = build_spawnable_codex_exec_command(
         std::path::Path::new("/fake/codex"),
         "Prompt",
@@ -405,9 +428,9 @@ fi
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ]
     );
+    assert!(capabilities.supports_ultra_for_model("gpt-5.6-sol"));
 }
 
 #[test]
@@ -701,7 +724,6 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
         (LogicalEffort::High, "high"),
         (LogicalEffort::XHigh, "xhigh"),
         (LogicalEffort::Max, "max"),
-        (LogicalEffort::Ultra, "ultra"),
     ] {
         let args = build_codex_exec_args(
             &full_codex_capabilities(),
@@ -718,6 +740,34 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
             .any(|pair| pair[0] == "-c"
                 && pair[1] == format!("model_reasoning_effort=\"{expected}\"")));
     }
+}
+
+#[test]
+fn build_codex_exec_args_only_emits_ultra_for_the_ultra_capability() {
+    let legacy_ultra_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            reasoning_effort: Some(LogicalEffort::Ultra),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("legacy Ultra effort should normalize");
+    assert!(legacy_ultra_args
+        .windows(2)
+        .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"max\"" }));
+
+    let capability_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            reasoning_effort: Some(LogicalEffort::Max),
+            ultra_mode: true,
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("Ultra capability should build");
+    assert!(capability_args
+        .windows(2)
+        .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"ultra\"" }));
 }
 
 #[test]
@@ -1000,10 +1050,12 @@ role: project_chat
         context_type: Some("project".to_string()),
         context_id: Some("project-1".to_string()),
         conversation_id: Some("conversation-1".to_string()),
+        coordination_mode: None,
         task_id: None,
         project_id: Some("project-1".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: Vec::new(),
+        enforce_filesystem_roots: false,
         lead_session_id: None,
         parent_conversation_id: Some("conversation-1".to_string()),
         agent_run_id: None,
@@ -1151,11 +1203,13 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         context_type: Some("ideation".to_string()),
         context_id: Some("session-123".to_string()),
         conversation_id: Some("conversation-current".to_string()),
+        coordination_mode: Some("rx_native_workflow".to_string()),
         task_id: None,
         task_state: Some("re_executing".to_string()),
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: vec![root.join("project-root")],
+        enforce_filesystem_roots: false,
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
         agent_run_id: Some("run-123".to_string()),
@@ -1265,6 +1319,59 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
 }
 
 #[test]
+fn build_codex_mcp_overrides_emits_filesystem_enforcement_only_when_enabled() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let plugin_dir = create_plugin_dir(temp_dir.path());
+    std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build"))
+        .expect("create fake mcp build dir");
+    std::fs::write(
+        plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    )
+    .expect("write fake mcp server");
+
+    let enforced = CodexMcpRuntimeContext {
+        enforce_filesystem_roots: true,
+        ..Default::default()
+    };
+    let enforced_overrides =
+        build_codex_mcp_overrides(&plugin_dir, "ralphx-plan-verifier", false, Some(&enforced))
+            .expect("enforced overrides");
+    let enforced_args = enforced_overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.") && entry.contains(".args="))
+        .expect("enforced args override");
+    assert!(
+        enforced_args.contains("--filesystem-enforced") && enforced_args.contains("\"1\""),
+        "enforced Codex MCP args must carry the CLI-only flag: {enforced_args}"
+    );
+
+    let unenforced = CodexMcpRuntimeContext::default();
+    let unenforced_overrides = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx-plan-verifier",
+        false,
+        Some(&unenforced),
+    )
+    .expect("unenforced overrides");
+    let unenforced_args = unenforced_overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.") && entry.contains(".args="))
+        .expect("unenforced args override");
+    assert!(
+        !unenforced_args.contains("--filesystem-enforced"),
+        "unenforced Codex MCP args must preserve the prior shape: {unenforced_args}"
+    );
+    assert!(
+        enforced_overrides
+            .iter()
+            .chain(unenforced_overrides.iter())
+            .all(|entry| !entry.contains("RALPHX_FILESYSTEM_ENFORCED")),
+        "filesystem enforcement must never be delivered through process env"
+    );
+}
+
+#[test]
 fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -1276,7 +1383,13 @@ fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
     let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
 
     let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    configure_spawn(&mut cmd, None);
+    cmd.env("GITHUB_TOKEN", "stale-secret");
+    configure_spawn(&mut cmd, None, CodexPromptTransport::PositionalArg);
+
+    assert!(cmd
+        .as_std()
+        .get_envs()
+        .all(|(key, value)| { key != OsStr::new("GITHUB_TOKEN") || value.is_none() }));
 
     let path_value = cmd
         .as_std()
@@ -1304,6 +1417,53 @@ fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
         })
         .expect("RALPHX_AGENT_SCREENSHOT_DIR env");
     assert!(screenshot_dir.to_string_lossy().contains("screenshots"));
+}
+
+#[tokio::test]
+async fn positional_prompt_transport_exposes_immediate_stdin_eof() {
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "payload=$(cat); if [ -n \"$payload\" ]; then printf 'data:%s' \"$payload\"; else printf eof; fi",
+    ]);
+    let transport = configure_spawn(&mut cmd, None, CodexPromptTransport::PositionalArg);
+    let child = SpawnableCommand::new_with_stdin_transport(cmd, None, transport)
+        .spawn()
+        .await
+        .expect("spawn positional transport fixture");
+    let output = child.wait_with_output().await.expect("wait for fixture");
+
+    assert_eq!(transport, SpawnableStdinTransport::Null);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "eof");
+}
+
+#[tokio::test]
+async fn explicit_stdin_prompt_transport_writes_prompt_then_closes_pipe() {
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "payload=$(cat); if [ -n \"$payload\" ]; then printf 'data:%s' \"$payload\"; else printf eof; fi",
+    ]);
+    let transport = configure_spawn(&mut cmd, None, CodexPromptTransport::Stdin);
+    let child = SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        Some("prompt-through-stdin".to_string()),
+        transport,
+    )
+    .spawn()
+    .await
+    .expect("spawn stdin transport fixture");
+    let output = child.wait_with_output().await.expect("wait for fixture");
+
+    assert_eq!(transport, SpawnableStdinTransport::Piped);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "data:prompt-through-stdin"
+    );
 }
 
 #[test]
@@ -1339,6 +1499,12 @@ harnesses:
         "external MCP transport should use a streamable HTTP URL; override keys: {:?}",
         override_keys(&overrides)
     );
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx.required=true"));
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx.startup_timeout_sec=30"));
     assert!(
         overrides.iter().any(|entry| {
             entry == "mcp_servers.ralphx.bearer_token_env_var=\"RALPHX_TAURI_MCP_BYPASS_TOKEN\""
@@ -1383,6 +1549,14 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
     )
     .expect("overrides");
     let args = codex_mcp_args_override(&overrides);
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("Plan spawn args");
 
     assert!(
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
@@ -1390,26 +1564,71 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_freeform=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_freeform=false"
+        }),
         "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_streaming_events=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_streaming_events=false"
+        }),
         "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "include_apply_patch_tool=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "include_apply_patch_tool=false"
+        }),
         "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
+}
+
+#[test]
+fn build_codex_mcp_overrides_disables_apply_patch_for_persona_extractor() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(&plugin_dir, "ralphx-persona-extractor", false, None)
+        .expect("persona extractor overrides");
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("PersonaExtractor spawn args");
+
+    assert!(
+        spawn_args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "features.shell_tool=false"),
+        "Codex PersonaExtractor must disable the native shell; override keys: {:?}",
+        override_keys(&overrides)
+    );
+
+    assert!(
+        overrides.iter().any(|entry| entry
+            == "mcp_servers.ralphx.enabled_tools=[\"fs_read_file\",\"fs_list_dir\",\"fs_grep\",\"fs_glob\",\"ask_user_question\",\"save_persona_draft\",\"get_persona_draft\"]"),
+        "Codex PersonaExtractor must receive exactly its canonical MCP grants"
+    );
+
+    for expected in [
+        "features.apply_patch_freeform=false",
+        "features.apply_patch_streaming_events=false",
+        "include_apply_patch_tool=false",
+    ] {
+        assert!(
+            spawn_args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == expected),
+            "Codex PersonaExtractor must disable {expected}; override keys: {:?}",
+            override_keys(&overrides)
+        );
+    }
 }
 
 #[test]
@@ -1551,6 +1770,12 @@ harnesses:
         "internal MCP sidecar should launch bundled stdio server; override keys: {:?}",
         override_keys(&overrides)
     );
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx_internal.required=true"));
+    assert!(overrides
+        .iter()
+        .any(|entry| entry == "mcp_servers.ralphx_internal.startup_timeout_sec=30"));
     assert!(
         overrides.iter().any(|entry| {
             entry
@@ -1593,11 +1818,13 @@ harnesses:
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
         conversation_id: Some("conversation current".to_string()),
+        coordination_mode: None,
         task_id: None,
         task_state: Some("reviewing".to_string()),
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: Vec::new(),
+        enforce_filesystem_roots: false,
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
         agent_run_id: Some("run 789".to_string()),

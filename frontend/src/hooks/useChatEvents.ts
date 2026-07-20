@@ -575,12 +575,12 @@ export function useChatEvents({
       (!contextId || payload.context_id === contextId);
 
     const isDelegatedTaskEventPayload = (payload: {
-      tool_name?: string;
-      subagent_type?: string;
-      delegated_job_id?: string;
-      delegated_session_id?: string;
-      delegated_conversation_id?: string;
-      delegated_agent_run_id?: string;
+      tool_name?: string | undefined;
+      subagent_type?: string | undefined;
+      delegated_job_id?: string | undefined;
+      delegated_session_id?: string | undefined;
+      delegated_conversation_id?: string | undefined;
+      delegated_agent_run_id?: string | undefined;
     }) =>
       (payload.tool_name != null && canonicalizeToolName(payload.tool_name) === "delegate_start")
       || payload.subagent_type === "delegated"
@@ -786,7 +786,7 @@ export function useChatEvents({
 
         const canonicalToolName = canonicalizeToolName(tool_name);
 
-        if (supportsSubagentTasks && !parent_tool_use_id && isDelegationStartToolCall(canonicalToolName)) {
+        if (!parent_tool_use_id && isDelegationStartToolCall(canonicalToolName)) {
           setStreamingContentBlocks((prev) => {
             const alreadyHasMarker = prev.some(
               (block) => block.type === "task" && block.toolUseId === id,
@@ -833,7 +833,7 @@ export function useChatEvents({
           return;
         }
 
-        if (supportsSubagentTasks && !parent_tool_use_id && isDelegationControlToolCall(canonicalToolName)) {
+        if (!parent_tool_use_id && isDelegationControlToolCall(canonicalToolName)) {
           return;
         }
 
@@ -970,9 +970,8 @@ export function useChatEvents({
     );
 
     // ── agent:task_started (subagent) ────────────────────────────────
-    if (supportsSubagentTasks) {
-      unsubscribes.push(
-        bus.subscribe<{
+    unsubscribes.push(
+      bus.subscribe<{
           tool_use_id: string;
           tool_name?: string;
           description?: string;
@@ -996,9 +995,11 @@ export function useChatEvents({
           context_id?: string;
           context_type?: string;
           seq?: number;
-        }>("agent:task_started", (payload) => {
+      }>("agent:task_started", (payload) => {
           const receivedAt = Date.now();
           if (!isRelevant(payload)) return;
+          const isDelegated = isDelegatedTaskEventPayload(payload);
+          if (!supportsSubagentTasks && !isDelegated) return;
           setStreamingContentBlocks((prev) => {
             const alreadyHasMarker = prev.some(
               (block) => block.type === "task" && block.toolUseId === payload.tool_use_id,
@@ -1009,7 +1010,6 @@ export function useChatEvents({
           setStreamingTasks((prev) => {
             const existing = prev.get(payload.tool_use_id);
             const next = new Map(prev);
-            const isDelegated = isDelegatedTaskEventPayload(payload);
             const delegatedJobId = payload.delegated_job_id ?? existing?.delegatedJobId;
             const delegatedSessionId = payload.delegated_session_id ?? existing?.delegatedSessionId;
             const delegatedConversationId =
@@ -1079,14 +1079,12 @@ export function useChatEvents({
             next.set(payload.tool_use_id, newTask);
             return next;
           });
-        })
-      );
-    }
+      })
+    );
 
     // ── agent:task_completed (subagent) ──────────────────────────────
-    if (supportsSubagentTasks) {
-      unsubscribes.push(
-        bus.subscribe<{
+    unsubscribes.push(
+      bus.subscribe<{
           tool_use_id: string;
           agent_id?: string;
           status?: string;
@@ -1118,11 +1116,21 @@ export function useChatEvents({
           context_id?: string;
           context_type?: string;
           seq?: number;
-        }>("agent:task_completed", (payload) => {
+      }>("agent:task_completed", (payload) => {
           if (!isRelevant(payload)) return;
+          const isDelegatedPayload = isDelegatedTaskEventPayload(payload);
+          if (!supportsSubagentTasks && !isDelegatedPayload) return;
           setStreamingTasks((prev) => {
             const task = prev.get(payload.tool_use_id);
-            const isDelegated = isDelegatedTaskEventPayload(payload);
+            const isDelegated = isDelegatedPayload
+              || (task != null && isDelegatedTaskEventPayload({
+                tool_name: task.toolName,
+                subagent_type: task.subagentType,
+                delegated_job_id: task.delegatedJobId,
+                delegated_session_id: task.delegatedSessionId,
+                delegated_conversation_id: task.delegatedConversationId,
+                delegated_agent_run_id: task.delegatedAgentRunId,
+              }));
             if (!task && !isDelegated) return prev;
             const next = new Map(prev);
             const updated: StreamingTask = {
@@ -1220,9 +1228,8 @@ export function useChatEvents({
             next.set(payload.tool_use_id, updated);
             return next;
           });
-        })
-      );
-    }
+      })
+    );
 
     // ── agent:chunk (streaming text) ─────────────────────────────────
     // Chunks are filtered by conversation_id via isRelevant — teammate chunks

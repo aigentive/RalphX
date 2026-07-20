@@ -2,7 +2,7 @@ import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
 export type IdeationArtifactTab = Exclude<
   AgentArtifactTab,
-  "skills" | "publish" | "pr" | "jira" | "linear" | "granola"
+  "skills" | "publish" | "pr" | "jira" | "linear" | "clickup" | "granola"
 >;
 
 export interface IdeationArtifactAvailability {
@@ -17,7 +17,7 @@ export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
   canStartPlan,
-  hasVerificationEvidence,
+  hasVerificationEvidence: _hasVerificationEvidence,
   hasExecutionTasks,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
   if (!hasPlanArtifact) {
@@ -28,7 +28,6 @@ export function getVisibleIdeationArtifactTabs({
 
   return [
     "plan",
-    ...(canShowDataDrivenTabs && hasVerificationEvidence ? ["verification" as const] : []),
     ...(canShowDataDrivenTabs && hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }

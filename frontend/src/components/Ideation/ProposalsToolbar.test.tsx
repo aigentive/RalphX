@@ -161,11 +161,11 @@ describe("ProposalsToolbar", () => {
     expect(acceptBtn).toBeDisabled();
   });
 
-  it("disables accept button when verification gate blocks", () => {
+  it("leaves acceptance to the backend verification policy", () => {
     mocks.gate = { canAccept: false, reason: "Verification required" };
     render(<ProposalsToolbar {...baseProps()} />);
     const acceptBtn = screen.getByText("Accept Plan (2)").closest("button");
-    expect(acceptBtn).toBeDisabled();
+    expect(acceptBtn).not.toBeDisabled();
   });
 
   it("disables accept button when isPendingAcceptance is true", () => {
@@ -199,11 +199,11 @@ describe("ProposalsToolbar", () => {
     expect(alerts.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders verification-blocked shield-alert when gate blocks and not readonly", () => {
+  it("does not render a stale client-side verification gate warning", () => {
     mocks.gate = { canAccept: false, reason: "Verification required" };
     const { container } = render(<ProposalsToolbar {...baseProps()} />);
     const shields = container.querySelectorAll(".lucide-shield-alert");
-    expect(shields.length).toBeGreaterThanOrEqual(1);
+    expect(shields.length).toBe(0);
   });
 
   it("does not render verification-blocked shield when totalCount is 0", () => {

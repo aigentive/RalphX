@@ -81,7 +81,10 @@ pub(crate) fn is_user_attended_turn_completion(
         && !ideation_session_has_parent
         && matches!(
             context_type,
-            ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+            ChatContextType::Ideation
+                | ChatContextType::Project
+                | ChatContextType::Standalone
+                | ChatContextType::Task
         )
 }
 
@@ -125,6 +128,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
             }
         }
         ChatContextType::Project => (Some(context_id.to_string()), false, None),
+        ChatContextType::Standalone => (None, false, None),
         ChatContextType::Task => {
             let task_id = TaskId::from_string(context_id.to_string());
             match state.task_repo.get_by_id(&task_id).await {
@@ -3780,6 +3784,26 @@ async fn process_codex_stream_background<R: Runtime>(
         .map(|status| status.success())
         .unwrap_or(true);
     let status_code = status.as_ref().and_then(|status| status.code());
+    let status_signal = status
+        .as_ref()
+        .and_then(|status| process_exit_details(status).exit_signal);
+    let stderr_preview = truncate_str(stderr_content.trim(), 2000);
+
+    if !status_success || (!codex_turn_completed && response_text.trim().is_empty()) {
+        tracing::warn!(
+            conversation_id = %conversation_id_str,
+            agent_run_id = agent_run_id.as_deref().unwrap_or("unknown"),
+            exit_code = ?status_code,
+            exit_signal = ?status_signal,
+            stdout_lines_seen = lines_seen,
+            stdout_lines_parsed = lines_parsed,
+            runtime_error_count = runtime_errors.len(),
+            local_tool_error_count = local_tool_errors.len(),
+            stderr_len = stderr_content.len(),
+            stderr_preview = %stderr_preview,
+            "Codex process reached terminal stream state"
+        );
+    }
 
     let outcome = StreamOutcome {
         response_text,
@@ -3839,10 +3863,14 @@ async fn process_codex_stream_background<R: Runtime>(
             return Err(provider_error);
         }
         if !stderr_trimmed.is_empty() {
-            return Err(StreamError::AgentExit {
-                exit_code: status_code,
-                stderr: stderr_trimmed,
-            });
+            let meaningful_stderr =
+                super::chat_service_errors::meaningful_agent_exit_stderr(&stderr_trimmed);
+            if !meaningful_stderr.is_empty() {
+                return Err(StreamError::AgentExit {
+                    exit_code: status_code,
+                    stderr: stderr_trimmed,
+                });
+            }
         }
     }
 
@@ -3869,7 +3897,12 @@ async fn process_codex_stream_background<R: Runtime>(
             local_tool_error_count = local_tool_errors.len(),
             "Codex terminal stream produced no meaningful completion"
         );
-        return Err(StreamError::NoOutput { context_type });
+        return Err(StreamError::NoOutput {
+            context_type,
+            exit_code: status_code,
+            exit_signal: status_signal,
+            stderr: stderr_preview.to_string(),
+        });
     }
 
     if outcome.tool_calls.is_empty() {

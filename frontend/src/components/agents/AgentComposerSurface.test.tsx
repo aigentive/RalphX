@@ -1,14 +1,23 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AtlassianIntegrationSettings } from "@/api/atlassian";
+import type { GranolaIntegrationSettings } from "@/api/granola";
+import type {
+  TicketingProvider,
+  TicketingProviderSummary,
+} from "@/api/ticketing";
 import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import {
   AgentComposerProjectLine,
   AgentComposerSurface,
 } from "./AgentComposerSurface";
+import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -21,7 +30,109 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   stat: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+const featureFlags = vi.hoisted(() => ({ composerFolderReferences: true }));
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  useFeatureFlags: () => ({ data: featureFlags }),
+}));
+
 type ComposerProps = Parameters<typeof AgentComposerSurface>[0];
+
+const INTEGRATION_UPDATED_AT = "2026-07-20T00:00:00Z";
+
+function ticketingProvider(
+  provider: TicketingProvider,
+  overrides: Partial<TicketingProviderSummary> = {},
+): TicketingProviderSummary {
+  return {
+    provider,
+    label: provider === "clickup" ? "ClickUp" : `${provider[0]?.toUpperCase()}${provider.slice(1)}`,
+    enabled: true,
+    connectionStatus: "connected",
+    capabilities: {
+      supportsBoards: false,
+      supportsKanban: false,
+      kanbanWrite: false,
+      statusWrite: false,
+      assignmentWrite: false,
+      commentWrite: false,
+      labelWrite: false,
+      freshness: "manual",
+    },
+    ...overrides,
+  };
+}
+
+function atlassianSettings(
+  overrides: Partial<AtlassianIntegrationSettings> = {},
+): AtlassianIntegrationSettings {
+  return {
+    enabled: true,
+    authMethod: "api_token",
+    siteUrl: "https://example.atlassian.net",
+    email: "dev@example.com",
+    hasApiToken: true,
+    hasOauthClientSecret: false,
+    hasOauthToken: false,
+    validationStatus: "valid",
+    jiraAvailable: true,
+    confluenceAvailable: true,
+    updatedAt: INTEGRATION_UPDATED_AT,
+    ...overrides,
+  };
+}
+
+function granolaSettings(
+  overrides: Partial<GranolaIntegrationSettings> = {},
+): GranolaIntegrationSettings {
+  return {
+    enabled: true,
+    hasApiToken: true,
+    validationStatus: "valid",
+    updatedAt: INTEGRATION_UPDATED_AT,
+    ...overrides,
+  };
+}
+
+function defaultComposerInvokeResponse(cmd: string): unknown {
+  if (cmd === "list_conversation_folder_references") return [];
+  if (cmd === "list_agent_composer_skills") return { skills: [] };
+  if (cmd === "search_agent_composer_entries") {
+    return { entries: [], truncated: false };
+  }
+  if (cmd === "search_agent_composer_plan_references") {
+    return { plans: [], truncated: false };
+  }
+  if (cmd === "search_atlassian_resources") return { resources: [] };
+  if (cmd === "resolve_atlassian_resource_urls") return { results: [] };
+  return undefined;
+}
+
+function mockComposerIntegrationAvailability({
+  providers = [
+    ticketingProvider("jira"),
+    ticketingProvider("linear"),
+    ticketingProvider("clickup"),
+  ],
+  atlassian = atlassianSettings(),
+  granola = granolaSettings(),
+}: {
+  providers?: TicketingProviderSummary[];
+  atlassian?: AtlassianIntegrationSettings;
+  granola?: GranolaIntegrationSettings;
+} = {}) {
+  vi.mocked(invoke).mockImplementation((cmd) => {
+    if (cmd === "list_ticketing_providers") return Promise.resolve(providers);
+    if (cmd === "get_atlassian_integration_settings") {
+      return Promise.resolve(atlassian);
+    }
+    if (cmd === "get_granola_integration_settings") {
+      return Promise.resolve(granola);
+    }
+    return Promise.resolve(defaultComposerInvokeResponse(cmd));
+  });
+}
 
 function renderComposer(overrides: Partial<ComposerProps> = {}) {
   const queryClient = new QueryClient({
@@ -29,7 +140,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
+      <TooltipProvider delayDuration={0}>
         <AgentComposerSurface
           project={{
             value: "project-1",
@@ -101,32 +212,415 @@ function makeTerminalDragEvent() {
   };
 }
 
+/** Intercepts `requestAnimationFrame` so paint-boundary-deferred work (like the
+ * folder-reference hydration query) can be held and flushed explicitly, proving
+ * it does not run in the same synchronous render as the composer shell. */
+function holdDeferredFrames() {
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+
+  window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    const id = nextId;
+    nextId += 1;
+    callbacks.set(id, callback);
+    return id;
+  }) as typeof window.requestAnimationFrame;
+  window.cancelAnimationFrame = ((id: number) => {
+    callbacks.delete(id);
+  }) as typeof window.cancelAnimationFrame;
+
+  return {
+    flush() {
+      const queuedCallbacks = [...callbacks.values()];
+      callbacks.clear();
+      for (const callback of queuedCallbacks) {
+        callback(performance.now());
+      }
+    },
+    restore() {
+      callbacks.clear();
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+    },
+  };
+}
+
 describe("AgentComposerSurface", () => {
   beforeEach(() => {
     vi.useRealTimers();
     setRalphxTerminalDockDragActive(false);
-    vi.mocked(invoke).mockImplementation((cmd) => {
-      if (cmd === "list_agent_composer_skills") {
-        return Promise.resolve({ skills: [] });
-      }
-      if (cmd === "search_agent_composer_entries") {
-        return Promise.resolve({ entries: [], truncated: false });
-      }
-      if (cmd === "search_agent_composer_plan_references") {
-        return Promise.resolve({ plans: [], truncated: false });
-      }
-      if (cmd === "search_atlassian_resources") {
-        return Promise.resolve({ resources: [] });
-      }
-      if (cmd === "resolve_atlassian_resource_urls") {
-        return Promise.resolve({ results: [] });
+    mockComposerIntegrationAvailability();
+  });
+
+  it("shows Add folder directly after Add files for a Project conversation", async () => {
+    const normal = renderComposer({
+      conversationId: "conversation-1",
+      enableAttachments: true,
+      project: {
+        value: "project-1",
+        onValueChange: vi.fn(),
+        options: [{ id: "project-1", label: "RalphX" }],
+        placeholder: "Project",
+      },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    const addFiles = screen.getByRole("button", { name: "Add files" });
+    const addFolder = screen.getByRole("button", { name: "Add folder" });
+    expect(
+      addFiles.compareDocumentPosition(addFolder) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      screen.queryByRole("button", { name: "New project" }),
+    ).not.toBeInTheDocument();
+    normal.unmount();
+
+    // Persona mode needs the Personas flag in addition to folder references.
+    renderComposer({
+      conversationId: "conversation-2",
+      enableAttachments: true,
+      mode: { value: "persona_builder", onValueChange: vi.fn(), options: [] },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+  });
+
+  it("shows only integrations that are active in Settings", async () => {
+    mockComposerIntegrationAvailability({
+      providers: [
+        ticketingProvider("jira"),
+        ticketingProvider("linear", { enabled: false }),
+        ticketingProvider("clickup"),
+      ],
+      atlassian: atlassianSettings({ confluenceAvailable: false }),
+      granola: granolaSettings({ validationStatus: "invalid" }),
+    });
+
+    renderComposer();
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+
+    expect(await screen.findByRole("button", { name: "Jira" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ClickUp" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confluence" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Linear" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Granola" })).not.toBeInTheDocument();
+  });
+
+  it("hides the Integrations section when no configured integration is active", async () => {
+    mockComposerIntegrationAvailability({
+      providers: [
+        ticketingProvider("jira", {
+          enabled: false,
+          connectionStatus: "disconnected",
+        }),
+      ],
+      atlassian: atlassianSettings({
+        enabled: false,
+        hasApiToken: false,
+        validationStatus: "not_configured",
+        jiraAvailable: false,
+        confluenceAvailable: false,
+      }),
+      granola: granolaSettings({
+        enabled: false,
+        hasApiToken: false,
+        validationStatus: "not_configured",
+      }),
+    });
+
+    renderComposer();
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "get_granola_integration_settings",
+        {},
+      ),
+    );
+
+    expect(screen.queryByText("Integrations")).not.toBeInTheDocument();
+  });
+
+  it("adds a picked folder and renders the hydrated chip after invalidation", async () => {
+    const references = [] as Array<Record<string, string>>;
+    vi.mocked(invoke).mockImplementation((cmd, args) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      if (cmd === "add_conversation_folder_reference") {
+        const input = (args as { input: Record<string, string> }).input;
+        references.push({ id: "folder-1", ...input, createdAt: "2026-01-01T00:00:00Z" });
+        return Promise.resolve(references[0]);
       }
       return Promise.resolve(undefined);
     });
+    vi.mocked(openDialog).mockResolvedValue("/work/design-notes");
+    renderComposer({ conversationId: "conversation-1", enableAttachments: true });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", { input: { conversationId: "conversation-1", folderPath: "/work/design-notes", displayName: "design-notes" } }));
+    await waitFor(() => expect(screen.getByText("design-notes")).toBeInTheDocument());
+  });
+
+  it("hydrates folder chips and removes one with an accessible, tooltip-backed control", async () => {
+    const references = [
+      {
+        id: "folder-1",
+        conversationId: "conversation-1",
+        folderPath: "/work/brand-kit",
+        displayName: "brand-kit",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      if (cmd === "remove_conversation_folder_reference") {
+        references.splice(0, 1);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1" });
+    const folderChip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    expect(folderChip).toHaveTextContent("Folder");
+    expect(folderChip).toHaveTextContent("brand-kit");
+    const remove = await screen.findByRole("button", { name: "Remove folder brand-kit" });
+    expect(remove).toBeInTheDocument();
+    fireEvent.click(remove);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("remove_conversation_folder_reference", { input: { conversationId: "conversation-1", folderReferenceId: "folder-1" } }));
+    await waitFor(() => expect(screen.queryByText("brand-kit")).not.toBeInTheDocument());
+  });
+
+  it("snapshots hydrated folder references when sending", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") {
+        return Promise.resolve([
+          {
+            id: "folder-1",
+            conversationId: "conversation-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    await waitFor(() => expect(screen.getByText("brand-kit")).toBeInTheDocument());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith("Review this folder", {
+        folderReferences: [
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("shows a retryable folder-reference warning instead of treating a failed list as empty", async () => {
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(new Error("folder list unavailable"))
+      .mockResolvedValueOnce([]);
+    renderComposer({ conversationId: "conversation-folder-error" });
+
+    expect(
+      await screen.findByText(
+        "Couldn't load folder references — previously attached folders may still be visible to the agent",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("folder-reference-chips")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry folder references" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Couldn't load folder references — previously attached folders may still be visible to the agent",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shows the full folder path from the keyboard-focusable persisted chip", async () => {
+    const references = [
+      {
+        id: "folder-1",
+        conversationId: "conversation-1",
+        folderPath: "/work/very/long/path/design-notes",
+        displayName: "design-notes",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1" });
+    const chip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    const pathTrigger = chip.querySelector<HTMLElement>('[tabindex="0"]');
+    expect(pathTrigger).not.toBeNull();
+    fireEvent.focus(pathTrigger!);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("/work/very/long/path/design-notes");
+  });
+
+  it("defers folder-reference hydration behind the first paint boundary", async () => {
+    const deferredFrames = holdDeferredFrames();
+    try {
+      renderComposer({ conversationId: "conversation-1" });
+
+      // Composer shell paints synchronously; the hydration query must not
+      // have fired inside the same render/effect pass.
+      expect(screen.getByLabelText("Message input")).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith("list_conversation_folder_references", {
+        conversationId: "conversation-1",
+      });
+
+      deferredFrames.flush();
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("list_conversation_folder_references", {
+          conversationId: "conversation-1",
+        }),
+      );
+    } finally {
+      deferredFrames.restore();
+    }
+  });
+
+  it("surfaces the folder cap rejection inline near the composer instead of a modal", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve([]);
+      if (cmd === "add_conversation_folder_reference") {
+        return Promise.reject(new Error("Maximum of 6 live folder references reached"));
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.mocked(openDialog).mockResolvedValue("/work/one-too-many");
+    renderComposer({ conversationId: "conversation-1", enableAttachments: true });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Maximum of 6 live folder references reached");
+  });
+
+  it("renders pre-send draft folder chips with an accessible, tooltip-backed remove control", async () => {
+    const onRemoveFolder = vi.fn();
+    const user = userEvent.setup();
+    renderComposer({
+      conversationId: null,
+      folders: [
+        { id: "draft-1", folderPath: "/work/draft-notes", displayName: "draft-notes" },
+      ],
+      onRemoveFolder,
+    });
+
+    expect(screen.getByText("draft-notes")).toBeInTheDocument();
+    const remove = screen.getByRole("button", { name: "Remove folder draft-notes" });
+    await user.hover(remove);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Remove folder");
+
+    await user.click(remove);
+    expect(onRemoveFolder).toHaveBeenCalledWith("draft-1");
+  });
+
+  it("does not render draft folder chips once removed (absence assertion)", () => {
+    const { rerender } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider delayDuration={0}>
+          <AgentComposerSurface
+            project={{ value: "project-1", onValueChange: vi.fn(), options: [], placeholder: "Project" }}
+            provider={{ value: "codex", onValueChange: vi.fn(), options: [] }}
+            model={{ value: "gpt-5.5", onValueChange: vi.fn(), options: [] }}
+            effort={{ value: "xhigh", onValueChange: vi.fn(), options: [] }}
+            onSend={vi.fn()}
+            folders={[{ id: "draft-1", folderPath: "/work/draft-notes", displayName: "draft-notes" }]}
+            onRemoveFolder={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("draft-notes")).toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider delayDuration={0}>
+          <AgentComposerSurface
+            project={{ value: "project-1", onValueChange: vi.fn(), options: [], placeholder: "Project" }}
+            provider={{ value: "codex", onValueChange: vi.fn(), options: [] }}
+            model={{ value: "gpt-5.5", onValueChange: vi.fn(), options: [] }}
+            effort={{ value: "xhigh", onValueChange: vi.fn(), options: [] }}
+            onSend={vi.fn()}
+            folders={[]}
+            onRemoveFolder={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByText("draft-notes")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("draft-folder-reference-chips")).not.toBeInTheDocument();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("stages artifact selections as removable excerpt chips and sends them separately", async () => {
+    const onSend = vi.fn();
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    act(() => {
+      stageComposerExcerptReference("conversation-1", {
+        sourceKind: "plan",
+        sourceId: "artifact-1",
+        sourceLabel: "Plan",
+        title: "Release plan",
+        excerpt: "Ship the native selection flow",
+        artifactId: "artifact-1",
+        version: 4,
+      });
+    });
+
+    const chip = screen.getByTestId(
+      "agent-composer-reference-pill-excerpt:plan:artifact-1",
+    );
+    expect(chip).toHaveTextContent("Plan excerpt");
+    expect(chip).toHaveTextContent("Ship the native selection flow");
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Use this context" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Use this context", {
+      excerptReferences: [
+        {
+          sourceKind: "plan",
+          sourceId: "artifact-1",
+          sourceLabel: "Plan",
+          title: "Release plan",
+          excerpt: "Ship the native selection flow",
+          artifactId: "artifact-1",
+          version: 4,
+        },
+      ],
+    });
   });
 
   it("keeps the runtime selector content-sized instead of filling the footer row", () => {
@@ -139,6 +633,25 @@ describe("AgentComposerSurface", () => {
       "flex-1",
     );
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
+  });
+
+  it("resets the complete runtime tuple from the quick dropdown", async () => {
+    const onReset = vi.fn();
+    renderComposer({
+      runtimeDefault: {
+        source: "project_ui",
+        onReset,
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const reset = screen.getByTestId("agent-composer-runtime-reset");
+    expect(reset).toHaveAccessibleName(
+      "Reset runtime to current role default",
+    );
+    fireEvent.click(reset);
+
+    await waitFor(() => expect(onReset).toHaveBeenCalledTimes(1));
   });
 
   it("renders an optional compact toolbar control without changing runtime selector layout", () => {
@@ -186,6 +699,311 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("Coordinate this", {
       teamIntent: { coordinationMode: "rx_native_team" },
     });
+  });
+
+  it("sends the selected capability as the provider-neutral intent", async () => {
+    const onSend = vi.fn();
+    const onValueChange = vi.fn();
+    renderComposer({
+      onSend,
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+        fastMode: {
+          visible: true,
+          value: false,
+          onValueChange: vi.fn(),
+        },
+      },
+      capability: {
+        value: "rx_native_workflow",
+        onValueChange,
+        options: [
+          { id: "solo", label: "Defaults" },
+          { id: "rx_native_workflow", label: "Workflow" },
+        ],
+        testId: "agent-composer-capability",
+      },
+    });
+
+    expect(
+      screen.queryByRole("button", { name: /^Capabilities:/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const orderedRows = [
+      "agent-composer-runtime-provider-menu-trigger",
+      "agent-composer-runtime-model-menu-trigger",
+      "agent-composer-runtime-effort-menu-trigger",
+      "agent-composer-runtime-capability-menu-trigger",
+      "agent-composer-runtime-speed-menu-trigger",
+    ].map((testId) => screen.getByTestId(testId));
+    for (let index = 0; index < orderedRows.length - 1; index += 1) {
+      expect(
+        orderedRows[index]?.compareDocumentPosition(orderedRows[index + 1]!),
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    fireEvent.click(screen.getByRole("button", { name: /^Capabilities,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-capability-solo"));
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledWith("solo"));
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Run the migration workflow" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Run the migration workflow", {
+      capabilityIntent: { coordinationMode: "rx_native_workflow" },
+    });
+  });
+
+  it("keeps a capability-only runtime menu reachable without optimistic selection", async () => {
+    let settleSelection: (() => void) | undefined;
+    const onValueChange = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settleSelection = resolve;
+        }),
+    );
+    renderComposer({
+      provider: {
+        value: "codex",
+        onValueChange: vi.fn(),
+        options: [{ id: "codex", label: "Codex" }],
+        disabled: true,
+      },
+      model: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [],
+        disabled: true,
+      },
+      effort: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [],
+        disabled: true,
+      },
+      capability: {
+        value: "solo",
+        onValueChange,
+        options: [
+          { id: "solo", label: "Defaults" },
+          { id: "rx_native_team", label: "Team" },
+        ],
+        testId: "agent-composer-capability",
+      },
+    });
+
+    const runtimeTrigger = screen.getByTestId("agent-composer-runtime-pill");
+    expect(runtimeTrigger).toHaveTextContent("Runtime settings");
+    expect(runtimeTrigger).toHaveAccessibleName(/capabilities/i);
+    fireEvent.click(runtimeTrigger);
+    fireEvent.click(screen.getByRole("button", { name: /^Capabilities,/ }));
+    fireEvent.click(
+      screen.getByTestId("agent-composer-capability-rx_native_team"),
+    );
+
+    expect(onValueChange).toHaveBeenCalledWith("rx_native_team");
+    expect(screen.getByRole("button", { name: /^Capabilities, Defaults/ })).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-capability-submenu")).toBeInTheDocument();
+
+    settleSelection?.();
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("agent-composer-runtime-capability-submenu"),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Capabilities, Defaults/ }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("keeps a rejected capability selection open for retry", async () => {
+    const onValueChange = vi.fn(() => Promise.reject(new Error("update failed")));
+    renderComposer({
+      capability: {
+        value: "solo",
+        onValueChange,
+        options: [
+          { id: "solo", label: "Defaults" },
+          { id: "rx_native_team", label: "Team" },
+          {
+            id: "codex_native_ultra",
+            label: "Ultra",
+            disabled: true,
+            disabledReason: "Ultra is unavailable for this model.",
+          },
+        ],
+        testId: "agent-composer-capability",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByRole("button", { name: /^Capabilities,/ }));
+    expect(
+      screen.getByTestId("agent-composer-capability-codex_native_ultra"),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Ultra is unavailable for this model."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByTestId("agent-composer-capability-rx_native_team"),
+    );
+
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("agent-composer-runtime-capability-submenu")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Capabilities, Defaults/ })).toBeInTheDocument();
+  });
+
+  it("disables the integrated capability row while an update is pending", () => {
+    renderComposer({
+      capability: {
+        value: "solo",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "solo", label: "Defaults" },
+          { id: "rx_native_team", label: "Team" },
+        ],
+        pending: true,
+        testId: "agent-composer-capability",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    const capabilityRow = screen.getByRole("button", {
+      name: /^Capabilities, Defaults/,
+    });
+    expect(capabilityRow).toBeDisabled();
+    fireEvent.click(capabilityRow);
+    expect(
+      screen.queryByTestId("agent-composer-runtime-capability-submenu"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the staged line selection and clears it from the composer", () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first\nsecond",
+      },
+      onClearSelectionSnapshot,
+    });
+
+    expect(screen.getByText("Selection: Implementation Plan · L10–11")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear selected artifact lines" }),
+    );
+
+    expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a Granola fallback label for a note selection without a title", () => {
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "note",
+        sourceKind: "granola",
+        sourceId: "not_1234567890ABCD",
+        provider: "granola",
+        startLine: 3,
+        endLine: 3,
+        content: "Decision",
+      },
+    });
+
+    expect(screen.getByText("Selection: Granola · L3")).toBeTruthy();
+  });
+
+  it("sends the frozen selection and clears it only after backend acceptance", async () => {
+    let acceptSend: (() => void) | undefined;
+    const onSend = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          acceptSend = resolve;
+        }),
+    );
+    const onClearSelectionSnapshot = vi.fn();
+    const selectionSnapshot = {
+      sourceType: "ticket" as const,
+      sourceKind: "jira" as const,
+      sourceId: "10042",
+      sourceKey: "RX-42",
+      provider: "atlassian" as const,
+      startLine: 4,
+      endLine: 5,
+      content: "saved first\nsaved second",
+    };
+    renderComposer({ selectionSnapshot, onClearSelectionSnapshot, onSend });
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Review this" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Review this", { selectionSnapshot });
+    expect(onClearSelectionSnapshot).not.toHaveBeenCalled();
+
+    acceptSend?.();
+    await waitFor(() => expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1));
+  });
+
+  it("retains the frozen selection when sending fails", async () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "linear",
+        sourceId: "issue-1",
+        sourceKey: "ENG-1",
+        provider: "linear",
+        startLine: 2,
+        endLine: 2,
+        content: "selected",
+      },
+      onClearSelectionSnapshot,
+      onSend: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Review this" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
+    expect(screen.getByText("Selection: ENG-1 · L2")).toBeTruthy();
+  });
+
+  it("retains a controlled composer's frozen selection without leaking a rejected send", async () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      value: "Review this",
+      onChange: vi.fn(),
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "plan-1",
+        startLine: 3,
+        endLine: 3,
+        content: "selected",
+      },
+      onClearSelectionSnapshot,
+      onSend: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
+    expect(screen.getByText("Selection: Plan · L3")).toBeTruthy();
   });
 
   it("hides the runtime pill when no model is available to show or select", () => {
@@ -281,24 +1099,13 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toHaveClass(
+      "max-h-[min(38rem,var(--radix-popover-content-available-height))]",
     );
-    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
-
-    const selectedModel = screen.getByTestId(
-      "agent-composer-runtime-model-gpt-5.5",
+    expect(screen.getByTestId("agent-composer-runtime-menu-scroll")).toHaveClass(
+      "overflow-y-auto",
+      "overscroll-contain",
     );
-    const runtimePopover = selectedModel.closest("[data-side]");
-
-    expect(runtimePopover).toHaveClass(
-      "max-h-[var(--radix-popover-content-available-height)]",
-    );
-    expect(runtimePopover).toHaveClass("overflow-y-auto");
-    expect(runtimePopover).toHaveClass("overscroll-contain");
-    expect(runtimePopover).not.toHaveClass("overflow-hidden");
   });
 
   it("shows disabled Codex Fast mode reason in the runtime selector", () => {
@@ -327,7 +1134,7 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("composer-codex-fast-mode")).toBeDisabled();
   });
 
-  it("opens the runtime selector on Quick effort controls with catalog detail copy", () => {
+  it("opens directly to the unified runtime rows and inline effort scale", () => {
     renderComposer({
       effort: {
         value: "high",
@@ -342,11 +1149,11 @@ describe("AgentComposerSurface", () => {
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
 
-    expect(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Provider,/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Effort,/ })).toBeInTheDocument();
     expect(screen.getByRole("slider", { name: "Effort" })).toHaveAttribute(
       "aria-valuetext",
       "High",
@@ -357,7 +1164,7 @@ describe("AgentComposerSurface", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("replaces Quick with Advanced and opens its peer rows on hover", () => {
+  it("opens the unified runtime peer rows on hover", () => {
     const onModelChange = vi.fn();
     const onEffortChange = vi.fn();
     const onFastModeChange = vi.fn();
@@ -387,15 +1194,7 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
-
-    expect(
-      screen.queryByTestId("agent-composer-runtime-quick"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
     expect(screen.queryByText("Providers & models")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Provider,/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
@@ -432,9 +1231,6 @@ describe("AgentComposerSurface", () => {
     expect(
       screen.getByTestId("agent-composer-runtime-effort-submenu"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("slider", { name: "Effort" }),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("Lower latency.")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("agent-composer-runtime-effort-low"));
     expect(onEffortChange).toHaveBeenCalledWith("low");
@@ -449,12 +1245,7 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-speed-fast"));
     expect(onFastModeChange).toHaveBeenCalledWith(true);
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced, switch to Quick runtime settings",
-      }),
-    );
-    expect(screen.getByTestId("agent-composer-runtime-quick")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
   });
 
   it("shows only the regular provider settings action in Advanced", () => {
@@ -471,11 +1262,6 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
 
     expect(
@@ -557,11 +1343,6 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
     fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
@@ -586,18 +1367,13 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
     fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
     expect(onProviderChange).toHaveBeenCalledWith("claude");
   });
 
-  it("opens from the composer-scoped shortcut and resets to Quick after closing", () => {
+  it("opens from the composer-scoped shortcut and resets nested state after closing", () => {
     renderComposer({
       model: {
         value: "gpt-5.5",
@@ -612,11 +1388,6 @@ describe("AgentComposerSurface", () => {
     const input = screen.getByLabelText("Message input");
     fireEvent.focus(input);
     fireEvent.keyDown(input, { key: "M", ctrlKey: true, shiftKey: true });
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
     expect(
       screen.getByTestId("agent-composer-runtime-model-gpt-5.4"),
@@ -625,11 +1396,7 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
 
-    expect(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
     expect(
       screen.queryByTestId("agent-composer-runtime-model-gpt-5.4"),
     ).not.toBeInTheDocument();
@@ -669,13 +1436,8 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
 
-    expect(screen.getByTestId("agent-composer-runtime-advanced")).toHaveAttribute(
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toHaveAttribute(
       "data-layout",
       "drill-in",
     );
@@ -727,20 +1489,11 @@ describe("AgentComposerSurface", () => {
     });
     expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced, switch to Quick runtime settings",
-      }),
-    );
-    expect(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
     rectSpy.mockRestore();
   });
 
-  it("dismisses a wide child flyout before Advanced and the root selector", () => {
+  it("dismisses a wide child flyout before the unified root selector", () => {
     renderComposer({
       model: {
         value: "gpt-5.5",
@@ -753,39 +1506,26 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
     fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-model-submenu"), {
       key: "Escape",
     });
 
-    expect(screen.getByTestId("agent-composer-runtime-advanced")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
     expect(
       screen.queryByTestId("agent-composer-runtime-model-submenu"),
     ).not.toBeInTheDocument();
 
-    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-advanced"), {
+    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-menu"), {
       key: "Escape",
     });
 
-    expect(screen.getByTestId("agent-composer-runtime-quick")).toBeInTheDocument();
     expect(
-      screen.queryByTestId("agent-composer-runtime-advanced"),
-    ).not.toBeInTheDocument();
-
-    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-quick"), {
-      key: "Escape",
-    });
-    expect(
-      screen.queryByTestId("agent-composer-runtime-quick"),
+      screen.queryByTestId("agent-composer-runtime-menu"),
     ).not.toBeInTheDocument();
   });
 
-  it("omits an empty Quick scale and explains the empty Advanced effort state", () => {
+  it("omits an empty scale and explains the empty Effort state", () => {
     renderComposer({
       effort: {
         value: "",
@@ -796,11 +1536,6 @@ describe("AgentComposerSurface", () => {
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     expect(screen.queryByRole("slider", { name: "Effort" })).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
     expect(
       screen.getByText("No effort options for this model"),
@@ -820,11 +1555,6 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
     fireEvent.change(screen.getByPlaceholderText("Custom model ID"), {
       target: { value: "future-model" },
@@ -832,7 +1562,7 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use" }));
 
     expect(onModelChange).toHaveBeenCalledWith("future-model");
-    expect(screen.getByTestId("agent-composer-runtime-advanced")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
   });
 
   it("hydrates custom model values and commits them from Enter", () => {
@@ -848,11 +1578,6 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
 
     const customInput = screen.getByPlaceholderText("Custom model ID");
@@ -980,6 +1705,60 @@ describe("AgentComposerSurface", () => {
       screen.getByText("Plan execution is still active"),
     ).toBeInTheDocument();
     expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps specialized modes behind the existing mode-menu disclosure", async () => {
+    const user = userEvent.setup();
+    renderComposer({
+      mode: {
+        value: "edit",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+          { id: "review_pr", label: "Review PR" },
+          { id: "chat", label: "Ask" },
+          { id: "automation", label: "Automation" },
+          { id: "persona_builder", label: "Persona" },
+        ],
+        secondaryOptionIds: ["automation", "persona_builder"],
+        testId: "agent-mode",
+      },
+    });
+
+    await user.click(screen.getByTestId("agent-mode-chip"));
+
+    expect(screen.getByTestId("agent-mode-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-mode-chat")).toHaveTextContent("Ask");
+    expect(screen.queryByTestId("agent-mode-automation")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-mode-persona_builder")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show more modes" }));
+
+    expect(screen.getByTestId("agent-mode-automation")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-mode-persona_builder")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show fewer modes" })).toBeInTheDocument();
+  });
+
+  it("keeps a selected specialized mode visible before disclosure", async () => {
+    const user = userEvent.setup();
+    renderComposer({
+      mode: {
+        value: "automation",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+          { id: "automation", label: "Automation" },
+        ],
+        secondaryOptionIds: ["automation"],
+        testId: "agent-mode",
+      },
+    });
+
+    await user.click(screen.getByTestId("agent-mode-chip"));
+
+    expect(screen.getByTestId("agent-mode-automation")).toBeInTheDocument();
   });
 
   it("runs slash mode commands from the composer menu", async () => {
@@ -1782,7 +2561,7 @@ describe("AgentComposerSurface", () => {
       renderComposer();
 
       fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-      fireEvent.click(screen.getByText(label));
+      fireEvent.click(await screen.findByRole("button", { name: label }));
 
       const textarea = screen.getByLabelText("Message input");
       expect(textarea).toHaveValue(expectedValue);
@@ -1802,7 +2581,7 @@ describe("AgentComposerSurface", () => {
     renderComposer();
 
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    fireEvent.click(screen.getByText("ClickUp"));
+    fireEvent.click(await screen.findByRole("button", { name: "ClickUp" }));
 
     const textarea = screen.getByLabelText("Message input");
     expect(textarea).toHaveValue("@clickup:");

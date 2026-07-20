@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { PauseCircle, Sparkles } from "lucide-react";
+import { Lock, PauseCircle, Sparkles } from "lucide-react";
 
 import type {
   AgentConversationBranchMode,
@@ -15,11 +15,16 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
+import type { AutomationAuthoringMode } from "@/api/automations";
+import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   PERSONA_UNAVAILABLE_PREFIX,
   isPersonaUnavailableError,
@@ -36,6 +41,7 @@ import {
   selectComposerDraft,
   useChatStore,
   type ChatComposerAttachment,
+  type ChatComposerFolder,
 } from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -44,13 +50,15 @@ import {
   loadPullRequestBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
-import type { AgentModelRegistry } from "@/lib/agent-models";
+import {
+  agentModelSupportsCodexUltra,
+  type AgentModelRegistry,
+} from "@/lib/agent-models";
 import {
   CODEX_FAST_MODE_DESCRIPTION,
   codexFastModeAvailabilityForProvider,
 } from "@/lib/codex-fast-mode";
 import {
-  AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
@@ -78,10 +86,15 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
-import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+import {
+  PRIMARY_AGENT_START_MODE_IDS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
+import { PersonaBuildBanner } from "./PersonaBuildBanner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface PendingAttachment {
   id: string;
@@ -92,16 +105,21 @@ interface PendingAttachment {
 }
 
 interface AgentsStartComposerSubmitInput {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
+  useRoleDefault?: boolean;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   files: File[];
+  folders?: ChatComposerFolder[];
   codexFastMode?: boolean | null;
   personaId?: string | null;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
+  sourcePersonaId?: string;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -115,7 +133,6 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   modelRegistry: AgentModelRegistry;
-  onCreateProject: () => void;
   onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
   onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
@@ -212,20 +229,29 @@ export function AgentsStartComposer({
   isLoadingProjects,
   isSubmitting,
   modelRegistry,
-  onCreateProject,
   onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
+  const defaultStartMode = useAgentSessionStore((s) => s.defaultStartMode);
   const initialRuntime = normalizeRuntimeForPersistence(
     defaultRuntime,
     modelRegistry,
   );
-  const [projectId, setProjectId] = useState(defaultProjectId ?? "");
+  const [projectId, setProjectId] = useState<string | null>(defaultProjectId);
+  const [projectLocked, setProjectLocked] = useState(false);
+  const [sourcePersonaId, setSourcePersonaId] = useState<string | null>(null);
+  const [sourcePersonaName, setSourcePersonaName] = useState<string | null>(null);
   const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
-  const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
-  const [teamEnabled, setTeamEnabled] = useState(false);
+  const [mode, setMode] = useState<AgentConversationWorkspaceMode>(
+    defaultStartMode,
+  );
+  const [capabilityMode, setCapabilityMode] = useState<
+    CapabilityIntent["coordinationMode"]
+  >("solo");
+  const [automationAuthoringMode, setAutomationAuthoringMode] =
+    useState<AutomationAuthoringMode | null>(null);
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
@@ -259,14 +285,24 @@ export function AgentsStartComposer({
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
+  const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
   const [personaId, setPersonaId] = useState<string | null>(null);
+  const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
   const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const { data: featureFlags } = useFeatureFlags();
+  const startModeOptions = useMemo(
+    () =>
+      buildAgentStartModeOptions({
+        autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
+      }),
+    [featureFlags.agentConversationAutopilot],
+  );
   const {
     settings: providerSettings,
     providers: configuredProviders,
@@ -291,6 +327,12 @@ export function AgentsStartComposer({
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
   );
+  const persistedRuntimeOverride = useAgentSessionStore((s) =>
+    projectId ? s.lastRuntimeByProjectId[projectId] : undefined
+  );
+  const clearLastRuntimeForProject = useAgentSessionStore(
+    (s) => s.clearLastRuntimeForProject
+  );
   const startConversationDraft = useAgentSessionStore(
     (s) => s.startConversationDraft
   );
@@ -304,15 +346,25 @@ export function AgentsStartComposer({
   const setComposerDraftAttachments = useChatStore(
     (s) => s.setComposerDraftAttachments
   );
+  const setComposerDraftFolders = useChatStore((s) => s.setComposerDraftFolders);
   const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
   const content = startComposerDraft?.content ?? "";
   const attachments = useMemo(
     () => (startComposerDraft?.attachments ?? []).filter(isPendingAttachment),
     [startComposerDraft?.attachments]
   );
+  const folders = useMemo(
+    () => startComposerDraft?.folders ?? [],
+    [startComposerDraft?.folders]
+  );
 
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const roleDefaultQuery = useStartComposerRoleDefault(projectId, mode);
+  const currentRoleKey = `${projectId}:${mode}`;
+  const hasLocalRoleOverride = roleOverrideKey === currentRoleKey;
+  const hasRoleOverride =
+    Boolean(persistedRuntimeOverride) || hasLocalRoleOverride;
   const providerOptions = useMemo(
     () =>
       buildAgentProviderAvailabilityOptions({
@@ -378,6 +430,136 @@ export function AgentsStartComposer({
     provider === "codex" && codexFastModeAvailability.supported
       ? codexFastMode
       : false;
+  const codexUltraAvailable = agentModelSupportsCodexUltra(
+    provider,
+    modelId,
+    modelRegistry,
+    codexProviderSettings?.ultraSupportedModels,
+  );
+  const capabilityOptions = useMemo(() => {
+    const options = [
+      {
+        id: "solo",
+        label: "Defaults",
+        description: "Use the selected provider without extra orchestration.",
+      },
+    ];
+    if (featureFlags.agentConversationTeam) {
+      options.push({
+        id: "rx_native_team",
+        label: "Team",
+        description: "Coordinate RalphX-native delegated teammates.",
+      });
+    }
+    if (featureFlags.agentConversationWorkflows) {
+      options.push({
+        id: "rx_native_workflow",
+        label: "Workflow",
+        description: "Generate and run a durable reviewed orchestration script.",
+      });
+    }
+    if (codexUltraAvailable) {
+      options.push({
+        id: "codex_native_ultra",
+        label: "Ultra",
+        description: "Activate Codex provider-native subagents and maximum reasoning.",
+      });
+    }
+    return options;
+  }, [
+    codexUltraAvailable,
+    featureFlags.agentConversationTeam,
+    featureFlags.agentConversationWorkflows,
+  ]);
+
+  const runtimeForRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault) => {
+      const nextProvider = toAgentProvider(roleDefault.value.provider);
+      if (!nextProvider) {
+        throw new Error(
+          `Unsupported provider in ${roleDefault.role} default: ${roleDefault.value.provider}`,
+        );
+      }
+      return normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId:
+            roleDefault.value.model ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              supportedModelAliasesForProvider(providerOptions, nextProvider),
+            ),
+          ...(roleDefault.value.effort
+            ? { effort: roleDefault.value.effort as AgentEffort }
+            : {}),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, nextProvider),
+        supportedModelAliasesForProvider(providerOptions, nextProvider),
+      );
+    },
+    [modelRegistry, providerOptions],
+  );
+
+  const applyRoleDefault = useCallback(
+    (roleDefault: ComposerRoleDefault, preserveRuntime = false) => {
+      const nextRuntime = runtimeForRoleDefault(roleDefault);
+      if (!preserveRuntime) {
+        setProvider(nextRuntime.provider);
+        setModelId(nextRuntime.modelId);
+        setEffort(nextRuntime.effort);
+      }
+      setCodexFastModeOverride(
+        roleDefault.value.serviceTier === "provider_default"
+          ? null
+          : roleDefault.value.serviceTier === "fast",
+      );
+      const nextCapability = roleDefault.value.coordinationMode ?? "solo";
+      setCapabilityMode(
+        capabilityOptions.some((option) => option.id === nextCapability)
+          ? (nextCapability as CapabilityIntent["coordinationMode"])
+          : "solo",
+      );
+      setPersonaId(
+        featureFlags.agentPersonas ? roleDefault.value.personaId : null,
+      );
+    },
+    [
+      capabilityOptions,
+      featureFlags.agentPersonas,
+      runtimeForRoleDefault,
+    ],
+  );
+
+  useEffect(() => {
+    if (!roleDefaultQuery.data || hasLocalRoleOverride) {
+      return;
+    }
+    applyRoleDefault(roleDefaultQuery.data, Boolean(persistedRuntimeOverride));
+  }, [
+    applyRoleDefault,
+    hasLocalRoleOverride,
+    persistedRuntimeOverride,
+    roleDefaultQuery.data,
+  ]);
+
+  useEffect(() => {
+    const available = capabilityOptions.some(
+      (option) => option.id === capabilityMode,
+    );
+    if (!available) {
+      setCapabilityMode("solo");
+      if (capabilityMode !== "solo") {
+        setError(
+          plainStartComposerError(
+            "That capability is no longer available, so this draft was switched to Defaults.",
+          ),
+        );
+      }
+    }
+  }, [capabilityMode, capabilityOptions]);
+
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -387,13 +569,72 @@ export function AgentsStartComposer({
     setStartConversationFailure(null);
     setError(null);
   }, [setStartConversationFailure]);
+  const markRoleOverride = useCallback(() => {
+    setRoleOverrideKey(currentRoleKey);
+  }, [currentRoleKey]);
+  const handleCapabilityChange = useCallback(
+    async (next: CapabilityIntent["coordinationMode"]) => {
+      if (next === capabilityMode) {
+        return;
+      }
+      if (next === "codex_native_ultra") {
+        const confirmed = await confirm({
+          title: "Enable Codex Ultra?",
+          description:
+            "Ultra activates provider-native subagents plus maximum reasoning and can dramatically increase total usage. Select it only after considering the cost.",
+          confirmText: "Enable Ultra",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      clearStartError();
+      markRoleOverride();
+      setCapabilityMode(next);
+    },
+    [capabilityMode, clearStartError, confirm, markRoleOverride],
+  );
   const openPersonaSettings = useCallback(() => {
     openModal("settings", { section: "personas" });
   }, [openModal]);
 
   useEffect(() => {
-    setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
-  }, [defaultProjectId, projects]);
+    if (projectLocked) {
+      return;
+    }
+    setProjectId((currentProjectId) => {
+      if (currentProjectId === null && featureFlags.standaloneConversations) {
+        return null;
+      }
+      if (currentProjectId && projects.some((project) => project.id === currentProjectId)) {
+        return currentProjectId;
+      }
+      return defaultProjectId ?? projects[0]?.id ?? null;
+    });
+  }, [defaultProjectId, featureFlags.standaloneConversations, projectLocked, projects]);
+
+  useEffect(() => {
+    if (!featureFlags.standaloneConversations || projectId !== null) {
+      return;
+    }
+    setCapabilityMode("solo");
+    setPersonaId(null);
+    if (mode !== "chat" && mode !== "persona_builder") {
+      setMode("chat");
+      setAutomationAuthoringMode(null);
+      setError(
+        plainStartComposerError(
+          "Project-requiring modes are unavailable without a project. Switched to Ask.",
+        ),
+      );
+    }
+  }, [featureFlags.standaloneConversations, mode, projectId]);
+
+  useEffect(() => {
+    if (mode !== "persona_builder") return;
+    setCapabilityMode("solo");
+    setPersonaId(null);
+  }, [mode]);
 
   useEffect(() => {
     if (!startConversationDraft) {
@@ -404,8 +645,12 @@ export function AgentsStartComposer({
       return;
     }
     setProjectId(draft.projectId);
-    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
+    setProjectLocked(draft.projectLocked ?? false);
+    setSourcePersonaId(draft.sourcePersonaId ?? null);
+    setSourcePersonaName(draft.sourcePersonaName ?? null);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content ?? "");
     setMode(draft.mode);
+    setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
@@ -428,6 +673,7 @@ export function AgentsStartComposer({
     setModelId(retryInput.runtime.modelId);
     setEffort(retryInput.runtime.effort);
     setMode(retryInput.mode);
+    setAutomationAuthoringMode(retryInput.automationAuthoringMode ?? null);
     if (retryInput.base) {
       setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
     }
@@ -438,10 +684,13 @@ export function AgentsStartComposer({
   }, [startConversationFailure]);
 
   useEffect(() => {
+    if (roleDefaultQuery.data && !hasRoleOverride) {
+      return;
+    }
     setProvider(normalizedRuntime.provider);
     setModelId(normalizedRuntime.modelId);
     setEffort(normalizedRuntime.effort);
-  }, [normalizedRuntime]);
+  }, [hasRoleOverride, normalizedRuntime, roleDefaultQuery.data]);
 
   const modelOptions = useMemo(
     () =>
@@ -547,14 +796,24 @@ export function AgentsStartComposer({
   ]);
 
   const handleProjectChange = useCallback(
-    (nextProjectId: string) => {
+    (nextProjectId: string | null) => {
+      if (projectLocked) return;
       clearStartError();
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      if (nextProjectId) {
+        persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      }
     },
-    [clearStartError, effort, modelId, persistRuntimePreference, provider]
+    [
+      clearStartError,
+      effort,
+      modelId,
+      persistRuntimePreference,
+      projectLocked,
+      provider,
+    ]
   );
 
   const handleProviderChange = useCallback(
@@ -564,6 +823,7 @@ export function AgentsStartComposer({
         return;
       }
       clearStartError();
+      markRoleOverride();
       const remembered = lastModelEffortByProvider[nextProvider];
       const nextProviderModelAliases = supportedModelAliasesForProvider(
         providerOptions,
@@ -588,12 +848,13 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
       lastModelEffortByProvider,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       providerOptions,
@@ -603,6 +864,7 @@ export function AgentsStartComposer({
   const handleModelChange = useCallback(
     (nextModelId: string) => {
       clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -616,11 +878,12 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -632,6 +895,7 @@ export function AgentsStartComposer({
   const handleEffortChange = useCallback(
     (nextEffort: AgentEffort) => {
       clearStartError();
+      markRoleOverride();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -645,12 +909,13 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
       modelId,
       modelRegistry,
+      markRoleOverride,
       persistRuntimePreference,
       projectId,
       provider,
@@ -696,6 +961,43 @@ export function AgentsStartComposer({
     },
     [clearStartError, composerIntegrationReferences]
   );
+
+  const handleResetRoleDefault = useCallback(async () => {
+    clearStartError();
+    setIsResettingRoleDefault(true);
+    try {
+      const result = await roleDefaultQuery.refetch();
+      if (result.isError || !result.data) {
+        const message =
+          result.error instanceof Error
+            ? result.error.message
+            : "Failed to load the current role default";
+        setError(plainStartComposerError(message));
+        return;
+      }
+      if (projectId) {
+        clearLastRuntimeForProject(projectId);
+      }
+      setRoleOverrideKey(null);
+      applyRoleDefault(result.data);
+    } catch (error) {
+      setError(
+        plainStartComposerError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load the current role default",
+        ),
+      );
+    } finally {
+      setIsResettingRoleDefault(false);
+    }
+  }, [
+    applyRoleDefault,
+    clearLastRuntimeForProject,
+    clearStartError,
+    projectId,
+    roleDefaultQuery,
+  ]);
 
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
@@ -919,6 +1221,21 @@ export function AgentsStartComposer({
     );
   };
 
+  const handleFoldersSelected = useCallback(
+    (nextFolders: ChatComposerFolder[]) => {
+      clearStartError();
+      setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, nextFolders);
+    },
+    [clearStartError, setComposerDraftFolders],
+  );
+
+  const handleRemoveFolder = useCallback(
+    (folderId: string) => {
+      handleFoldersSelected(folders.filter((folder) => folder.id !== folderId));
+    },
+    [folders, handleFoldersSelected],
+  );
+
   const submitStartInput = useCallback(
     async (input: AgentsStartComposerSubmitInput) => {
       const launchRuntime = normalizeRuntimeForSelectableProvider({
@@ -988,6 +1305,7 @@ export function AgentsStartComposer({
         ? {
             ...startConversationFailure.retryInput,
             files: attachments.map((attachment) => attachment.file),
+            folders,
           }
         : null);
     if (!lastAttempt) {
@@ -1004,7 +1322,7 @@ export function AgentsStartComposer({
     };
     setIsStartFromIsolatedBranch(true);
     await submitStartInput(isolatedAttempt);
-  }, [attachments, startConversationFailure, submitStartInput]);
+  }, [attachments, folders, startConversationFailure, submitStartInput]);
 
   const handleRemovePersonaAndRetry = useCallback(async () => {
     const lastAttempt = lastStartAttemptRef.current;
@@ -1012,14 +1330,18 @@ export function AgentsStartComposer({
       return;
     }
     setPersonaId(null);
-    await submitStartInput({ ...lastAttempt, personaId: null });
+    await submitStartInput({
+      ...lastAttempt,
+      useRoleDefault: false,
+      personaId: null,
+    });
   }, [submitStartInput]);
 
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
     message,
     options,
   ) => {
-    if (!projectId) {
+    if (projectId === null && !featureFlags.standaloneConversations) {
       setError(plainStartComposerError("Project is required"));
       return;
     }
@@ -1053,19 +1375,57 @@ export function AgentsStartComposer({
           ),
         }
       : null;
-    const teamIntent = teamEnabled
-      ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
-      : null;
+    let launchRuntime: AgentRuntimeSelection = { provider, modelId, effort };
+    let launchCapabilityMode = capabilityMode;
+    let launchCodexFastMode =
+      provider === "codex" ? selectableCodexFastMode : null;
+    let launchPersonaId =
+      featureFlags.agentPersonas && personaId ? personaId : null;
+    if (!hasLocalRoleOverride && roleDefaultQuery.data) {
+      const resolvedDefault = roleDefaultQuery.data;
+      if (!persistedRuntimeOverride) {
+        launchRuntime = runtimeForRoleDefault(resolvedDefault);
+      }
+      const defaultCapability =
+        resolvedDefault.value.coordinationMode ?? "solo";
+      launchCapabilityMode = capabilityOptions.some(
+        (option) => option.id === defaultCapability,
+      )
+        ? (defaultCapability as CapabilityIntent["coordinationMode"])
+        : "solo";
+      launchCodexFastMode =
+        launchRuntime.provider === "codex"
+          ? resolvedDefault.value.serviceTier === "provider_default"
+            ? codexProviderFastMode
+            : resolvedDefault.value.serviceTier === "fast"
+          : null;
+      launchPersonaId = featureFlags.agentPersonas
+        ? resolvedDefault.value.personaId
+        : null;
+    }
+    const capabilityIntent = {
+      coordinationMode: launchCapabilityMode,
+    } satisfies CapabilityIntent;
     await submitStartInput({
       projectId,
       content: message.trim(),
-      runtime: { provider, modelId, effort },
+      runtime: launchRuntime,
+      useRoleDefault: !hasRoleOverride,
       mode,
+      ...(mode === "automation" && automationAuthoringMode
+        ? { automationAuthoringMode }
+        : {}),
       base,
       files: attachments.map((attachment) => attachment.file),
-      codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
-      ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
-      ...(teamIntent ? { teamIntent } : {}),
+      folders,
+      codexFastMode: launchCodexFastMode,
+      ...(mode !== "persona_builder" && launchPersonaId
+        ? { personaId: launchPersonaId }
+        : {}),
+      ...(mode === "persona_builder" && sourcePersonaId
+        ? { sourcePersonaId }
+        : {}),
+      ...(mode !== "persona_builder" && projectId ? { capabilityIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1079,6 +1439,7 @@ export function AgentsStartComposer({
   };
 
   return (
+    <>
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden px-6 py-8 sm:px-8">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
@@ -1178,6 +1539,17 @@ export function AgentsStartComposer({
             </div>
           )}
 
+          {mode === "persona_builder" && (
+            <PersonaBuildBanner
+              projectName={
+                projectId
+                  ? projects.find((project) => project.id === projectId)?.name ?? projectId
+                  : null
+              }
+              sourcePersonaName={sourcePersonaName}
+            />
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -1198,6 +1570,9 @@ export function AgentsStartComposer({
             isSubmitting={isSubmitting}
             autoFocus
             attachments={attachments}
+            folders={folders}
+            onFoldersSelected={handleFoldersSelected}
+            onRemoveFolder={handleRemoveFolder}
             initialProjectReferences={draftProjectReferences}
             initialIntegrationReferences={draftIntegrationReferences}
             initialArtifactReferences={draftArtifactReferences}
@@ -1227,26 +1602,59 @@ export function AgentsStartComposer({
               value: mode,
               onValueChange: (value) => {
                 clearStartError();
-                setMode(value as AgentConversationWorkspaceMode);
+                const nextMode = value as AgentConversationWorkspaceMode;
+                if (nextMode !== mode) {
+                  if (projectId) {
+                    clearLastRuntimeForProject(projectId);
+                  }
+                  setRoleOverrideKey(null);
+                }
+                setMode(nextMode);
+                if (nextMode !== "automation") {
+                  setAutomationAuthoringMode(null);
+                }
               },
-              options: AGENT_START_MODE_OPTIONS,
+              options: startModeOptions.filter(
+                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
+              ).map((option) => ({
+                ...option,
+                ...(projectId === null && option.requiresProject
+                  ? {
+                      disabled: true,
+                      disabledReason: "Requires a project",
+                    }
+                  : {}),
+              })),
+              secondaryOptionIds: startModeOptions
+                .filter(
+                  (option) =>
+                    !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+                )
+                .map((option) => option.id),
               testId: "agents-start-mode",
             }}
-            team={{
-              enabled: teamEnabled,
-              onEnabledChange: (enabled) => {
-                clearStartError();
-                setTeamEnabled(enabled);
-              },
-              testId: "agents-start-team",
-            }}
-            {...(featureFlags.agentPersonas
+            {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
+              ? {
+                  capability: {
+                    value: capabilityMode,
+                    onValueChange: handleCapabilityChange,
+                    options: capabilityOptions,
+                    testId: "agents-start-capability",
+                  },
+                }
+              : {})}
+            {...(mode !== "persona_builder" && featureFlags.agentPersonas && projectId
               ? {
                   personaControl: (
                     <PersonaPickerControl
+                      currentProjectId={projectId}
+                      currentProjectName={
+                        projects.find((project) => project.id === projectId)?.name ?? projectId
+                      }
                       personaId={personaId}
                       onValueChange={(nextPersonaId) => {
                         clearStartError();
+                        markRoleOverride();
                         setPersonaId(nextPersonaId);
                       }}
                       onOpenPersonas={openPersonaSettings}
@@ -1263,15 +1671,12 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               })),
               placeholder: projects.length === 0 ? "No projects yet" : "Select project",
-              disabled: isLoadingProjects || projects.length === 0,
+              disabled:
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
               className: "max-w-[300px] flex-none",
-              endAction: (
-                <AgentComposerProjectCreateButton
-                  onClick={onCreateProject}
-                  testId="agents-start-new-project"
-                />
-              ),
             }}
             provider={{
               value: provider,
@@ -1301,7 +1706,10 @@ export function AgentsStartComposer({
               fastMode: {
                 visible: provider === "codex",
                 value: selectableCodexFastMode,
-                onValueChange: setCodexFastModeOverride,
+                onValueChange: (value) => {
+                  markRoleOverride();
+                  setCodexFastModeOverride(value);
+                },
                 disabled:
                   !providerSettingsReady ||
                   !codexFastModeAvailability.supported,
@@ -1322,7 +1730,17 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
-            sendDisabledReason={providerStatusMessage}
+            runtimeDefault={{
+              source: roleDefaultQuery.data?.source ?? null,
+              isResetting: roleDefaultQuery.isFetching || isResettingRoleDefault,
+              disabled: !projectId,
+              onReset: handleResetRoleDefault,
+            }}
+            sendDisabledReason={
+              isResettingRoleDefault
+                ? "Resetting the current role default"
+                : providerStatusMessage
+            }
           />
 
           {providerStatusMessage && (
@@ -1361,36 +1779,59 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               }))}
               placeholder={projects.length === 0 ? "No projects yet" : "Select project"}
-              disabled={isLoadingProjects || projects.length === 0}
+              disabled={
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations)
+              }
               testId="agents-start-project"
+              allowNoProject={featureFlags.standaloneConversations === true}
+              standaloneCaption="Runs in a private workspace"
             />
-            <BranchBasePicker
-              value={selectedStartFromKey}
-              onValueChange={handleStartFromChange}
-              options={startFromOptions}
-              enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestStartFromOptions}
-              isLoadingPullRequests={isLoadingPullRequestStartFrom}
-              pullRequestMessage={pullRequestStartFromMessage}
-              onPullRequestSearch={searchPullRequestStartFromOptions}
-              placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
-              disabled={!activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)}
-              testId="agents-start-base"
-              isLoading={isLoadingStartFrom}
-              onIntent={ensureStartFromOptionsLoaded}
-              onOpenChange={(open) => {
-                if (open) {
-                  ensureStartFromOptionsLoaded();
+            {projectLocked && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    aria-label="Persona build project is locked"
+                    className="inline-flex h-7 w-7 items-center justify-center text-[var(--text-muted)]"
+                  >
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Persona scope is locked for this build</TooltipContent>
+              </Tooltip>
+            )}
+            {projectId && (
+              <BranchBasePicker
+                value={selectedStartFromKey}
+                onValueChange={handleStartFromChange}
+                options={startFromOptions}
+                enablePullRequests={Boolean(activeProjectId)}
+                pullRequestOptions={pullRequestStartFromOptions}
+                isLoadingPullRequests={isLoadingPullRequestStartFrom}
+                pullRequestMessage={pullRequestStartFromMessage}
+                onPullRequestSearch={searchPullRequestStartFromOptions}
+                placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
+                disabled={
+                  !activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)
                 }
-              }}
-              closeOnSelect={false}
-              isolatedBranch={effectiveStartFromIsolatedBranch}
-              isolatedBranchDisabled={startFromForcesIsolatedBranch}
-              onIsolatedBranchChange={(value) => {
-                clearStartError();
-                setIsStartFromIsolatedBranch(value);
-              }}
-            />
+                testId="agents-start-base"
+                isLoading={isLoadingStartFrom}
+                onIntent={ensureStartFromOptionsLoaded}
+                onOpenChange={(open) => {
+                  if (open) {
+                    ensureStartFromOptionsLoaded();
+                  }
+                }}
+                closeOnSelect={false}
+                isolatedBranch={effectiveStartFromIsolatedBranch}
+                isolatedBranchDisabled={startFromForcesIsolatedBranch}
+                onIsolatedBranchChange={(value) => {
+                  clearStartError();
+                  setIsStartFromIsolatedBranch(value);
+                }}
+              />
+            )}
           </div>
 
           {error?.kind === "linked_setup" ? (
@@ -1447,6 +1888,8 @@ export function AgentsStartComposer({
         </div>
       </div>
     </div>
+    <ConfirmationDialog {...confirmationDialogProps} />
+    </>
   );
 }
 

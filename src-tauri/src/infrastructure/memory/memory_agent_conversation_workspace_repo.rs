@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -13,11 +13,15 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId, IdeationSessionId,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 use crate::error::{AppError, AppResult};
 
 #[cfg(test)]
@@ -39,6 +43,14 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     local_cleanup_markers: RwLock<HashMap<ChatConversationId, (String, DateTime<Utc>)>>,
     #[cfg(test)]
     next_pr_supervision_preference_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_publication_event_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_publication_update_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_worktree_path_list_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_auto_merge_restore_completion_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -56,12 +68,43 @@ impl MemoryAgentConversationWorkspaceRepository {
             local_cleanup_markers: RwLock::new(HashMap::new()),
             #[cfg(test)]
             next_pr_supervision_preference_error: Mutex::new(None),
+            #[cfg(test)]
+            next_publication_event_error: Mutex::new(None),
+            #[cfg(test)]
+            next_publication_update_error: Mutex::new(None),
+            #[cfg(test)]
+            next_worktree_path_list_error: Mutex::new(None),
+            #[cfg(test)]
+            next_auto_merge_restore_completion_error: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub fn fail_next_pr_supervision_preference_update(&self, message: impl Into<String>) {
         *self.next_pr_supervision_preference_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_publication_event(&self, message: impl Into<String>) {
+        *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_publication_update(&self, message: impl Into<String>) {
+        *self.next_publication_update_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_worktree_path_list(&self, message: impl Into<String>) {
+        *self.next_worktree_path_list_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_auto_merge_restore_completion(&self, message: impl Into<String>) {
+        *self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -118,6 +161,49 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let retry_secs = crate::infrastructure::agents::claude::git_runtime_config()
+            .terminal_pr_local_cleanup_retry_secs;
+        let retry_secs = i64::try_from(retry_secs).unwrap_or(i64::MAX);
+        let retry_cutoff = Utc::now() - chrono::Duration::seconds(retry_secs);
+        let markers = self.local_cleanup_markers.read().await;
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| workspace.project_id == *project_id)
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Archived
+                    || workspace
+                        .publication_pr_status
+                        .as_deref()
+                        .is_some_and(|status| matches!(status, "merged" | "closed"))
+            })
+            .filter(|workspace| match markers.get(&workspace.conversation_id) {
+                None => true,
+                Some((status, checked_at)) => {
+                    matches!(
+                        status.as_str(),
+                        "pending"
+                            | "failed"
+                            | "failed_unsafe"
+                            | "failed_operational"
+                            | "unsafe"
+                            | "target_ref_missing"
+                            | "workspace_dirty"
+                            | "branch_missing"
+                            | "cleaning"
+                    ) && *checked_at < retry_cutoff
+                }
+            })
+            .cloned()
+            .collect())
+    }
+
     async fn mark_local_cleanup_status(
         &self,
         conversation_id: &ChatConversationId,
@@ -129,6 +215,72 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .insert(conversation_id.clone(), (status.to_string(), checked_at));
         Ok(())
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        if !self.workspaces.read().await.contains_key(conversation_id) {
+            return Err(AppError::NotFound(format!(
+                "Agent conversation workspace not found while claiming local cleanup: {conversation_id}"
+            )));
+        }
+        let mut markers = self.local_cleanup_markers.write().await;
+        let claim = match markers.get(conversation_id) {
+            Some((status, _)) if status == "cleaned" => {
+                AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
+            }
+            Some((status, checked_at)) if status == "cleaning" && *checked_at >= stale_before => {
+                AgentWorkspaceLocalCleanupClaim::AlreadyInProgress
+            }
+            Some((status, _))
+                if !matches!(
+                    status.as_str(),
+                    "cleaning"
+                        | "pending"
+                        | "failed"
+                        | "failed_unsafe"
+                        | "failed_operational"
+                        | "unsafe"
+                        | "target_ref_missing"
+                        | "workspace_dirty"
+                        | "branch_missing"
+                ) =>
+            {
+                AgentWorkspaceLocalCleanupClaim::AlreadyInProgress
+            }
+            _ => {
+                markers.insert(
+                    conversation_id.clone(),
+                    ("cleaning".to_string(), claimed_at),
+                );
+                AgentWorkspaceLocalCleanupClaim::Claimed
+            }
+        };
+        Ok(claim)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let mut markers = self.local_cleanup_markers.write().await;
+        if markers
+            .get(conversation_id)
+            .is_none_or(|(current, current_claimed_at)| {
+                current != "cleaning" || *current_claimed_at != claimed_at
+            })
+        {
+            return Ok(false);
+        }
+        markers.insert(conversation_id.clone(), (status.to_string(), checked_at));
+        Ok(true)
     }
 
     async fn get_local_cleanup_status(
@@ -165,6 +317,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .values()
             .filter(|workspace| {
                 workspace.linked_ideation_session_id.as_ref() == Some(ideation_session_id)
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned())
+    }
+
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| {
+                workspace.task_pipeline_session_id.as_ref() == Some(ideation_session_id)
             })
             .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
             .cloned())
@@ -357,6 +525,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_update_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
         if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
             workspace.publication_pr_number = pr_number;
             workspace.publication_pr_url = pr_url.map(str::to_string);
@@ -371,6 +544,25 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.updated_at = now;
         }
         Ok(())
+    }
+
+    async fn list_worktree_paths_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<HashSet<String>> {
+        #[cfg(test)]
+        if let Some(message) = self.next_worktree_path_list_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| workspace.project_id == *project_id)
+            .map(|workspace| workspace.worktree_path.clone())
+            .collect())
     }
 
     async fn update_pr_supervision_preferences(
@@ -523,6 +715,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         &self,
         event: AgentConversationWorkspacePublicationEvent,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         self.publication_events
             .write()
             .await
@@ -772,20 +968,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         conversation_id: &ChatConversationId,
         pr_number: i64,
         head_sha: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<String>> {
         let mut actions = self.pr_review_actions.write().await;
+        let mut superseded_ids = Vec::new();
         for action in actions.values_mut() {
             if action.conversation_id == *conversation_id
                 && action.pr_number == pr_number
                 && action.head_sha != head_sha
                 && action.status == AgentWorkspacePrReviewActionStatus::Pending
             {
+                superseded_ids.push(action.id.clone());
                 action.status = AgentWorkspacePrReviewActionStatus::Superseded;
                 action.resolved_at = Some(Utc::now());
                 action.updated_at = Utc::now();
             }
         }
-        Ok(())
+        Ok(superseded_ids)
     }
 
     async fn mark_pr_review_first_action_resolved(
@@ -840,6 +1038,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             if monitor.previous_version_id.is_none() {
                 monitor.previous_version_id = existing.previous_version_id.clone();
             }
+            // Guard transitions are exclusively compare-and-set operations. A normal Review
+            // monitor upsert must not erase the durable GitHub auto-merge ownership record.
+            monitor.auto_merge_guard = existing.auto_merge_guard.clone();
         }
         monitor.updated_at = Utc::now();
         monitors.insert(monitor.conversation_id, monitor.clone());
@@ -858,6 +1059,96 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .cloned())
     }
 
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_target_scope: AgentWorkspaceReviewTargetScope,
+        expected_diff_fingerprint: &str,
+        expected_review_conversation_id: &ChatConversationId,
+        expected_run_id: &str,
+        error: &str,
+    ) -> AppResult<bool> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing
+            || monitor.current_target_scope != Some(expected_target_scope)
+            || monitor.current_diff_fingerprint.as_deref() != Some(expected_diff_fingerprint)
+            || monitor.review_conversation_id.as_ref() != Some(expected_review_conversation_id)
+            || monitor.last_run_id.as_deref() != Some(expected_run_id)
+        {
+            return Ok(false);
+        }
+
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.review_blocking_summary = None;
+        monitor.review_blocking_fingerprint = None;
+        monitor.review_fixer_run_id = None;
+        monitor.review_fixer_conversation_id = None;
+        monitor.review_fixer_status = None;
+        monitor.last_error = Some(error.to_string());
+        monitor.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let workspaces = self.workspaces.read().await;
+        let Some(workspace) = workspaces.get(conversation_id) else {
+            return Ok(None);
+        };
+        if workspace_review_approval_publish_status_is_active(
+            workspace.publication_push_status.as_deref(),
+        ) {
+            return Ok(None);
+        }
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        let fixer_active = matches!(
+            monitor.review_fixer_status.as_deref(),
+            Some("routing" | "queued" | "running")
+        );
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
+            || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
+            || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
+            || monitor.current_target_scope != Some(snapshot.target_scope)
+            || monitor.reviewed_target_scope != Some(snapshot.target_scope)
+            || monitor.current_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.reviewed_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
+            || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || fixer_active
+        {
+            return Ok(None);
+        }
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_gate_bypassed_at = Some(approved_at);
+        monitor.review_gate_bypassed_target_scope = Some(snapshot.target_scope);
+        monitor.review_gate_bypassed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+        monitor.review_gate_bypassed_artifact_id = Some(snapshot.artifact_id.clone());
+        monitor.review_gate_bypassed_artifact_version = Some(snapshot.artifact_version);
+        monitor.updated_at = approved_at;
+        let updated = monitor.clone();
+        self.publication_events
+            .write()
+            .await
+            .entry(*conversation_id)
+            .or_default()
+            .push(snapshot.audit_event(*conversation_id, approved_at));
+        Ok(Some(updated))
+    }
+
     async fn list_reviewing_workspace_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
@@ -867,6 +1158,92 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing)
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.auto_merge_guard != expected {
+            return Ok(false);
+        }
+        monitor.auto_merge_guard = next;
+        monitor.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        #[cfg(test)]
+        if let Some(message) = self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap()
+            .take()
+        {
+            return Err(AppError::Infrastructure(message));
+        }
+        let now = Utc::now();
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if !workspace.pr_auto_merge_desired
+            || (expected.target_scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
+                && (workspace.publication_pr_number != Some(expected.pr_number)
+                    || workspace.has_terminal_publication_pr_status()))
+        {
+            return Ok(false);
+        }
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.auto_merge_guard != Some(expected.clone()) {
+            return Ok(false);
+        }
+        if expected.target_scope == AgentWorkspaceReviewTargetScope::SelectedSource
+            && (monitor.current_target_scope != Some(expected.target_scope)
+                || monitor.current_diff_fingerprint.as_deref()
+                    != Some(expected.diff_fingerprint.as_str())
+                || monitor.selected_source_pull_request_number != Some(expected.pr_number)
+                || monitor.selected_source_head_sha != expected.head_sha)
+        {
+            return Ok(false);
+        }
+        workspace.pr_auto_merge_current = Some(true);
+        workspace.pr_supervision_status = Some("monitoring".to_string());
+        workspace.pr_supervision_summary =
+            Some("GitHub auto-merge was restored after the workspace Review passed.".to_string());
+        workspace.pr_supervision_updated_at = Some(now);
+        workspace.updated_at = now;
+        monitor.auto_merge_guard = None;
+        monitor.updated_at = now;
+        Ok(true)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self
+            .workspace_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| monitor.auto_merge_guard.is_some())
             .cloned()
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
@@ -1028,6 +1405,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .retain(|_, action| action.conversation_id != *conversation_id);
         Ok(())
     }
+}
+
+fn workspace_review_approval_publish_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
 }
 
 fn pr_review_action_terminal_status(status: AgentWorkspacePrReviewActionStatus) -> bool {
@@ -1316,6 +1700,7 @@ mod tests {
 
         let mut second = candidate_workspace("linked-second");
         second.linked_ideation_session_id = Some(session_id.clone());
+        second.task_pipeline_session_id = Some(session_id.clone());
         repo.create_or_update(second.clone()).await.unwrap();
 
         let loaded = repo
@@ -1325,11 +1710,23 @@ mod tests {
             .expect("latest linked workspace should load");
         assert_eq!(loaded.conversation_id, second.conversation_id);
 
+        let task_pipeline = repo
+            .get_by_task_pipeline_session_id(&session_id)
+            .await
+            .unwrap()
+            .expect("durably attached Tasks workspace should load");
+        assert_eq!(task_pipeline.conversation_id, second.conversation_id);
+
         let missing = repo
             .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
             .await
             .unwrap();
         assert!(missing.is_none());
+        assert!(repo
+            .get_by_task_pipeline_session_id(&IdeationSessionId::from_string("missing-session"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

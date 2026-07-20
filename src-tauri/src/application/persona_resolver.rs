@@ -3,9 +3,10 @@
 //! 2. explicit suppression → suppress without a read
 //! 3. external MCP → suppress
 //! 4. Project context is required for both explicit and inherited directives
-//! 5. explicit personas resolve before inherited suppression gates
-//! 6. inherited personas suppress for agent overrides, Automation mode, and verification
-//! 7. inheritance reads only `conversation.persona_id`, then requires a bindable persona
+//! 5. all directives suppress for Automation/PersonaBuilder mode and verification
+//! 6. inherited personas additionally suppress for agent overrides
+//! 7. explicit and inherited personas share active/project bindability enforcement
+//! 8. inheritance reads only `conversation.persona_id`, then requires a bindable persona
 //!    and a safe render.
 //!
 //! Ideation conversations do exist as `chat_conversations` rows and flow through `send_message`.
@@ -18,6 +19,7 @@ use thiserror::Error;
 use crate::application::persona_prompt::{render_persona_block, ResolvedPersona};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, PersonaDirective, PersonaId,
+    ProjectId,
 };
 use crate::domain::repositories::PersonaRepository;
 
@@ -41,6 +43,8 @@ pub enum PersonaError {
     #[error("Persona render rejected: {0}")]
     RenderRejected(String),
 }
+
+pub const PERSONA_PROJECT_SCOPE_MISMATCH: &str = "project_scope_mismatch";
 
 /// Resolves the sole persona authority for a send.
 ///
@@ -70,20 +74,26 @@ pub async fn resolve_persona_for_send(
         return Ok(None);
     }
 
-    if let PersonaDirective::Explicit(persona_id) = directive {
-        return resolve_persona_by_id(persona_id, repo).await.map(Some);
+    if matches!(
+        flags.agent_conversation_mode,
+        Some(
+            AgentConversationWorkspaceMode::Automation
+                | AgentConversationWorkspaceMode::PersonaBuilder
+        )
+    ) || flags.is_verification
+    {
+        return Ok(None);
     }
 
-    if flags.agent_name_override_set
-        || matches!(
-            flags.agent_conversation_mode,
-            Some(
-                AgentConversationWorkspaceMode::Automation
-                    | AgentConversationWorkspaceMode::PersonaBuilder
-            )
-        )
-        || flags.is_verification
-    {
+    let conversation_project_id = ProjectId::from_string(conversation.context_id.clone());
+
+    if let PersonaDirective::Explicit(persona_id) = directive {
+        return resolve_persona_by_id(persona_id, &conversation_project_id, repo)
+            .await
+            .map(Some);
+    }
+
+    if flags.agent_name_override_set {
         return Ok(None);
     }
 
@@ -91,13 +101,18 @@ pub async fn resolve_persona_for_send(
         return Ok(None);
     };
 
-    resolve_persona_by_id(&PersonaId::from_string(persona_id), repo)
-        .await
-        .map(Some)
+    resolve_persona_by_id(
+        &PersonaId::from_string(persona_id),
+        &conversation_project_id,
+        repo,
+    )
+    .await
+    .map(Some)
 }
 
 async fn resolve_persona_by_id(
     persona_id: &PersonaId,
+    project_id: &ProjectId,
     repo: Arc<dyn PersonaRepository>,
 ) -> Result<ResolvedPersona, PersonaError> {
     let persona = repo
@@ -111,6 +126,17 @@ async fn resolve_persona_by_id(
     if !persona.is_bindable() {
         return Err(PersonaError::Unavailable {
             persona_id: persona.id.to_string(),
+        });
+    }
+
+    if !persona.is_bindable_to_project(project_id) {
+        return Ok(ResolvedPersona {
+            id: persona.id,
+            slug: persona.slug,
+            version: persona.version,
+            content_hash: persona.content_hash,
+            block: String::new(),
+            skipped_reason: Some(PERSONA_PROJECT_SCOPE_MISMATCH),
         });
     }
 

@@ -931,20 +931,27 @@ description: Workspace bridge instructions
     #[test]
     fn live_general_workspace_agents_do_not_load_workspace_bridge_skill() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        for agent_name in ["ralphx-general-worker", "ralphx-general-explorer"] {
-            let injected = inject_internal_skills_into_system_prompt(
-                &root,
-                agent_name,
-                "Base prompt",
-                "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
-            )
-            .unwrap_or_else(|error| panic!("{agent_name} injection failed: {error}"));
-            assert!(
-                injected.injected_skill_names.is_empty(),
-                "{agent_name} must not load agent workspace bridge skills"
-            );
-            assert_eq!(injected.system_prompt, "Base prompt");
-        }
+        let directive = "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->";
+
+        let worker_error = inject_internal_skills_into_system_prompt(
+            &root,
+            "ralphx-general-worker",
+            "Base prompt",
+            directive,
+        )
+        .expect_err("worker must reject a disallowed workspace bridge directive");
+        assert!(worker_error.contains("ralphx-agent-workspace-swe"));
+        assert!(worker_error.contains("not listed in allowed"));
+
+        let explorer = inject_internal_skills_into_system_prompt(
+            &root,
+            "ralphx-general-explorer",
+            "Base prompt",
+            directive,
+        )
+        .expect("explorer without internal skills should leave the prompt unchanged");
+        assert!(explorer.injected_skill_names.is_empty());
+        assert_eq!(explorer.system_prompt, "Base prompt");
     }
 
     #[test]

@@ -11,4 +11,6 @@ Snapshot notes:
 RalphX notes:
 
 - RalphX must map its execution halt and operator expectations onto Codex approval semantics without assuming Claude behavior.
-- Initial Codex rollout should stay conservative and explicit about network/disk policy.
+- Provider/lane settings and compatibility-locked workflows stay on `approval_policy="never"`.
+- Standalone Chat is a narrow backend-owned exception: RalphX emits `approval_policy="on-request"` together with the contained workspace sandbox, while Project and Standalone PersonaBuilder launches retain the compatibility policy.
+- RalphX launches Standalone Chat through non-interactive `codex exec`; an action that requires a fresh approval cannot open an interactive prompt, so Codex fails that action closed and surfaces the error.

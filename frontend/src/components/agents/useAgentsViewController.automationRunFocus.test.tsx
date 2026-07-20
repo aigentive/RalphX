@@ -215,6 +215,14 @@ describe("useAgentsViewController automation run focus", () => {
     view.rerenderController();
 
     await expectRunFocusApplied();
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().visibleAgentScope).toEqual({
+        workspaceConversationId: hydratedSetup.id,
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+    });
     expect(clearSpy).toHaveBeenCalledTimes(1);
     expect(
       useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
@@ -224,6 +232,8 @@ describe("useAgentsViewController automation run focus", () => {
 
     view.rerenderController();
     expect(clearSpy).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(useAgentSessionStore.getState().visibleAgentScope).toBeNull();
   });
 
   it("does not re-apply a consumed request after manually switching back to Workspace", async () => {
@@ -310,6 +320,82 @@ describe("useAgentsViewController automation run focus", () => {
       "data-active-tab",
       "pr",
     );
+  });
+
+  it("reveals a hidden tab targeted by an explicit automation-run focus request", async () => {
+    const setup = automationSetupConversation();
+    mockHydratedSetupConversation(setup);
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: setup.id,
+      artifactByConversationId: {
+        [setup.id]: {
+          isOpen: true,
+          activeTab: "tasks",
+          taskMode: "graph",
+          hiddenTabs: ["plan"],
+        },
+      },
+      automationRunFocusRequestByConversationId: {
+        [setup.id]: focusRequest({ seededTab: "plan" }),
+      },
+    });
+    useAgentArtifactUiStore.getState().setArtifactState(setup.id, {
+      isOpen: true,
+      activeTab: "tasks",
+      taskMode: "graph",
+      hiddenTabs: ["plan"],
+    });
+
+    renderControllerView();
+    await expectRunFocusApplied();
+
+    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-active-tab",
+      "plan",
+    );
+    await waitFor(() => {
+      expect(
+        useAgentSessionStore.getState().artifactByConversationId[setup.id]
+          ?.hiddenTabs,
+      ).toEqual([]);
+    });
+  });
+
+  it("does not unhide Automation during level-triggered setup seeding", async () => {
+    const setup = automationSetupConversation();
+    mockHydratedSetupConversation(setup);
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: setup.id,
+      artifactByConversationId: {
+        [setup.id]: {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+          hiddenTabs: ["automation"],
+        },
+      },
+    });
+    useAgentArtifactUiStore.getState().setArtifactState(setup.id, {
+      isOpen: true,
+      activeTab: "plan",
+      taskMode: "graph",
+      hiddenTabs: ["automation"],
+    });
+
+    renderControllerView();
+
+    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-active-tab",
+      "plan",
+    );
+    await waitFor(() => {
+      expect(
+        useAgentSessionStore.getState().artifactByConversationId[setup.id]
+          ?.hiddenTabs,
+      ).toEqual(["automation"]);
+    });
   });
 
   it("keeps a newer automation-run request when an older request id is cleared", () => {

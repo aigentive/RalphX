@@ -11,7 +11,46 @@ fn persona_attribution_fixture() -> ResolvedPersona {
         version: 4,
         content_hash: "truthful-write-hash".to_string(),
         block: "SECRET_PERSONA_BODY_MUST_NOT_PERSIST".to_string(),
+        skipped_reason: None,
     }
+}
+
+#[tokio::test]
+async fn project_scope_mismatch_forces_negative_attribution_even_if_caller_marks_injected() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id))
+        .await
+        .expect("persona run should persist");
+    let mut persona = persona_attribution_fixture();
+    persona.skipped_reason = Some("project_scope_mismatch");
+    persona.block.clear();
+
+    record_persona_run_attribution::<tauri::test::MockRuntime>(
+        &state.agent_run_repo,
+        None,
+        &conversation_id,
+        &run.id.as_str(),
+        AgentHarnessKind::Codex,
+        Some(&persona),
+        true,
+        None,
+    )
+    .await;
+
+    let attributed = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attributed.persona_injected, Some(false));
+    assert_eq!(
+        attributed.persona_skipped_reason.as_deref(),
+        Some("project_scope_mismatch")
+    );
 }
 
 #[tokio::test]

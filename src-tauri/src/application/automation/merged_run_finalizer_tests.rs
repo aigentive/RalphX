@@ -151,7 +151,7 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
             .local_cleanup_status_for_test(&conversation_id)
             .await
             .as_deref(),
-        Some("unsafe")
+        Some("failed_unsafe")
     );
 }
 
@@ -187,7 +187,7 @@ async fn merged_run_finalizer_cleans_pre_archived_conversation_and_archives_work
             .local_cleanup_status_for_test(&conversation_id)
             .await
             .as_deref(),
-        Some("unsafe")
+        Some("failed_unsafe")
     );
     assert_eq!(
         workspace_repo

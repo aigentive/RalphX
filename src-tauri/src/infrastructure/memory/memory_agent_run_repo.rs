@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
-    InterruptedConversation,
+    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    ChatConversationId, InterruptedConversation,
 };
 use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
 use crate::error::AppResult;
@@ -66,6 +66,25 @@ impl AgentRunRepository for MemoryAgentRunRepository {
             .cloned())
     }
 
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: crate::domain::agents::AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.conversation_id == *conversation_id
+                    && run.status == AgentRunStatus::Completed
+                    && run.harness == Some(harness)
+                    && run.provider_session_id.as_deref() == Some(provider_session_id)
+            })
+            .max_by_key(|run| run.started_at)
+            .cloned())
+    }
+
     async fn get_active_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
@@ -74,6 +93,24 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(runs
             .values()
             .find(|r| r.conversation_id == *conversation_id && r.is_active())
+            .cloned())
+    }
+
+    async fn get_latest_action(
+        &self,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at)
             .cloned())
     }
 

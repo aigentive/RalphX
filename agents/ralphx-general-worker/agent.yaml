@@ -27,6 +27,15 @@ capabilities:
     - get_memories_for_paths
     - list_project_skills
     - get_project_skill
+    - create_agent_workflow_script
+    - start_agent_workflow_run
+    - get_agent_workflow_run
+    - pause_agent_workflow_run
+    - resume_agent_workflow_run
+    - cancel_agent_workflow_run
+  internal_skills:
+    allowed:
+      - ralphx-agent-workflow-orchestrator
 harnesses:
   claude:
     model: sonnet

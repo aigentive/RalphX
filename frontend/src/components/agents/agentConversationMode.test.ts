@@ -4,10 +4,15 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
+  buildConversationModeOptions,
+  buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { AgentConversation } from "./agentConversations";
-import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+import {
+  AGENT_START_MODE_OPTIONS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 
 function conversation(
   overrides: Partial<AgentConversation> = {},
@@ -91,6 +96,18 @@ describe("isConversationModeLocked", () => {
     expect(isConversationModeLocked(conversation(), workspace())).toBe(false);
   });
 
+  it("does not treat durable Tasks return context as an active ownership lock", () => {
+    expect(
+      isConversationModeLocked(
+        conversation({ agentMode: "tasks" }),
+        workspace({
+          mode: "tasks",
+          taskPipelineSessionId: "session-1",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("locks automation and persona builder conversations without workspace rows", () => {
     expect(
       isConversationModeLocked(conversation({ agentMode: "automation" }), null),
@@ -108,12 +125,94 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     );
   });
 
-  it("excludes persona builder from selectable mode options", () => {
-    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  it("includes Persona as a label-only conversation mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona", disabled: true }),
     );
-    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  });
+
+  it.each(["automation", "persona_builder"] as const)(
+    "disables every conversation-mode option while %s is locked",
+    (mode) => {
+      const options = buildConversationModeOptions(
+        conversation({ agentMode: mode }),
+        null,
+      );
+      expect(options).not.toHaveLength(0);
+      expect(options.every((option) => option.disabled)).toBe(true);
+    },
+  );
+
+  it("keeps Persona in the starter registry for feature-gated rendering", () => {
+    expect(AGENT_START_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona" }),
     );
+  });
+
+  it("orders ordinary new-run modes by planning, execution, review, and inquiry", () => {
+    expect(
+      AGENT_START_MODE_OPTIONS.slice(0, 5).map(({ id, label }) => ({ id, label })),
+    ).toEqual([
+      { id: "plan", label: "Plan" },
+      { id: "edit", label: "Agent" },
+      { id: "review_pr", label: "Review PR" },
+      { id: "chat", label: "Ask" },
+      { id: "automation", label: "Automation" },
+    ]);
+  });
+
+  it("keeps legacy-only modes out of fresh conversations and gates Autopilot", () => {
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
+        (option) => option.id,
+      ),
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: true }).map(
+        (option) => option.id,
+      ),
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "autopilot",
+      "persona_builder",
+    ]);
+  });
+
+  it("offers Tasks only for the current or durably attached pipeline", () => {
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).not.toContain("tasks");
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: true,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toContain("tasks");
+  });
+
+  it("keeps a disabled current Autopilot mode visible after opt-out", () => {
+    const autopilot = buildAgentConversationModeOptions({
+      currentMode: "autopilot",
+      taskPipelineAvailable: false,
+      autopilotEnabled: false,
+    }).find((option) => option.id === "autopilot");
+
+    expect(autopilot).toMatchObject({ disabled: true });
   });
 });

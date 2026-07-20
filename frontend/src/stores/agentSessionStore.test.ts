@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  getShownArtifactTabs,
   migrateAgentSessionStore,
   selectArtifactState,
   selectHasStoredArtifactState,
@@ -19,6 +20,27 @@ describe("agentSessionStore", () => {
       "uncommitted",
       "unpushed",
     ]);
+    expect(useAgentSessionStore.getInitialState().defaultStartMode).toBe("edit");
+  });
+
+  it("migrates invalid new-run mode preferences to Agent", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "persona_builder",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "edit" });
+
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "plan",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "plan" });
   });
 
   it("migrates older persisted sidebar filter state to all projects", () => {
@@ -111,7 +133,7 @@ describe("agentSessionStore", () => {
     });
   });
 
-  it("preserves remembered GPT-5.6 runtimes during migration", () => {
+  it("normalizes remembered Ultra preferences to ordinary Max", () => {
     expect(
       migrateAgentSessionStore(
         {
@@ -137,7 +159,7 @@ describe("agentSessionStore", () => {
         "conversation-1": {
           provider: "codex",
           modelId: "gpt-5.6-terra",
-          effort: "ultra",
+          effort: "max",
         },
       },
       lastRuntimeByProjectId: {
@@ -250,6 +272,38 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("migrates v7 artifact visibility preferences and drops unknown tabs", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "plan",
+              taskMode: "graph",
+              hiddenTabs: ["plan", "removed-tab", "plan", "jira"],
+            },
+            "conversation-2": {
+              isOpen: false,
+              activeTab: "tasks",
+              taskMode: "kanban",
+            },
+          },
+        },
+        7,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          hiddenTabs: ["plan", "jira"],
+        },
+        "conversation-2": {
+          hiddenTabs: [],
+        },
+      },
+    });
+  });
+
   it("passes through non-object persistedState", () => {
     expect(migrateAgentSessionStore(null, 0)).toBeNull();
     expect(migrateAgentSessionStore("nope", 0)).toBe("nope");
@@ -258,6 +312,15 @@ describe("agentSessionStore", () => {
   describe("actions", () => {
     beforeEach(() => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+    });
+
+    it("persists the preferred ordinary new-run mode", () => {
+      useAgentSessionStore.getState().setDefaultStartMode("plan");
+
+      expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"defaultStartMode":"plan"',
+      );
     });
 
     it("setFocusedProject expands only the focused project without selecting a conversation", () => {
@@ -354,6 +417,55 @@ describe("agentSessionStore", () => {
       );
       expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
       expect(consumeStartConversationDraft()).toBeNull();
+    });
+
+    it("round-trips a standalone start draft without inventing a project id", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+    });
+
+    it("preserves persona-builder scope lock and refine provenance in the consumed copy", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    });
+
+    it("selects a standalone conversation without project focus bookkeeping", () => {
+      useAgentSessionStore.getState().selectConversation(null, "standalone-1");
+
+      const state = useAgentSessionStore.getState();
+      expect(state.selectedProjectId).toBeNull();
+      expect(state.focusedProjectId).toBeNull();
+      expect(state.selectedConversationId).toBe("standalone-1");
+      expect(state.lastSelectedConversationByProjectId).toEqual({});
     });
 
     it("selectConversation pins focus + remembers per-project last conversation", () => {
@@ -470,11 +582,17 @@ describe("agentSessionStore", () => {
       expect(after.activeTab).toBe("verification");
       expect(after.isOpen).toBe(true);
 
-      setArtifactState("c1", { isOpen: false, activeTab: "plan", taskMode: "kanban" });
+      setArtifactState("c1", {
+        isOpen: false,
+        activeTab: "plan",
+        taskMode: "kanban",
+        hiddenTabs: [],
+      });
       expect(selectArtifactState("c1")(useAgentSessionStore.getState())).toEqual({
         isOpen: false,
         activeTab: "plan",
         taskMode: "kanban",
+        hiddenTabs: [],
       });
 
       setTaskArtifactMode("c1", "graph");
@@ -484,14 +602,68 @@ describe("agentSessionStore", () => {
       expect(selectHasStoredArtifactState(null)(useAgentSessionStore.getState())).toBe(false);
     });
 
+    it("hides, shows, and reveals tabs without changing pane-open semantics", () => {
+      const {
+        hideArtifactTab,
+        revealArtifactTab,
+        setArtifactOpen,
+        setArtifactTab,
+        showArtifactTab,
+      } = useAgentSessionStore.getState();
+
+      setArtifactTab("c1", "verification");
+      hideArtifactTab("c1", "verification", ["plan", "verification", "tasks"]);
+      expect(selectArtifactState("c1")(useAgentSessionStore.getState())).toEqual({
+        isOpen: true,
+        activeTab: "plan",
+        taskMode: "graph",
+        hiddenTabs: ["verification"],
+      });
+
+      showArtifactTab("c1", "verification");
+      expect(selectArtifactState("c1")(useAgentSessionStore.getState())).toMatchObject({
+        activeTab: "plan",
+        hiddenTabs: [],
+      });
+
+      hideArtifactTab("c1", "verification", ["plan", "verification", "tasks"]);
+      setArtifactOpen("c1", false);
+      revealArtifactTab("c1", "verification");
+      expect(selectArtifactState("c1")(useAgentSessionStore.getState())).toEqual({
+        isOpen: false,
+        activeTab: "verification",
+        taskMode: "graph",
+        hiddenTabs: [],
+      });
+    });
+
+    it("uses canonical visible filtering without mutating hidden preferences", () => {
+      const availableTabs = ["plan", "verification", "tasks"] as const;
+      const hiddenTabs = ["verification"] as const;
+
+      expect(getShownArtifactTabs(availableTabs, hiddenTabs)).toEqual([
+        "plan",
+        "tasks",
+      ]);
+      expect(hiddenTabs).toEqual(["verification"]);
+    });
+
     it("focusTaskArtifact opens the Tasks tab and increments focus requests", () => {
-      const { focusTaskArtifact } = useAgentSessionStore.getState();
+      const { focusTaskArtifact, setArtifactState } = useAgentSessionStore.getState();
+
+      setArtifactState("c1", {
+        isOpen: false,
+        activeTab: "plan",
+        taskMode: "graph",
+        hiddenTabs: ["tasks"],
+      });
 
       focusTaskArtifact("c1", "task-1");
       let state = useAgentSessionStore.getState();
       expect(selectArtifactState("c1")(state)).toMatchObject({
         isOpen: true,
         activeTab: "tasks",
+        hiddenTabs: [],
       });
       expect(state.taskArtifactFocusRequestByConversationId.c1).toEqual({
         taskId: "task-1",
@@ -573,6 +745,28 @@ describe("agentSessionStore", () => {
       ).toBeUndefined();
     });
 
+    it("keeps the exact visible Agent scope transient", () => {
+      useAgentSessionStore.getState().setVisibleAgentScope({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+
+      expect(useAgentSessionStore.getState().visibleAgentScope).toEqual({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+      const partialize = useAgentSessionStore.persist.getOptions().partialize;
+      const persisted = partialize?.(useAgentSessionStore.getState()) as Record<
+        string,
+        unknown
+      >;
+      expect(persisted).not.toHaveProperty("visibleAgentScope");
+    });
+
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {
       const { setRuntimeForConversation, setLastRuntimeForProject } =
         useAgentSessionStore.getState();
@@ -606,16 +800,43 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().runtimeByConversationId.c2).toEqual({
         provider: "codex",
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
       });
       expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p3).toEqual({
         provider: "codex",
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
       });
       expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
         modelId: "gpt-5.6-terra",
-        effort: "ultra",
+        effort: "max",
+      });
+    });
+
+    it("clears a project runtime override without changing remembered provider choices", () => {
+      const state = useAgentSessionStore.getState();
+      state.setRuntimeForConversation("c-reset", "p-reset", {
+        provider: "codex",
+        modelId: "gpt-5.6",
+        effort: "xhigh",
+      });
+
+      state.setRoleDefaultRuntimeForConversation("c-reset", "p-reset", {
+        provider: "claude",
+        modelId: "sonnet",
+        effort: "high",
+      });
+
+      const cleared = useAgentSessionStore.getState();
+      expect(cleared.runtimeByConversationId["c-reset"]).toEqual({
+        provider: "claude",
+        modelId: "sonnet",
+        effort: "high",
+      });
+      expect(cleared.lastRuntimeByProjectId["p-reset"]).toBeUndefined();
+      expect(cleared.lastModelEffortByProvider.claude).toEqual({
+        modelId: "sonnet",
+        effort: "high",
       });
     });
 

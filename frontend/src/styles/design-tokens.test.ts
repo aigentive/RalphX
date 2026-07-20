@@ -185,6 +185,36 @@ describe("design-tokens", () => {
       );
     });
 
+    it("should keep Sonner toast copy readable in dark mode", () => {
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toaster\]\s*\{[^}]*--normal-text:\s*#FFFFFF;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-description\]\s*\{[^}]*color:\s*rgba\(255,255,255,\.54\)\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="dark"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-title\],[^{]*\[data-content\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+    });
+
+    it("should keep Sonner toast copy readable in high-contrast mode", () => {
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toaster\]\s*\{[^}]*--normal-text:\s*#FFFFFF;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-description\]\s*\{[^}]*color:\s*#BFBFBF\s*!important;/s
+      );
+      expect(cssContent).toMatch(
+        /\[data-theme="high-contrast"\]\s+\[data-sonner-toast\]\[data-styled="true"\]\s+\[data-title\],[^{]*\[data-content\]\s*\{[^}]*color:\s*#FFFFFF\s*!important;/s
+      );
+    });
+
     it("should define literal tooltip chrome tokens across themes", () => {
       expect(cssContent).toMatch(/--tooltip-bg:\s*#232329/);
       expect(cssContent).toMatch(/--tooltip-border:\s*#393940/);

@@ -11,14 +11,16 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use ralphx_lib::application::plan_verification_service::{
+    get_plan_verification_status, PlanVerificationStatusKind,
+};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, AutomationRunId,
-    ChatConversation, IdeationSession, IdeationSessionBuilder, IdeationSessionFlow,
-    IdeationSessionId, IdeationSessionStatus, NotificationCategory, Project, ProjectId,
-    SessionOrigin, SessionPurpose, Task, VerificationConfirmationStatus, VerificationRunSnapshot,
-    VerificationStatus,
+    AgentRun, AgentRunActionKind, Artifact, ArtifactContent, ArtifactId, ArtifactMetadata,
+    ArtifactType, AutomationRunId, ChatConversation, IdeationSession, IdeationSessionBuilder,
+    IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, NotificationCategory, Project,
+    ProjectId, SessionOrigin, SessionPurpose, Task, VerificationRunSnapshot, VerificationStatus,
 };
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
@@ -27,8 +29,13 @@ use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::agents::claude::verification_config;
-use ralphx_lib::infrastructure::memory::MemoryIdeationSessionRepository;
-use ralphx_lib::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRepo;
+use ralphx_lib::infrastructure::memory::{
+    MemoryAgentProviderSettingsRepository, MemoryIdeationSessionRepository,
+};
+use ralphx_lib::infrastructure::sqlite::{
+    SqliteAgentRunRepository, SqliteChatConversationRepository,
+    SqliteIdeationSessionRepository as SessionRepo,
+};
 use std::sync::Arc;
 
 // ============================================================
@@ -37,6 +44,43 @@ use std::sync::Arc;
 
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test());
+    let execution_state = Arc::new(ExecutionState::new());
+    let tracker = TeamStateTracker::new();
+    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
+    HttpServerState {
+        app_state,
+        execution_state,
+        team_tracker: tracker,
+        team_service,
+        delegation_service: Default::default(),
+    }
+}
+
+async fn setup_model_native_verification_test_state() -> HttpServerState {
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_run_repo = Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
+        app_state.db.inner(),
+    )));
+    app_state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(
+        Arc::clone(app_state.db.inner()),
+    ));
+    let app_state = Arc::new(app_state);
+    let execution_state = Arc::new(ExecutionState::new());
+    let tracker = TeamStateTracker::new();
+    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
+    HttpServerState {
+        app_state,
+        execution_state,
+        team_tracker: tracker,
+        team_service,
+        delegation_service: Default::default(),
+    }
+}
+
+async fn setup_disabled_provider_test_state() -> HttpServerState {
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
     let tracker = TeamStateTracker::new();
     let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
@@ -110,6 +154,8 @@ fn make_active_session() -> IdeationSession {
         title: Some("Test Session".to_string()),
         status: IdeationSessionStatus::Active,
         plan_artifact_id: None,
+        verified_plan_artifact_id: None,
+        verified_plan_agent_run_id: None,
         inherited_plan_artifact_id: None,
         seed_task_id: None,
         parent_session_id: None,
@@ -202,13 +248,13 @@ async fn create_plan_artifact_records_each_non_automation_planning_artifact() {
     let rows = plan_notifications(&state).await;
     assert_eq!(rows.len(), 2);
     let first_dedupe_key = format!("plan:{}:{}", session.id, first.id);
-    assert!(rows
-        .iter()
-        .any(|row| { row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) }));
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) && row.read_at.is_some()
+    }));
     let second_dedupe_key = format!("plan:{}:{}", session.id, second.id);
-    assert!(rows
-        .iter()
-        .any(|row| { row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) }));
+    assert!(rows.iter().any(|row| {
+        row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) && row.read_at.is_none()
+    }));
     let conversation_id = conversation.id.as_str();
     assert!(rows
         .iter()
@@ -426,6 +472,221 @@ async fn test_child_can_update_own_plan() {
         child.plan_artifact_id.as_ref().map(|id| id.as_str()),
         Some(updated.id.as_str()),
         "Child's plan_artifact_id should be updated to the new version"
+    );
+}
+
+#[tokio::test]
+async fn verification_action_can_complete_the_plan_version_it_revises() {
+    let state = setup_model_native_verification_test_state().await;
+    let (session_id, original_artifact_id) = create_parent_with_plan(&state).await;
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.as_str().to_string());
+    run.action_target_id = Some(original_artifact_id.clone());
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+
+    let revised = update_plan_artifact(
+        State(state.clone()),
+        headers.clone(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: original_artifact_id,
+            content: "reviewed and revised plan".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("the verification action should be able to revise its plan")
+    .0;
+
+    let run_after_revision = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_after_revision.action_target_id.as_deref(),
+        Some(revised.id.as_str()),
+        "the live action authority must follow the version it created"
+    );
+
+    let completed = complete_plan_verification_http(State(state.clone()), headers.clone())
+        .await
+        .expect("the live action should complete proof for its revised artifact")
+        .0;
+    assert_eq!(completed.plan_artifact_id, revised.id);
+    let _ = complete_plan_verification_http(State(state.clone()), headers)
+        .await
+        .expect("retrying an already-recorded completion should be idempotent");
+
+    let verified = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        verified
+            .verified_plan_artifact_id
+            .as_ref()
+            .map(ArtifactId::as_str),
+        Some(revised.id.as_str())
+    );
+    let events = state
+        .app_state
+        .external_events_repo
+        .get_events_after_cursor(&[verified.project_id.as_str().to_string()], 0, 20)
+        .await
+        .expect("external verification events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "ideation:verified")
+            .count(),
+        1,
+        "authoritative completion must emit one ideation:verified event"
+    );
+}
+
+#[tokio::test]
+async fn updating_a_plan_does_not_interrupt_drafting_with_automatic_verification() {
+    let state = setup_test_state().await;
+    state.execution_state.pause();
+    let mut project = Project::new("Auto verification project".to_string(), "/tmp".to_string());
+    project.id = ProjectId::from_string("proj-test".to_string());
+    state.app_state.project_repo.create(project).await.unwrap();
+    let (session_id, original_artifact_id) = create_parent_with_plan(&state).await;
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.auto_verify_plans = true;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let revised = update_plan_artifact(
+        State(state.clone()),
+        axum::http::HeaderMap::new(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: original_artifact_id,
+            content: "new version requiring automatic verification".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("plan update should remain a drafting-only operation")
+    .0;
+
+    let status = get_plan_verification_status(&state.app_state, &session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        status.plan_artifact_id.as_deref(),
+        Some(revised.id.as_str())
+    );
+    assert_eq!(
+        status.status,
+        PlanVerificationStatusKind::Unverified,
+        "automatic verification must wait for an acceptance attempt"
+    );
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        session.pending_initial_prompt.is_none(),
+        "draft revisions must not enqueue a verification prompt"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_plan_does_not_launch_automatic_verification_during_drafting() {
+    let state = setup_disabled_provider_test_state().await;
+    let session = make_active_session();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.auto_verify_plans = true;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Committed plan".to_string(),
+            content: "Plan content".to_string(),
+        }),
+    )
+    .await
+    .expect("plan creation should not depend on verification launch availability")
+    .0;
+
+    let persisted = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.plan_artifact_id.as_ref().map(ArtifactId::as_str),
+        Some(created.id.as_str())
+    );
+    assert_eq!(
+        get_plan_verification_status(&state.app_state, &session_id)
+            .await
+            .unwrap()
+            .status,
+        PlanVerificationStatusKind::Unverified
+    );
+    assert!(
+        persisted.pending_initial_prompt.is_none(),
+        "plan creation must not enqueue verification before acceptance"
     );
 }
 
@@ -3230,18 +3491,11 @@ async fn test_6d_triple_prime_edit_plan_artifact_header_bypasses_freeze() {
 }
 
 // ============================================================
-// Origin-based auto-verify override
+// Origin-based verification policy
 // ============================================================
 
-/// Bug 2 defense-in-depth: External-origin sessions trigger auto-verification when
-/// a plan artifact is created, regardless of the global `auto_verify` config setting.
-///
-/// The `auto_verify_enabled` flag is shadowed inside `run_transaction` after the
-/// session is loaded: `let auto_verify_enabled = auto_verify_enabled || session.origin == External`.
-/// This test verifies that the session's `verification_in_progress` is set to true
-/// after `create_plan_artifact` for an External-origin session.
 #[tokio::test]
-async fn test_external_origin_session_auto_verifies_without_config() {
+async fn test_external_origin_plan_creation_waits_for_acceptance_before_auto_verification() {
     let state = setup_test_state().await;
 
     // Create an External-origin session
@@ -3257,7 +3511,7 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         .await
         .unwrap();
 
-    // Create a plan artifact — this should trigger auto-verify for External sessions
+    // External origin must not bypass the acceptance-bound trigger policy.
     let result = create_plan_artifact(
         State(state.clone()),
         Json(CreatePlanArtifactRequest {
@@ -3274,9 +3528,6 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         result.err()
     );
 
-    // External origin must still bypass config and trigger generation 1. Depending on whether
-    // verifier launch is immediately successful, persisted state may remain Reviewing or may be
-    // rolled back to Pending confirmation after spawn failure cleanup.
     let updated = state
         .app_state
         .ideation_session_repo
@@ -3285,22 +3536,11 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         .unwrap()
         .expect("session must still exist");
 
-    assert_eq!(
-        updated.verification_generation, 1,
-        "External-origin session must have generation=1 after first auto-verify trigger"
-    );
-    assert!(
-        (updated.verification_status == VerificationStatus::Reviewing
-            && updated.verification_in_progress)
-            || (updated.verification_status == VerificationStatus::Unverified
-                && !updated.verification_in_progress
-                && updated.verification_confirmation_status
-                    == Some(VerificationConfirmationStatus::Pending)),
-        "External-origin auto-verify must either still be running or be reset to pending confirmation after spawn cleanup: status={:?}, in_progress={}, confirmation={:?}",
-        updated.verification_status,
-        updated.verification_in_progress,
-        updated.verification_confirmation_status
-    );
+    assert_eq!(updated.verification_generation, 0);
+    assert_eq!(updated.verification_status, VerificationStatus::Unverified);
+    assert!(!updated.verification_in_progress);
+    assert_eq!(updated.verification_confirmation_status, None);
+    assert!(updated.pending_initial_prompt.is_none());
 }
 
 #[tokio::test]

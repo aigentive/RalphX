@@ -18,6 +18,7 @@ import type {
   ConversationTimelinePageResponse,
   AgentConversationWorkspace,
   AgentConversationWorkspacePublicationEvent,
+  ArchiveConversationResult,
   AgentSidebarConversationGroupsResponse,
   AgentSidebarConversationsInput,
   AgentSidebarPublicationState,
@@ -702,13 +703,14 @@ export async function mockGetConversationStats(
 
 export async function mockCreateConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string
 ): Promise<ChatConversation> {
+  const id = generateTestUuid();
   const conversation: ChatConversation = {
-    id: generateTestUuid(),
+    id,
     contextType,
-    contextId,
+    contextId: contextId ?? id,
     ...normalizeConversationProviderMetadata({}),
     coordinationMode: "solo",
     title: title?.trim() || null,
@@ -742,7 +744,7 @@ export async function mockUpdateConversationTitle(
 export async function mockArchiveConversation(
   conversationId: string,
   _options: { closePullRequest: boolean }
-): Promise<ChatConversation> {
+): Promise<ArchiveConversationResult> {
   const conversation = mockConversations.get(conversationId);
   if (!conversation) {
     throw new Error(`Conversation ${conversationId} not found`);
@@ -753,7 +755,15 @@ export async function mockArchiveConversation(
     updatedAt: new Date().toISOString(),
   };
   mockConversations.set(conversationId, updated);
-  return cloneConversation(updated);
+  return {
+    conversation: cloneConversation(updated),
+    cleanup: {
+      runtimeShutdownSucceeded: true,
+      cleanupClaim: "claimed",
+      localCleanup: "cleaned",
+      message: null,
+    },
+  };
 }
 
 export async function mockRestoreConversation(
@@ -822,6 +832,32 @@ export async function mockGetAgentRunStatus(
   return null;
 }
 
+type MockConversationRuntimeInput = Pick<
+  StartAgentConversationInput,
+  "providerHarness" | "modelId" | "logicalEffort"
+>;
+
+function applyMockConversationRuntime(
+  conversation: ChatConversation,
+  input: MockConversationRuntimeInput,
+): ChatConversation {
+  return {
+    ...conversation,
+    ...(input.providerHarness !== undefined
+      ? { providerHarness: input.providerHarness }
+      : {}),
+    ...(input.modelId
+      ? { logicalModel: input.modelId, effectiveModelId: input.modelId }
+      : {}),
+    ...(input.logicalEffort
+      ? {
+          logicalEffort: input.logicalEffort,
+          effectiveEffort: input.logicalEffort,
+        }
+      : {}),
+  };
+}
+
 export async function mockSendAgentMessage(
   contextType: ContextType,
   contextId: string,
@@ -841,10 +877,13 @@ export async function mockSendAgentMessage(
   if (!conversation) {
     conversation = await mockCreateConversation(contextType, contextId);
   }
-  if (options?.teamIntent) {
+  if (options) {
     conversation = {
-      ...conversation,
-      coordinationMode: options.teamIntent.coordinationMode,
+      ...applyMockConversationRuntime(conversation, options),
+      coordinationMode:
+        options.capabilityIntent?.coordinationMode ??
+        options.teamIntent?.coordinationMode ??
+        conversation.coordinationMode,
       updatedAt: new Date().toISOString(),
     };
     mockConversations.set(conversation.id, conversation);
@@ -862,16 +901,20 @@ export async function mockSendAgentMessage(
 export async function mockStartAgentConversation(
   input: StartAgentConversationInput
 ): Promise<StartAgentConversationResult> {
+  const contextType = input.projectId ? "project" : "standalone";
+  const contextId = input.projectId ?? null;
   const conversation = input.conversationId
     ? mockConversations.get(input.conversationId) ??
-      (await mockCreateConversation("project", input.projectId))
-    : await mockCreateConversation("project", input.projectId);
+      (await mockCreateConversation(contextType, contextId))
+    : await mockCreateConversation(contextType, contextId);
   const mode = input.mode ?? "edit";
   const modeConversation: ChatConversation = {
-    ...conversation,
+    ...applyMockConversationRuntime(conversation, input),
     agentMode: mode,
     coordinationMode:
-      input.teamIntent?.coordinationMode ?? conversation.coordinationMode,
+      input.capabilityIntent?.coordinationMode ??
+      input.teamIntent?.coordinationMode ??
+      conversation.coordinationMode,
     updatedAt: new Date().toISOString(),
   };
   mockConversations.set(conversation.id, modeConversation);
@@ -883,7 +926,9 @@ export async function mockStartAgentConversation(
     queuedAsPending: false,
   };
 
-  const workspace = createMockWorkspace(modeConversation, input.projectId, mode, input.base);
+  const workspace = input.projectId
+    ? createMockWorkspace(modeConversation, input.projectId, mode, input.base)
+    : null;
   if (workspace) {
     mockWorkspaces.set(conversation.id, workspace);
   }

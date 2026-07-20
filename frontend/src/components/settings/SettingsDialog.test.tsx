@@ -20,6 +20,15 @@ import { SETTINGS_SECTIONS } from "./settings-registry";
 import { sectionModuleLoaders } from "./SettingsDialog.performance";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
+const settingsTasksEnabledRef = vi.hoisted(() => ({ current: true }));
+
+vi.mock("@/hooks/useIdeationSettings", () => ({
+  useIdeationSettings: () => ({
+    settings: { tasksEnabled: settingsTasksEnabledRef.current },
+    isLoading: false,
+    isError: false,
+  }),
+}));
 
 // ---------------------------------------------------------------------------
 // uiStore mock
@@ -71,6 +80,10 @@ vi.mock("./ExternalMcpSettingsPanel", () => ({
   ),
 }));
 
+vi.mock("./McpSettingsSection", () => ({
+  McpSettingsSection: () => <div data-testid="mcp-section">MCP</div>,
+}));
+
 vi.mock("./HarnessProvidersSection", () => ({
   HarnessProvidersSection: () => (
     <div data-testid="providers-section">Providers</div>
@@ -85,6 +98,16 @@ vi.mock("./RepositorySettingsSection", () => ({
 
 vi.mock("./PersonasSection", () => ({
   PersonasSection: () => <div data-testid="personas-section">Personas</div>,
+}));
+
+vi.mock("./CapabilitiesSection", () => ({
+  CapabilitiesSection: () => (
+    <div data-testid="capabilities-section">Capabilities</div>
+  ),
+}));
+
+vi.mock("./AgentsSettingsSection", () => ({
+  AgentsSettingsSection: () => <div data-testid="agents-section">Agents</div>,
 }));
 
 // ---------------------------------------------------------------------------
@@ -124,6 +147,8 @@ describe("SettingsDialog", () => {
     uiState.modalContext = undefined;
     uiState.closeModal = mockCloseModal;
     featureFlags.agentPersonas = false;
+    settingsTasksEnabledRef.current = true;
+    vi.mocked(invoke).mockResolvedValue(undefined);
   });
 
   // --------------------------------------------------------------------------
@@ -192,6 +217,45 @@ describe("SettingsDialog", () => {
     await expect(sectionModuleLoaders.personas()).resolves.toHaveProperty("PersonasSection");
   });
 
+  it("registers and defers the Capabilities settings section", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "capabilities",
+      groupId: "general",
+      label: "Capabilities",
+    });
+    await expect(sectionModuleLoaders.capabilities()).resolves.toHaveProperty(
+      "CapabilitiesSection",
+    );
+  });
+
+  it("consolidates the legacy agent pages into one lazy Agents section", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "agents",
+      groupId: "harness",
+      label: "Agents",
+    });
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "execution-harnesses")).toBe(false);
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "ideation-harnesses")).toBe(false);
+    await expect(sectionModuleLoaders.agents()).resolves.toHaveProperty(
+      "AgentsSettingsSection",
+    );
+  });
+
+  it("registers MCP under Harness and preserves the External MCP deep link", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "mcp",
+      groupId: "harness",
+      label: "MCP",
+    });
+    expect(SETTINGS_SECTIONS.some((section) => section.id === "external-mcp")).toBe(false);
+    await expect(sectionModuleLoaders.mcp()).resolves.toHaveProperty("McpSettingsSection");
+
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "external-mcp" };
+    render(<SettingsDialog {...defaultProps} />);
+    expect(await screen.findByTestId("mcp-section")).toBeInTheDocument();
+  });
+
   describe("Section initialization via modalContext deep-link", () => {
     it("defaults to the Providers section when no modalContext.section is provided", async () => {
       uiState.activeModal = "settings";
@@ -213,14 +277,21 @@ describe("SettingsDialog", () => {
       expect(screen.queryByTestId("max-concurrent-tasks")).not.toBeInTheDocument();
     });
 
-    it("initializes to Execution Agents section when modalContext.section is 'execution-harnesses'", async () => {
+    it("routes the legacy Execution Agents deep link into Agents", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = { section: "execution-harnesses" };
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(
-        await screen.findByText("Execution Pipeline Agents", {}, { timeout: 5_000 })
-      ).toBeInTheDocument();
+      expect(await screen.findByTestId("agents-section")).toBeInTheDocument();
+      expect(screen.getByText("Agents", { selector: ".cur" })).toBeInTheDocument();
+    });
+
+    it("routes the legacy Ideation Agents deep link into Agents", async () => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = { section: "ideation-harnesses" };
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(await screen.findByTestId("agents-section")).toBeInTheDocument();
     });
 
     it("opens the Personas section from a settings deep link when enabled", async () => {
@@ -234,6 +305,21 @@ describe("SettingsDialog", () => {
       expect(await screen.findByTestId("personas-section")).toBeInTheDocument();
     });
 
+  });
+
+  it("hides Tasks-only settings and redirects their deep links while Tasks are off", async () => {
+    settingsTasksEnabledRef.current = false;
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "execution" };
+    render(<SettingsDialog {...defaultProps} />);
+
+    expect(screen.queryByRole("button", { name: "Execution" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Global Capacity" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review Policy" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Autonomy Policy" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Planning & Verification", { selector: ".cur" }))
+      .toBeInTheDocument();
   });
 
   // --------------------------------------------------------------------------

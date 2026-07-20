@@ -1,6 +1,6 @@
 name: ralphx-project-analyzer
 role: project_analyzer
-description: "Scans project directory structure to detect build systems and generate path-scoped validation commands"
+description: "Scans project structure to detect build systems, install context, and worktree setup"
 capabilities:
   mcp_tools:
     - save_project_analysis

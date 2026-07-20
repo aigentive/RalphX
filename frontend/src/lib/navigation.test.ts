@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useAgentArtifactUiStore } from "@/components/agents/agentArtifactUiStore";
 import type { IdeationSession } from "@/types/ideation";
 import {
   navigateToAgentConversation,
@@ -43,9 +44,11 @@ vi.mock("@/stores/ideationStore", () => ({
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: { getState: mockProjectGetState },
 }));
-vi.mock("@/stores/agentSessionStore", () => ({
+vi.mock("@/stores/agentSessionStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/agentSessionStore")>()),
   useAgentSessionStore: {
     getState: () => ({
+      artifactByConversationId: {},
       selectConversation: selectConversationMock,
       setArtifactTab: setArtifactTabMock,
       setFocusedProject: setFocusedProjectMock,
@@ -108,6 +111,7 @@ function cacheLinkedConversation(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
   mockProjectGetState.mockReturnValue({
     activeProjectId: PROJECT_A,
     selectProject: selectProjectMock,
@@ -156,12 +160,55 @@ describe("navigateToAgentConversation", () => {
     );
     expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
   });
+
+  it("switches projects before showing a cross-project conversation", () => {
+    navigateToAgentConversation(PROJECT_B, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_B, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_B}`,
+      CONVERSATION_A,
+    );
+    expect(mockUiSetState).toHaveBeenCalledWith({
+      viewByProject: { [PROJECT_B]: "agents" },
+    });
+    expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
+    expect(setCurrentViewMock).not.toHaveBeenCalled();
+  });
+
+  it("opens a standalone conversation without inventing project ownership", () => {
+    navigateToAgentConversation(null, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(null, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `standalone:${CONVERSATION_A}`,
+      CONVERSATION_A,
+    );
+    expect(selectProjectMock).not.toHaveBeenCalled();
+    expect(mockUiSetState).not.toHaveBeenCalled();
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
 });
 
 describe("navigateToAgentPlan", () => {
   it("opens the exact conversation's Plan artifact", () => {
+    useAgentArtifactUiStore.getState().setArtifactState(CONVERSATION_A, {
+      isOpen: false,
+      activeTab: "tasks",
+      taskMode: "kanban",
+      hiddenTabs: ["plan"],
+    });
+
     navigateToAgentPlan(PROJECT_A, CONVERSATION_A);
 
+    expect(
+      useAgentArtifactUiStore.getState().artifactByConversationId[CONVERSATION_A],
+    ).toEqual({
+      isOpen: true,
+      activeTab: "plan",
+      taskMode: "kanban",
+      hiddenTabs: [],
+    });
     expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
     expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
     expect(setActiveConversationMock).toHaveBeenCalledWith(

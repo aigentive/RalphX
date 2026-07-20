@@ -54,6 +54,28 @@ fn claude_spawn_permission_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+async fn seed_completed_continuation_runtime(
+    agent_run_repo: &Arc<dyn crate::domain::repositories::AgentRunRepository>,
+    conversation_id: &ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.complete();
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    let model = match harness {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.6-sol",
+    };
+    run.logical_model = Some(model.to_string());
+    run.effective_model_id = Some(model.to_string());
+    agent_run_repo
+        .create(run)
+        .await
+        .expect("seed completed continuation runtime");
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -79,6 +101,9 @@ impl Drop for EnvVarGuard {
 fn persona_for_send_fixture(id: &str, status: PersonaStatus) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: format!("{id} persona"),
         description: "send failure fixture".to_string(),
@@ -87,6 +112,8 @@ fn persona_for_send_fixture(id: &str, status: PersonaStatus) -> Persona {
         version: 1,
         content_hash: format!("{id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -1191,6 +1218,13 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     );
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
     let unused_path = Path::new(".");
 
@@ -1272,6 +1306,9 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
     let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
     let persona = Persona {
         id: PersonaId::from("queue-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queue-persona".to_string(),
         name: "Queue Persona".to_string(),
         description: "queue attribution fixture".to_string(),
@@ -1280,6 +1317,8 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
         version: 3,
         content_hash: "queue-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -1298,6 +1337,13 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
         .await
         .expect("seed queue conversation");
     let conversation_id = conversation.id;
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1508,6 +1554,14 @@ EOF
         child_id.as_str(),
         "Continue".to_string(),
     );
+    let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1515,7 +1569,7 @@ EOF
             AgentHarnessKind::Claude,
             child_id.as_str(),
             child_id.as_str(),
-            ChatConversationId::new(),
+            conversation_id,
             "session-cli",
             false,
             &message_queue,
@@ -1577,6 +1631,9 @@ async fn process_queue_resume_persona_block(
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     let persona = Persona {
         id: PersonaId::from("queued-resume-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-persona".to_string(),
         name: "Queued Resume Persona".to_string(),
         description: "queue resume fixture".to_string(),
@@ -1585,6 +1642,8 @@ async fn process_queue_resume_persona_block(
         version: 1,
         content_hash: "queued-resume-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -1595,6 +1654,9 @@ async fn process_queue_resume_persona_block(
         .expect("seed queued resume persona");
     let replacement_persona = Persona {
         id: PersonaId::from("queued-resume-replacement-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-replacement-persona".to_string(),
         name: "Queued Resume Replacement Persona".to_string(),
         description: "queue resume replacement fixture".to_string(),
@@ -1603,6 +1665,8 @@ async fn process_queue_resume_persona_block(
         version: 1,
         content_hash: "queued-resume-replacement-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -1677,6 +1741,13 @@ async fn process_queue_resume_persona_block(
             .await
             .expect("archive explicit persona between enqueue and flush");
     }
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "queue-resume-session",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1840,6 +1911,8 @@ async fn send_queued_message_now_preserves_suppress_directive_and_agent_override
             version: Some(2),
             status: Some("approved".to_string()),
         }],
+        None,
+        Vec::new(),
         Vec::new(),
     );
 
@@ -1911,6 +1984,13 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     std::fs::write(&unselected_path, "unselected queued attachment").expect("write unselected");
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let selected_attachment = chat_attachment_repo
         .create(ChatAttachment::new(
             conversation_id,
@@ -1941,6 +2021,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         vec![selected_attachment.id],
     );
@@ -2097,6 +2179,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
         review_repo: Some(Arc::clone(&state.review_repo)),
     };
 
@@ -2234,6 +2319,9 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
         review_repo: Some(Arc::clone(&state.review_repo)),
     };
 

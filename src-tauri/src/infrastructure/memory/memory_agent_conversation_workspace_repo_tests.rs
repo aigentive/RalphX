@@ -3,10 +3,14 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::AgentWorkspaceLocalCleanupClaim;
 
 fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
     AgentConversationWorkspace::new(
@@ -79,6 +83,192 @@ async fn restart_restore_rejects_missing_workspace() {
 }
 
 #[tokio::test]
+async fn approve_workspace_review_anyway_is_exact_and_single_use() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-review-bypass");
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .expect("insert workspace");
+    let artifact_id = ArtifactId::from_string("artifact-review-bypass");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-1".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(2);
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert blocking monitor");
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-1".to_string(),
+        artifact_id,
+        artifact_version: 2,
+    };
+
+    let applied = repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("approve exact snapshot")
+        .expect("transition should apply");
+    assert_eq!(
+        applied.review_outcome,
+        AgentWorkspaceReviewOutcome::Blocking
+    );
+    assert_eq!(
+        applied.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("retry should be a no-op")
+        .is_none());
+    let events = repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list audit events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "workspace_review_approved_anyway")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn approve_workspace_review_anyway_rejects_active_publish_without_audit() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-review-bypass-publishing");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("checking".to_string());
+    repo.create_or_update(workspace)
+        .await
+        .expect("insert publishing workspace");
+    let artifact_id = ArtifactId::from_string("artifact-review-bypass-publishing");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-publishing".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(7);
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert blocking monitor");
+    let snapshot = AgentWorkspaceReviewApprovalSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-publishing".to_string(),
+        artifact_id,
+        artifact_version: 7,
+    };
+
+    assert!(repo
+        .approve_workspace_review_anyway(&conversation_id, &snapshot, chrono::Utc::now())
+        .await
+        .expect("approval check should not fail")
+        .is_none());
+    let stored = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load monitor")
+        .expect("monitor remains");
+    assert_eq!(
+        stored.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list audit events")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn reserved_workspace_review_start_failure_is_exact_and_cannot_clobber_newer_run() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-reserved-review");
+    let review_conversation_id = ChatConversationId::from_string("review-conversation-new");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-new".to_string());
+    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.last_run_id = Some("run-new".to_string());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("insert reserved monitor");
+
+    assert!(!repo
+        .fail_reserved_workspace_review_start(
+            &conversation_id,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            "diff-new",
+            &review_conversation_id,
+            "run-old",
+            "stale failure",
+        )
+        .await
+        .expect("reject stale reservation"));
+    let unchanged = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load unchanged monitor")
+        .expect("monitor exists");
+    assert_eq!(
+        unchanged.status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing
+    );
+    assert_eq!(unchanged.last_run_id.as_deref(), Some("run-new"));
+    assert!(unchanged.last_error.is_none());
+
+    assert!(repo
+        .fail_reserved_workspace_review_start(
+            &conversation_id,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            "diff-new",
+            &review_conversation_id,
+            "run-new",
+            "launch failed",
+        )
+        .await
+        .expect("fail exact reservation"));
+    let failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load failed monitor")
+        .expect("monitor exists");
+    assert_eq!(failed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        failed.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        failed.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(failed.last_error.as_deref(), Some("launch failed"));
+}
+
+#[tokio::test]
 async fn cleanup_status_round_trips_and_clears() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("conversation-cleanup");
@@ -104,6 +294,133 @@ async fn cleanup_status_round_trips_and_clears() {
             .expect("read cleared marker"),
         None
     );
+}
+
+#[tokio::test]
+async fn local_cleanup_claim_is_single_flight_and_cleaned_is_monotonic() {
+    let repo = std::sync::Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::from_string("conversation-cleanup-claim");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+    let claimed_at = chrono::Utc::now();
+    let stale_before = claimed_at - chrono::Duration::hours(1);
+
+    let (first, second) = tokio::join!(
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+        repo.claim_local_cleanup(&conversation_id, claimed_at, stale_before),
+    );
+    let claims = [first.expect("first claim"), second.expect("second claim")];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| **claim == AgentWorkspaceLocalCleanupClaim::Claimed)
+            .count(),
+        1
+    );
+    assert!(claims.contains(&AgentWorkspaceLocalCleanupClaim::AlreadyInProgress));
+
+    let replacement_claimed_at = claimed_at + chrono::Duration::hours(2);
+    assert_eq!(
+        repo.claim_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("replacement claim"),
+        AgentWorkspaceLocalCleanupClaim::Claimed
+    );
+    assert!(!repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            claimed_at,
+            "failed_operational",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("stale owner finalize is rejected"));
+    assert!(repo
+        .finalize_local_cleanup(
+            &conversation_id,
+            replacement_claimed_at,
+            "cleaned",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("replacement owner finalizes"));
+    assert_eq!(
+        repo.claim_local_cleanup(&conversation_id, chrono::Utc::now(), stale_before)
+            .await
+            .expect("claim after success"),
+        AgentWorkspaceLocalCleanupClaim::AlreadyCleaned
+    );
+}
+
+#[tokio::test]
+async fn terminal_cleanup_candidates_include_only_stale_retryable_markers() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let project_id = ProjectId::from_string("project-memory".to_string());
+    let stale_checked_at = chrono::Utc::now() - chrono::Duration::days(30);
+    let fresh_checked_at = chrono::Utc::now();
+    let retryable_statuses = [
+        "pending",
+        "failed",
+        "failed_unsafe",
+        "failed_operational",
+        "unsafe",
+        "target_ref_missing",
+        "workspace_dirty",
+        "branch_missing",
+        "cleaning",
+    ];
+
+    let mut retryable_conversation_ids = Vec::new();
+    for status in retryable_statuses {
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = make_workspace(conversation_id.clone());
+        workspace.status = AgentConversationWorkspaceStatus::Active;
+        workspace.publication_pr_status = Some("merged".to_string());
+        repo.create_or_update(workspace)
+            .await
+            .expect("insert terminal workspace");
+        repo.mark_local_cleanup_status(&conversation_id, status, stale_checked_at)
+            .await
+            .expect("mark stale retryable cleanup");
+        retryable_conversation_ids.push((status, conversation_id));
+    }
+    let fresh_id = ChatConversationId::new();
+    let mut fresh_workspace = make_workspace(fresh_id.clone());
+    fresh_workspace.status = AgentConversationWorkspaceStatus::Active;
+    fresh_workspace.publication_pr_status = Some("closed".to_string());
+    repo.create_or_update(fresh_workspace)
+        .await
+        .expect("insert fresh terminal workspace");
+    repo.mark_local_cleanup_status(&fresh_id, "cleaning", fresh_checked_at)
+        .await
+        .expect("mark fresh cleanup");
+    let non_terminal_id = ChatConversationId::new();
+    repo.create_or_update(make_workspace(non_terminal_id))
+        .await
+        .expect("insert active workspace");
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .expect("list terminal cleanup candidates");
+
+    assert_eq!(candidates.len(), retryable_statuses.len());
+    for (status, conversation_id) in retryable_conversation_ids {
+        assert!(
+            candidates
+                .iter()
+                .any(|workspace| workspace.conversation_id == conversation_id),
+            "stale retryable marker {status} should be returned"
+        );
+    }
+    assert!(!candidates
+        .iter()
+        .any(|workspace| workspace.conversation_id == fresh_id));
 }
 
 #[tokio::test]
@@ -343,9 +660,11 @@ async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_termi
     .await
     .expect("mark submitted");
 
-    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 703, "current-head")
+    let superseded_ids = repo
+        .supersede_pending_pr_review_actions_except_head(&conversation_id, 703, "current-head")
         .await
         .expect("supersede old pending actions");
+    assert_eq!(superseded_ids, vec![stale.id.clone()]);
 
     let stale = repo
         .get_pr_review_action(&stale.id)
@@ -368,5 +687,226 @@ async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_termi
     assert_eq!(
         submitted.status,
         AgentWorkspacePrReviewActionStatus::Submitted
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_guard_survives_monitor_updates_and_requires_its_owner() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-guard");
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: Some("head-sha".to_string()),
+        last_error: None,
+    };
+    let mut guarded = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+    guarded.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(guarded)
+        .await
+        .expect("guarded monitor should persist");
+
+    repo.upsert_workspace_review_monitor(AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        project_id,
+    ))
+    .await
+    .expect("normal monitor update should persist");
+
+    let stale_guard = AgentWorkspaceReviewAutoMergeGuard {
+        last_error: Some("stale writer".to_string()),
+        ..guard.clone()
+    };
+    assert!(!repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(stale_guard),
+            None,
+        )
+        .await
+        .expect("stale guard update should be rejected"));
+    let restoring_guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        ..guard.clone()
+    };
+    assert!(repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(guard),
+            Some(restoring_guard.clone()),
+        )
+        .await
+        .expect("guard owner should update it"));
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor should load")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(restoring_guard)
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_stale_selected_source_head() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-stale-source");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+        diff_fingerprint: "selected-source".to_string(),
+        head_sha: Some("reviewed-head".to_string()),
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some("selected-source".to_string());
+    monitor.selected_source_pull_request_number = Some(42);
+    monitor.selected_source_head_sha = Some("new-head".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("stale restore should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_retargeted_publication_pr() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-retargeted-pr");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.publication_pr_number = Some(84);
+    workspace.publication_pr_status = Some("open".to_string());
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("retargeted restore should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_missing_publication_pr() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-missing-pr");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("missing PR authority should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
     );
 }

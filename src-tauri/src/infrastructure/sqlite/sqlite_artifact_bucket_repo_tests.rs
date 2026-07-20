@@ -119,10 +119,10 @@ async fn test_get_all_empty() {
     let db = setup_test_db();
     let repo = SqliteArtifactBucketRepository::new(db.new_connection());
 
-    // v25 migration seeds 4 system buckets, v37 adds team-findings (5 total)
+    // v25 seeds 4 system buckets; v37 and persona history add one each.
     let result = repo.get_all().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().len(), 5);
+    assert_eq!(result.unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -138,8 +138,8 @@ async fn test_get_all_with_buckets() {
 
     let result = repo.get_all().await;
     assert!(result.is_ok());
-    // 5 seeded + 2 created
-    assert_eq!(result.unwrap().len(), 7);
+    // 6 seeded + 2 created
+    assert_eq!(result.unwrap().len(), 8);
 }
 
 #[tokio::test]
@@ -175,10 +175,10 @@ async fn test_get_system_buckets_empty() {
     let bucket = create_test_bucket();
     repo.create(bucket).await.unwrap();
 
-    // v25 seeds 4 system buckets, v37 adds team-findings (5 total)
+    // v25 seeds 4 system buckets; v37 and persona history add one each.
     let result = repo.get_system_buckets().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().len(), 5);
+    assert_eq!(result.unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -196,8 +196,8 @@ async fn test_get_system_buckets_returns_only_system() {
     assert!(result.is_ok());
 
     let buckets = result.unwrap();
-    // 5 seeded + 1 created
-    assert_eq!(buckets.len(), 6);
+    // 6 seeded + 1 created
+    assert_eq!(buckets.len(), 7);
     assert!(buckets.iter().all(|b| b.is_system));
     assert!(buckets.iter().any(|b| b.id == system.id));
 }
@@ -304,7 +304,7 @@ async fn test_from_shared_connection() {
 // ==================== SEEDING TESTS ====================
 
 #[tokio::test]
-async fn test_seed_builtin_buckets_creates_all_five() {
+async fn test_seed_builtin_buckets_creates_all_six() {
     let db = setup_test_db();
     let repo = SqliteArtifactBucketRepository::new(db.new_connection());
 
@@ -313,10 +313,10 @@ async fn test_seed_builtin_buckets_creates_all_five() {
     assert_eq!(count, 0);
 
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 6);
 
     let system = repo.get_system_buckets().await.unwrap();
-    assert_eq!(system.len(), 5);
+    assert_eq!(system.len(), 6);
 }
 
 #[tokio::test]
@@ -331,9 +331,9 @@ async fn test_seed_builtin_buckets_is_idempotent() {
     assert_eq!(count1, 0);
     assert_eq!(count2, 0);
 
-    // Still only 5 buckets
+    // Still only the 6 seeded buckets
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 6);
 }
 
 #[tokio::test]
@@ -410,6 +410,24 @@ async fn test_seed_builtin_buckets_creates_prd_library() {
 }
 
 #[tokio::test]
+async fn test_seed_builtin_buckets_creates_persona_library() {
+    let db = setup_test_db();
+    let repo = SqliteArtifactBucketRepository::new(db.new_connection());
+
+    let bucket = repo
+        .get_by_id(&ArtifactBucketId::from_string("persona-library"))
+        .await
+        .unwrap()
+        .expect("persona library should be seeded");
+
+    assert!(bucket.is_system);
+    assert!(bucket.accepts_type(ArtifactType::Persona));
+    assert!(bucket.can_write("agent"));
+    assert!(bucket.can_write("user"));
+    assert!(bucket.can_write("system"));
+}
+
+#[tokio::test]
 async fn test_seed_builtin_buckets_preserves_existing() {
     let db = setup_test_db();
     let repo = SqliteArtifactBucketRepository::new(db.new_connection());
@@ -421,7 +439,7 @@ async fn test_seed_builtin_buckets_preserves_existing() {
     // Seed built-ins (already seeded by v25, so no new ones)
     repo.seed_builtin_buckets().await.unwrap();
 
-    // Should have 6 buckets total (1 custom + 5 system from v25+v37)
+    // Should have 7 buckets total (1 custom + 6 seeded system buckets)
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 6);
+    assert_eq!(all.len(), 7);
 }

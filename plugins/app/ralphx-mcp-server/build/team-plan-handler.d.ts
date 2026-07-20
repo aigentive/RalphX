@@ -9,6 +9,7 @@
  * Timeout staggering: backend timeout = 840s (14 min), client AbortController = 900,000ms (15 min).
  * Backend always fires first, returning a structured 408 response.
  */
+import { type RuntimeContext } from "./runtime-context.js";
 export interface RequestTeamPlanArgs {
     process: string;
     teammates: unknown[];
@@ -24,7 +25,7 @@ export interface RequestTeamPlanArgs {
  * 4. GET /api/team/plan/await/:plan_id — blocks until user approves/rejects (15 min timeout)
  * 5. Return approval result to agent
  */
-export declare function handleRequestTeamPlan(args: RequestTeamPlanArgs, contextType: string, contextId: string, leadSessionId: string | undefined): Promise<{
+export declare function handleRequestTeamPlan(args: RequestTeamPlanArgs, contextType: string, contextId: string, leadSessionId: string | undefined, runtimeContext?: Pick<RuntimeContext, "conversationId">): Promise<{
     content: Array<{
         type: "text";
         text: string;

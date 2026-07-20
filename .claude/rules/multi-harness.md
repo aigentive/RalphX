@@ -24,4 +24,5 @@ paths:
 | New harnesses extend the shared surface | Adding another harness must start from the shared registries/bundles/adapters and docs, not from a new pairwise `claude+X` special case. |
 | Settings/docs must stay in sync | Any user-visible harness capability, limitation, or lane-setting change must update user docs and the relevant `.claude/rules` file in the same PR. |
 | Providers own readiness/defaults | Provider settings own CLI readiness, enablement, default-provider selection, provider defaults, and first-enable lane application; lane settings only choose among enabled/validated providers. |
-| Codex MCP launch modes are locked | Until RalphX MCP supports weaker Codex modes, Codex approval/sandbox defaults and settings must remain `never` / `danger-full-access`. |
+| Provider-native MCP stays provider-owned | RalphX inherits native server definitions and applies provider-neutral global/project deny policy at the shared launch seam; required internal servers stay locked and fail closed. |
+| Codex launch security is context-scoped | Provider/lane defaults and compatibility-locked workflows remain `never` / `danger-full-access`; only Standalone Chat uses backend-owned `on-request` / `workspace-write`, where non-interactive approval escalation fails closed. |

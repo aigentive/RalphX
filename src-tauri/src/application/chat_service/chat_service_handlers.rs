@@ -8,7 +8,7 @@
 //   agent run failure recording, message finalization, and fallback task transitions
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -40,17 +40,17 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
-    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, MessageQueue, OutcomeLedgerService,
     QueueKey, QueuedMessage, RunningAgentRegistry,
 };
-use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::services::{TaskScheduler, WebhookPublisher};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{stream_timeouts, ContentBlockItem, ToolCall};
 use crate::infrastructure::memory::MemoryProjectMemorySettingsRepository;
@@ -70,7 +70,10 @@ use crate::utils::secret_redactor::redact;
 fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
     matches!(
         context_type,
-        ChatContextType::Ideation | ChatContextType::Task | ChatContextType::Project
+        ChatContextType::Ideation
+            | ChatContextType::Task
+            | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 
@@ -375,9 +378,11 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&str>,
+    working_directory: &Path,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
 ) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
-    match recovery_retry_provider_decision(
+    let provider_env = match recovery_retry_provider_decision(
         app_handle,
         agent_provider_settings_repo,
         recovery_harness,
@@ -385,15 +390,22 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     )
     .await
     {
-        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
-            provider_spawnable.apply_provider_env(&provider_env);
-            Some(provider_spawnable.spawnable)
-        }
-        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
-            Some(provider_spawnable.spawnable)
-        }
-        Err(_) => None,
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => Some(provider_env),
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
+        Err(_) => return None,
+    };
+    let handle = app_handle.as_ref()?;
+    let app_state = handle.state::<AppState>();
+    let policy = app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
+        .await
+        .ok()?;
+    provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
+    if let Some(provider_env) = provider_env.as_ref() {
+        provider_spawnable.apply_provider_env(provider_env);
     }
+    Some(provider_spawnable.spawnable)
 }
 
 #[derive(Clone, Copy)]
@@ -402,6 +414,8 @@ struct RecoveryRetryProviderGate<'a, R: Runtime> {
     agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&'a str>,
+    working_directory: &'a Path,
 }
 
 impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
@@ -410,12 +424,16 @@ impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
         agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
         recovery_harness: AgentHarnessKind,
         context_type: ChatContextType,
+        project_id: Option<&'a str>,
+        working_directory: &'a Path,
     ) -> Self {
         Self {
             app_handle,
             agent_provider_settings_repo,
             recovery_harness,
             context_type,
+            project_id,
+            working_directory,
         }
     }
 }
@@ -431,6 +449,8 @@ async fn resolve_recovery_retry_spawnable<R: Runtime>(
                 provider_gate.agent_provider_settings_repo,
                 provider_gate.recovery_harness,
                 provider_gate.context_type,
+                provider_gate.project_id,
+                provider_gate.working_directory,
                 provider_spawnable,
             )
             .await
@@ -469,6 +489,38 @@ impl RecoveryRetryAppRepos {
     }
 }
 
+async fn recovery_retry_folder_refs_context<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    conversation: &ChatConversation,
+    project_id: Option<&str>,
+    working_directory: &Path,
+    enabled: bool,
+) -> Result<(Option<String>, Vec<PathBuf>), String> {
+    let Some(handle) = app_handle else {
+        tracing::warn!(
+            conversation_id = conversation.id.as_str(),
+            reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
+            "folder_refs_skipped"
+        );
+        return Ok((None, Vec::new()));
+    };
+    let app_state = handle.state::<AppState>();
+    let resolved = chat_service_context::resolve_conversation_spawn_context(
+        conversation,
+        conversation.agent_mode,
+        project_id,
+        Arc::clone(&app_state.project_repo),
+        working_directory,
+        Some(app_state.app_paths.app_data_dir()),
+        Some(app_state.app_paths.app_data_dir()),
+        Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
+        enabled,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok((resolved.folder_refs_block, resolved.folder_roots))
+}
+
 async fn resolve_recovery_retry_persona<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
     feature_enabled: bool,
@@ -497,7 +549,7 @@ async fn resolve_recovery_retry_persona<R: Runtime>(
         super::persona_resolve_flags_for_conversation(
             feature_enabled,
             false,
-            agent_name_override_set,
+            agent_name_override_set || conversation.bound_agent_name.is_some(),
             context_type,
             conversation,
             workspace_mode,
@@ -710,19 +762,8 @@ pub(crate) fn validation_cache_fresh_for_episode(
 async fn validated_completion_override(
     task: &Task,
     episode_entered_at: chrono::DateTime<chrono::Utc>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
 ) -> bool {
-    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
-        Ok(Some(cache)) => cache,
-        Ok(None) => return false,
-        Err(e) => {
-            tracing::warn!(
-                task_id = task.id.as_str(),
-                error = %e,
-                "Failed to parse validation_cache for completion override"
-            );
-            return false;
-        }
-    };
     let Some(worktree_path) = task.worktree_path.as_deref() else {
         return false;
     };
@@ -745,6 +786,48 @@ async fn validated_completion_override(
                 task_id = task.id.as_str(),
                 error = %e,
                 "Failed to resolve HEAD SHA for completion override"
+            );
+            return false;
+        }
+    };
+
+    let Some(validation_run_repo) = validation_run_repo.as_ref() else {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            "First-class validation repository unavailable for completion override"
+        );
+        return false;
+    };
+    match validation_run_repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+    {
+        Ok(Some(evidence)) => {
+            return crate::application::validation_service::validation_run_proves_current_completion(
+                &evidence,
+                &current_head_sha,
+                episode_entered_at,
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %error,
+                "First-class validation query failed for completion override"
+            );
+            return false;
+        }
+        Ok(None) => {}
+    }
+
+    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
+        Ok(Some(cache)) => cache,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to parse validation_cache for completion override"
             );
             return false;
         }
@@ -791,6 +874,10 @@ struct RuntimeSupportRepos {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
 }
 
 impl RuntimeSupportRepos {
@@ -800,6 +887,8 @@ impl RuntimeSupportRepos {
         agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+        task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+        validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     ) -> Self {
         Self {
             execution_settings_repo: execution_settings_repo.as_ref().map(Arc::clone),
@@ -807,7 +896,21 @@ impl RuntimeSupportRepos {
             agent_provider_settings_repo: agent_provider_settings_repo.as_ref().map(Arc::clone),
             plan_branch_repo: plan_branch_repo.as_ref().map(Arc::clone),
             interactive_process_registry: interactive_process_registry.as_ref().map(Arc::clone),
+            task_step_repo: task_step_repo.as_ref().map(Arc::clone),
+            validation_run_repo: validation_run_repo.as_ref().map(Arc::clone),
+            external_events_repo: None,
+            webhook_publisher: None,
         }
+    }
+
+    fn with_completion_event_delivery(
+        mut self,
+        external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+        webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
+    ) -> Self {
+        self.external_events_repo = external_events_repo.as_ref().map(Arc::clone);
+        self.webhook_publisher = webhook_publisher.as_ref().map(Arc::clone);
+        self
     }
 }
 
@@ -946,6 +1049,14 @@ fn build_runtime_factory_deps<R: Runtime>(
         runtime_support.plan_branch_repo,
         runtime_support.interactive_process_registry,
     )
+    .with_completion_authority_repositories(
+        runtime_support.task_step_repo,
+        runtime_support.validation_run_repo,
+    )
+    .with_completion_event_delivery(
+        runtime_support.external_events_repo,
+        runtime_support.webhook_publisher,
+    )
     .with_agent_conversation_workspace_repo(
         app_handle
             .as_ref()
@@ -1003,6 +1114,9 @@ fn build_recovery_retry_background_context<R: Runtime>(
     team_mode: bool,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
@@ -1066,6 +1180,9 @@ fn build_recovery_retry_background_context<R: Runtime>(
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
+            validation_run_repo: validation_run_repo.as_ref().map(Arc::clone),
+            external_events_repo: external_events_repo.as_ref().map(Arc::clone),
+            webhook_publisher: webhook_publisher.as_ref().map(Arc::clone),
             review_repo: review_repo.clone(),
         },
         execution_state: execution_state.clone(),
@@ -1536,6 +1653,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -1562,7 +1682,10 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         agent_provider_settings_repo,
         plan_branch_repo,
         interactive_process_registry,
-    );
+        task_step_repo,
+        validation_run_repo,
+    )
+    .with_completion_event_delivery(external_events_repo, webhook_publisher);
 
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
@@ -1659,8 +1782,12 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     .with_task_scheduler(task_scheduler);
                     let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
                     let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
-                        validated_completion_override(&current_task_for_gate, episode_entered_at)
-                            .await
+                        validated_completion_override(
+                            &current_task_for_gate,
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
                     } else {
                         false
                     };
@@ -1717,7 +1844,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 "Worker run ended with all steps completed; transitioning to PendingReview"
                             );
                         if let Err(e) = transition_service
-                            .transition_task(&task_id, InternalStatus::PendingReview)
+                            .transition_execution_completed_to_review(&task_id, agent_run_id)
                             .await
                         {
                             tracing::error!(
@@ -1760,7 +1887,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                         if let Err(e) = transition_service
-                            .transition_task(&task_id, InternalStatus::PendingReview)
+                            .transition_execution_completed_to_review(&task_id, agent_run_id)
                             .await
                         {
                             tracing::error!(
@@ -2331,6 +2458,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
+    external_events_repo: &Option<Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: &Option<Arc<dyn WebhookPublisher>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
@@ -2342,7 +2472,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         agent_provider_settings_repo,
         plan_branch_repo,
         interactive_process_registry,
-    );
+        task_step_repo,
+        validation_run_repo,
+    )
+    .with_completion_event_delivery(external_events_repo, webhook_publisher);
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
     let stored_provider_harness = conversation_provider_session_ref
@@ -2415,6 +2548,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 &None,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
+                external_events_repo,
+                webhook_publisher,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2500,6 +2636,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 &None,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
+                external_events_repo,
+                webhook_publisher,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2713,7 +2852,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             app_handle,
                             persona_feature_enabled,
                             conv,
-                            context_type,
+                            conv.context_type,
                             agent_name_override_set,
                         )
                         .await;
@@ -2721,24 +2860,51 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .as_ref()
                             .ok()
                             .and_then(|persona| persona.clone());
+                        let retry_folder_refs = recovery_retry_folder_refs_context(
+                            app_handle,
+                            conv,
+                            resolved_project_id.as_deref(),
+                            working_directory,
+                            crate::infrastructure::agents::composer_folder_references_enabled(),
+                        )
+                        .await;
 
-                        let retry_provider_spawnable = match retry_persona {
-                            Ok(persona) => {
-                                chat_service_context::build_resume_command_for_harness(
+                        let retry_agent_name =
+                            super::chat_service_helpers::resolve_agent_with_team_mode(
+                                &context_type,
+                                None,
+                                team_mode,
+                            );
+                        let external_readiness = chat_service_context::await_required_external_mcp(
+                            app_handle.as_ref(),
+                            recovery_harness,
+                            plugin_dir,
+                            retry_agent_name,
+                            None,
+                        )
+                        .await;
+                        let retry_provider_spawnable =
+                            match (retry_persona, retry_folder_refs, external_readiness) {
+                            (Ok(persona), Ok((folder_refs_block, filesystem_read_roots)), Ok(())) => {
+                                chat_service_context::build_resume_command_for_harness_with_folder_refs(
                                     recovery_harness,
                                     cli_path,
                                     plugin_dir,
-                                    context_type,
-                                    context_id,
+                                    conv.context_type,
+                                    conv.context_id.as_str(),
+                                    conv.coordination_mode,
+                                    &conversation_id.as_str(),
+                                    conv.agent_mode,
                                     msg,
                                     persona,
+                                    folder_refs_block.as_deref(),
                                     None,
                                     None,
                                     working_directory,
                                     &new_session_id,
                                     resolved_project_id.as_deref(),
-                                    &[],
-                                    if context_type == ChatContextType::Project {
+                                    &filesystem_read_roots,
+                                    if conv.context_type == ChatContextType::Project {
                                         Some(conversation_id.as_str())
                                     } else {
                                         None
@@ -2766,13 +2932,21 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 )
                                 .await
                             }
-                            Err(error) => Err(format!("Persona unavailable: {error}")),
+                            (Err(error), _, _) => Err(format!("Persona unavailable: {error}")),
+                            (_, Err(error), _) => {
+                                Err(format!("Folder references unavailable: {error}"))
+                            }
+                            (_, _, Err(error)) => Err(format!(
+                                "External MCP transport is not ready for recovery retry: {error}"
+                            )),
                         };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
                             app_handle,
                             &retry_agent_provider_settings_repo,
                             recovery_harness,
-                            context_type,
+                            conv.context_type,
+                            resolved_project_id.as_deref(),
+                            working_directory,
                         );
                         let retry_spawnable = resolve_recovery_retry_spawnable(
                             retry_provider_spawnable,
@@ -2844,6 +3018,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         team_mode,
                                         review_repo,
                                         task_step_repo,
+                                        validation_run_repo,
+                                        external_events_repo,
+                                        webhook_publisher,
                                         interactive_process_registry,
                                         verification_child_registry,
                                     ),
@@ -2920,7 +3097,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     AttemptResolution::Current {
                         task,
                         episode_entered_at,
-                    } => validated_completion_override(task.as_ref(), episode_entered_at).await,
+                    } => {
+                        validated_completion_override(
+                            task.as_ref(),
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
+                    }
                     _ => false,
                 }
             };
@@ -2946,7 +3130,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 );
 
                 if transition_service
-                    .transition_task(&task_id, InternalStatus::PendingReview)
+                    .transition_execution_completed_to_review(&task_id, agent_run_id)
                     .await
                     .is_ok()
                 {
@@ -3435,13 +3619,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
                             )
                         ) {
-                        let validation_complete = if let Some(episode_entered_at) =
-                            episode_entered_at
-                        {
-                            validated_completion_override(&current_task, episode_entered_at).await
-                        } else {
-                            false
-                        };
+                        let validation_complete =
+                            if let Some(episode_entered_at) = episode_entered_at {
+                                validated_completion_override(
+                                    &current_task,
+                                    episode_entered_at,
+                                    validation_run_repo,
+                                )
+                                .await
+                            } else {
+                                false
+                            };
 
                         if validation_complete {
                             let all_steps_done =

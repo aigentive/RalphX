@@ -2,7 +2,7 @@
 //
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::agents::AgentHarnessKind;
@@ -92,6 +92,38 @@ pub enum SendCallerContext {
     /// Startup/recovery-initiated send.
     /// Must not roll over, repair, or spawn a terminal Agent workspace automatically.
     StartupResumption,
+}
+
+const PENDING_PROMPT_ENVELOPE_PREFIX: &str = "ralphx-pending-prompt-v1:";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingPromptEnvelope {
+    message: String,
+    metadata: String,
+}
+
+pub(crate) fn encode_pending_initial_prompt(message: &str, metadata: Option<&str>) -> String {
+    let Some(metadata) = metadata else {
+        return message.to_string();
+    };
+    let envelope = PendingPromptEnvelope {
+        message: message.to_string(),
+        metadata: metadata.to_string(),
+    };
+    match serde_json::to_string(&envelope) {
+        Ok(payload) => format!("{PENDING_PROMPT_ENVELOPE_PREFIX}{payload}"),
+        Err(_) => message.to_string(),
+    }
+}
+
+pub(crate) fn decode_pending_initial_prompt(payload: &str) -> (String, Option<String>) {
+    let Some(encoded) = payload.strip_prefix(PENDING_PROMPT_ENVELOPE_PREFIX) else {
+        return (payload.to_string(), None);
+    };
+    match serde_json::from_str::<PendingPromptEnvelope>(encoded) {
+        Ok(envelope) => (envelope.message, Some(envelope.metadata)),
+        Err(_) => (payload.to_string(), None),
+    }
 }
 
 /// Result from sending a message (returns immediately while processing continues in background)
@@ -903,8 +935,14 @@ pub struct TeamArtifactCreatedPayload {
 
 #[derive(Debug, Clone)]
 pub enum ChatServiceError {
+    InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    SpawnValidation {
+        harness: crate::domain::agents::AgentHarnessKind,
+        model: String,
+        reason: String,
+    },
     CommunicationFailed(String),
     ParseError(String),
     ContextNotFound(String),
@@ -917,8 +955,17 @@ pub enum ChatServiceError {
 impl std::fmt::Display for ChatServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::SpawnValidation {
+                harness,
+                model,
+                reason,
+            } => write!(
+                f,
+                "Invalid agent runtime (harness={harness}, model={model}): {reason}"
+            ),
             Self::CommunicationFailed(msg) => write!(f, "Communication failed: {}", msg),
             Self::ParseError(msg) => write!(f, "Parse error: {}", msg),
             Self::ContextNotFound(msg) => write!(f, "Context not found: {}", msg),

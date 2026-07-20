@@ -1,11 +1,10 @@
 ---
 paths:
-  - "src/components/tasks/detail-views/**"
-  - "src/components/tasks/TaskDetailPanel*"
-  - "src/components/tasks/TaskDetailOverlay*"
-  - "src/components/tasks/TaskDetailView*"
-  - "src/components/tasks/TaskDetailModal*"
-  - "src/components/agents/task-details/**"
+  - "frontend/src/components/tasks/detail-views/**"
+  - "frontend/src/components/tasks/TaskDetailPanel*"
+  - "frontend/src/components/tasks/TaskDetailOverlay*"
+  - "frontend/src/components/tasks/TaskDetailView*"
+  - "frontend/src/components/agents/task-details/**"
 ---
 
 # Task Detail Views Registry
@@ -33,6 +32,10 @@ paths:
 | `approved` | CompletedTaskDetail | Task completed |
 | `pending_merge` | MergingTaskDetail | Programmatic merge in progress |
 | `merging` | MergingTaskDetail | Agent-assisted merge in progress |
+| `waiting_on_pr` | MergingTaskDetail | PR-based merge waiting on external PR |
+| `updating_plan_branch` | BranchUpdateTaskDetail | Plan branch update in progress |
+| `updating_task_branch` | BranchUpdateTaskDetail | Task branch update in progress |
+| `branch_update_blocked` | BranchUpdateTaskDetail | Branch update blocked, needs attention |
 | `merge_incomplete` | MergeIncompleteTaskDetail | Non-conflict merge failure, retry/resolve |
 | `merge_conflict` | MergeConflictTaskDetail | Merge conflicts, manual resolution |
 | `merged` | MergedTaskDetail | Successfully merged |
@@ -45,10 +48,10 @@ paths:
 
 | Component | Path |
 |-----------|------|
-| Registry definition | `src/components/tasks/TaskDetailPanel.tsx:74-100` |
-| View selection logic | `src/components/tasks/TaskDetailPanel.tsx:308-315` |
-| Entry point (Kanban) | `src/components/tasks/TaskDetailOverlay.tsx:628` |
-| View components | `src/components/tasks/detail-views/*.tsx` |
+| Registry definition | `frontend/src/components/tasks/TaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS` map |
+| View selection logic | `frontend/src/components/tasks/TaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS[status] ?? BasicTaskDetail` (inside `useViewRegistry` block) |
+| Entry point (Kanban) | `frontend/src/components/tasks/TaskDetailOverlay.tsx` |
+| View components | `frontend/src/components/tasks/detail-views/*.tsx` |
 
 ## Agents Fork
 
@@ -61,7 +64,7 @@ paths:
 | Transcript focus | Historical stage with `conversationId` must set `taskHistoryState` and focus the main Agents chat on the matching runtime `contextType`; no `conversationId` → show no-transcript copy and do not borrow another transcript |
 | Historical actions | Mutation actions stay hidden/disabled in historical mode |
 
-## View Components (12 total)
+## View Components (13 total)
 
 | Component | States Handled | Key Features |
 |-----------|----------------|--------------|
@@ -73,7 +76,8 @@ paths:
 | EscalatedTaskDetail | escalated | Escalation reason, human decision buttons |
 | RevisionTaskDetail | revision_needed | Review feedback, parsed issues, attempt count |
 | CompletedTaskDetail | approved | Approval details, review history, diff viewer |
-| MergingTaskDetail | pending_merge, merging | Agent merge progress spinner |
+| MergingTaskDetail | pending_merge, merging, waiting_on_pr | Agent merge progress spinner / PR wait |
+| BranchUpdateTaskDetail | updating_plan_branch, updating_task_branch, branch_update_blocked | Branch update progress/blocked recovery |
 | MergeConflictTaskDetail | merge_conflict | Conflict files, resolution steps, resolve button |
 | MergeIncompleteTaskDetail | merge_incomplete | Error context, recovery steps, retry/resolve buttons |
 | MergedTaskDetail | merged | Merge completion details |
@@ -102,6 +106,6 @@ TaskDetailOverlay (useViewRegistry={true})
 ## Adding New Views
 
 1. Create `src/components/tasks/detail-views/NewStatusTaskDetail.tsx`
-2. Implement `TaskDetailProps` interface: `{ task: Task; isHistorical?: boolean }`
+2. Implement `TaskDetailProps` interface: `{ task: Task; isHistorical?: boolean; viewStatus?: InternalStatus }`
 3. Render content inside `TwoColumnLayout`; the common rail is injected by `TaskDetailContextProvider`
 4. Add to `TASK_DETAIL_VIEWS` map in `TaskDetailPanel.tsx`

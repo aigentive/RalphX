@@ -8,6 +8,9 @@ pub mod agent_conversation_workspace;
 mod agent_conversation_workspace_tests;
 pub mod agent_run;
 pub mod agent_task;
+pub mod agent_workflow_protocol;
+#[cfg(test)]
+mod agent_workflow_protocol_tests;
 pub mod api_key;
 pub mod app_state;
 pub mod artifact;
@@ -17,6 +20,7 @@ pub mod automation;
 mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
+pub mod conversation_folder_reference;
 pub mod chat_timeline;
 pub mod branch_update;
 #[cfg(test)]
@@ -40,6 +44,9 @@ pub mod project;
 pub mod project_memory_settings;
 pub mod project_skill_settings;
 pub mod research;
+pub mod scripted_agent_workflow;
+#[cfg(test)]
+mod scripted_agent_workflow_tests;
 pub mod review;
 pub mod review_issue;
 pub mod status;
@@ -85,14 +92,17 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_run::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
     InterruptedConversation,
 };
 pub use agent_task::{
@@ -125,6 +135,9 @@ pub use automation::{
     AutomationRunStatus, AutomationStatus,
 };
 pub use chat_attachment::{ChatAttachment, ChatAttachmentId};
+pub use conversation_folder_reference::{
+    ConversationFolderReference, ConversationFolderReferenceId,
+};
 pub use chat_conversation::{
     legacy_claude_session_alias, normalize_provider_session_compatibility,
     AttributionBackfillStatus, ChatContextType, ChatConversation, ChatConversationId,
@@ -184,7 +197,7 @@ pub use notification::{
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
-pub use persona::{Persona, PersonaDirective, PersonaId, PersonaStatus};
+pub use persona::{Persona, PersonaDirective, PersonaId, PersonaScopeFilter, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use project_memory_settings::ProjectMemorySettings;
 pub use project_skill_settings::ProjectSkillSettings;
@@ -192,6 +205,12 @@ pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,
     ResearchDepth, ResearchDepthPreset, ResearchOutput, ResearchPresets, ResearchProcess,
     ResearchProcessId, ResearchProcessStatus, ResearchProgress, RESEARCH_PRESETS,
+};
+pub use scripted_agent_workflow::{
+    sha256_hex, AgentWorkflowInvocation, AgentWorkflowInvocationId, AgentWorkflowLogEntry,
+    AgentWorkflowMeta, AgentWorkflowPhase, AgentWorkflowPhaseId, AgentWorkflowProgress,
+    AgentWorkflowRun, AgentWorkflowRunId, AgentWorkflowRunStatus, AgentWorkflowScript,
+    AgentWorkflowScriptId, AgentWorkflowStepStatus,
 };
 pub use review::{
     ParseReviewActionTypeError, ParseReviewOutcomeError, ParseReviewStatusError,
@@ -220,7 +239,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId, TeamMessageRecord,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
+    TeamMessageRecord,
     TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
     TeammateSnapshot,
 };

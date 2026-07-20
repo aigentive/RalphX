@@ -4,6 +4,7 @@ import {
   DEFAULT_AGENT_RUNTIME,
   agentEffortOptionsForModel,
   agentModelOptions,
+  agentModelSupportsCodexUltra,
   defaultModelForProvider,
   normalizeRuntimeForPersistence,
   normalizeRuntimeSelection,
@@ -51,10 +52,10 @@ describe("agentOptions", () => {
   it("only exposes xhigh for Codex models that support it", () => {
     expect(
       agentEffortOptionsForModel("codex", "gpt-5.6-sol").map((option) => option.id),
-    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    ).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(
       agentEffortOptionsForModel("codex", "gpt-5.6-terra").map((option) => option.id),
-    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    ).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(
       agentEffortOptionsForModel("codex", "gpt-5.6-luna").map((option) => option.id),
     ).toEqual(["low", "medium", "high", "xhigh", "max"]);
@@ -139,10 +140,10 @@ describe("agentOptions", () => {
       )?.description,
     ).toBe("Maximum reasoning depth for the hardest problems.");
     expect(
-      agentEffortOptionsForModel("codex", "gpt-5.6-sol").find(
+      agentEffortOptionsForModel("codex", "gpt-5.6-sol").some(
         (option) => option.id === "ultra",
-      )?.description,
-    ).toBe("Maximum reasoning with automatic task delegation.");
+      ),
+    ).toBe(false);
     expect(
       agentEffortOptionsForModel("claude", "opus").find(
         (option) => option.id === "xhigh",
@@ -155,6 +156,20 @@ describe("agentOptions", () => {
     ).toBe(
       "For intelligence-demanding tasks that justify higher usage and possible overthinking.",
     );
+  });
+
+  it("exposes Ultra separately from ordinary reasoning effort", () => {
+    expect(
+      agentModelSupportsCodexUltra("codex", "gpt-5.6-sol", undefined, [
+        "gpt-5.6-sol",
+      ]),
+    ).toBe(true);
+    expect(
+      agentModelSupportsCodexUltra("codex", "gpt-5.6-luna", undefined, [
+        "gpt-5.6-luna",
+      ]),
+    ).toBe(false);
+    expect(agentModelSupportsCodexUltra("claude", "opus")).toBe(false);
   });
 
   it("capability-gates GPT-5.6 Codex models above older Codex models", () => {
@@ -241,7 +256,7 @@ describe("agentOptions", () => {
     ).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-sol",
-      effort: "ultra",
+      effort: "max",
     });
     expect(
       normalizeRuntimeSelection(
@@ -271,7 +286,7 @@ describe("agentOptions", () => {
     ).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-terra",
-      effort: "ultra",
+      effort: "max",
     });
     expect(
       normalizeRuntimeForPersistence({
@@ -293,7 +308,7 @@ describe("agentOptions", () => {
     ).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-sol",
-      effort: "ultra",
+      effort: "max",
     });
   });
 

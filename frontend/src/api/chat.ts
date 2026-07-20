@@ -421,6 +421,7 @@ export interface QueuedMessageResponse {
   content: string;
   createdAt: string;
   isEditing: boolean;
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
   attachmentIds: string[];
 }
 
@@ -659,7 +660,10 @@ const ChatConversationResponseSchema = z.object({
   effective_effort: z.string().nullable().optional(),
   service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
+  bound_agent_name: z.string().nullable().optional(),
   persona_id: z.string().nullable().optional(),
+  builder_draft_id: z.string().nullable().optional(),
+  builder_result_persona_id: z.string().nullable().optional(),
   last_run_persona_run_id: z.string().nullable().optional(),
   last_run_persona_id: z.string().nullable().optional(),
   last_run_persona_slug: z.string().nullable().optional(),
@@ -744,7 +748,10 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveEffort: raw.effective_effort ?? null,
     serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
+    boundAgentName: raw.bound_agent_name ?? null,
     personaId: raw.persona_id ?? null,
+    builderDraftId: raw.builder_draft_id ?? null,
+    builderResultPersonaId: raw.builder_result_persona_id ?? null,
     lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
     lastRunPersonaId: raw.last_run_persona_id ?? null,
     lastRunPersonaSlug: raw.last_run_persona_slug ?? null,
@@ -1530,17 +1537,19 @@ export async function getConversationStats(
  */
 export async function createConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string,
+  mode?: AgentConversationMode,
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "create_agent_conversation",
     {
       input: {
         contextType,
-        contextId,
+        ...(contextId ? { contextId } : {}),
         ...(title !== undefined &&
           title.trim().length > 0 && { title: title.trim() }),
+        ...(mode !== undefined && { mode }),
       },
     },
     ChatConversationResponseSchema,
@@ -1577,16 +1586,58 @@ export async function spawnConversationSessionNamer(
   });
 }
 
+const TerminalCleanupClaimSchema = z.enum([
+  "claimed",
+  "already_in_progress",
+  "already_cleaned",
+  "not_claimed",
+]);
+
+const TerminalLocalCleanupResultSchema = z.enum([
+  "cleaned",
+  "pending",
+  "failed_unsafe",
+  "failed_operational",
+]);
+
+const ArchiveConversationResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  cleanup: z.object({
+    runtime_shutdown_succeeded: z.boolean(),
+    cleanup_claim: TerminalCleanupClaimSchema,
+    local_cleanup: TerminalLocalCleanupResultSchema,
+    message: z.string().nullable(),
+  }),
+});
+
+export interface ArchiveConversationResult {
+  conversation: ChatConversation;
+  cleanup: {
+    runtimeShutdownSucceeded: boolean;
+    cleanupClaim: z.infer<typeof TerminalCleanupClaimSchema>;
+    localCleanup: z.infer<typeof TerminalLocalCleanupResultSchema>;
+    message: string | null;
+  };
+}
+
 export async function archiveConversation(
   conversationId: string,
   options: { closePullRequest: boolean },
-): Promise<ChatConversation> {
+): Promise<ArchiveConversationResult> {
   const raw = await typedInvoke(
     "archive_agent_conversation",
     { conversationId, closePullRequest: options.closePullRequest },
-    ChatConversationResponseSchema,
+    ArchiveConversationResponseSchema,
   );
-  return transformConversation(raw);
+  return {
+    conversation: transformConversation(raw.conversation),
+    cleanup: {
+      runtimeShutdownSucceeded: raw.cleanup.runtime_shutdown_succeeded,
+      cleanupClaim: raw.cleanup.cleanup_claim,
+      localCleanup: raw.cleanup.local_cleanup,
+      message: raw.cleanup.message,
+    },
+  };
 }
 
 export async function restoreConversation(
@@ -1620,22 +1671,61 @@ export async function getAgentRunStatus(
 // Namespace Export for Alternative Usage Pattern
 // ============================================================================
 
+const ComposerSelectionSnapshotSchema = z.object({
+  sourceType: z.enum(["artifact", "ticket"]),
+  sourceKind: z.enum(["plan", "jira", "linear", "clickup"]),
+  sourceId: z.string(),
+  sourceTitle: z.string().optional(),
+  sourceKey: z.string().optional(),
+  provider: z.enum(["atlassian", "linear", "clickup"]).optional(),
+  artifactVersion: z.number().int().positive().optional(),
+  sourceRevision: z.string().optional(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  content: z.string(),
+});
+
 const QueuedMessageResponseSchema = z.object({
   id: z.string(),
   content: z.string(),
   created_at: z.string(),
   is_editing: z.boolean(),
+  composer_selection_snapshot: ComposerSelectionSnapshotSchema.optional(),
   attachment_ids: z.array(z.string()).optional().default([]),
 });
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
 
 function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
+  const selection = raw.composer_selection_snapshot;
   return {
     id: raw.id,
     content: raw.content,
     createdAt: raw.created_at,
     isEditing: raw.is_editing,
+    ...(selection
+      ? {
+          composerSelectionSnapshot: {
+            sourceType: selection.sourceType,
+            sourceKind: selection.sourceKind,
+            sourceId: selection.sourceId,
+            ...(selection.sourceTitle
+              ? { sourceTitle: selection.sourceTitle }
+              : {}),
+            ...(selection.sourceKey ? { sourceKey: selection.sourceKey } : {}),
+            ...(selection.provider ? { provider: selection.provider } : {}),
+            ...(selection.artifactVersion
+              ? { artifactVersion: selection.artifactVersion }
+              : {}),
+            ...(selection.sourceRevision
+              ? { sourceRevision: selection.sourceRevision }
+              : {}),
+            startLine: selection.startLine,
+            endLine: selection.endLine,
+            content: selection.content,
+          },
+        }
+      : {}),
     attachmentIds: raw.attachment_ids,
   };
 }
@@ -1682,8 +1772,10 @@ export const chatApi = {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
+  approveAgentWorkspaceReviewAnyway,
   listAgentConversationIssues,
   updateAgentConversationIssueStatus,
   convertAgentConversationIssueFollowup,
@@ -1701,6 +1793,8 @@ export const chatApi = {
   updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
+  activateAgentTaskPipeline,
+  startAgentTaskPipeline,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
@@ -1749,6 +1843,20 @@ export interface ComposerIntegrationReference {
   includeTranscript?: boolean;
 }
 
+export interface ComposerSelectionSnapshot {
+  sourceType: "artifact" | "ticket" | "note";
+  sourceKind: "plan" | "jira" | "linear" | "clickup" | "granola";
+  sourceId: string;
+  sourceTitle?: string;
+  sourceKey?: string;
+  provider?: "atlassian" | "linear" | "clickup" | "granola";
+  artifactVersion?: number;
+  sourceRevision?: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
 export interface ComposerArtifactReference {
   artifactId: string;
   kind: string;
@@ -1758,12 +1866,41 @@ export interface ComposerArtifactReference {
   status?: string;
 }
 
+export type ComposerExcerptSourceKind =
+  | "plan"
+  | "review"
+  | "issue"
+  | "task"
+  | "automation_spec"
+  | "pull_request"
+  | "workspace_diff"
+  | "jira"
+  | "linear"
+  | "granola";
+
+export interface ComposerExcerptReference {
+  sourceKind: ComposerExcerptSourceKind;
+  sourceId: string;
+  sourceLabel: string;
+  title?: string;
+  excerpt: string;
+  artifactId?: string;
+  sessionId?: string;
+  version?: number;
+  url?: string;
+  filePath?: string;
+  revision?: string;
+  locator?: string;
+}
+
 export type TeamIntentStrategy = "research" | "debate" | "execution";
 
-export interface TeamIntent {
+export interface CapabilityIntent {
   coordinationMode: CoordinationMode;
   strategy?: TeamIntentStrategy | null;
 }
+
+export type TeamIntent = CapabilityIntent;
 
 export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
 
@@ -1781,11 +1918,14 @@ export interface SendAgentMessageOptions {
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   teamMessageTarget?: TeamMessageTarget | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
+  composerExcerptReferences?: ComposerExcerptReference[];
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -1822,6 +1962,8 @@ export interface AgentConversationWorkspace {
   branchName: string;
   worktreePath: string;
   linkedIdeationSessionId: string | null;
+  taskPipelineSessionId?: string | null;
+  taskPipelineAvailable?: boolean;
   linkedPlanBranchId: string | null;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
   modeSwitchLocked?: boolean;
@@ -1846,7 +1988,7 @@ export interface AgentConversationWorkspace {
   updatedAt: string;
 }
 
-export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+export type WorkspaceOpenTargetKind = "editor" | "terminal" | "fileManager";
 
 export interface WorkspaceOpenTarget {
   id: string;
@@ -1855,7 +1997,7 @@ export interface WorkspaceOpenTarget {
 }
 
 export interface StartAgentConversationInput {
-  projectId: string;
+  projectId?: string | null;
   content: string;
   conversationId?: string | null;
   parentConversationId?: string | null;
@@ -1864,13 +2006,16 @@ export interface StartAgentConversationInput {
   modelId?: string | null;
   logicalEffort?: string | null;
   personaId?: string | null;
+  sourcePersonaId?: string | null;
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export interface StartAgentConversationResult {
@@ -1902,6 +2047,7 @@ export interface SwitchAgentConversationModeResult {
 export interface UpdateAgentConversationCoordinationModeInput {
   conversationId: string;
   coordinationMode: CoordinationMode;
+  modelOverride?: string;
 }
 
 export interface CopyAgentConversationPlanInput {
@@ -2014,6 +2160,13 @@ export type AgentWorkspaceReviewGateStatus =
 export type AgentWorkspaceReviewTargetScope =
   "selected_source" | "workspace_delta";
 
+export type AgentWorkspaceReviewAutoMergeGuardStatus =
+  | "pausing"
+  | "paused_for_review"
+  | "awaiting_publish"
+  | "restoring"
+  | "restore_failed";
+
 export type AgentWorkspacePrReviewActionKind =
   "request_changes" | "approve" | "comment";
 
@@ -2103,6 +2256,11 @@ export interface AgentWorkspaceReviewMonitor {
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
+  reviewGateBypassedAt: string | null;
+  reviewGateBypassedTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewGateBypassedDiffFingerprint: string | null;
+  reviewGateBypassedArtifactId: string | null;
+  reviewGateBypassedArtifactVersion: number | null;
   reviewedHeadSha: string | null;
   reviewedDiffFingerprint: string | null;
   selectedSourceBaseRef: string | null;
@@ -2123,6 +2281,13 @@ export interface AgentWorkspaceReviewMonitor {
   reviewFixerStatus: string | null;
   lastRunId: string | null;
   lastError: string | null;
+  autoMergeGuardStatus: AgentWorkspaceReviewAutoMergeGuardStatus | null;
+  autoMergeGuardPrNumber: number | null;
+  autoMergeGuardMethod: string | null;
+  autoMergeGuardTargetScope: AgentWorkspaceReviewTargetScope | null;
+  autoMergeGuardDiffFingerprint: string | null;
+  autoMergeGuardHeadSha: string | null;
+  autoMergeGuardLastError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2133,15 +2298,50 @@ export interface AgentWorkspaceReviewContext {
   events: AgentConversationWorkspacePublicationEvent[];
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
+}
+
+export type AgentWorkspaceReviewRuntimeState =
+  | "active_owned"
+  | "terminal"
+  | "missing_runtime_identity"
+  | "malformed_runtime_identity"
+  | "stale_runtime";
+
+export interface AgentWorkspaceReviewStartConfirmation {
+  targetScope: AgentWorkspaceReviewTargetScope | null;
+  diffFingerprint: string | null;
+  headSha: string | null;
+  prNumber: number | null;
+  willDisableAutoMerge: boolean;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
+}
+
+export interface AgentWorkspaceReviewStartPreview {
+  success: boolean;
+  target: AgentWorkspaceReviewTarget | null;
+  willDisableAutoMerge: boolean;
+  prNumber: number | null;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
+  confirmation: AgentWorkspaceReviewStartConfirmation;
 }
 
 export interface StartAgentWorkspaceReviewResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
@@ -2154,11 +2354,27 @@ export interface StartAgentWorkspaceReviewFixerResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
   started: boolean;
   skippedReason: string | null;
+}
+
+export interface ApproveAgentWorkspaceReviewAnywayInput {
+  targetScope: AgentWorkspaceReviewTargetScope;
+  diffFingerprint: string;
+  artifactId: string;
+  artifactVersion: number;
+}
+
+export interface ApproveAgentWorkspaceReviewAnywayResult {
+  success: boolean;
+  monitor: AgentWorkspaceReviewMonitor;
 }
 
 export interface SubmitAgentWorkspacePrReviewActionResult {
@@ -2214,6 +2430,8 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   branch_name: z.string(),
   worktree_path: z.string(),
   linked_ideation_session_id: z.string().nullable(),
+  task_pipeline_session_id: z.string().nullable().optional().default(null),
+  task_pipeline_available: z.boolean().optional().default(false),
   linked_plan_branch_id: z.string().nullable(),
   source_pull_request:
     AgentConversationWorkspaceSourcePullRequestResponseSchema.nullable()
@@ -2418,6 +2636,23 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
+  review_gate_bypassed_at: z.string().nullable().optional().default(null),
+  review_gate_bypassed_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  review_gate_bypassed_diff_fingerprint: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
+  review_gate_bypassed_artifact_id: z.string().nullable().optional().default(null),
+  review_gate_bypassed_artifact_version: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null),
   reviewed_head_sha: z.string().nullable(),
   reviewed_diff_fingerprint: z.string().nullable(),
   selected_source_base_ref: z.string().nullable(),
@@ -2438,6 +2673,21 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_fixer_status: z.string().nullable().optional().default(null),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
+  auto_merge_guard_status: z
+    .enum(["pausing", "paused_for_review", "awaiting_publish", "restoring", "restore_failed"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_pr_number: z.number().nullable().optional().default(null),
+  auto_merge_guard_method: z.string().nullable().optional().default(null),
+  auto_merge_guard_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_diff_fingerprint: z.string().nullable().optional().default(null),
+  auto_merge_guard_head_sha: z.string().nullable().optional().default(null),
+  auto_merge_guard_last_error: z.string().nullable().optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -2447,6 +2697,19 @@ const AgentWorkspaceReviewContextResponseSchema = z.object({
   events: AgentConversationWorkspacePublicationEventListResponseSchema,
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2455,6 +2718,19 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2462,15 +2738,54 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   skipped_reason: z.string().nullable(),
   was_queued: z.boolean(),
 });
+const AgentWorkspaceReviewStartConfirmationSchema = z.object({
+  target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  diff_fingerprint: z.string().nullable().optional().default(null),
+  head_sha: z.string().nullable().optional().default(null),
+  pr_number: z.number().nullable().optional().default(null),
+  will_disable_auto_merge: z.boolean(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
+});
+const AgentWorkspaceReviewStartPreviewResponseSchema = z.object({
+  success: z.boolean(),
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  will_disable_auto_merge: z.boolean(),
+  pr_number: z.number().nullable(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
+  confirmation: AgentWorkspaceReviewStartConfirmationSchema,
+});
 const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
   started: z.boolean(),
   skipped_reason: z.string().nullable(),
+});
+const ApproveAgentWorkspaceReviewAnywayResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspaceReviewMonitorResponseSchema,
 });
 const SubmitAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
@@ -2491,7 +2806,7 @@ const SetAgentWorkspacePrReviewAutoApproveResponseSchema = z.object({
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
   label: z.string(),
-  kind: z.enum(["editor", "fileManager"]),
+  kind: z.enum(["editor", "terminal", "fileManager"]),
 });
 
 export const StartAgentConversationResponseSchema = z.object({
@@ -2602,6 +2917,9 @@ type RawAgentWorkspaceReviewContext = z.infer<
 type RawStartAgentWorkspaceReviewResponse = z.infer<
   typeof StartAgentWorkspaceReviewResponseSchema
 >;
+type RawAgentWorkspaceReviewStartPreviewResponse = z.infer<
+  typeof AgentWorkspaceReviewStartPreviewResponseSchema
+>;
 type RawStartAgentWorkspaceReviewFixerResponse = z.infer<
   typeof StartAgentWorkspaceReviewFixerResponseSchema
 >;
@@ -2640,6 +2958,8 @@ function transformAgentConversationWorkspace(
     branchName: raw.branch_name,
     worktreePath: raw.worktree_path,
     linkedIdeationSessionId: raw.linked_ideation_session_id,
+    taskPipelineSessionId: raw.task_pipeline_session_id,
+    taskPipelineAvailable: raw.task_pipeline_available,
     linkedPlanBranchId: raw.linked_plan_branch_id,
     sourcePullRequest: raw.source_pull_request
       ? {
@@ -2730,7 +3050,7 @@ export function startAgentConversationInvokeInput(
   input: StartAgentConversationInput,
 ) {
   return {
-    projectId: input.projectId,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     content: input.content,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
     ...(input.providerHarness
@@ -2739,11 +3059,16 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
+    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),
     ...(input.mode ? { mode: input.mode } : {}),
-    ...(input.teamIntent ? { teamIntent: input.teamIntent } : {}),
+    ...(input.capabilityIntent
+      ? { capabilityIntent: input.capabilityIntent }
+      : input.teamIntent
+        ? { teamIntent: input.teamIntent }
+        : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
       : {}),
@@ -2752,6 +3077,9 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.composerArtifactReferences?.length
       ? { composerArtifactReferences: input.composerArtifactReferences }
+      : {}),
+    ...(input.composerSelectionSnapshot
+      ? { composerSelectionSnapshot: input.composerSelectionSnapshot }
       : {}),
     ...(input.base
       ? {
@@ -2973,6 +3301,12 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
+    reviewGateBypassedAt: raw.review_gate_bypassed_at,
+    reviewGateBypassedTargetScope: raw.review_gate_bypassed_target_scope,
+    reviewGateBypassedDiffFingerprint:
+      raw.review_gate_bypassed_diff_fingerprint,
+    reviewGateBypassedArtifactId: raw.review_gate_bypassed_artifact_id,
+    reviewGateBypassedArtifactVersion: raw.review_gate_bypassed_artifact_version,
     reviewedHeadSha: raw.reviewed_head_sha,
     reviewedDiffFingerprint: raw.reviewed_diff_fingerprint,
     selectedSourceBaseRef: raw.selected_source_base_ref,
@@ -2993,6 +3327,13 @@ function transformAgentWorkspaceReviewMonitor(
     reviewFixerStatus: raw.review_fixer_status,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
+    autoMergeGuardStatus: raw.auto_merge_guard_status,
+    autoMergeGuardPrNumber: raw.auto_merge_guard_pr_number,
+    autoMergeGuardMethod: raw.auto_merge_guard_method,
+    autoMergeGuardTargetScope: raw.auto_merge_guard_target_scope,
+    autoMergeGuardDiffFingerprint: raw.auto_merge_guard_diff_fingerprint,
+    autoMergeGuardHeadSha: raw.auto_merge_guard_head_sha,
+    autoMergeGuardLastError: raw.auto_merge_guard_last_error,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
@@ -3007,6 +3348,11 @@ function transformAgentWorkspaceReviewContext(
     events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3020,12 +3366,39 @@ function transformStartAgentWorkspaceReviewResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
     started: raw.started,
     skippedReason: raw.skipped_reason,
     wasQueued: raw.was_queued,
+  };
+}
+
+function transformAgentWorkspaceReviewStartPreview(
+  raw: RawAgentWorkspaceReviewStartPreviewResponse,
+): AgentWorkspaceReviewStartPreview {
+  return {
+    success: raw.success,
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    willDisableAutoMerge: raw.will_disable_auto_merge,
+    prNumber: raw.pr_number,
+    mergeMethod: raw.merge_method,
+    restoreAfterPublish: raw.restore_after_publish,
+    confirmation: {
+      targetScope: raw.confirmation.target_scope,
+      diffFingerprint: raw.confirmation.diff_fingerprint,
+      headSha: raw.confirmation.head_sha,
+      prNumber: raw.confirmation.pr_number,
+      willDisableAutoMerge: raw.confirmation.will_disable_auto_merge,
+      mergeMethod: raw.confirmation.merge_method,
+      restoreAfterPublish: raw.confirmation.restore_after_publish,
+    },
   };
 }
 
@@ -3036,6 +3409,11 @@ function transformStartAgentWorkspaceReviewFixerResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3179,6 +3557,18 @@ export async function listAgentConversationWorkspacePublicationEvents(
   return raw.map(transformAgentConversationWorkspacePublicationEvent);
 }
 
+export class AgentWorkspaceHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, statusText: string, detail: string | null) {
+    super(
+      detail ? `${status} ${statusText}: ${detail}` : `${status} ${statusText}`,
+    );
+    this.name = "AgentWorkspaceHttpError";
+    this.status = status;
+  }
+}
+
 async function fetchAgentWorkspaceJson<T>(
   path: string,
   schema: z.ZodType<T>,
@@ -3197,10 +3587,10 @@ async function fetchAgentWorkspaceJson<T>(
     } catch {
       detail = null;
     }
-    throw new Error(
-      detail
-        ? `${response.status} ${response.statusText}: ${detail}`
-        : `${response.status} ${response.statusText}`,
+    throw new AgentWorkspaceHttpError(
+      response.status,
+      response.statusText,
+      detail,
     );
   }
   return schema.parse(await response.json());
@@ -3226,9 +3616,22 @@ export async function getAgentWorkspaceReviewContext(
   return transformAgentWorkspaceReviewContext(raw);
 }
 
+export async function getAgentWorkspaceReviewStartPreview(
+  conversationId: string,
+): Promise<AgentWorkspaceReviewStartPreview> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-start-preview`,
+    AgentWorkspaceReviewStartPreviewResponseSchema,
+  );
+  return transformAgentWorkspaceReviewStartPreview(raw);
+}
+
 export async function startAgentWorkspaceReview(
   conversationId: string,
-  options: { force?: boolean } = {},
+  options: {
+    force?: boolean;
+    confirmation?: AgentWorkspaceReviewStartConfirmation;
+  } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-runs`,
@@ -3236,7 +3639,22 @@ export async function startAgentWorkspaceReview(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: options.force ?? false }),
+      body: JSON.stringify({
+        force: options.force ?? false,
+        confirmation: options.confirmation
+          ? {
+              target_scope: options.confirmation.targetScope,
+              diff_fingerprint: options.confirmation.diffFingerprint,
+              head_sha: options.confirmation.headSha,
+              pr_number: options.confirmation.prNumber,
+              will_disable_auto_merge:
+                options.confirmation.willDisableAutoMerge,
+              merge_method: options.confirmation.mergeMethod,
+              restore_after_publish:
+                options.confirmation.restoreAfterPublish,
+            }
+          : undefined,
+      }),
     },
   );
   return transformStartAgentWorkspaceReviewResponse(raw);
@@ -3254,6 +3672,30 @@ export async function startAgentWorkspaceReviewFixer(
     },
   );
   return transformStartAgentWorkspaceReviewFixerResponse(raw);
+}
+
+export async function approveAgentWorkspaceReviewAnyway(
+  conversationId: string,
+  input: ApproveAgentWorkspaceReviewAnywayInput,
+): Promise<ApproveAgentWorkspaceReviewAnywayResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-approve-anyway`,
+    ApproveAgentWorkspaceReviewAnywayResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target_scope: input.targetScope,
+        diff_fingerprint: input.diffFingerprint,
+        artifact_id: input.artifactId,
+        artifact_version: input.artifactVersion,
+      }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+  };
 }
 
 const AgentConversationIssueOccurrenceResponseSchema = z.object({
@@ -3772,6 +4214,7 @@ export async function updateAgentConversationCoordinationMode(
       input: {
         conversationId: input.conversationId,
         coordinationMode: input.coordinationMode,
+        ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
       },
     },
     ChatConversationResponseSchema,
@@ -3812,6 +4255,54 @@ export async function importAgentConversationPlan(
     AgentConversationPlanSeedResponseSchema,
   );
   return transformAgentConversationPlanSeedResponse(raw);
+}
+
+export async function activateAgentTaskPipeline(input: {
+  conversationId: string;
+  sessionId: string;
+}): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "activate_agent_task_pipeline",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+      },
+    },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function startAgentTaskPipeline(input: {
+  conversationId: string;
+  sessionId: string;
+  proposalIds: string[];
+  baseBranchOverride?: string | null;
+}): Promise<{ tasksCreated: number; executionPlanId: string | null }> {
+  const raw = await typedInvoke(
+    "start_agent_task_pipeline",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        proposalIds: input.proposalIds,
+        ...(input.baseBranchOverride
+          ? { baseBranchOverride: input.baseBranchOverride }
+          : {}),
+      },
+    },
+    z
+      .object({
+        tasks_created: z.number().int().nonnegative(),
+        execution_plan_id: z.string().nullable(),
+      })
+      .passthrough(),
+  );
+  return {
+    tasksCreated: raw.tasks_created,
+    executionPlanId: raw.execution_plan_id,
+  };
 }
 
 /**
@@ -3856,7 +4347,11 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
-        ...(options?.teamIntent ? { teamIntent: options.teamIntent } : {}),
+        ...(options?.capabilityIntent
+          ? { capabilityIntent: options.capabilityIntent }
+          : options?.teamIntent
+            ? { teamIntent: options.teamIntent }
+            : {}),
         ...(options?.teamMessageTarget
           ? { teamMessageTarget: options.teamMessageTarget }
           : {}),
@@ -3871,6 +4366,12 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.composerArtifactReferences?.length
           ? { composerArtifactReferences: options.composerArtifactReferences }
+          : {}),
+        ...(options?.composerSelectionSnapshot
+          ? { composerSelectionSnapshot: options.composerSelectionSnapshot }
+          : {}),
+        ...(options?.composerExcerptReferences?.length
+          ? { composerExcerptReferences: options.composerExcerptReferences }
           : {}),
       },
     },

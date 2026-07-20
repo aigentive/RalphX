@@ -5,10 +5,11 @@
 
 use async_trait::async_trait;
 
+use crate::agents::AgentHarnessKind;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
-    InterruptedConversation,
+    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    ChatConversationId, InterruptedConversation,
 };
 use crate::error::AppResult;
 
@@ -42,11 +43,40 @@ pub trait AgentRunRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentRun>>;
 
+    /// Get the latest successful run that owns one provider-native session.
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|run| {
+                run.status == AgentRunStatus::Completed
+                    && run.harness == Some(harness)
+                    && run.provider_session_id.as_deref() == Some(provider_session_id)
+            })
+            .max_by_key(|run| run.started_at))
+    }
+
     /// Get the active (running) run for a conversation, if any
     async fn get_active_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentRun>>;
+
+    /// Get the latest run for one backend-owned action authority tuple.
+    async fn get_latest_action(
+        &self,
+        _action_kind: AgentRunActionKind,
+        _action_context_id: &str,
+        _action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        Ok(None)
+    }
 
     /// Get all runs for a conversation, ordered by started_at DESC
     async fn get_by_conversation(

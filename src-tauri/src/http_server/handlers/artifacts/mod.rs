@@ -7,12 +7,13 @@ use rusqlite::Connection;
 use tracing::error;
 
 use super::*;
+use crate::application::verification_event_emitters::emit_verification_status_changed;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, SessionOrigin, VerificationStatus,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, NotificationTargetKind,
+    VerificationStatus,
 };
 use crate::domain::repositories::IdeationSessionRepository;
-use crate::application::verification_event_emitters::emit_verification_status_changed;
 use crate::domain::services::running_agent_registry::{RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
@@ -40,5 +41,6 @@ pub use update::update_plan_artifact;
 use events::emit_plan_update_events;
 use shared::{
     attach_plan_approval, finalize_plan_update, map_app_err, plan_approval_view_sync,
-    resolve_caller_session_id, PlanApprovalView,
+    reconcile_plan_notifications, resolve_artifact_mutation_authority, resolve_caller_session_id,
+    PlanApprovalView,
 };

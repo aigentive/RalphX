@@ -2,19 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::{collections::HashMap, time::Instant};
 
-use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{
     plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
-    AgentHarnessKind, AgentProviderSettings, DEFAULT_AGENT_HARNESS,
+    AgentHarnessKind, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::infrastructure::agents::claude::{
     agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
     execution_defaults_config, external_mcp_config, find_claude_cli, node_utils,
-    probe_claude_cli_cached, reconciliation_config, register_mcp_server, resolve_plugin_dir,
-    scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
+    probe_claude_cli_cached, reconciliation_config, resolve_plugin_dir, scheduler_config,
+    ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
-    SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
+    UiFeatureFlagsConfig,
 };
 use crate::infrastructure::agents::{
     find_codex_cli, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, ResolvedCodexCli,
@@ -23,8 +21,6 @@ use which::which;
 
 pub(crate) type HarnessProbeFn = fn() -> HarnessRuntimeProbe;
 pub(crate) type ChatHarnessCliResolver = fn(&Path) -> Result<ResolvedChatHarnessCli, String>;
-pub(crate) type StartupHarnessIntegrationResolver =
-    fn() -> Result<Option<ResolvedHarnessStartupIntegration>, String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HarnessRuntimeProbe {
@@ -36,6 +32,7 @@ pub(crate) struct HarnessRuntimeProbe {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
     pub supports_fast_mode: bool,
     pub fast_mode_supported_models: Vec<String>,
     pub error: Option<String>,
@@ -49,15 +46,6 @@ pub(crate) enum ResolvedChatHarnessCli {
     Codex {
         cli_path: PathBuf,
         capabilities: CodexCliCapabilities,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolvedHarnessStartupIntegration {
-    RegisterConfiguredMcpServer {
-        harness: AgentHarnessKind,
-        cli_path: PathBuf,
-        plugin_dir: PathBuf,
     },
 }
 
@@ -84,25 +72,10 @@ pub(crate) struct DefaultExternalMcpBootstrap {
     pub entry_path: PathBuf,
 }
 
-impl ResolvedHarnessStartupIntegration {
-    pub(crate) fn harness(&self) -> AgentHarnessKind {
-        match self {
-            Self::RegisterConfiguredMcpServer { harness, .. } => *harness,
-        }
-    }
-
-    pub(crate) fn description(&self) -> &'static str {
-        match self {
-            Self::RegisterConfiguredMcpServer { .. } => "configured MCP server registration",
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct HarnessRuntimeAdapter {
     pub probe: HarnessProbeFn,
     pub resolve_chat_cli: ChatHarnessCliResolver,
-    pub resolve_startup_integration: StartupHarnessIntegrationResolver,
 }
 
 fn probe_claude_harness() -> HarnessRuntimeProbe {
@@ -127,6 +100,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                         cli_version: capabilities.version.clone(),
                         supported_model_aliases: Some(capabilities.supported_model_aliases.clone()),
                         supported_efforts: Some(capabilities.supported_effort_labels()),
+                        ultra_supported_models: Vec::new(),
                         supports_fast_mode: false,
                         fast_mode_supported_models: Vec::new(),
                         error: None,
@@ -141,6 +115,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -156,6 +131,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some("Claude CLI not found".to_string()),
@@ -188,6 +164,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             HarnessRuntimeProbe {
                 binary_path,
                 binary_found: true,
@@ -197,6 +174,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: capabilities.version.clone(),
                 supported_model_aliases,
                 supported_efforts,
+                ultra_supported_models,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -212,6 +190,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some(error),
@@ -225,6 +204,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some(error),
@@ -378,67 +358,16 @@ fn probe_codex_cli_cached(cli_path: &Path) -> Result<CodexCliCapabilities, Strin
     result
 }
 
-fn resolve_claude_startup_integration_for_cli_path(
-    cli_path: PathBuf,
-) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
-    let plugin_dir = crate::infrastructure::agents::claude::find_plugin_dir()
-        .ok_or_else(|| "Claude plugin directory not found".to_string())?;
-    Ok(Some(
-        ResolvedHarnessStartupIntegration::RegisterConfiguredMcpServer {
-            harness: AgentHarnessKind::Claude,
-            cli_path,
-            plugin_dir,
-        },
-    ))
-}
-
-fn provider_startup_cli_path(
-    harness: AgentHarnessKind,
-    provider_settings: Option<&AgentProviderSettings>,
-) -> Option<Result<PathBuf, String>> {
-    let settings = provider_settings?;
-    if settings.provider != harness {
-        return None;
-    }
-    crate::application::managed_provider_cli::checked_provider_cli_launch_path(
-        settings,
-        "startup harness integration",
-    )
-}
-
-fn resolve_claude_startup_integration_with_provider_settings(
-    provider_settings: Option<&AgentProviderSettings>,
-) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
-    let cli_path = match provider_startup_cli_path(AgentHarnessKind::Claude, provider_settings) {
-        Some(Ok(path)) => path,
-        Some(Err(error)) => return Err(error),
-        None => find_claude_cli().ok_or_else(|| "Claude CLI not found".to_string())?,
-    };
-    resolve_claude_startup_integration_for_cli_path(cli_path)
-}
-
-fn resolve_claude_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
-{
-    resolve_claude_startup_integration_with_provider_settings(None)
-}
-
-fn resolve_codex_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
-{
-    Ok(None)
-}
-
 pub(crate) fn standard_harness_runtime_adapters() -> HashMap<AgentHarnessKind, HarnessRuntimeAdapter>
 {
     standard_harness_registry(|harness| match harness {
         AgentHarnessKind::Claude => HarnessRuntimeAdapter {
             probe: probe_claude_harness,
             resolve_chat_cli: resolve_claude_chat_harness_cli,
-            resolve_startup_integration: resolve_claude_startup_integration,
         },
         AgentHarnessKind::Codex => HarnessRuntimeAdapter {
             probe: probe_codex_harness,
             resolve_chat_cli: resolve_codex_chat_harness_cli,
-            resolve_startup_integration: resolve_codex_startup_integration,
         },
     })
 }
@@ -489,6 +418,7 @@ pub(crate) fn seed_available_harness_probes_for_test_at(binary_path: &str) {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: None,
@@ -511,6 +441,7 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some(format!("No harness probe registered for {}", harness)),
@@ -575,6 +506,7 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some("Harness runtime probe panicked".to_string()),
@@ -816,36 +748,12 @@ pub(crate) fn default_external_session_similarity_threshold() -> f64 {
     default_external_mcp_config().external_session_similarity_threshold
 }
 
-pub(crate) fn default_verification_config() -> VerificationConfig {
-    verification_config().clone()
-}
-
-pub(crate) fn default_verification_auto_verify_enabled() -> bool {
-    verification_config().auto_verify
-}
-
 pub(crate) fn default_verification_max_rounds() -> u32 {
     verification_config().max_rounds
 }
 
-pub(crate) fn default_verification_specialists() -> Vec<SpecialistEntry> {
-    verification_config().specialists.clone()
-}
-
 pub(crate) fn default_ui_feature_flags() -> UiFeatureFlagsConfig {
     ui_feature_flags_config().clone()
-}
-
-pub(crate) fn default_verification_reconciliation_config() -> VerificationReconciliationConfig {
-    let verification = default_verification_config();
-    let external_mcp = default_external_mcp_config();
-    VerificationReconciliationConfig {
-        stale_after_secs: verification.reconciliation_stale_after_secs,
-        auto_verify_stale_secs: verification.auto_verify_stale_secs,
-        interval_secs: verification.reconciliation_interval_secs,
-        external_session_stale_secs: external_mcp.external_session_stale_secs,
-        external_session_startup_grace_secs: external_mcp.external_session_startup_grace_secs,
-    }
 }
 
 pub(crate) fn default_execution_settings_config() -> ExecutionDefaultsConfig {
@@ -1122,6 +1030,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             (
                 HarnessRuntimeProbe {
                     binary_path: Some(resolved.path.to_string_lossy().into_owned()),
@@ -1132,6 +1041,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: capabilities.version.clone(),
                     supported_model_aliases,
                     supported_efforts,
+                    ultra_supported_models,
                     supports_fast_mode,
                     fast_mode_supported_models,
                     error,
@@ -1150,6 +1060,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -1163,6 +1074,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -1207,55 +1119,6 @@ pub(crate) fn resolve_chat_harness_cli(
     );
     cached.insert(cache_key, result.clone());
     result
-}
-
-pub(crate) fn resolve_startup_harness_integration(
-    harness: AgentHarnessKind,
-) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
-    let adapters = standard_harness_runtime_adapters();
-    let adapter = adapters
-        .get(&harness)
-        .copied()
-        .ok_or_else(|| format!("No startup harness integration registered for {}", harness))?;
-    (adapter.resolve_startup_integration)()
-}
-
-pub(crate) fn resolve_startup_harness_integration_with_provider_settings(
-    harness: AgentHarnessKind,
-    provider_settings: Option<&AgentProviderSettings>,
-) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
-    match harness {
-        AgentHarnessKind::Claude => {
-            resolve_claude_startup_integration_with_provider_settings(provider_settings)
-        }
-        AgentHarnessKind::Codex => resolve_startup_harness_integration(harness),
-    }
-}
-
-pub(crate) async fn resolve_startup_harness_integration_with_provider_repo(
-    harness: AgentHarnessKind,
-    provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
-) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
-    if harness != AgentHarnessKind::Claude {
-        return resolve_startup_harness_integration(harness);
-    }
-
-    let provider_settings = provider_settings_repo.get(harness).await.map_err(|error| {
-        format!("Failed to read {harness} provider settings for startup integration: {error}")
-    })?;
-    resolve_startup_harness_integration_with_provider_settings(harness, provider_settings.as_ref())
-}
-
-pub(crate) async fn run_startup_harness_integration(
-    integration: ResolvedHarnessStartupIntegration,
-) -> Result<(), String> {
-    match integration {
-        ResolvedHarnessStartupIntegration::RegisterConfiguredMcpServer {
-            cli_path,
-            plugin_dir,
-            ..
-        } => register_mcp_server(&cli_path, &plugin_dir).await,
-    }
 }
 
 #[cfg(test)]
@@ -1364,6 +1227,7 @@ mod tests {
                 "xhigh".to_string(),
             ],
             model_supported_efforts: std::collections::BTreeMap::new(),
+            ultra_supported_models: Vec::new(),
         }
     }
 
@@ -1372,12 +1236,6 @@ mod tests {
             path: PathBuf::from(path),
             capabilities: test_codex_capabilities(),
         }
-    }
-
-    #[test]
-    fn resolve_startup_harness_integration_returns_none_for_codex() {
-        let integration = resolve_startup_harness_integration(AgentHarnessKind::Codex).unwrap();
-        assert!(integration.is_none());
     }
 
     #[test]
@@ -1536,6 +1394,7 @@ mod tests {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: None,
@@ -1597,6 +1456,7 @@ mod tests {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: None,
@@ -1805,6 +1665,7 @@ esac
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: None,
@@ -1877,20 +1738,6 @@ esac
             codex_chat_service_cli_path_from_resolve_result(Err("Codex CLI not found".to_string()));
 
         assert_eq!(cli_path, PathBuf::from("codex"));
-    }
-
-    #[test]
-    fn startup_integration_description_matches_variant() {
-        let integration = ResolvedHarnessStartupIntegration::RegisterConfiguredMcpServer {
-            harness: AgentHarnessKind::Claude,
-            cli_path: PathBuf::from("claude"),
-            plugin_dir: PathBuf::from("plugins/app"),
-        };
-        assert_eq!(integration.harness(), AgentHarnessKind::Claude);
-        assert_eq!(
-            integration.description(),
-            "configured MCP server registration"
-        );
     }
 
     #[test]

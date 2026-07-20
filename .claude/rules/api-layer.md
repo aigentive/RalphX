@@ -19,7 +19,7 @@ paths:
 ## Pipeline (CRITICAL)
 
 ```
-Rust (snake_case) → Zod schema (snake_case) → Transform fn → TS types (camelCase)
+Rust (serde casing per struct) → Zod schema (matches Rust serialization) → Transform fn → TS types (camelCase)
 ```
 
 | Layer | Format | File | Example |
@@ -41,7 +41,7 @@ Rust (snake_case) → Zod schema (snake_case) → Transform fn → TS types (cam
 |---------|----|----- |---------|
 | Direct | `{ taskId }` | `task_id: String` | ❌ `{ task_id }` → silent missing |
 | Struct | `{ input: { taskId } }` | serde match | Must match exactly |
-| Response | — | default snake_case | ❌ NEVER `rename_all` |
+| Response | — | check `#[serde(...)]` per struct | snake_case is the default; many responses use `rename_all = "camelCase"` — Zod schema MUST mirror the actual serialization (see tauri-invoke-conventions.md) |
 
 ## Domain API Pattern
 

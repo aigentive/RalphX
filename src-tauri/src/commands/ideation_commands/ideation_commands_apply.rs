@@ -6,6 +6,7 @@ use tauri::{Manager, State};
 
 use crate::application::{
     agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path,
+    agent_task_pipeline_service::validate_start_authority_sync,
     session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget},
     spawn_ready_task_scheduler_if_needed, AppState, TaskCleanupService,
 };
@@ -41,6 +42,75 @@ struct TxOutput {
     any_ready_tasks: bool,
 }
 
+fn recheck_exact_plan_verification(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    expected_plan_id: Option<&str>,
+    required: bool,
+) -> AppResult<()> {
+    if !required {
+        return Ok(());
+    }
+    let (current_plan_id, verified_plan_id): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT plan_artifact_id, verified_plan_artifact_id
+             FROM ideation_sessions
+             WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| {
+            AppError::Database(format!(
+                "Failed to recheck plan verification proof: {}",
+                error
+            ))
+        })?;
+    if current_plan_id.as_deref() != expected_plan_id
+        || verified_plan_id.as_deref() != current_plan_id.as_deref()
+    {
+        return Err(AppError::Validation(
+            "Plan changed or lost exact verification proof before acceptance; verify the current plan and accept again"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn finalize_session_acceptance(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    require_pending_confirmation: bool,
+) -> AppResult<()> {
+    let rows = if require_pending_confirmation {
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET status = 'accepted', acceptance_status = 'accepted',
+                 converted_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+             WHERE id = ?1 AND status = 'active' AND acceptance_status = 'pending'",
+            [session_id],
+        )
+    } else {
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET status = 'accepted',
+                 converted_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+             WHERE id = ?1 AND status = 'active'",
+            [session_id],
+        )
+    }
+    .map_err(|error| AppError::Database(format!("Failed to accept ideation session: {}", error)))?;
+    if rows != 1 {
+        return Err(AppError::Validation(if require_pending_confirmation {
+            "Session is no longer awaiting acceptance".to_string()
+        } else {
+            "Session is no longer active".to_string()
+        }));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Transaction Phase Helpers
 // ============================================================================
@@ -49,6 +119,24 @@ pub(super) fn phase_insert_execution_plan(
     conn: &rusqlite::Connection,
     session_id_str: &str,
 ) -> AppResult<ExecutionPlan> {
+    let active_plan_exists = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM execution_plans
+                WHERE session_id = ?1 AND status = 'active'
+             )",
+            [session_id_str],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| {
+            AppError::Database(format!("Failed to check active execution plan: {error}"))
+        })?;
+    if active_plan_exists {
+        return Err(AppError::Conflict(
+            "This task pipeline already has an active execution plan".to_string(),
+        ));
+    }
+
     let exec_plan = ExecutionPlan::new(IdeationSessionId::from_string(session_id_str.to_string()));
     conn.execute(
         "INSERT INTO execution_plans (id, session_id, status, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -449,12 +537,18 @@ pub(super) async fn load_linked_agent_conversation_workspace(
             ))
         })?;
 
-    Ok(workspaces.into_iter().find(|workspace| {
-        workspace
-            .linked_ideation_session_id
-            .as_ref()
-            .is_some_and(|linked_session_id| linked_session_id == session_id)
-    }))
+    Ok(workspaces
+        .iter()
+        .find(|workspace| {
+            workspace.mode == AgentConversationWorkspaceMode::Tasks
+                && workspace.task_pipeline_session_id.as_ref() == Some(session_id)
+        })
+        .cloned()
+        .or_else(|| {
+            workspaces
+                .into_iter()
+                .find(|workspace| workspace.linked_ideation_session_id.as_ref() == Some(session_id))
+        }))
 }
 
 /// Core apply-proposals logic — no Tauri types.
@@ -475,6 +569,35 @@ pub async fn apply_proposals_core(
     app_state: &AppState,
     input: ApplyProposalsInput,
 ) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, false, None).await
+}
+
+/// Apply every selected proposal under a still-pending human confirmation.
+///
+/// The pending confirmation is consumed in the same transaction that accepts
+/// the session and creates its execution-plan/task rows. Verification admission
+/// failures therefore leave the confirmation pending for a later retry.
+pub async fn apply_pending_proposals_core(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, true, None).await
+}
+
+pub(crate) async fn apply_supervised_proposals_core(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+    conversation_id: String,
+) -> AppResult<ApplyProposalsResult> {
+    apply_proposals_core_inner(app_state, input, false, Some(conversation_id)).await
+}
+
+async fn apply_proposals_core_inner(
+    app_state: &AppState,
+    input: ApplyProposalsInput,
+    require_pending_confirmation: bool,
+    supervised_task_pipeline_conversation_id: Option<String>,
+) -> AppResult<ApplyProposalsResult> {
     let session_id = IdeationSessionId::from_string(input.session_id);
 
     // Status will be determined automatically based on dependencies:
@@ -491,14 +614,26 @@ pub async fn apply_proposals_core(
         .map_err(|e| AppError::Database(e.to_string()))?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(Some(&session_id))
+        .await?;
+
     if session.status != IdeationSessionStatus::Active {
         return Err(AppError::Validation(
             "Cannot apply proposals from an inactive session".to_string(),
         ));
     }
+    if require_pending_confirmation
+        && session.acceptance_status != Some(crate::domain::entities::AcceptanceStatus::Pending)
+    {
+        return Err(AppError::Validation(
+            "Session is not in pending_acceptance state".to_string(),
+        ));
+    }
 
-    // Verification gate: block acceptance if plan is not verified (when enforcement is enabled).
-    // Resolve the effective policy once from (settings, session.origin) and pass to gate.
+    // Acceptance is the only automatic-verification boundary. Draft creation and
+    // revision stay uninterrupted; a required unverified plan queues one visible
+    // Verify Plan turn here and asks the caller to retry after proof is recorded.
     let ideation_settings = app_state
         .ideation_settings_repo
         .get_settings()
@@ -506,15 +641,24 @@ pub async fn apply_proposals_core(
         .map_err(|e| AppError::Database(format!("Failed to get ideation settings: {}", e)))?;
     let effective_policy =
         crate::domain::services::resolve_effective_gate_policy(&ideation_settings, session.origin);
-    if let Err(e) = crate::domain::services::check_verification_gate(&session, &effective_policy) {
-        return Err(AppError::Validation(e.to_string()));
-    }
+    let chat_service = app_state.build_chat_service_with_managed_execution_state();
+    crate::application::plan_verification_service::ensure_plan_verification_for_acceptance(
+        app_state,
+        &chat_service,
+        &session,
+        &effective_policy,
+    )
+    .await?;
 
     let proposal_ids: HashSet<TaskProposalId> = input
         .proposal_ids
         .into_iter()
         .map(TaskProposalId::from_string)
         .collect();
+    let requested_proposal_ids = proposal_ids
+        .iter()
+        .map(|proposal_id| proposal_id.as_str().to_string())
+        .collect::<Vec<_>>();
 
     // Validate that all proposals exist and belong to this session
     let all_proposals = app_state
@@ -608,8 +752,9 @@ pub async fn apply_proposals_core(
     }
 
     let proposals_to_apply: Vec<TaskProposal> = all_proposals
-        .into_iter()
+        .iter()
         .filter(|p| proposal_ids.contains(&p.id))
+        .cloned()
         .collect();
 
     if proposals_to_apply.len() != proposal_ids.len() {
@@ -641,9 +786,15 @@ pub async fn apply_proposals_core(
             .await?;
 
     if let Some(workspace) = linked_agent_workspace.as_ref() {
-        if workspace.mode != AgentConversationWorkspaceMode::Ideation {
+        let owns_supervised_pipeline = workspace.mode == AgentConversationWorkspaceMode::Tasks
+            && workspace.task_pipeline_session_id.as_ref() == Some(&session_id);
+        if !matches!(
+            workspace.mode,
+            AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Autopilot
+        ) && !owns_supervised_pipeline
+        {
             return Err(AppError::Validation(
-                "Linked agent conversation workspace is not in ideation mode".to_string(),
+                "Linked agent conversation workspace does not own this task pipeline".to_string(),
             ));
         }
         resolve_valid_agent_conversation_workspace_path(&project, workspace).await?;
@@ -706,14 +857,35 @@ pub async fn apply_proposals_core(
         })
         .collect();
 
+    let session_converted = all_proposals
+        .iter()
+        .filter(|proposal| is_local_proposal(proposal, &project_dir))
+        .filter(|proposal| proposal.created_task_id.is_none())
+        .all(|proposal| proposal_ids.contains(&proposal.id));
+
     // All proposals were foreign — transition session to Accepted and return early.
     if proposals_to_apply.is_empty() {
+        if !session_converted {
+            return Err(AppError::Validation(
+                "No local proposals were selected for acceptance".to_string(),
+            ));
+        }
         let foreign_skipped = total_count;
+        let session_id_tx = session_id.as_str().to_string();
+        let expected_plan_id_tx = plan_artifact_id.as_ref().map(ToString::to_string);
+        let require_verification_tx = effective_policy.require_verification_for_accept;
         app_state
-            .ideation_session_repo
-            .update_status(&session_id, IdeationSessionStatus::Accepted)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .db
+            .run_transaction(move |conn| {
+                recheck_exact_plan_verification(
+                    conn,
+                    &session_id_tx,
+                    expected_plan_id_tx.as_deref(),
+                    require_verification_tx,
+                )?;
+                finalize_session_acceptance(conn, &session_id_tx, require_pending_confirmation)
+            })
+            .await?;
         return Ok(ApplyProposalsResult {
             created_task_ids: vec![],
             dependencies_created: 0,
@@ -782,7 +954,11 @@ pub async fn apply_proposals_core(
     let project_base_branch_tx = project.base_branch.clone();
     let project_name_tx = project.name.clone();
     let project_pr_eligible_tx = project.github_pr_enabled;
+    let require_verification_for_accept_tx = effective_policy.require_verification_for_accept;
+    let session_converted_tx = session_converted;
     let proposals_tx = proposals_to_apply.clone();
+    let supervised_conversation_id_tx = supervised_task_pipeline_conversation_id;
+    let requested_proposal_ids_tx = requested_proposal_ids;
     // Convert to String-keyed map so the closure is 'static
     let proposal_deps_tx: HashMap<String, Vec<String>> = proposal_deps
         .iter()
@@ -797,6 +973,25 @@ pub async fn apply_proposals_core(
     let tx_output = app_state
         .db
         .run_transaction(move |conn| {
+            crate::application::tasks_feature_policy::authorize_tasks_session_sync(
+                conn,
+                Some(&session_id_str),
+            )?;
+            if let Some(conversation_id) = supervised_conversation_id_tx.as_deref() {
+                validate_start_authority_sync(
+                    conn,
+                    conversation_id,
+                    &session_id_str,
+                    &requested_proposal_ids_tx,
+                )?;
+            }
+            recheck_exact_plan_verification(
+                conn,
+                &session_id_str,
+                plan_artifact_id_tx.as_ref().map(ArtifactId::as_str),
+                require_verification_for_accept_tx,
+            )?;
+
             // ----------------------------------------------------------------
             // (a) INSERT execution_plan
             // ----------------------------------------------------------------
@@ -864,6 +1059,10 @@ pub async fn apply_proposals_core(
                 &created_tasks,
             )?;
 
+            if session_converted_tx {
+                finalize_session_acceptance(conn, &session_id_str, require_pending_confirmation)?;
+            }
+
             Ok(TxOutput {
                 execution_plan_id,
                 plan_branch_id: branch_id.clone(),
@@ -890,31 +1089,6 @@ pub async fn apply_proposals_core(
                     error
                 ))
             })?;
-    }
-
-    // ========================================================================
-    // POST-TRANSACTION: session status transition to Accepted
-    // ========================================================================
-
-    // Check if all LOCAL proposals in session are now applied.
-    // Foreign proposals (target_project pointing to another project) are intentionally
-    // excluded — they were migrated elsewhere and should not block session acceptance.
-    let remaining = app_state
-        .task_proposal_repo
-        .get_by_session(&session_id)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?
-        .into_iter()
-        .filter(|p| is_local_proposal(p, &project_dir) && p.created_task_id.is_none())
-        .count();
-
-    let session_converted = remaining == 0;
-    if session_converted {
-        app_state
-            .ideation_session_repo
-            .update_status(&session_id, IdeationSessionStatus::Accepted)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
     let is_user_title = session
@@ -976,11 +1150,42 @@ pub async fn apply_proposals_to_kanban(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state(input, &state, &app).await
+}
+
+#[doc(hidden)]
+pub async fn apply_proposals_to_kanban_for_state(
+    input: ApplyProposalsInput,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state_inner(input, state, app, None).await
+}
+
+pub(crate) async fn apply_supervised_proposals_to_kanban_for_state(
+    input: ApplyProposalsInput,
+    conversation_id: String,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state_inner(input, state, app, Some(conversation_id)).await
+}
+
+async fn apply_proposals_to_kanban_for_state_inner(
+    input: ApplyProposalsInput,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+    supervised_task_pipeline_conversation_id: Option<String>,
+) -> Result<ApplyProposalsResultResponse, String> {
     use crate::commands::emit_queue_changed;
 
-    let result = apply_proposals_core(&state, input)
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = match supervised_task_pipeline_conversation_id {
+        Some(conversation_id) => {
+            apply_supervised_proposals_core(state.inner(), input, conversation_id).await
+        }
+        None => apply_proposals_core(state.inner(), input).await,
+    }
+    .map_err(|e| e.to_string())?;
 
     // IPR cleanup: stop the ideation session's interactive Claude CLI process
     // now that the session has been accepted (terminal state).
@@ -1005,7 +1210,7 @@ pub async fn apply_proposals_to_kanban(
         }
 
         // Stop and archive any running verification child agents (best-effort).
-        stop_verification_children(&result.session_id, &state)
+        stop_verification_children(&result.session_id, state.inner())
             .await
             .ok();
     }
@@ -1018,7 +1223,7 @@ pub async fn apply_proposals_to_kanban(
         let proposals_context = result.proposal_titles.join("; ");
         let session_id_str = result.session_id.clone();
         if let Err(error) = spawn_session_namer_agent(
-            &state,
+            state.inner(),
             SessionNamerTarget::accepted_session(session_id_str, proposals_context),
         )
         .await
@@ -1030,11 +1235,11 @@ pub async fn apply_proposals_to_kanban(
     // Emit queue_changed if any tasks were set to Ready status
     if result.any_ready_tasks {
         let project_id = ProjectId::from_string(result.project_id.clone());
-        emit_queue_changed(&state, &project_id, &app).await;
+        emit_queue_changed(state, &project_id, app).await;
 
         let execution_state = app.state::<Arc<ExecutionState>>();
         spawn_ready_task_scheduler_if_needed(
-            &state,
+            state.inner(),
             Arc::clone(&*execution_state),
             Some(app.clone()),
             true,

@@ -104,6 +104,11 @@ fn agent_waiting_allows_user_attended_interactive_conversations() {
         false,
         false,
     ));
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Standalone,
+        false,
+        false,
+    ));
 }
 
 #[async_trait::async_trait]
@@ -206,6 +211,33 @@ async fn spawn_jsonl_process_with_exit_status(
     command
         .spawn()
         .expect("spawn codex jsonl fixture with exit status")
+}
+
+async fn spawn_jsonl_process_with_stderr(
+    lines: &[&str],
+    stderr: &str,
+    exit_status: i32,
+) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(
+            "printf '%s' \"$RALPHX_STREAM_LINES\"; printf '%s' \"$RALPHX_STREAM_STDERR\" >&2; exit \"$RALPHX_EXIT_STATUS\"",
+        )
+        .env("RALPHX_STREAM_LINES", payload)
+        .env("RALPHX_STREAM_STDERR", stderr)
+        .env("RALPHX_EXIT_STATUS", exit_status.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command.spawn().expect("spawn Codex stderr fixture")
 }
 
 async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
@@ -489,7 +521,9 @@ async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
         matches!(
             result,
             Err(StreamError::NoOutput {
-                context_type: ChatContextType::Ideation
+                context_type: ChatContextType::Ideation,
+                exit_code: Some(1),
+                ..
             })
         ),
         "a non-zero terminal exit without diagnostics must not be reduced to AgentExit"
@@ -531,9 +565,62 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
     .await;
 
     assert!(
-        matches!(result, Err(StreamError::NoOutput { context_type: ChatContextType::Ideation })),
+        matches!(
+            result,
+            Err(StreamError::NoOutput {
+                context_type: ChatContextType::Ideation,
+                exit_code: Some(0),
+                ..
+            })
+        ),
         "a terminal success without text, tool output, or completion signal must not settle as success"
     );
+}
+
+#[tokio::test]
+async fn codex_stdin_notice_only_exit_is_typed_as_no_output_with_details() {
+    let child = spawn_jsonl_process_with_stderr(
+        &[r#"{"type":"thread.started","thread_id":"stdin-notice-thread"}"#],
+        "Reading additional input from stdin...",
+        1,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("stdin-notice-run".to_string()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    match result {
+        Err(StreamError::NoOutput {
+            exit_code, stderr, ..
+        }) => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("Reading additional input from stdin"));
+        }
+        other => panic!("expected typed no-output failure, got {other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -187,6 +187,7 @@ fn automation_status_transition_matrix_matches_spec() {
         (Active, Stopped),
         (Paused, Active),
         (Paused, Stopped),
+        (Stopped, Active),
     ];
 
     for from in statuses {

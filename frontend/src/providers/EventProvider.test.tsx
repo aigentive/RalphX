@@ -44,6 +44,10 @@ vi.mock("@/hooks/useGlobalAgentLifecycle", () => ({
   useGlobalAgentLifecycle: vi.fn(),
 }));
 
+vi.mock("@/hooks/useAgentWorkflowEvents", () => ({
+  useAgentWorkflowEvents: vi.fn(),
+}));
+
 vi.mock("@/hooks/useNotificationEvents", () => ({
   useNotificationEvents: vi.fn(),
 }));

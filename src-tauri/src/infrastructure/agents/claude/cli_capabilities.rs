@@ -320,6 +320,8 @@ fn run_claude_command(cli_path: &Path, args: &[&str]) -> Result<String, String> 
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
     crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_std_command(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;

@@ -19,14 +19,12 @@ interface NotificationHistoryRowProps {
   notification: Notification;
   now: number;
   onOpen: (notification: Notification) => void;
-  observe: (id: string, readAt: string | undefined) => (element: HTMLButtonElement | null) => void;
 }
 
 export const NotificationHistoryRow = memo(function NotificationHistoryRow({
   notification,
   now,
   onOpen,
-  observe,
 }: NotificationHistoryRowProps) {
   const presentation = ATTENTION_CATEGORY_MAPPING[notification.category];
   const Icon = presentation.icon;
@@ -34,7 +32,6 @@ export const NotificationHistoryRow = memo(function NotificationHistoryRow({
 
   return (
     <button
-      ref={observe(notification.id, notification.readAt)}
       type="button"
       data-testid={`notification-history-row-${notification.id}`}
       onClick={() => onOpen(notification)}

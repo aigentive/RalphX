@@ -282,26 +282,6 @@ export const IDEATION_TOOLS = [
         },
     },
     // ========================================================================
-    // VERIFICATION CONFIRMATION STATUS (ralphx-ideation and ralphx-ideation-team-lead only)
-    // ========================================================================
-    {
-        name: "get_verification_confirmation_status",
-        description: "Check whether the user has confirmed, rejected, or is still pending confirmation for plan verification. " +
-            "Call this after `create_plan_artifact` to detect whether the user has acted on the verification confirmation dialog. " +
-            "Response includes status: \"pending\" (user hasn't responded yet), \"accepted\" (user confirmed — verification will start), " +
-            "\"rejected\" (user dismissed — session stays Unverified), or \"not_applicable\" (external session or no pending confirmation exists).",
-        inputSchema: {
-            type: "object",
-            properties: {
-                session_id: {
-                    type: "string",
-                    description: "The ideation session ID to check verification confirmation status for",
-                },
-            },
-            required: ["session_id"],
-        },
-    },
-    // ========================================================================
     // QUESTION TOOLS (ralphx-ideation agent — inline AskUserQuestion)
     // ========================================================================
     {
@@ -480,8 +460,8 @@ export const IDEATION_TOOLS = [
                 },
                 purpose: {
                     type: "string",
-                    enum: ["general", "verification"],
-                    description: "Purpose of the child session. 'general' for regular follow-on sessions (default), 'verification' for plan verification sessions that run in the background.",
+                    enum: ["general"],
+                    description: "Purpose of the child session. Only general follow-on sessions are supported.",
                 },
                 is_external_trigger: {
                     type: "boolean",

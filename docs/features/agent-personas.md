@@ -2,35 +2,55 @@
 
 ## Overview
 
-Agent Personas are prompt-only behavior profiles for Agent conversations. RalphX stores each persona in its local database and binds it to one conversation, so changing a persona affects that conversation's future sends without changing the underlying project or other conversations.
+Agent Personas are reusable, prompt-only behavior profiles for Agent conversations. A persona is either global or scoped to one project, while its binding remains local to a single eligible conversation.
 
-## How to Use Personas
+## Create and Build
 
-1. Open **Settings → Personas** to create, edit, approve, archive, or delete personas.
-2. Use **Build with agent** to draft a persona from selected project material. Drafts are refined through the builder, then approved before they can be bound.
-3. In an eligible Project-context Agent conversation, choose a persona from the composer picker before sending.
-4. Use the persona chip in the session toolbar to inspect or switch the bound persona. Switching stops an active agent before the new binding takes effect.
+- **Manual:** Open **Settings → Personas**, choose **New**, select Global or a project, edit the draft, then approve it.
+- **Build with Agent:** In **Settings → Personas**, choose **Build with Agent**, select Global or a project, and RalphX opens the standard Agents composer with **Persona** mode locked.
+- **From a project conversation:** Open the conversation's persona chip and choose **Create persona for this project** to open a new project-locked **Persona** builder without returning to Settings.
+- **Refine with Agent:** Use a persona's Refine action to open a scope-locked Persona conversation seeded from that persona.
 
-## What a Persona Changes
+Persona building now uses the normal Agents conversation. Add text files or folder references from the composer, describe and name the desired persona, and answer the builder's questions. The builder saves the result directly to the conversation-bound draft; a Markdown-only chat response is not a completed build. The Persona tab opens with the conversation, shows the saved draft, and provides **Approve persona**. There is no copy/paste step or separate Settings ingestion screen.
 
-- The persona is appended to the agent's prompt; it is not a separate agent, model, skill, or project setting.
-- The binding is per conversation and persists locally, including across app restarts.
-- A conversation can have one bound active persona at a time.
+Each Persona conversation owns one persona lineage. If a request describes several personas, choose one to build first and start a separate Persona conversation for each additional persona.
 
-## V1 Limitations
+Folder references are default-off during rollout. Enable **Settings → Capabilities → Folder context** to show **Add folder** directly below **Add files** in supported Agent composers. Standalone conversations remain controlled by the `standalone_conversations` config/env flag.
 
-| Limitation | V1 behavior |
+## Scope and Context
+
+| Build or use case | Behavior |
 |---|---|
-| Teammates, subagents, and pipeline agents | Teammates, in-process Task subagents, and pipeline agents (worker, reviewer, and merger) are persona-less. |
-| Conversation scope | Personas are available only in Project-context Agent conversations; Ideation, Task chat, and Merge chat have no persona binding. |
-| External MCP | **BLANKET SUPPRESS:** all external MCP sends have no persona in v1. |
-| Native `--agent` paths | Native `--agent` paths bypass injection. RalphX emits `persona:injection_skipped` without persona content. |
-| Codex continuity | Codex re-sends the persona each turn. The 10 KB cap bounds the added prompt size but does not solve transcript stacking. |
-| Draft iteration | Drafts are iterated only through the builder agent; the manual editor edits active personas, not drafts. |
-| Persona chip | The chip appears only in the session toolbar. Project-context hosts without that toolbar have no chip in v1. |
+| Global build | Runs as a standalone conversation in a private app-owned workspace. |
+| Project build | Runs with the selected project's repository plus its private builder workspace. |
+| Attached text file | Materialized into the private workspace and exposed to the builder by path. |
+| Attached folder | Stored as a live folder reference; contents are read in place and are never copied. Each send records the effective folder as an immutable message-history reference. |
+| Persona picker | Offers global personas plus personas scoped to the current project. |
+| Refine | Keeps the source persona's scope; approval updates the source lineage. |
 
-## Rollout and Next Steps
+The builder's filesystem tools are constrained to the resolved project/workspace/folder roots. Missing or moved referenced content fails closed instead of adding a dangling path to the prompt.
 
-Before Agent Personas are enabled by default, RalphX must complete the [GA gate procedures](../development/persona-ga-gates.md), including live Claude resume and packaged-app ingestion smoke tests.
+## Versioned Persona Artifacts
 
-Planned expansions, including wider binding scopes, pipeline propagation, external-MCP controls, and a Codex compact-digest or clean-session approach, are tracked in [Phase 4 of the personas design](../../.artifacts/specs/agent-personas/design.md#v2-backlog).
+Every persona content write appends an immutable artifact version. In a Persona conversation, open the **Persona** artifact tab to inspect the draft or approved result, select historical versions, see who created each version, approve a draft, or open/refine the resulting persona.
+
+Each builder conversation owns at most one draft and retains a result pointer after approval. Plain approvals keep their draft history; seeded refinement appends the approved result to the source persona's lineage.
+
+## Using a Persona
+
+1. Start or open an eligible project Agent conversation.
+2. Choose a persona before sending, or use the persona chip to inspect or switch the current binding.
+3. RalphX injects the active persona into future sends for that conversation.
+
+Switching a persona stops an active agent before the new binding takes effect. Archiving a persona clears active bindings; deleting a project deletes its drafts, archives its active personas, and clears affected bindings.
+
+## Boundaries
+
+- A persona changes prompt behavior; it is not a model, skill, project setting, or separate agent.
+- Teammates, delegated agents, pipeline workers/reviewers/mergers, Ideation, Task, Merge, and external MCP sends remain persona-less.
+- Standalone chat does not support persona binding; standalone **Persona** mode is the global builder flow.
+- Standalone Chat and Standalone PersonaBuilder both support Claude and Codex; PersonaBuilder keeps each provider's MCP-compatible launch policy plus enforced filesystem roots.
+- Native agent paths that cannot accept prompt injection report `persona:injection_skipped` without exposing persona content.
+- Builder attachments must decode as UTF-8 text (binary files are rejected); file-type filtering in the picker is advisory.
+
+The `agent_personas`, `standalone_conversations`, and `composer_folder_references` flags gate their corresponding surfaces. Global Refine remains unavailable when standalone conversations are disabled.

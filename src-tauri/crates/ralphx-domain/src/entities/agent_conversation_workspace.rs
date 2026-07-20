@@ -16,6 +16,8 @@ pub enum AgentConversationWorkspaceMode {
     Chat,
     Edit,
     Plan,
+    Tasks,
+    Autopilot,
     Ideation,
     ReviewPr,
     Automation,
@@ -28,6 +30,8 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Chat => write!(f, "chat"),
             AgentConversationWorkspaceMode::Edit => write!(f, "edit"),
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
+            AgentConversationWorkspaceMode::Tasks => write!(f, "tasks"),
+            AgentConversationWorkspaceMode::Autopilot => write!(f, "autopilot"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
             AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
             AgentConversationWorkspaceMode::Automation => write!(f, "automation"),
@@ -44,6 +48,8 @@ impl FromStr for AgentConversationWorkspaceMode {
             "chat" => Ok(Self::Chat),
             "edit" => Ok(Self::Edit),
             "plan" => Ok(Self::Plan),
+            "tasks" => Ok(Self::Tasks),
+            "autopilot" => Ok(Self::Autopilot),
             "ideation" => Ok(Self::Ideation),
             "review_pr" => Ok(Self::ReviewPr),
             "automation" => Ok(Self::Automation),
@@ -110,6 +116,29 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+/// Response-only classification of whether the current runtime owns Review mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewRuntimeState {
+    ActiveOwned,
+    Terminal,
+    MissingRuntimeIdentity,
+    MalformedRuntimeIdentity,
+    StaleRuntime,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewRuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActiveOwned => write!(f, "active_owned"),
+            Self::Terminal => write!(f, "terminal"),
+            Self::MissingRuntimeIdentity => write!(f, "missing_runtime_identity"),
+            Self::MalformedRuntimeIdentity => write!(f, "malformed_runtime_identity"),
+            Self::StaleRuntime => write!(f, "stale_runtime"),
+        }
+    }
+}
+
 impl std::fmt::Display for AgentWorkspaceReviewMonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -135,6 +164,57 @@ impl FromStr for AgentWorkspaceReviewMonitorStatus {
             )),
         }
     }
+}
+
+/// Durable GitHub auto-merge state owned by an authoritative workspace Review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewAutoMergeGuardStatus {
+    Pausing,
+    PausedForReview,
+    AwaitingPublish,
+    Restoring,
+    RestoreFailed,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewAutoMergeGuardStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pausing => write!(f, "pausing"),
+            Self::PausedForReview => write!(f, "paused_for_review"),
+            Self::AwaitingPublish => write!(f, "awaiting_publish"),
+            Self::Restoring => write!(f, "restoring"),
+            Self::RestoreFailed => write!(f, "restore_failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewAutoMergeGuardStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pausing" => Ok(Self::Pausing),
+            "paused_for_review" => Ok(Self::PausedForReview),
+            "awaiting_publish" => Ok(Self::AwaitingPublish),
+            "restoring" => Ok(Self::Restoring),
+            "restore_failed" => Ok(Self::RestoreFailed),
+            _ => Err(format!(
+                "unknown workspace review auto-merge guard status: '{value}'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceReviewAutoMergeGuard {
+    pub status: AgentWorkspaceReviewAutoMergeGuardStatus,
+    pub pr_number: i64,
+    pub merge_method: String,
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub head_sha: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +545,11 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_artifact_id: Option<ArtifactId>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<DateTime<Utc>>,
+    pub review_gate_bypassed_at: Option<DateTime<Utc>>,
+    pub review_gate_bypassed_target_scope: Option<AgentWorkspaceReviewTargetScope>,
+    pub review_gate_bypassed_diff_fingerprint: Option<String>,
+    pub review_gate_bypassed_artifact_id: Option<ArtifactId>,
+    pub review_gate_bypassed_artifact_version: Option<u32>,
     pub reviewed_head_sha: Option<String>,
     pub reviewed_diff_fingerprint: Option<String>,
     pub selected_source_base_ref: Option<String>,
@@ -485,6 +570,7 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_status: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
+    pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -504,6 +590,11 @@ impl AgentWorkspaceReviewMonitor {
             review_artifact_id: None,
             review_artifact_version: None,
             review_artifact_updated_at: None,
+            review_gate_bypassed_at: None,
+            review_gate_bypassed_target_scope: None,
+            review_gate_bypassed_diff_fingerprint: None,
+            review_gate_bypassed_artifact_id: None,
+            review_gate_bypassed_artifact_version: None,
             reviewed_head_sha: None,
             reviewed_diff_fingerprint: None,
             selected_source_base_ref: None,
@@ -524,6 +615,7 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_status: None,
             last_run_id: None,
             last_error: None,
+            auto_merge_guard: None,
             created_at: now,
             updated_at: now,
         }
@@ -560,6 +652,74 @@ impl AgentWorkspaceReviewMonitor {
         self.review_outcome == AgentWorkspaceReviewOutcome::Passed
             && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
             && self.review_artifact_id.is_some()
+    }
+
+    pub fn has_current_review_bypass_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.status == AgentWorkspaceReviewMonitorStatus::Ready
+            && self.review_outcome == AgentWorkspaceReviewOutcome::Blocking
+            && self.review_gate_bypassed_at.is_some()
+            && self.review_gate_bypassed_target_scope == Some(target_scope)
+            && self.review_gate_bypassed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
+            && self.review_gate_bypassed_artifact_id == self.review_artifact_id
+            && self.review_gate_bypassed_artifact_version == self.review_artifact_version
+            && self.review_artifact_id.is_some()
+            && self.review_artifact_version.is_some()
+            && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
+    }
+
+    pub fn has_current_review_publish_authorization_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.has_current_passing_review_for_target(target_scope, head_sha, diff_fingerprint)
+            || self.has_current_review_bypass_for_target(target_scope, head_sha, diff_fingerprint)
+    }
+
+    pub fn clear_review_gate_bypass(&mut self) {
+        self.review_gate_bypassed_at = None;
+        self.review_gate_bypassed_target_scope = None;
+        self.review_gate_bypassed_diff_fingerprint = None;
+        self.review_gate_bypassed_artifact_id = None;
+        self.review_gate_bypassed_artifact_version = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewApprovalSnapshot {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+}
+
+impl AgentWorkspaceReviewApprovalSnapshot {
+    pub fn audit_event(
+        &self,
+        conversation_id: ChatConversationId,
+        approved_at: DateTime<Utc>,
+    ) -> AgentConversationWorkspacePublicationEvent {
+        let mut event = AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "workspace_review_approved_anyway",
+            "succeeded",
+            format!(
+                "Human approved blocking Workspace Review artifact {} v{} for {} at diff {}.",
+                self.artifact_id.as_str(),
+                self.artifact_version,
+                self.target_scope,
+                self.diff_fingerprint
+            ),
+            Some("workspace_review_approved_anyway".to_string()),
+        );
+        event.created_at = approved_at;
+        event
     }
 }
 
@@ -684,6 +844,7 @@ pub struct AgentConversationWorkspace {
     pub branch_name: String,
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<IdeationSessionId>,
+    pub task_pipeline_session_id: Option<IdeationSessionId>,
     pub linked_plan_branch_id: Option<PlanBranchId>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     pub publication_pr_number: Option<i64>,
@@ -731,6 +892,7 @@ impl AgentConversationWorkspace {
             branch_name,
             worktree_path,
             linked_ideation_session_id: None,
+            task_pipeline_session_id: None,
             linked_plan_branch_id: None,
             source_pull_request: None,
             publication_pr_number: None,

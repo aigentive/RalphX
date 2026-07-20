@@ -29,8 +29,8 @@ use ralphx_lib::application::interactive_process_registry::{
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, ProjectId,
-    TaskId,
+    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, TaskId,
 };
 use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
@@ -43,6 +43,9 @@ use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: id.to_string(),
         description: "Gate-1 test persona".to_string(),
@@ -51,10 +54,27 @@ fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
         version: 1,
         content_hash: content_hash.to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
+}
+
+async fn seed_project_context(state: &AppState, context_id: &str) -> tempfile::TempDir {
+    let project_dir = tempfile::tempdir().expect("temp project dir");
+    let mut project = Project::new(
+        format!("Gate-1 test project {context_id}"),
+        project_dir.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string(context_id.to_string());
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project context");
+    project_dir
 }
 
 fn write_capturing_claude_cli(temp: &Path, capture: &Path) -> PathBuf {
@@ -183,6 +203,7 @@ async fn gate1_persona_resolution_failure_blocks_before_stdin_write() {
 async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-compare";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-gate1-compare", "persona body", "new-hash");
     state.persona_repo.create(persona.clone()).await.unwrap();
     let mut conversation =
@@ -275,6 +296,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         configure_runtime_plugin_dirs_for_gate1_persona_test();
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-edit";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-gate1-edit", "old persona body", "old-hash");
     state
         .persona_repo
@@ -288,11 +310,23 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
         provider_session_id: "preserved-provider-session".to_string(),
     });
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("persist bound conversation");
+    let mut completed_run = AgentRun::new(conversation_id);
+    completed_run.complete();
+    completed_run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+    completed_run.provider_session_id = Some("preserved-provider-session".to_string());
+    completed_run.logical_model = Some("sonnet".to_string());
+    completed_run.effective_model_id = Some("sonnet".to_string());
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("seed completed runtime for preserved provider session");
 
     let mut old_process = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
@@ -316,7 +350,16 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         .await;
     state
         .persona_repo
-        .update_content(&persona.id, "new persona body", "new-hash")
+        .set_status(&persona.id, PersonaStatus::Archived)
+        .await
+        .expect("release the active slug for fixture replacement");
+    let mut updated_persona = persona.clone();
+    updated_persona.content = "new persona body".to_string();
+    updated_persona.content_hash = "new-hash".to_string();
+    updated_persona.version += 1;
+    state
+        .persona_repo
+        .create(updated_persona)
         .await
         .expect("simulate update_persona content hash bump");
 
@@ -822,6 +865,7 @@ async fn gate1_without_active_conversation_bypasses_fast_path() {
         configure_runtime_plugin_dirs_for_gate1_persona_test();
     let state = AppState::new_test();
     let context_id = "project-gate1-no-active-conversation";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -875,6 +919,7 @@ async fn gate1_without_active_conversation_bypasses_fast_path() {
 async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-override-order";
+    let _project_dir = seed_project_context(&state, context_id).await;
     let persona = active_persona("persona-override-order", "persona body", "new-hash");
     state.persona_repo.create(persona.clone()).await.unwrap();
     let mut conversation =

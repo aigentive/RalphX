@@ -16,8 +16,10 @@ import {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
+  approveAgentWorkspaceReviewAnyway,
   listAgentConversationIssues,
   updateAgentConversationIssueStatus,
   convertAgentConversationIssueFollowup,
@@ -526,12 +528,14 @@ describe("chat api", () => {
     });
   });
 
-  it("accepts persona_builder mode and threads nullable persona_id to personaId", async () => {
+  it("accepts persona_builder mode and transforms its persona bindings", async () => {
     mockInvoke.mockResolvedValue([
       {
         ...planSeedConversationResponse(),
         agent_mode: "persona_builder",
         persona_id: null,
+        builder_draft_id: "draft-1",
+        builder_result_persona_id: "persona-1",
       },
     ]);
 
@@ -540,6 +544,8 @@ describe("chat api", () => {
     expect(result[0]).toMatchObject({
       agentMode: "persona_builder",
       personaId: null,
+      builderDraftId: "draft-1",
+      builderResultPersonaId: "persona-1",
     });
   });
 
@@ -1374,6 +1380,51 @@ describe("chat api", () => {
     });
   });
 
+  it("creates a self-keyed standalone conversation without sending contextId", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-1",
+      context_type: "standalone",
+      context_id: "standalone-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone" },
+    });
+  });
+
+  it("creates a persona builder with its mode persisted before setup", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-builder-1",
+      context_type: "standalone",
+      context_id: "standalone-builder-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      agent_mode: "persona_builder",
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone", null, undefined, "persona_builder");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone", mode: "persona_builder" },
+    });
+  });
+
   it("updates conversation title", async () => {
     mockInvoke.mockResolvedValue({
       id: "c-title",
@@ -1405,18 +1456,26 @@ describe("chat api", () => {
 
   it("archives conversation", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Old agent",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Old agent",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     const result = await archiveConversation("c-archive", { closePullRequest: false });
@@ -1425,23 +1484,32 @@ describe("chat api", () => {
       conversationId: "c-archive",
       closePullRequest: false,
     });
-    expect(result.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.conversation.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.cleanup.localCleanup).toBe("cleaned");
   });
 
   it("passes explicit PR closure intent when archiving", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive-close-pr",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Close PR",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive-close-pr",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Close PR",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     await archiveConversation("c-archive-close-pr", { closePullRequest: true });
@@ -2374,6 +2442,7 @@ describe("chat api", () => {
     const result = await updateAgentConversationCoordinationMode({
       conversationId: "conversation-chat",
       coordinationMode: "rx_native_team",
+      modelOverride: "gpt-5.6-sol",
     });
 
     expect(mockInvoke).toHaveBeenCalledWith(
@@ -2382,6 +2451,7 @@ describe("chat api", () => {
         input: {
           conversationId: "conversation-chat",
           coordinationMode: "rx_native_team",
+          modelOverride: "gpt-5.6-sol",
         },
       },
     );
@@ -2754,6 +2824,29 @@ describe("chat api", () => {
     });
   });
 
+  it("sends the provider-neutral workflow capability intent", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Build a workflow", undefined, undefined, {
+      conversationId: "c1",
+      capabilityIntent: { coordinationMode: "rx_native_workflow" },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Build a workflow",
+        conversationId: "c1",
+        capabilityIntent: { coordinationMode: "rx_native_workflow" },
+      },
+    });
+  });
+
   it("sends unified agent message with hidden user-message handoff", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
@@ -2805,6 +2898,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     );
 
@@ -2820,6 +2923,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     });
   });
@@ -2831,6 +2944,16 @@ describe("chat api", () => {
         content: "queued",
         created_at: "2026-01-24T10:00:00Z",
         is_editing: false,
+        composer_selection_snapshot: {
+          sourceType: "ticket",
+          sourceKind: "clickup",
+          sourceId: "task-1",
+          sourceKey: "CU-1",
+          provider: "clickup",
+          startLine: 3,
+          endLine: 3,
+          content: "selected line",
+        },
         attachment_ids: ["att-1"],
       },
     ]);
@@ -2839,6 +2962,7 @@ describe("chat api", () => {
 
     expect(list).toHaveLength(1);
     expect(list[0].attachmentIds).toEqual(["att-1"]);
+    expect(list[0].composerSelectionSnapshot?.sourceKey).toBe("CU-1");
   });
 
   it("deletes queued message", async () => {
@@ -3084,6 +3208,9 @@ describe("chat api", () => {
     );
     expect(chatApi.getAgentWorkspaceReviewContext).toBe(
       getAgentWorkspaceReviewContext,
+    );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toBe(
+      getAgentWorkspaceReviewStartPreview,
     );
     expect(chatApi.startAgentWorkspaceReview).toBe(startAgentWorkspaceReview);
     expect(chatApi.startAgentWorkspaceReviewFixer).toBe(
@@ -3403,6 +3530,10 @@ describe("getConversationActiveState", () => {
           events: [],
           target: rawWorkspaceReviewTarget(),
           monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: true,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
           is_current: true,
           is_outdated: false,
           should_show_tab: true,
@@ -3422,6 +3553,10 @@ describe("getConversationActiveState", () => {
     expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);
+    expect(result.reviewArtifactIsCurrent).toBe(true);
+    expect(result.reviewArtifactIsOutdated).toBe(false);
+    expect(result.canMutateReviewState).toBe(false);
+    expect(result.reviewRuntimeState).toBe("missing_runtime_identity");
   });
 
   it("starts a general workspace review run through the encoded REST endpoint", async () => {
@@ -3465,6 +3600,68 @@ describe("getConversationActiveState", () => {
     expect(result.monitor.status).toBe("reviewing");
   });
 
+  it("preserves workspace review HTTP conflicts for a receipt refresh", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () =>
+        Promise.resolve({
+          error: "workspace Review target or GitHub auto-merge state changed",
+        }),
+    });
+
+    await expect(startAgentWorkspaceReview("conversation-1")).rejects.toEqual(
+      expect.objectContaining({
+        name: "AgentWorkspaceHttpError",
+        status: 409,
+      }),
+    );
+  });
+
+  it("fetches the target-bound workspace review start preview", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          target: rawWorkspaceReviewTarget(),
+          will_disable_auto_merge: true,
+          pr_number: 42,
+          merge_method: "squash",
+          restore_after_publish: true,
+          confirmation: {
+            target_scope: "workspace_delta",
+            diff_fingerprint: "fingerprint-1",
+            head_sha: "head-sha-1",
+            pr_number: 42,
+            will_disable_auto_merge: true,
+            merge_method: "squash",
+            restore_after_publish: true,
+          },
+        }),
+    });
+
+    const result = await getAgentWorkspaceReviewStartPreview("conversation/1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-start-preview",
+      ),
+      undefined,
+    );
+    expect(result.confirmation).toEqual({
+      targetScope: "workspace_delta",
+      diffFingerprint: "fingerprint-1",
+      headSha: "head-sha-1",
+      prNumber: 42,
+      willDisableAutoMerge: true,
+      mergeMethod: "squash",
+      restoreAfterPublish: true,
+    });
+    expect(result.restoreAfterPublish).toBe(true);
+  });
+
   it("starts the workspace review fixer through the encoded REST endpoint", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -3503,6 +3700,51 @@ describe("getConversationActiveState", () => {
     expect(result.isCurrent).toBe(true);
     expect(result.monitor.reviewFixerStatus).toBe("running");
     expect(result.monitor.reviewFixerRunId).toBe("fixer-run-1");
+  });
+
+  it("approves an exact blocking workspace Review through the encoded REST endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          monitor: rawWorkspaceReviewMonitor({
+            review_outcome: "blocking",
+            review_gate_status: "passed",
+            review_gate_bypassed_at: "2026-06-18T12:06:00Z",
+            review_gate_bypassed_target_scope: "workspace_delta",
+            review_gate_bypassed_diff_fingerprint: "fingerprint-1",
+            review_gate_bypassed_artifact_id: "review-artifact-1",
+            review_gate_bypassed_artifact_version: 2,
+          }),
+        }),
+    });
+
+    const result = await approveAgentWorkspaceReviewAnyway("conversation/1", {
+      targetScope: "workspace_delta",
+      diffFingerprint: "fingerprint-1",
+      artifactId: "review-artifact-1",
+      artifactVersion: 2,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-approve-anyway",
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_scope: "workspace_delta",
+          diff_fingerprint: "fingerprint-1",
+          artifact_id: "review-artifact-1",
+          artifact_version: 2,
+        }),
+      },
+    );
+    expect(result.monitor.reviewOutcome).toBe("blocking");
+    expect(result.monitor.reviewGateStatus).toBe("passed");
+    expect(result.monitor.reviewGateBypassedArtifactVersion).toBe(2);
   });
 
   it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {
@@ -3791,6 +4033,32 @@ describe("getConversationActiveState", () => {
 });
 
 describe("startAgentConversationInvokeInput", () => {
+  it("omits projectId for standalone chat starts", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "hello",
+        conversationId: "standalone-1",
+        mode: "chat",
+      }),
+    ).toEqual({
+      content: "hello",
+      conversationId: "standalone-1",
+      mode: "chat",
+    });
+  });
+  it("maps persona-builder refine provenance without inventing a standalone project", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "Refine this voice",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+      }),
+    ).toEqual({
+      content: "Refine this voice",
+      mode: "persona_builder",
+      sourcePersonaId: "persona-reviewer",
+    });
+  });
   it("includes only projectId and content when all optional fields are absent", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",
@@ -3888,6 +4156,21 @@ describe("startAgentConversationInvokeInput", () => {
         baseRefName: "main",
         headRefOid: "deadbeef",
       },
+    });
+  });
+
+  it("prefers capabilityIntent while retaining teamIntent compatibility", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        projectId: "project-1",
+        content: "use Ultra",
+        capabilityIntent: { coordinationMode: "codex_native_ultra" },
+        teamIntent: { coordinationMode: "rx_native_team" },
+      }),
+    ).toEqual({
+      projectId: "project-1",
+      content: "use Ultra",
+      capabilityIntent: { coordinationMode: "codex_native_ultra" },
     });
   });
 

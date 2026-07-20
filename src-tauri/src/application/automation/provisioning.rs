@@ -132,9 +132,10 @@ impl AutomationRunStartRequest {
             ),
         };
         Ok(StartAgentConversationInput {
-            project_id: self.project_id,
+            project_id: Some(self.project_id),
             content,
             persona_id: None,
+            source_persona_id: None,
             conversation_id: Some(self.conversation_id.as_str().to_string()),
             parent_conversation_id: None,
             title: None,
@@ -155,6 +156,7 @@ impl AutomationRunStartRequest {
             composer_project_references: self.composer_project_references,
             composer_integration_references: self.composer_integration_references,
             composer_artifact_references: self.composer_artifact_references,
+            composer_selection_snapshot: None,
             team_intent: None,
         })
     }

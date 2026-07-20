@@ -293,7 +293,16 @@ pub async fn draft_agent_workspace_pr_description(
         conversation_context: &conversation_context,
     });
 
-    let runtime = state.resolve_pr_describer_runtime(conversation).await?;
+    let runtime = state
+        .resolve_manual_role_background_agent_runtime(
+            Some(project.id.as_str()),
+            Some(Path::new(&project.working_directory)),
+            crate::domain::agents::RoutingRole::UtilityPrDescriber,
+            agent_names::AGENT_PR_DESCRIBER,
+            "agent workspace PR describer",
+            conversation.provider_harness,
+        )
+        .await?;
     let agent_client = Arc::clone(&runtime.client);
     let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
@@ -322,6 +331,7 @@ pub async fn draft_agent_workspace_pr_description(
             max_tokens: None,
             timeout_secs: Some(120),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {

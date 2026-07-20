@@ -26,6 +26,7 @@ import {
 } from "./automations.transforms";
 import type {
   Automation,
+  AutomationAuthoringMode,
   AutomationDetail,
   AutomationRun,
   AutomationRunScopedInput,
@@ -41,12 +42,16 @@ import type {
 export type {
   Automation,
   AutomationBaseRefKind,
+  AutomationAuthoringMode,
   AutomationChainMode,
   AutomationCompletionSignal,
   AutomationDetail,
+  AutomationDecompositionVerificationStatus,
   AutomationJudgeState,
   AutomationPlanApprovalMode,
   AutomationPlanJudgeState,
+  AutomationPipelineProgress,
+  AutomationPipelineTask,
   AutomationPrMergeMode,
   AutomationPromptAuthor,
   AutomationRun,
@@ -101,10 +106,14 @@ const CALLER_SESSION_ID_HEADER = "x-ralphx-caller-session-id";
 function createDraftArgs(input: CreateAutomationDraftInput): {
   projectId: string;
   name?: string;
+  authoringMode?: AutomationAuthoringMode;
 } {
   return {
     projectId: input.projectId,
     ...(input.name !== undefined && { name: input.name }),
+    ...(input.authoringMode !== undefined && {
+      authoringMode: input.authoringMode,
+    }),
   };
 }
 
@@ -215,6 +224,30 @@ export const automationsApi = {
   triggerRunNow: (id: string): Promise<AutomationScheduleResponse> =>
     typedInvokeWithTransform(
       "trigger_automation_run_now",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  restart: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "restart_automation",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  retryJudge: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "retry_automation_judge",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  retryPlanJudge: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "retry_automation_plan_judge",
       { input: { id } },
       AutomationScheduleResponseSchema,
       transformAutomationScheduleResponse,

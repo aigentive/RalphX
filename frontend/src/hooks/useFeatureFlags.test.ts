@@ -11,12 +11,10 @@ import {
   applyFeatureFlagOverrides,
   isViewEnabled,
   useFeatureFlags,
+  useUpdateFeatureFlags,
 } from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  featureFlagsSchema,
-  type FeatureFlags,
-} from "@/types/feature-flags";
+import { featureFlagsSchema, type FeatureFlags } from "@/types/feature-flags";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -25,7 +23,11 @@ function createWrapper() {
     },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return createElement(QueryClientProvider, { client: queryClient }, children);
+    return createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      children,
+    );
   };
 }
 
@@ -44,6 +46,8 @@ describe("isViewEnabled", () => {
     atlassianOauth: false,
     ticketingDashboard: true,
     agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
   };
   const activityDisabled: FeatureFlags = {
     activityPage: false,
@@ -55,6 +59,8 @@ describe("isViewEnabled", () => {
     atlassianOauth: false,
     ticketingDashboard: true,
     agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
   };
   const extensibilityDisabled: FeatureFlags = {
     activityPage: true,
@@ -76,6 +82,8 @@ describe("isViewEnabled", () => {
     atlassianOauth: false,
     ticketingDashboard: false,
     agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
   };
 
   it("returns true for kanban regardless of flags", () => {
@@ -135,6 +143,8 @@ describe("applyFeatureFlagOverrides", () => {
     atlassianOauth: false,
     ticketingDashboard: true,
     agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
   };
 
   it("returns flags unchanged", () => {
@@ -144,12 +154,17 @@ describe("applyFeatureFlagOverrides", () => {
 
 describe("featureFlagsSchema", () => {
   it("defaults agentPersonas to false when the backend omits it", () => {
-    expect(
-      featureFlagsSchema.parse({
-        activityPage: true,
-        extensibilityPage: true,
-      }).agentPersonas,
-    ).toBe(false);
+    const flags = featureFlagsSchema.parse({
+      activityPage: true,
+      extensibilityPage: true,
+    });
+
+    expect(flags.agentPersonas).toBe(false);
+    expect(flags.agentConversationTeam).toBe(false);
+    expect(flags.agentConversationWorkflows).toBe(false);
+    expect(flags.composerFolderReferences).toBe(false);
+    expect(flags.standaloneConversations).toBe(false);
+    expect(flags.agentConversationAutopilot).toBe(false);
   });
 });
 
@@ -182,6 +197,11 @@ describe("useFeatureFlags", () => {
       atlassianOauth: false,
       ticketingDashboard: false,
       agentPersonas: false,
+      agentConversationTeam: false,
+      agentConversationWorkflows: false,
+      composerFolderReferences: false,
+      standaloneConversations: false,
+      agentConversationAutopilot: false,
     });
   });
 
@@ -205,6 +225,11 @@ describe("useFeatureFlags", () => {
       atlassianOauth: false,
       ticketingDashboard: false,
       agentPersonas: false,
+      agentConversationTeam: false,
+      agentConversationWorkflows: false,
+      composerFolderReferences: false,
+      standaloneConversations: false,
+      agentConversationAutopilot: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -234,6 +259,68 @@ describe("useFeatureFlags", () => {
       atlassianOauth: false,
       ticketingDashboard: false,
       agentPersonas: false,
+      agentConversationTeam: false,
+      agentConversationWorkflows: false,
+      composerFolderReferences: false,
+      standaloneConversations: false,
+      agentConversationAutopilot: false,
+    });
+  });
+});
+
+describe("useUpdateFeatureFlags", () => {
+  it("updates folder references independently", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      composerFolderReferences: true,
+    });
+
+    const { result } = renderHook(() => useUpdateFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate({ composerFolderReferences: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { composerFolderReferences: true },
+    });
+  });
+
+  it("updates Team independently without writing Workflows", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      agentConversationTeam: true,
+      agentConversationWorkflows: false,
+    });
+
+    const { result } = renderHook(() => useUpdateFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate({ agentConversationTeam: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { agentConversationTeam: true },
+    });
+  });
+
+  it("updates Autopilot independently", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      agentConversationAutopilot: true,
+    });
+
+    const { result } = renderHook(() => useUpdateFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate({ agentConversationAutopilot: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { agentConversationAutopilot: true },
     });
   });
 });

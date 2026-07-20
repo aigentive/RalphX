@@ -14,6 +14,16 @@ export const atlassianIntegrationKeys = {
   settings: () => [...atlassianIntegrationKeys.all, "settings"] as const,
 };
 
+export function isConfluenceConnected(
+  settings: AtlassianIntegrationSettings | undefined,
+): boolean {
+  return Boolean(
+    settings?.enabled &&
+      settings.validationStatus === "valid" &&
+      settings.confluenceAvailable,
+  );
+}
+
 function updateSettingsAndRefreshTicketing(
   queryClient: ReturnType<typeof useQueryClient>,
   settings: AtlassianIntegrationSettings,

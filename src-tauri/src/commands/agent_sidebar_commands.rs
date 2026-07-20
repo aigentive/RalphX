@@ -17,6 +17,16 @@ const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
 const STANDALONE_AUTOMATION_GROUP_KEY: &str = "__standalone__";
 const STANDALONE_AUTOMATION_GROUP_LABEL: &str = "Standalone";
+/// Pseudo project-group key/label for projectless (Standalone context)
+/// conversations. Distinct from `STANDALONE_AUTOMATION_GROUP_KEY`, which is an
+/// unrelated automation-grouping bucket for "not part of any automation run."
+const NO_PROJECT_GROUP_KEY: &str = "__no_project__";
+const NO_PROJECT_GROUP_LABEL: &str = "No project";
+/// Upper bound on standalone-conversation rows fetched for sidebar enumeration
+/// per request; matches other groups' effectively-unbounded fetch (they are
+/// bounded by DB volume for a project, not paginated at the repo layer) while
+/// still capping a self-keyed, cross-project query.
+const NO_PROJECT_ENUMERATION_LIMIT: u32 = 500;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,6 +325,73 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 publication_state,
             });
         }
+    }
+
+    // Standalone (projectless) conversations enumerate independently of
+    // `project_ids`: they are self-keyed (context_id == conversation.id), so
+    // there is no shared context_id to loop per-id like the Project branch
+    // above. Always fetched (visibility of existing rows is not flag-gated —
+    // only creation is). The pseudo "No project" group is added to
+    // `project_labels` (used only when group_by == Project) ONLY when at
+    // least one row actually qualifies — unlike the explicitly requested
+    // `project_ids`, callers never ask for this group by id, so it must be
+    // data-driven (mirrors automation_groups, which only emits buckets that
+    // have rows) rather than always-present like the requested project groups.
+    let standalone_default_ref_label = default_ref_label(None);
+    let standalone_conversations = state
+        .chat_conversation_repo
+        .list_by_context_type(
+            ChatContextType::Standalone,
+            include_archived,
+            NO_PROJECT_ENUMERATION_LIMIT,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut has_no_project_rows = false;
+    for conversation in standalone_conversations {
+        if archived_only && !conversation.is_archived() {
+            continue;
+        }
+        if !matches_search(&conversation, search.as_deref()) {
+            continue;
+        }
+
+        let latest_run_status = state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|run| run.status);
+        // Standalone (chat-only in this phase) never creates an
+        // AgentConversationWorkspace, so there is no per-conversation
+        // workspace lookup here (unlike the per-project loop above).
+        let publication_state = publication_state_for_workspace(None, latest_run_status);
+        if !selected_state_set.contains(&publication_state) {
+            continue;
+        }
+
+        let (ref_kind, ref_label) =
+            conversation_ref_display(None, standalone_default_ref_label.as_str());
+        let sort_at = conversation.created_at;
+        let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
+        let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
+        let conversation = agent_conversation_response_for_state(state, conversation).await?;
+        has_no_project_rows = true;
+        rows.push(SidebarConversationRow {
+            project_id: NO_PROJECT_GROUP_KEY.to_string(),
+            automation_id: None,
+            sort_at,
+            is_pinned,
+            is_priority,
+            conversation,
+            workspace: None,
+            ref_kind,
+            ref_label,
+            publication_state,
+        });
+    }
+    if has_no_project_rows {
+        project_labels.push((NO_PROJECT_GROUP_KEY.to_string(), NO_PROJECT_GROUP_LABEL.to_string()));
     }
 
     rows.sort_by(|left, right| {
@@ -881,6 +958,7 @@ mod tests {
             first_run_prompt: Some("Run the next slice".to_string()),
             setup_analysis_summary: None,
             spec_artifact_id: None,
+            authoring_state_json: None,
             plan_approval_mode: AutomationPlanApprovalMode::Manual,
             pr_merge_mode: AutomationPrMergeMode::Manual,
             plan_deep_verification: false,
@@ -897,6 +975,22 @@ mod tests {
         created_at: DateTime<Utc>,
     ) -> ChatConversation {
         let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some(title.to_string());
+        conversation.created_at = created_at;
+        conversation.updated_at = created_at;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap()
+    }
+
+    async fn create_standalone_conversation(
+        state: &AppState,
+        title: &str,
+        created_at: DateTime<Utc>,
+    ) -> ChatConversation {
+        let mut conversation = ChatConversation::new_standalone();
         conversation.title = Some(title.to_string());
         conversation.created_at = created_at;
         conversation.updated_at = created_at;
@@ -1758,6 +1852,69 @@ mod tests {
             response.groups[1].rows[0].conversation.id,
             beta_conversation.id.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn project_grouping_adds_no_project_group_for_standalone_conversations() {
+        let state = AppState::new_test();
+        let alpha = create_project(&state, "alpha-standalone").await;
+        let now = Utc::now();
+
+        let project_conversation = create_conversation(&state, &alpha.id, "Alpha work", now).await;
+        let standalone_conversation =
+            create_standalone_conversation(&state, "Standalone chat", now - chrono::Duration::minutes(1))
+                .await;
+
+        let mut input = sidebar_input(&alpha.id);
+        input.group_by = Some("project".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.groups.len(),
+            2,
+            "the requested project group plus a data-driven 'No project' group"
+        );
+        assert_eq!(response.groups[0].key, alpha.id.as_str());
+        assert_eq!(response.groups[0].rows[0].conversation.id, project_conversation.id.as_str());
+
+        let no_project_group = &response.groups[1];
+        assert_eq!(no_project_group.key, "__no_project__");
+        assert_eq!(no_project_group.label, "No project");
+        assert_eq!(no_project_group.total, 1);
+        assert_eq!(
+            no_project_group.rows[0].conversation.id,
+            standalone_conversation.id.as_str()
+        );
+        assert_eq!(no_project_group.rows[0].conversation.context_type, "standalone");
+        assert!(no_project_group.rows[0].workspace.is_none());
+    }
+
+    #[tokio::test]
+    async fn project_grouping_omits_no_project_group_when_no_standalone_conversations_exist() {
+        // Regression guard for the OTHER direction: unlike explicitly requested
+        // project_ids (which always get a group even when empty), the "No
+        // project" group must be entirely absent when there are zero
+        // standalone conversations — it is data-driven, not
+        // always-present, so callers with no standalone rows don't render an
+        // empty phantom group.
+        let state = AppState::new_test();
+        let alpha = create_project(&state, "alpha-no-standalone").await;
+        let now = Utc::now();
+        create_conversation(&state, &alpha.id, "Alpha only", now).await;
+
+        let mut input = sidebar_input(&alpha.id);
+        input.group_by = Some("project".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].key, alpha.id.as_str());
+        assert!(!response.groups.iter().any(|group| group.key == "__no_project__"));
     }
 
     #[tokio::test]

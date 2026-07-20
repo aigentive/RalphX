@@ -11,6 +11,22 @@ export type AutomationSetupToolRuntimeContext = {
   conversationId?: string;
 };
 
+const EMPTY_CALLER_BOUND_INPUT_SCHEMA: Tool["inputSchema"] = {
+  type: "object",
+  properties: {},
+  required: [],
+};
+
+function callerBoundAutomationTool(name: string, description: string): Tool {
+  return {
+    name,
+    description:
+      description +
+      " The backend resolves the automation and current run or workspace from the caller conversation; do not pass ids.",
+    inputSchema: EMPTY_CALLER_BOUND_INPUT_SCHEMA,
+  };
+}
+
 export const AUTOMATION_SETUP_TOOLS: Tool[] = [
   {
     name: "get_automation",
@@ -60,7 +76,7 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         plan_deep_verification: {
           type: "boolean",
           description:
-            "Enable deeper plan verification before an approved plan proceeds.",
+            "Enable deeper plan verification before an approved plan proceeds. Required for the ideation task-graph bridge.",
         },
         goal_prompt: {
           type: "string",
@@ -70,7 +86,7 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         first_run_prompt: {
           type: "string",
           description:
-            "Self-contained prompt for run 1 instructing the run agent to make a scoped PR and publish it. Required before finalize.",
+            "Self-contained prompt for run 1 instructing the agent to produce the configured PR or verified task-graph deliverable. Required before finalize.",
         },
         provider_harness: {
           type: "string",
@@ -86,7 +102,9 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         },
         run_mode: {
           type: "string",
-          description: "Run mode for the automation. Use 'edit' for pr_merged automations.",
+          enum: ["edit", "ideation"],
+          description:
+            "Run deliverable: 'edit' publishes a PR; 'ideation' turns a verified plan into proposals, task dependencies, and the local task pipeline.",
         },
         base_ref_kind: {
           type: "string",
@@ -113,7 +131,9 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         },
         completion_signal: {
           type: "string",
-          description: "Completion signal for the automation (e.g. 'pr_merged').",
+          enum: ["pr_merged", "agent_completed", "ideation_finalized"],
+          description:
+            "Completion signal. Use 'pr_merged' for edit runs and 'ideation_finalized' for the ideation task-graph bridge.",
         },
         setup_analysis_summary: {
           type: "string",
@@ -134,6 +154,18 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
     },
   },
   {
+    name: "verify_automation_decomposition",
+    description:
+      "Run the independent decomposition-quality verifier for the trusted auto-finalize automation bound to this setup conversation. " +
+      "A verified current decomposition is finalized automatically; a revise verdict leaves the draft editable and returns actionable findings. " +
+      "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: "finalize_automation",
     description:
       "Mark the draft automation spec approved after backend validation passes. " +
@@ -144,6 +176,58 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
       required: [],
     },
   },
+  callerBoundAutomationTool(
+    "run_automation_now",
+    "Start a fresh run for the active automation. If the latest run was cancelled, the new run reuses its durable prompt; it never revives the cancelled run."
+  ),
+  callerBoundAutomationTool(
+    "pause_automation",
+    "Pause automatic scheduling without cancelling the automation. Use resume_automation to continue scheduling later."
+  ),
+  callerBoundAutomationTool(
+    "resume_automation",
+    "Resume scheduling for a paused automation. This does not revive a cancelled run; use run_automation_now when fresh work is needed."
+  ),
+  callerBoundAutomationTool(
+    "cancel_automation_run",
+    "Cancel the latest open run while leaving the automation active. Completed work and artifacts remain inspectable, and a later run must be fresh."
+  ),
+  callerBoundAutomationTool(
+    "cancel_automation",
+    "Cancel the automation: cancel open runs and disable automatic scheduling while preserving conversations, artifacts, branches, PRs, and completed work. Use restart_automation for a fresh run later."
+  ),
+  callerBoundAutomationTool(
+    "restart_automation",
+    "Reactivate a stopped automation and create a fresh run from its durable configuration and latest prompt. This never resumes a cancelled process or run row."
+  ),
+  callerBoundAutomationTool(
+    "retry_automation_judge",
+    "Retry the terminal judge only when the latest signal-terminal run has a persisted failed judge state. The backend rejects stale, ineligible, or already-running attempts."
+  ),
+  callerBoundAutomationTool(
+    "retry_automation_plan_judge",
+    "Retry the plan judge only when the parked latest run and exact current plan artifact have a persisted failed plan-judge state. The backend rejects stale attempts."
+  ),
+  callerBoundAutomationTool(
+    "skip_automation_judge",
+    "Skip the recoverable terminal judge only when the automation chain mode and latest-run state support it."
+  ),
+  callerBoundAutomationTool(
+    "get_automation_publish_status",
+    "Read Commit & Publish status for the publishable setup or latest eligible run workspace selected by RalphX."
+  ),
+  callerBoundAutomationTool(
+    "check_automation_publish_readiness",
+    "Check base freshness, local changes, and publish readiness for the publishable automation workspace selected by RalphX."
+  ),
+  callerBoundAutomationTool(
+    "update_automation_from_base",
+    "Update the publishable automation workspace from its configured base through the existing workspace recovery pipeline."
+  ),
+  callerBoundAutomationTool(
+    "publish_automation_workspace",
+    "Publish the selected automation workspace through RalphX's existing Commit & Publish pipeline. Call only after the user explicitly asks to commit, publish, or open a PR."
+  ),
 ];
 
 const AUTOMATION_SETUP_TOOL_NAMES = new Set(
@@ -151,6 +235,21 @@ const AUTOMATION_SETUP_TOOL_NAMES = new Set(
 );
 
 const CALLER_SESSION_ID_HEADER = "X-RalphX-Caller-Session-Id";
+const CALLER_BOUND_ACTION_PATHS: Readonly<Record<string, string>> = {
+  run_automation_now: "run_automation_now",
+  pause_automation: "pause_automation",
+  resume_automation: "resume_automation",
+  cancel_automation_run: "cancel_automation_run",
+  cancel_automation: "cancel_automation",
+  restart_automation: "restart_automation",
+  retry_automation_judge: "retry_automation_judge",
+  retry_automation_plan_judge: "retry_automation_plan_judge",
+  skip_automation_judge: "skip_automation_judge",
+  get_automation_publish_status: "get_automation_publish_status",
+  check_automation_publish_readiness: "check_automation_publish_readiness",
+  update_automation_from_base: "update_automation_from_base",
+  publish_automation_workspace: "publish_automation_workspace",
+};
 const UPDATE_AUTOMATION_FIELDS = [
   "name",
   "max_runs",
@@ -186,6 +285,10 @@ export async function callAutomationSetupTool(
   runtimeContext?: AutomationSetupToolRuntimeContext
 ): Promise<unknown> {
   const headers = automationSetupHeaders(name, runtimeContext);
+  const callerBoundPath = CALLER_BOUND_ACTION_PATHS[name];
+  if (callerBoundPath) {
+    return callTauri(callerBoundPath, {}, { headers });
+  }
 
   switch (name) {
     case "get_automation":
@@ -196,6 +299,8 @@ export async function callAutomationSetupTool(
         updateAutomationPayload(args),
         { headers }
       );
+    case "verify_automation_decomposition":
+      return callTauri("verify_automation_decomposition", {}, { headers });
     case "finalize_automation":
       return callTauri("finalize_automation", {}, { headers });
     default:

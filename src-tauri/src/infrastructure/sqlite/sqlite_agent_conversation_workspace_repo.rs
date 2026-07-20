@@ -13,14 +13,17 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
@@ -34,10 +37,6 @@ fn parse_datetime(value: &str) -> DateTime<Utc> {
     }
     Utc::now()
 }
-
-#[cfg(test)]
-#[path = "sqlite_agent_conversation_workspace_repo_tests.rs"]
-mod tests;
 
 fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
@@ -80,6 +79,9 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         worktree_path: row.get("worktree_path")?,
         linked_ideation_session_id: row
             .get::<_, Option<String>>("linked_ideation_session_id")?
+            .map(IdeationSessionId::from_string),
+        task_pipeline_session_id: row
+            .get::<_, Option<String>>("task_pipeline_session_id")?
             .map(IdeationSessionId::from_string),
         linked_plan_branch_id: row
             .get::<_, Option<String>>("linked_plan_branch_id")?
@@ -206,6 +208,43 @@ fn row_to_workspace_review_monitor(
     let reviewed_target_scope = row
         .get::<_, Option<String>>("reviewed_target_scope")?
         .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let auto_merge_guard_status = row
+        .get::<_, Option<String>>("auto_merge_guard_status")?
+        .and_then(|value| AgentWorkspaceReviewAutoMergeGuardStatus::from_str(&value).ok());
+    let auto_merge_guard_pr_number = row.get::<_, Option<i64>>("auto_merge_guard_pr_number")?;
+    let auto_merge_guard_method = row.get::<_, Option<String>>("auto_merge_guard_method")?;
+    let auto_merge_guard_target_scope = row
+        .get::<_, Option<String>>("auto_merge_guard_target_scope")?
+        .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let auto_merge_guard_diff_fingerprint =
+        row.get::<_, Option<String>>("auto_merge_guard_diff_fingerprint")?;
+    let auto_merge_guard_head_sha = row.get::<_, Option<String>>("auto_merge_guard_head_sha")?;
+    let auto_merge_guard_last_error =
+        row.get::<_, Option<String>>("auto_merge_guard_last_error")?;
+    let auto_merge_guard = match (
+        auto_merge_guard_status,
+        auto_merge_guard_pr_number,
+        auto_merge_guard_method,
+        auto_merge_guard_target_scope,
+        auto_merge_guard_diff_fingerprint,
+    ) {
+        (
+            Some(status),
+            Some(pr_number),
+            Some(merge_method),
+            Some(target_scope),
+            Some(diff_fingerprint),
+        ) => Some(AgentWorkspaceReviewAutoMergeGuard {
+            status,
+            pr_number,
+            merge_method,
+            target_scope,
+            diff_fingerprint,
+            head_sha: auto_merge_guard_head_sha,
+            last_error: auto_merge_guard_last_error,
+        }),
+        _ => None,
+    };
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     Ok(AgentWorkspaceReviewMonitor {
@@ -235,6 +274,19 @@ fn row_to_workspace_review_monitor(
         review_artifact_updated_at: row
             .get::<_, Option<String>>("review_artifact_updated_at")?
             .map(|value| parse_datetime(&value)),
+        review_gate_bypassed_at: row
+            .get::<_, Option<String>>("review_gate_bypassed_at")?
+            .map(|value| parse_datetime(&value)),
+        review_gate_bypassed_target_scope: row
+            .get::<_, Option<String>>("review_gate_bypassed_target_scope")?
+            .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok()),
+        review_gate_bypassed_diff_fingerprint: row.get("review_gate_bypassed_diff_fingerprint")?,
+        review_gate_bypassed_artifact_id: row
+            .get::<_, Option<String>>("review_gate_bypassed_artifact_id")?
+            .map(ArtifactId::from_string),
+        review_gate_bypassed_artifact_version: row
+            .get::<_, Option<i64>>("review_gate_bypassed_artifact_version")?
+            .and_then(|value| u32::try_from(value).ok()),
         reviewed_head_sha: row.get("reviewed_head_sha")?,
         reviewed_diff_fingerprint: row.get("reviewed_diff_fingerprint")?,
         selected_source_base_ref: row.get("selected_source_base_ref")?,
@@ -259,6 +311,7 @@ fn row_to_workspace_review_monitor(
         review_fixer_status: row.get("review_fixer_status")?,
         last_run_id: row.get("last_run_id")?,
         last_error: row.get("last_error")?,
+        auto_merge_guard,
         created_at: parse_datetime(&created_at),
         updated_at: parse_datetime(&updated_at),
     })
@@ -386,6 +439,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .linked_ideation_session_id
             .as_ref()
             .map(|id| id.as_str().to_string());
+        let task_pipeline_session_id = workspace
+            .task_pipeline_session_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
         let linked_plan_branch_id = workspace
             .linked_plan_branch_id
             .as_ref()
@@ -444,7 +501,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     "INSERT INTO agent_conversation_workspaces (
                         conversation_id, project_id, mode, branch_mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
-                        linked_ideation_session_id, linked_plan_branch_id,
+                        linked_ideation_session_id, task_pipeline_session_id, linked_plan_branch_id,
                         source_pr_number, source_pr_url, source_pr_title,
                         source_pr_head_ref, source_pr_base_ref, source_pr_head_sha,
                         publication_pr_number, publication_pr_url, publication_pr_status,
@@ -455,7 +512,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -467,6 +524,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         branch_name=excluded.branch_name,
                         worktree_path=excluded.worktree_path,
                         linked_ideation_session_id=excluded.linked_ideation_session_id,
+                        task_pipeline_session_id=COALESCE(agent_conversation_workspaces.task_pipeline_session_id, excluded.task_pipeline_session_id),
                         linked_plan_branch_id=excluded.linked_plan_branch_id,
                         source_pr_number=excluded.source_pr_number,
                         source_pr_url=excluded.source_pr_url,
@@ -503,6 +561,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         branch_name,
                         worktree_path,
                         linked_ideation_session_id,
+                        task_pipeline_session_id,
                         linked_plan_branch_id,
                         source_pr_number,
                         source_pr_url,
@@ -663,6 +722,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn get_by_task_pipeline_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let ideation_session_id = ideation_session_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE task_pipeline_session_id = ?1
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![ideation_session_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_workspace(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
     async fn save_followup_provenance(
         &self,
         conversation_id: &ChatConversationId,
@@ -753,15 +835,23 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND (
                          local_cleanup_status IS NULL
                          OR (
-                           local_cleanup_status IN ('unsafe', 'target_ref_missing', 'workspace_dirty')
-                           AND local_cleanup_checked_at IS NOT NULL
-                           AND local_cleanup_checked_at < ?2
+                           local_cleanup_status IN (
+                             'pending', 'failed', 'failed_unsafe', 'failed_operational',
+                             'unsafe', 'target_ref_missing', 'workspace_dirty',
+                             'branch_missing', 'cleaning'
+                           )
+                           AND (
+                             local_cleanup_checked_at IS NULL
+                             OR local_cleanup_checked_at < ?2
+                           )
                          )
                        )
                      ORDER BY created_at DESC",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![project_id, retry_cutoff], row_to_workspace)?;
+                let rows = stmt.query_map(
+                    rusqlite::params![project_id, retry_cutoff],
+                    row_to_workspace,
+                )?;
                 let mut workspaces = Vec::new();
                 for row in rows {
                     workspaces.push(row?);
@@ -790,6 +880,91 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     rusqlite::params![status, checked_at, conversation_id],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let claimed_at = claimed_at.to_rfc3339();
+        let stale_before = stale_before.to_rfc3339();
+        self.db
+            .run_transaction(move |tx| {
+                let changed = tx.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = 'cleaning', local_cleanup_checked_at = ?2,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1
+                       AND (
+                         local_cleanup_status IS NULL
+                         OR local_cleanup_status IN (
+                           'pending', 'failed', 'failed_unsafe', 'failed_operational',
+                           'unsafe', 'target_ref_missing', 'workspace_dirty', 'branch_missing'
+                         )
+                         OR (
+                           local_cleanup_status = 'cleaning'
+                           AND (
+                             local_cleanup_checked_at IS NULL
+                             OR local_cleanup_checked_at < ?3
+                           )
+                         )
+                       )",
+                    rusqlite::params![conversation_id, claimed_at, stale_before],
+                )?;
+                if changed == 1 {
+                    return Ok(AgentWorkspaceLocalCleanupClaim::Claimed);
+                }
+
+                let status = tx
+                    .query_row(
+                        "SELECT local_cleanup_status
+                         FROM agent_conversation_workspaces
+                         WHERE conversation_id = ?1",
+                        rusqlite::params![conversation_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?;
+                match status {
+                    None => Err(AppError::NotFound(format!(
+                        "Agent conversation workspace not found while claiming local cleanup: {conversation_id}"
+                    ))),
+                    Some(Some(status)) if status == "cleaned" => {
+                        Ok(AgentWorkspaceLocalCleanupClaim::AlreadyCleaned)
+                    }
+                    Some(_) => Ok(AgentWorkspaceLocalCleanupClaim::AlreadyInProgress),
+                }
+            })
+            .await
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let claimed_at = claimed_at.to_rfc3339();
+        let status = status.to_string();
+        let checked_at = checked_at.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2,
+                         updated_at = ?2
+                     WHERE conversation_id = ?3
+                       AND local_cleanup_status = 'cleaning'
+                       AND local_cleanup_checked_at = ?4",
+                    rusqlite::params![status, checked_at, conversation_id, claimed_at],
+                )?;
+                Ok(changed == 1)
             })
             .await
     }
@@ -1839,11 +2014,23 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         conversation_id: &ChatConversationId,
         pr_number: i64,
         head_sha: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<String>> {
         let conversation_id = conversation_id.as_str().to_string();
         let head_sha = head_sha.to_string();
         self.db
             .run(move |conn| {
+                let superseded_ids = {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM agent_workspace_pr_review_actions
+                         WHERE conversation_id = ?1 AND pr_number = ?2 AND head_sha != ?3
+                           AND status = 'pending'",
+                    )?;
+                    let rows = stmt.query_map(
+                        rusqlite::params![conversation_id, pr_number, head_sha],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    rows.collect::<Result<Vec<_>, _>>()?
+                };
                 conn.execute(
                     "UPDATE agent_workspace_pr_review_actions
                      SET status = 'superseded', resolved_at = ?4, updated_at = ?4
@@ -1856,7 +2043,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         Utc::now().to_rfc3339()
                     ],
                 )?;
-                Ok(())
+                Ok(superseded_ids)
             })
             .await
     }
@@ -1927,6 +2114,19 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let review_artifact_updated_at = monitor
             .review_artifact_updated_at
             .map(|value| value.to_rfc3339());
+        let review_gate_bypassed_at = monitor
+            .review_gate_bypassed_at
+            .map(|value| value.to_rfc3339());
+        let review_gate_bypassed_target_scope = monitor
+            .review_gate_bypassed_target_scope
+            .map(|scope| scope.to_string());
+        let review_gate_bypassed_diff_fingerprint = monitor.review_gate_bypassed_diff_fingerprint;
+        let review_gate_bypassed_artifact_id = monitor
+            .review_gate_bypassed_artifact_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_gate_bypassed_artifact_version =
+            monitor.review_gate_bypassed_artifact_version.map(i64::from);
         let reviewed_head_sha = monitor.reviewed_head_sha;
         let reviewed_diff_fingerprint = monitor.reviewed_diff_fingerprint;
         let selected_source_base_ref = monitor.selected_source_base_ref;
@@ -1953,6 +2153,34 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let review_fixer_status = monitor.review_fixer_status;
         let last_run_id = monitor.last_run_id;
         let last_error = monitor.last_error;
+        let auto_merge_guard_status = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.status.to_string());
+        let auto_merge_guard_pr_number = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.pr_number);
+        let auto_merge_guard_method = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.merge_method.clone());
+        let auto_merge_guard_target_scope = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.target_scope.to_string());
+        let auto_merge_guard_diff_fingerprint = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.diff_fingerprint.clone());
+        let auto_merge_guard_head_sha = monitor
+            .auto_merge_guard
+            .as_ref()
+            .and_then(|guard| guard.head_sha.clone());
+        let auto_merge_guard_last_error = monitor
+            .auto_merge_guard
+            .as_ref()
+            .and_then(|guard| guard.last_error.clone());
         let created_at = monitor.created_at.to_rfc3339();
         let updated_at = Utc::now().to_rfc3339();
         let fetch_id = monitor.conversation_id;
@@ -1965,6 +2193,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_gate_status, current_target_scope, reviewed_target_scope,
                         review_conversation_id, review_artifact_id,
                         review_artifact_version, review_artifact_updated_at,
+                        review_gate_bypassed_at, review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version,
                         reviewed_head_sha, reviewed_diff_fingerprint,
                         selected_source_base_ref, selected_source_base_sha,
                         selected_source_head_ref, selected_source_head_sha,
@@ -1973,12 +2205,16 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         current_diff_fingerprint, previous_version_id,
                         review_blocking_summary, review_blocking_fingerprint,
                         review_fixer_run_id, review_fixer_conversation_id,
-                        review_fixer_status, last_run_id, last_error, created_at,
-                        updated_at
+                        review_fixer_status, last_run_id, last_error,
+                        auto_merge_guard_status, auto_merge_guard_pr_number,
+                        auto_merge_guard_method, auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint, auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                        ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+                        ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
+                        ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -1991,6 +2227,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_review_monitors.review_artifact_id),
                         review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_review_monitors.review_artifact_version),
                         review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_review_monitors.review_artifact_updated_at),
+                        review_gate_bypassed_at = excluded.review_gate_bypassed_at,
+                        review_gate_bypassed_target_scope = excluded.review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint = excluded.review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id = excluded.review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version = excluded.review_gate_bypassed_artifact_version,
                         reviewed_head_sha = excluded.reviewed_head_sha,
                         reviewed_diff_fingerprint = excluded.reviewed_diff_fingerprint,
                         selected_source_base_ref = excluded.selected_source_base_ref,
@@ -2011,6 +2252,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_status = excluded.review_fixer_status,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
+                        auto_merge_guard_status = agent_workspace_review_monitors.auto_merge_guard_status,
+                        auto_merge_guard_pr_number = agent_workspace_review_monitors.auto_merge_guard_pr_number,
+                        auto_merge_guard_method = agent_workspace_review_monitors.auto_merge_guard_method,
+                        auto_merge_guard_target_scope = agent_workspace_review_monitors.auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint = agent_workspace_review_monitors.auto_merge_guard_diff_fingerprint,
+                        auto_merge_guard_head_sha = agent_workspace_review_monitors.auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error = agent_workspace_review_monitors.auto_merge_guard_last_error,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         conversation_id,
@@ -2024,6 +2272,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_id,
                         review_artifact_version,
                         review_artifact_updated_at,
+                        review_gate_bypassed_at,
+                        review_gate_bypassed_target_scope,
+                        review_gate_bypassed_diff_fingerprint,
+                        review_gate_bypassed_artifact_id,
+                        review_gate_bypassed_artifact_version,
                         reviewed_head_sha,
                         reviewed_diff_fingerprint,
                         selected_source_base_ref,
@@ -2044,6 +2297,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_status,
                         last_run_id,
                         last_error,
+                        auto_merge_guard_status,
+                        auto_merge_guard_pr_number,
+                        auto_merge_guard_method,
+                        auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint,
+                        auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error,
                         created_at,
                         updated_at,
                     ],
@@ -2080,6 +2340,152 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_target_scope: AgentWorkspaceReviewTargetScope,
+        expected_diff_fingerprint: &str,
+        expected_review_conversation_id: &ChatConversationId,
+        expected_run_id: &str,
+        error: &str,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_target_scope = expected_target_scope.to_string();
+        let expected_diff_fingerprint = expected_diff_fingerprint.to_string();
+        let expected_review_conversation_id = expected_review_conversation_id.as_str().to_string();
+        let expected_run_id = expected_run_id.to_string();
+        let error = error.to_string();
+        let updated_at = Utc::now().to_rfc3339();
+
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET status = 'blocked',
+                         review_outcome = 'run_failed',
+                         review_gate_status = 'failed',
+                         review_blocking_summary = NULL,
+                         review_blocking_fingerprint = NULL,
+                         review_fixer_run_id = NULL,
+                         review_fixer_conversation_id = NULL,
+                         review_fixer_status = NULL,
+                         last_error = ?6,
+                         updated_at = ?7
+                     WHERE conversation_id = ?1
+                       AND status = 'reviewing'
+                       AND current_target_scope = ?2
+                       AND current_diff_fingerprint = ?3
+                       AND review_conversation_id = ?4
+                       AND last_run_id = ?5",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_review_conversation_id,
+                        expected_run_id,
+                        error,
+                        updated_at,
+                    ],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
+    async fn approve_workspace_review_anyway(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewApprovalSnapshot,
+        approved_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let conversation_id_value = conversation_id.as_str().to_string();
+        let target_scope = snapshot.target_scope.to_string();
+        let diff_fingerprint = snapshot.diff_fingerprint.clone();
+        let artifact_id = snapshot.artifact_id.as_str().to_string();
+        let artifact_version = i64::from(snapshot.artifact_version);
+        let approved_at_value = approved_at.to_rfc3339();
+        let audit_event = snapshot.audit_event(*conversation_id, approved_at);
+        let audit_id = audit_event.id;
+        let audit_step = audit_event.step;
+        let audit_status = audit_event.status;
+        let audit_summary = audit_event.summary;
+        let audit_classification = audit_event.classification;
+        let audit_created_at = audit_event.created_at.to_rfc3339();
+        let applied = self
+            .db
+            .run(move |conn| {
+                let tx = conn.unchecked_transaction()?;
+                let changed = tx.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET review_gate_status = 'passed',
+                         review_gate_bypassed_at = ?6,
+                         review_gate_bypassed_target_scope = ?2,
+                         review_gate_bypassed_diff_fingerprint = ?3,
+                         review_gate_bypassed_artifact_id = ?4,
+                         review_gate_bypassed_artifact_version = ?5,
+                         updated_at = ?6
+                     WHERE conversation_id = ?1
+                       AND status = 'ready'
+                       AND review_outcome = 'blocking'
+                       AND review_gate_status = 'blocking'
+                       AND current_target_scope = ?2
+                       AND reviewed_target_scope = ?2
+                       AND current_diff_fingerprint = ?3
+                       AND reviewed_diff_fingerprint = ?3
+                       AND review_artifact_id = ?4
+                       AND review_artifact_version = ?5
+                       AND (review_fixer_status IS NULL
+                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))
+                       AND EXISTS (
+                           SELECT 1
+                             FROM agent_conversation_workspaces workspace
+                            WHERE workspace.conversation_id =
+                                  agent_workspace_review_monitors.conversation_id
+                              AND (
+                                  workspace.publication_push_status IS NULL
+                                  OR workspace.publication_push_status NOT IN (
+                                      'checking', 'committing', 'refreshing',
+                                      'describing', 'pushing'
+                                  )
+                              )
+                       )",
+                    rusqlite::params![
+                        conversation_id_value,
+                        target_scope,
+                        diff_fingerprint,
+                        artifact_id,
+                        artifact_version,
+                        approved_at_value,
+                    ],
+                )?;
+                if changed == 0 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                tx.execute(
+                    "INSERT INTO agent_conversation_workspace_publication_events (
+                        id, conversation_id, step, status, summary, classification, created_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        audit_id,
+                        conversation_id_value,
+                        audit_step,
+                        audit_status,
+                        audit_summary,
+                        audit_classification,
+                        audit_created_at,
+                    ],
+                )?;
+                tx.commit()?;
+                Ok(true)
+            })
+            .await?;
+        if !applied {
+            return Ok(None);
+        }
+        self.get_workspace_review_monitor(conversation_id).await
+    }
+
     async fn list_reviewing_workspace_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
@@ -2088,6 +2494,198 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_workspace_review_monitors
                      WHERE status = 'reviewing'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows = stmt.query_map([], row_to_workspace_review_monitor)?;
+                let mut monitors = Vec::new();
+                for row in rows {
+                    monitors.push(row?);
+                }
+                Ok(monitors)
+            })
+            .await
+    }
+
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_status = expected.as_ref().map(|guard| guard.status.to_string());
+        let expected_pr_number = expected.as_ref().map(|guard| guard.pr_number);
+        let expected_method = expected.as_ref().map(|guard| guard.merge_method.clone());
+        let expected_target_scope = expected
+            .as_ref()
+            .map(|guard| guard.target_scope.to_string());
+        let expected_diff_fingerprint = expected
+            .as_ref()
+            .map(|guard| guard.diff_fingerprint.clone());
+        let expected_head_sha = expected.as_ref().and_then(|guard| guard.head_sha.clone());
+        let expected_last_error = expected.and_then(|guard| guard.last_error);
+        let next_status = next.as_ref().map(|guard| guard.status.to_string());
+        let next_pr_number = next.as_ref().map(|guard| guard.pr_number);
+        let next_method = next.as_ref().map(|guard| guard.merge_method.clone());
+        let next_target_scope = next.as_ref().map(|guard| guard.target_scope.to_string());
+        let next_diff_fingerprint = next.as_ref().map(|guard| guard.diff_fingerprint.clone());
+        let next_head_sha = next.as_ref().and_then(|guard| guard.head_sha.clone());
+        let next_last_error = next.and_then(|guard| guard.last_error);
+        let updated_at = Utc::now().to_rfc3339();
+
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET auto_merge_guard_status = ?2,
+                         auto_merge_guard_pr_number = ?3,
+                         auto_merge_guard_method = ?4,
+                         auto_merge_guard_target_scope = ?5,
+                         auto_merge_guard_diff_fingerprint = ?6,
+                         auto_merge_guard_head_sha = ?7,
+                         auto_merge_guard_last_error = ?8,
+                         updated_at = ?9
+                     WHERE conversation_id = ?1
+                       AND auto_merge_guard_status IS ?10
+                       AND auto_merge_guard_pr_number IS ?11
+                       AND auto_merge_guard_method IS ?12
+                       AND auto_merge_guard_target_scope IS ?13
+                       AND auto_merge_guard_diff_fingerprint IS ?14
+                       AND auto_merge_guard_head_sha IS ?15
+                       AND auto_merge_guard_last_error IS ?16",
+                    rusqlite::params![
+                        conversation_id,
+                        next_status,
+                        next_pr_number,
+                        next_method,
+                        next_target_scope,
+                        next_diff_fingerprint,
+                        next_head_sha,
+                        next_last_error,
+                        updated_at,
+                        expected_status,
+                        expected_pr_number,
+                        expected_method,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_head_sha,
+                        expected_last_error,
+                    ],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_status = expected.status.to_string();
+        let expected_pr_number = expected.pr_number;
+        let expected_method = expected.merge_method;
+        let expected_target_scope = expected.target_scope.to_string();
+        let expected_diff_fingerprint = expected.diff_fingerprint;
+        let expected_head_sha = expected.head_sha;
+        let expected_last_error = expected.last_error;
+        let now = Utc::now().to_rfc3339();
+        let restored_summary =
+            "GitHub auto-merge was restored after the workspace Review passed.".to_string();
+
+        self.db
+            .run(move |conn| {
+                let tx = conn.unchecked_transaction()?;
+                let workspace_changed = tx.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET pr_auto_merge_current = 1,
+                         pr_supervision_status = 'monitoring',
+                         pr_supervision_summary = ?2,
+                         pr_supervision_updated_at = ?3,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1
+                       AND pr_auto_merge_desired = 1
+                       AND (
+                           ?5 = 'selected_source'
+                           OR (
+                               publication_pr_number IS ?4
+                               AND (
+                                   publication_pr_status IS NULL
+                                   OR publication_pr_status NOT IN ('closed', 'merged')
+                               )
+                           )
+                       )",
+                    rusqlite::params![
+                        conversation_id,
+                        restored_summary,
+                        now,
+                        expected_pr_number,
+                        &expected_target_scope,
+                    ],
+                )?;
+                if workspace_changed != 1 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                let monitor_changed = tx.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET auto_merge_guard_status = NULL,
+                         auto_merge_guard_pr_number = NULL,
+                         auto_merge_guard_method = NULL,
+                         auto_merge_guard_target_scope = NULL,
+                         auto_merge_guard_diff_fingerprint = NULL,
+                         auto_merge_guard_head_sha = NULL,
+                         auto_merge_guard_last_error = NULL,
+                         updated_at = ?9
+                     WHERE conversation_id = ?1
+                       AND auto_merge_guard_status IS ?2
+                       AND auto_merge_guard_pr_number IS ?3
+                       AND auto_merge_guard_method IS ?4
+                       AND auto_merge_guard_target_scope IS ?5
+                       AND auto_merge_guard_diff_fingerprint IS ?6
+                       AND auto_merge_guard_head_sha IS ?7
+                       AND auto_merge_guard_last_error IS ?8
+                       AND (
+                           ?5 != 'selected_source'
+                           OR (
+                               current_target_scope IS ?5
+                               AND current_diff_fingerprint IS ?6
+                               AND
+                               selected_source_pull_request_number IS ?3
+                               AND selected_source_head_sha IS ?7
+                           )
+                       )",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_status,
+                        expected_pr_number,
+                        expected_method,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_head_sha,
+                        expected_last_error,
+                        now,
+                    ],
+                )?;
+                if monitor_changed != 1 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                tx.commit()?;
+                Ok(true)
+            })
+            .await
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_review_monitors
+                     WHERE auto_merge_guard_status IS NOT NULL
                      ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_workspace_review_monitor)?;

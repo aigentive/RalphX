@@ -50,6 +50,7 @@ fn ready_probe(path: &str) -> HarnessRuntimeProbe {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        ultra_supported_models: Vec::new(),
         supports_fast_mode: false,
         fast_mode_supported_models: Vec::new(),
         error: None,
@@ -510,6 +511,7 @@ fn response_maps_settings_and_probe_fields() {
             cli_version: Some("2.1.170".to_string()),
             supported_model_aliases: Some(vec!["sonnet".to_string(), "fable".to_string()]),
             supported_efforts: Some(vec!["low".to_string(), "medium".to_string()]),
+            ultra_supported_models: vec!["gpt-5.6-sol".to_string()],
             supports_fast_mode: true,
             fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
             error: None,
@@ -558,6 +560,10 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.supported_efforts,
         Some(vec!["low".to_string(), "medium".to_string()])
+    );
+    assert_eq!(
+        response.ultra_supported_models,
+        vec!["gpt-5.6-sol".to_string()]
     );
     assert!(response.supports_fast_mode);
     assert_eq!(
@@ -772,6 +778,7 @@ async fn update_settings_saves_custom_binary_after_candidate_probe() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some("PATH Codex unavailable".to_string()),
@@ -838,6 +845,7 @@ async fn update_settings_expands_home_relative_custom_binary_before_save() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some("PATH Codex unavailable".to_string()),

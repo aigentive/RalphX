@@ -239,6 +239,111 @@ fn build_test_service_with_task_notifications(app_state: &AppState) -> TaskTrans
     )))
 }
 
+#[tokio::test]
+async fn failed_completion_recovery_preserves_work_and_records_append_only_audit() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Recovery audit project".to_string(),
+        "/tmp/recovery-audit-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id, "Recover completed work".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("task/recovery-audit".to_string());
+    task.worktree_path = Some("/tmp/recovery-audit-worktree".to_string());
+    task.merge_commit_sha = Some("promoted-sha".to_string());
+    task.metadata = Some(
+        serde_json::json!({
+            "failure_error": "false finalizer failure"
+        })
+        .to_string(),
+    );
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let evidence = crate::application::task_restart::FailedRecoveryEvidence {
+        agent_run_id: "run-current".to_string(),
+        validation_run_id: "validation-current".to_string(),
+        promoted_commit_sha: "promoted-sha".to_string(),
+        episode_entered_at: chrono::Utc::now(),
+    };
+    let service = build_test_service(&app_state);
+    let recovered = service
+        .recover_failed_completed_task_to_review(&task.id, &evidence)
+        .await
+        .unwrap();
+
+    assert_eq!(recovered.internal_status, InternalStatus::PendingReview);
+    assert_eq!(recovered.task_branch, task.task_branch);
+    assert_eq!(recovered.worktree_path, task.worktree_path);
+    assert_eq!(recovered.merge_commit_sha, task.merge_commit_sha);
+    let metadata: serde_json::Value =
+        serde_json::from_str(recovered.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata["failed_completion_recovery"]["original_failure"],
+        "false finalizer failure"
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["events"][0]["kind"],
+        "completed_work_recovered"
+    );
+    assert_eq!(
+        metadata["execution_recovery"]["events"][0]["reason_code"],
+        "validated_completed_work"
+    );
+
+    let repeated = service
+        .recover_failed_completed_task_to_review(&task.id, &evidence)
+        .await;
+    assert!(repeated.is_err(), "recovery CAS must not run twice");
+}
+
+#[tokio::test]
+async fn accepted_execution_completion_persists_one_event_per_agent_run() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Completion event project".to_string(),
+        "/tmp/completion-event-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id.clone(), "Complete once".to_string());
+    task.internal_status = InternalStatus::Executing;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let service = build_test_service(&app_state)
+        .with_external_events_repo(Arc::clone(&app_state.external_events_repo));
+    service
+        .transition_execution_completed_to_review(&task.id, "run-once")
+        .await
+        .unwrap();
+    let repeated = service
+        .transition_execution_completed_to_review(&task.id, "run-once")
+        .await
+        .expect("a late duplicate finalizer should be an idempotent no-op");
+    assert_eq!(repeated.internal_status, InternalStatus::PendingReview);
+
+    let events = app_state
+        .external_events_repo
+        .get_events_after_cursor(&[project.id.to_string()], 0, 100)
+        .await
+        .unwrap();
+    let completion_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "task:execution_completed")
+        .collect();
+    assert_eq!(completion_events.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(&completion_events[0].payload).unwrap();
+    assert_eq!(payload["agent_run_id"], "run-once");
+}
+
 struct FailingReviewStarter;
 
 #[async_trait]
@@ -340,6 +445,14 @@ impl NotificationRepository for FailingNotificationRepository {
     async fn mark_read(
         &self,
         _id: &str,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_read_by_dedupe_key(
+        &self,
+        _dedupe_key: &str,
         _read_at: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<Option<Notification>> {
         Err(AppError::Database("injected notification failure".into()))
@@ -2015,6 +2128,7 @@ fn test_runtime_resolution_context_applies_all_runtime_dependencies() {
         Some(Arc::clone(&app_state.execution_settings_repo)),
         Some(Arc::clone(&app_state.agent_lane_settings_repo)),
         Some(Arc::clone(&app_state.agent_provider_settings_repo)),
+        Some(Arc::new(app_state.manual_role_default_service())),
         Some(Arc::clone(&app_state.plan_branch_repo)),
         Some(Arc::clone(&app_state.interactive_process_registry)),
     );
@@ -2022,6 +2136,7 @@ fn test_runtime_resolution_context_applies_all_runtime_dependencies() {
     assert!(service.execution_settings_repo.is_some());
     assert!(service.agent_lane_settings_repo.is_some());
     assert!(service.agent_provider_settings_repo.is_some());
+    assert!(service.manual_role_default_service.is_some());
     assert!(service.plan_branch_repo.is_some());
     assert!(service.interactive_process_registry.is_some());
 }

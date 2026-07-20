@@ -11,6 +11,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import type { ReactNode } from "react";
+import { prKeys } from "./usePullRequestDetail";
 import {
   useGitRemoteUrl,
   useGitAuthDiagnostics,
@@ -26,8 +27,8 @@ import {
 // Test helpers
 // ============================================================================
 
-function createWrapper() {
-  const queryClient = new QueryClient({
+function createWrapper(queryClient?: QueryClient) {
+  const client = queryClient ?? new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
@@ -35,7 +36,7 @@ function createWrapper() {
     },
   });
   return ({ children }: { children: ReactNode }) =>
-    createElement(QueryClientProvider, { client: queryClient }, children);
+    createElement(QueryClientProvider, { client }, children);
 }
 
 // ============================================================================
@@ -151,8 +152,15 @@ describe("useGhAuthStatus", () => {
     vi.clearAllMocks();
   });
 
-  it("calls check_gh_auth and returns true when authenticated", async () => {
-    vi.mocked(invoke).mockResolvedValue(true);
+  it("derives true from canonical connection status when authenticated", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      state: "authenticated",
+      diagnostic: null,
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "octocat",
+    });
 
     const { result } = renderHook(() => useGhAuthStatus(), {
       wrapper: createWrapper(),
@@ -160,12 +168,19 @@ describe("useGhAuthStatus", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(invoke).toHaveBeenCalledWith("check_gh_auth", {});
+    expect(invoke).toHaveBeenCalledWith("get_github_connection_status", {});
     expect(result.current.data).toBe(true);
   });
 
-  it("returns false when gh CLI is not authenticated", async () => {
-    vi.mocked(invoke).mockResolvedValue(false);
+  it("returns false when canonical connection status is not authenticated", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      state: "provider_unavailable",
+      diagnostic: "http5xx",
+      ghInstalled: true,
+      authenticated: false,
+      host: "github.com",
+      account: null,
+    });
 
     const { result } = renderHook(() => useGhAuthStatus(), {
       wrapper: createWrapper(),
@@ -225,9 +240,11 @@ describe("git auth repair mutations", () => {
 
   it("calls setup_gh_git_auth without project args", async () => {
     vi.mocked(invoke).mockResolvedValue(true);
+    const queryClient = new QueryClient();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(() => useSetupGhGitAuth(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(queryClient),
     });
 
     result.current.mutate();
@@ -235,13 +252,21 @@ describe("git auth repair mutations", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(invoke).toHaveBeenCalledWith("setup_gh_git_auth", {});
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["gh-auth-status"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: prKeys.connectionStatus(),
+    });
   });
 
   it("calls login_gh_with_browser without project args", async () => {
     vi.mocked(invoke).mockResolvedValue(true);
+    const queryClient = new QueryClient();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(() => useLoginGhWithBrowser(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(queryClient),
     });
 
     result.current.mutate();
@@ -249,6 +274,12 @@ describe("git auth repair mutations", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(invoke).toHaveBeenCalledWith("login_gh_with_browser", {});
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["gh-auth-status"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: prKeys.connectionStatus(),
+    });
   });
 
   it("calls resume_deferred_git_startup without project args", async () => {

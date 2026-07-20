@@ -371,6 +371,78 @@ async fn pending_drain_launches_oldest_session_when_capacity_is_available() {
 }
 
 #[tokio::test]
+async fn pending_drain_preserves_typed_action_metadata() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(5);
+    execution_state.set_global_ideation_max(5);
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Pending Typed Action".to_string(),
+            "/test/pending-typed-action".to_string(),
+        ))
+        .await
+        .unwrap();
+    app_state
+        .execution_settings_repo
+        .update_settings(
+            Some(&project.id),
+            &ExecutionSettings {
+                max_concurrent_tasks: 5,
+                project_ideation_max: 5,
+                auto_commit: true,
+                pause_on_failure: true,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let pending = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let metadata = r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":"artifact-1"}"#;
+    let payload = crate::application::chat_service::encode_pending_initial_prompt(
+        "verify the current plan",
+        Some(metadata),
+    );
+    app_state
+        .ideation_session_repo
+        .set_pending_initial_prompt(pending.id.as_str(), Some(payload))
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let drain = PendingSessionDrainService::new(
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.execution_settings_repo),
+        Arc::clone(&execution_state),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&mock) as Arc<dyn ChatService>,
+    );
+
+    drain
+        .try_drain_pending_for_project(project.id.as_str())
+        .await;
+
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["verify the current plan".to_string()]
+    );
+    let options = mock.get_sent_options().await;
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].metadata.as_deref(), Some(metadata));
+}
+
+#[tokio::test]
 async fn pending_drain_restores_prompt_when_send_fails() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -436,7 +508,10 @@ async fn pending_drain_restores_prompt_when_send_fails() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(fetched.pending_initial_prompt.as_deref(), Some("retry later"));
+    assert_eq!(
+        fetched.pending_initial_prompt.as_deref(),
+        Some("retry later")
+    );
 }
 
 #[tokio::test]
@@ -476,10 +551,7 @@ async fn pending_drain_respects_running_task_project_capacity() {
         .unwrap();
     app_state
         .ideation_session_repo
-        .set_pending_initial_prompt(
-            pending.id.as_str(),
-            Some("wait for task slot".to_string()),
-        )
+        .set_pending_initial_prompt(pending.id.as_str(), Some("wait for task slot".to_string()))
         .await
         .unwrap();
     let running_task = app_state
