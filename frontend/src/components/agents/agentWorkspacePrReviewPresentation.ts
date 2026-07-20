@@ -122,7 +122,5 @@ export function shouldPollForPrReviewContext(
     return true;
   }
   const presentation = getAgentWorkspacePrReviewPresentation(context);
-  return !(
-    presentation.pendingAction && presentation.headStatus === "current"
-  );
+  return !presentation.canSubmit;
 }

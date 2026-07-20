@@ -96,6 +96,19 @@ describe("getAgentWorkspacePrReviewPresentation", () => {
     expect(shouldPollForPrReviewContext(current)).toBe(false);
   });
 
+  it("keeps polling a current action until its Review artifact is restored", () => {
+    const currentWithoutArtifact = context({ monitor: null });
+
+    expect(
+      getAgentWorkspacePrReviewPresentation(currentWithoutArtifact),
+    ).toMatchObject({
+      headStatus: "current",
+      canSubmit: false,
+      submitBlockedMessage: "Write the Review for this PR head before submitting.",
+    });
+    expect(shouldPollForPrReviewContext(currentWithoutArtifact)).toBe(true);
+  });
+
   it.each([
     [
       "stale",

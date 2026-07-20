@@ -270,6 +270,20 @@ pub async fn skip_agent_workspace_pr_review_action(
             None,
         ));
     }
+    let pr_number = review_pr_number(&workspace).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Review PR mode requires a linked pull request",
+            None,
+        )
+    })?;
+    if action.pr_number != pr_number {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "PR review action belongs to a different pull request",
+            None,
+        ));
+    }
     state
         .app_state
         .agent_conversation_workspace_repo
