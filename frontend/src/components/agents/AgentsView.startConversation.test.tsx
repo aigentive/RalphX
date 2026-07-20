@@ -181,6 +181,17 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
+  it("initializes an ordinary new run from the persisted mode preference", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({ defaultStartMode: "plan" });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Plan"),
+    );
+  });
+
   it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
     const atlas = { ...project, id: "project-atlas", name: "Atlas" };
     mockAgentViewData();
@@ -253,7 +264,7 @@ describe("AgentsView start conversation", () => {
     await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
 
     expect(screen.getByText("Runs in a private workspace")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Chat");
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Ask");
     expect(
       screen.getByText(/Project-requiring modes are unavailable without a project/),
     ).toBeInTheDocument();
@@ -284,8 +295,9 @@ describe("AgentsView start conversation", () => {
     expect(screen.queryByTestId("agents-start-project-standalone")).not.toBeInTheDocument();
   });
 
-  it("prefills and consumes a pending start conversation draft", async () => {
+  it("prefills and consumes an explicit start draft ahead of the saved default", async () => {
     mockAgentViewData();
+    useAgentSessionStore.getState().setDefaultStartMode("plan");
     loadBranchBaseOptionsMock.mockResolvedValueOnce({
       options: [
         {
@@ -3423,6 +3435,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
     await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "set up a weekly dependency cleanup automation" },

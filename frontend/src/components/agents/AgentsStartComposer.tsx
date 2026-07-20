@@ -89,7 +89,10 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
-import { buildAgentStartModeOptions } from "./agentStartModeOptions";
+import {
+  PRIMARY_AGENT_START_MODE_IDS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
@@ -237,6 +240,7 @@ export function AgentsStartComposer({
   onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
+  const defaultStartMode = useAgentSessionStore((s) => s.defaultStartMode);
   const initialRuntime = normalizeRuntimeForPersistence(
     defaultRuntime,
     modelRegistry,
@@ -248,7 +252,9 @@ export function AgentsStartComposer({
   const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
-  const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
+  const [mode, setMode] = useState<AgentConversationWorkspaceMode>(
+    defaultStartMode,
+  );
   const [capabilityMode, setCapabilityMode] = useState<
     CapabilityIntent["coordinationMode"]
   >("solo");
@@ -627,7 +633,7 @@ export function AgentsStartComposer({
       setAutomationAuthoringMode(null);
       setError(
         plainStartComposerError(
-          "Project-requiring modes are unavailable without a project. Switched to Chat.",
+          "Project-requiring modes are unavailable without a project. Switched to Ask.",
         ),
       );
     }
@@ -1693,6 +1699,12 @@ export function AgentsStartComposer({
                     }
                   : {}),
               })),
+              secondaryOptionIds: startModeOptions
+                .filter(
+                  (option) =>
+                    !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+                )
+                .map((option) => option.id),
               testId: "agents-start-mode",
             }}
             {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1

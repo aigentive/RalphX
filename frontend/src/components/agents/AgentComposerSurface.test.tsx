@@ -1707,6 +1707,60 @@ describe("AgentComposerSurface", () => {
     expect(onValueChange).not.toHaveBeenCalled();
   });
 
+  it("keeps specialized modes behind the existing mode-menu disclosure", async () => {
+    const user = userEvent.setup();
+    renderComposer({
+      mode: {
+        value: "edit",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+          { id: "review_pr", label: "Review PR" },
+          { id: "chat", label: "Ask" },
+          { id: "automation", label: "Automation" },
+          { id: "persona_builder", label: "Persona" },
+        ],
+        secondaryOptionIds: ["automation", "persona_builder"],
+        testId: "agent-mode",
+      },
+    });
+
+    await user.click(screen.getByTestId("agent-mode-chip"));
+
+    expect(screen.getByTestId("agent-mode-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-mode-chat")).toHaveTextContent("Ask");
+    expect(screen.queryByTestId("agent-mode-automation")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-mode-persona_builder")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show more modes" }));
+
+    expect(screen.getByTestId("agent-mode-automation")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-mode-persona_builder")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show fewer modes" })).toBeInTheDocument();
+  });
+
+  it("keeps a selected specialized mode visible before disclosure", async () => {
+    const user = userEvent.setup();
+    renderComposer({
+      mode: {
+        value: "automation",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+          { id: "automation", label: "Automation" },
+        ],
+        secondaryOptionIds: ["automation"],
+        testId: "agent-mode",
+      },
+    });
+
+    await user.click(screen.getByTestId("agent-mode-chip"));
+
+    expect(screen.getByTestId("agent-mode-automation")).toBeInTheDocument();
+  });
+
   it("runs slash mode commands from the composer menu", async () => {
     const onValueChange = vi.fn();
     renderComposer({
