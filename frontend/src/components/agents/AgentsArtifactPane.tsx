@@ -127,7 +127,6 @@ import {
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
-import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -169,10 +168,8 @@ import {
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
-import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
-import type { ArtifactExcerptSource } from "./artifact-selection/artifactSelection.types";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { useWorkspaceReviewActions } from "./useWorkspaceReviewActions";
 import { agentConversationKeys } from "./useProjectAgentConversations";
@@ -194,108 +191,6 @@ const PLAN_CONTROL_RUNNING_STATUSES = new Set<InternalStatus>([
 ]);
 
 function noop() {}
-
-function artifactPaneSelectionSource({
-  activeTab,
-  conversationId,
-  conversationTitle,
-  workspace,
-  planArtifact,
-  reviewArtifact,
-  taskId,
-  automationId,
-}: {
-  activeTab: AgentArtifactTab;
-  conversationId: string | null;
-  conversationTitle: string | null;
-  workspace: AgentConversationWorkspace | null;
-  planArtifact: Artifact | null;
-  reviewArtifact: Artifact | null;
-  taskId: string | null;
-  automationId: string | null;
-}): ArtifactExcerptSource {
-  const fallbackId = conversationId ?? "artifact-pane";
-  if (activeTab === "plan" && planArtifact) {
-    return {
-      sourceKind: "plan",
-      sourceId: planArtifact.id,
-      sourceLabel: "Plan",
-      title: planArtifact.name,
-      artifactId: planArtifact.id,
-      version: planArtifact.metadata.version,
-    };
-  }
-  if (activeTab === "review" && reviewArtifact) {
-    return {
-      sourceKind: "review",
-      sourceId: reviewArtifact.id,
-      sourceLabel: "Review",
-      title: reviewArtifact.name,
-      artifactId: reviewArtifact.id,
-      version: reviewArtifact.metadata.version,
-    };
-  }
-  if (activeTab === "tasks") {
-    return {
-      sourceKind: "task",
-      sourceId: taskId ?? fallbackId,
-      sourceLabel: "Task",
-      ...(conversationTitle ? { title: conversationTitle } : {}),
-    };
-  }
-  if (activeTab === "automation") {
-    return {
-      sourceKind: "automation_spec",
-      sourceId: automationId ?? fallbackId,
-      sourceLabel: "Automation",
-      ...(conversationTitle ? { title: conversationTitle } : {}),
-    };
-  }
-  if (activeTab === "pr") {
-    const pullRequest = workspace?.sourcePullRequest;
-    const prNumber = pullRequest?.number ?? workspace?.publicationPrNumber;
-    const title = pullRequest?.title ?? conversationTitle;
-    const url = pullRequest?.url ?? workspace?.publicationPrUrl;
-    return {
-      sourceKind: "pull_request",
-      sourceId: prNumber ? String(prNumber) : fallbackId,
-      sourceLabel: "PR",
-      ...(title ? { title } : {}),
-      ...(url ? { url } : {}),
-      ...(pullRequest?.headRefOid ? { revision: pullRequest.headRefOid } : {}),
-    };
-  }
-  if (activeTab === "publish") {
-    return {
-      sourceKind: "workspace_diff",
-      sourceId: workspace?.conversationId ?? fallbackId,
-      sourceLabel: "Diff",
-      ...(conversationTitle ? { title: conversationTitle } : {}),
-    };
-  }
-  const sourceKind =
-    activeTab === "jira"
-      ? "jira"
-      : activeTab === "linear"
-        ? "linear"
-        : activeTab === "granola"
-          ? "granola"
-          : "issue";
-  const sourceLabel =
-    activeTab === "jira"
-      ? "Jira"
-      : activeTab === "linear"
-        ? "Linear"
-        : activeTab === "granola"
-          ? "Granola"
-          : "Issue";
-  return {
-    sourceKind,
-    sourceId: fallbackId,
-    sourceLabel,
-    ...(conversationTitle ? { title: conversationTitle } : {}),
-  };
-}
 
 function getProposalCreatedTaskIds(
   proposals: readonly TaskProposal[],
@@ -1679,29 +1574,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     }
     onTabChange("publish");
   }, [onOpenPublish, onTabChange]);
-  const artifactSelectionSource = useMemo(
-    () =>
-      artifactPaneSelectionSource({
-        activeTab: effectiveActiveTab,
-        conversationId,
-        conversationTitle: conversation?.title ?? null,
-        workspace: scopedWorkspace,
-        planArtifact,
-        reviewArtifact,
-        taskId: taskArtifactSelectedId,
-        automationId,
-      }),
-    [
-      automationId,
-      conversation?.title,
-      conversationId,
-      effectiveActiveTab,
-      planArtifact,
-      reviewArtifact,
-      scopedWorkspace,
-      taskArtifactSelectedId,
-    ],
-  );
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {
       if (conversationId) stageComposerExcerptReference(conversationId, reference);
@@ -1982,11 +1854,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             enabled={artifactSelectionEnabled}
             onAddExcerpt={handleAddArtifactExcerpt}
           >
-            <ArtifactSelectableRegion
-              source={artifactSelectionSource}
-              className="contents"
-            >
-              <ArtifactContent
+            <ArtifactContent
           activeTab={effectiveActiveTab}
           tasksEnabled={tasksEnabled}
           workspace={scopedWorkspace}
@@ -2092,7 +1960,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           taskArtifactSelectedId={taskArtifactSelectedId}
                 onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
               />
-            </ArtifactSelectableRegion>
           </ArtifactSelectionProvider>
         )}
       </div>
@@ -2403,7 +2270,6 @@ function ArtifactContent({
     }
     return (
       <AgentPlanPanel
-        conversationId={conversationId}
         tasksEnabled={tasksEnabled}
         workspace={workspace}
         activeWorkspaceFreshness={activeWorkspaceFreshness}
@@ -2456,7 +2322,6 @@ function ArtifactContent({
 }
 
 function AgentPlanPanel({
-  conversationId,
   tasksEnabled,
   workspace,
   activeWorkspaceFreshness,
@@ -2478,7 +2343,6 @@ function AgentPlanPanel({
   onFocusIdeationSessionForConversation,
   onOpenTasks,
 }: {
-  conversationId: string | null;
   tasksEnabled: boolean;
   workspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -3416,20 +3280,6 @@ function AgentPlanPanel({
               >
                 RalphX continues this run automatically after approval.
               </div>
-            ) : null}
-            {planArtifact.content.type === "inline" ? (
-              <ArtifactSelectionSource
-                conversationId={conversationId}
-                source={{
-                  sourceType: "artifact",
-                  sourceKind: "plan",
-                  sourceId: planArtifact.id,
-                  sourceTitle: planArtifact.name,
-                  artifactVersion: planArtifact.metadata.version,
-                }}
-                content={planArtifact.content.text}
-                className="my-3 overflow-hidden rounded-md"
-              />
             ) : null}
             <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
               <LazyPlanDisplay

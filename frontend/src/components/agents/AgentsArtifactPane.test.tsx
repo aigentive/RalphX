@@ -6811,13 +6811,27 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
 
-    const planDisplay = screen.getByTestId("plan-display-chromeless");
+    const planDisplay = await screen.findByTestId("plan-display-chromeless");
     expect(
       within(planDisplay).queryByTestId("plan-approve-button"),
     ).not.toBeInTheDocument();
     expect(
       within(planDisplay).queryByTestId("plan-verify-button"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Select plan lines" }),
+    ).not.toBeInTheDocument();
+
+    const planBody = screen.getByText("Do the work.");
+    expect(
+      planBody.closest("[data-artifact-selectable-region]"),
+    ).not.toBeNull();
+    expect(banner.closest("[data-artifact-selectable-region]")).toBeNull();
+    expect(
+      within(banner)
+        .getByRole("button", { name: /Approve Plan/i })
+        .closest("[data-artifact-selectable-region]"),
+    ).toBeNull();
   });
 
   it("does not show the draft approval lifecycle banner outside Plan mode", async () => {
