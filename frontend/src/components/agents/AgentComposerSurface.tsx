@@ -96,6 +96,7 @@ import {
   type ComposerExcerptReference,
 } from "./artifact-selection/artifactSelection.types";
 import type {
+  ComposerRuntimeCapabilityField,
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
   ComposerRuntimeOption,
@@ -203,16 +204,7 @@ interface TeamFieldConfig {
   testId?: string;
 }
 
-export interface CapabilityFieldConfig {
-  value: CapabilityIntent["coordinationMode"];
-  onValueChange: (
-    value: CapabilityIntent["coordinationMode"],
-  ) => void | Promise<unknown>;
-  options: ComposerOption[];
-  disabled?: boolean;
-  pending?: boolean;
-  testId?: string;
-}
+export type CapabilityFieldConfig = ComposerRuntimeCapabilityField;
 
 export interface ChatFocusOption {
   id: string;
@@ -1974,6 +1966,7 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                {...(capability ? { capability } : {})}
                 {...(runtimeDefault ? { runtimeDefault } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
@@ -1990,13 +1983,8 @@ export function AgentComposerSurface({
               </div>
             )}
 
-            {capability ? (
-              <ComposerCapabilitiesSelector
-                capability={capability}
-                compact={compact}
-              />
-            ) : (
-              team && <ComposerTeamSwitch team={team} compact={compact} />
+            {!capability && team && (
+              <ComposerTeamSwitch team={team} compact={compact} />
             )}
 
             {personaControl && (
@@ -2009,7 +1997,7 @@ export function AgentComposerSurface({
               type="button"
               className={cn(
                 "agent-composer-action-button shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
-                team || capability ? "" : "ml-auto",
+                team && !capability ? "" : "ml-auto",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -2867,113 +2855,6 @@ function ComposerTeamSwitch({
         className="data-[state=checked]:bg-[var(--accent-primary)]"
       />
     </label>
-  );
-}
-
-function ComposerCapabilitiesSelector({
-  capability,
-  compact,
-}: {
-  capability: CapabilityFieldConfig;
-  compact: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const testId = capability.testId ?? "agent-composer-capability";
-  const selected =
-    capability.options.find((option) => option.id === capability.value) ??
-    capability.options[0];
-  const disabled = Boolean(capability.disabled || capability.pending);
-
-  if (!selected) {
-    return null;
-  }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          className={cn(
-            "ml-auto inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[var(--overlay-faint)] px-2.5 font-medium text-[var(--text-secondary)] transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-            compact ? "text-[0.6875rem]" : "text-[0.75rem]",
-          )}
-          style={{
-            backgroundColor:
-              "color-mix(in srgb, var(--bg-base) 18%, var(--bg-surface) 82%)",
-          }}
-          aria-label={`Capabilities: ${selected.label}`}
-          data-testid={testId}
-        >
-          <span>Capabilities</span>
-          <span style={{ color: "var(--text-primary)" }}>{selected.label}</span>
-          {capability.pending ? (
-            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3 w-3" aria-hidden="true" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-72 p-1.5"
-        data-testid={`${testId}-menu`}
-      >
-        <div role="radiogroup" aria-label="Agent capability">
-          {capability.options.map((option) => {
-            const checked = option.id === capability.value;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                role="radio"
-                aria-checked={checked}
-                disabled={option.disabled}
-                className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
-                style={{
-                  backgroundColor: checked
-                    ? "var(--bg-surface-hover)"
-                    : "transparent",
-                }}
-                onClick={() => {
-                  void Promise.resolve(
-                    capability.onValueChange(
-                      option.id as CapabilityIntent["coordinationMode"],
-                    ),
-                  ).then(() => setOpen(false));
-                }}
-                data-testid={`${testId}-${option.id}`}
-              >
-                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)]">
-                  {checked && (
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: "var(--accent-primary)" }}
-                    />
-                  )}
-                </span>
-                <span className="min-w-0">
-                  <span
-                    className="block text-[0.8125rem] font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {option.label}
-                  </span>
-                  {option.description && (
-                    <span
-                      className="mt-0.5 block text-[0.6875rem] leading-snug"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {option.description}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
   );
 }
 
