@@ -186,6 +186,11 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
             project_id: " project-1 ".to_string(),
             name: Some("Nightly automation".to_string()),
             authoring_mode: None,
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
         },
         app.state::<AppState>(),
     )

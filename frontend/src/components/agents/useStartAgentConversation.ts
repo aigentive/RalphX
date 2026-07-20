@@ -384,6 +384,7 @@ export function useStartAgentConversation({
             ? await automationsApi.createDraft({
                 projectId: targetProjectId!,
                 name: automationDraftNameFromContent(content),
+                ...(base ? { base } : {}),
                 ...(automationAuthoringMode
                   ? { authoringMode: automationAuthoringMode }
                   : {}),

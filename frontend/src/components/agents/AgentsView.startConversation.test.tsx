@@ -3398,8 +3398,48 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("starts automation mode by creating a bound setup conversation before sending", async () => {
+  it("starts automation mode from the selected current branch", async () => {
     mockAgentViewData();
+    const currentBranchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "current_branch:feature/automation-base",
+        label: "Current branch (feature/automation-base)",
+        detail: "Currently checked out in the project root",
+        source: "current",
+        selection: {
+          kind: "current_branch",
+          ref: "feature/automation-base",
+          displayName: "Current branch (feature/automation-base)",
+        },
+      },
+    ];
+    loadBranchBaseOptionsMock.mockResolvedValue({
+      options: currentBranchOptions,
+      selectedKey: "project_default:main",
+    });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: currentBranchOptions,
+          selectedKey: "current_branch:feature/automation-base",
+          loadedAt: "2026-07-20T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "current_branch:feature/automation-base",
+      },
+    });
     createAutomationDraftMock.mockResolvedValue({
       automation: {
         id: "automation-setup-flow",
@@ -3464,6 +3504,12 @@ describe("AgentsView start conversation", () => {
       expect(createAutomationDraftMock).toHaveBeenCalledWith({
         projectId: "project-1",
         name: "set up a weekly dependency cleanup automation",
+        base: {
+          kind: "current_branch",
+          branchMode: "isolated",
+          ref: "feature/automation-base",
+          displayName: "Current branch (feature/automation-base)",
+        },
       })
     );
     await waitFor(() =>
@@ -3573,6 +3619,12 @@ describe("AgentsView start conversation", () => {
         projectId: "project-1",
         name: "ship the trusted pipeline",
         authoringMode: "trusted_auto_finalize",
+        base: {
+          kind: "project_default",
+          branchMode: "isolated",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
       })
     );
   });
