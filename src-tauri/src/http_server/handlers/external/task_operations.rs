@@ -645,6 +645,14 @@ pub async fn create_task_note_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(tasks_feature_http_error)?;
+
     let note_text = format!("\n\n---\n**Note:** {}", req.note);
     task.description = Some(match task.description {
         Some(existing) => format!("{}{}", existing, note_text),
