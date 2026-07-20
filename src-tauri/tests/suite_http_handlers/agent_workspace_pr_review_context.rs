@@ -68,7 +68,7 @@ async fn setup(
     let conversation_id = ChatConversationId::new();
     let project_id = ProjectId::from_string("project-pr-review-reload".to_string());
     let mut workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project_id.clone(),
         AgentConversationWorkspaceMode::ReviewPr,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -93,7 +93,7 @@ async fn setup(
         .expect("seed Review PR workspace");
 
     let mut monitor = AgentWorkspacePrReviewMonitor::new(
-        conversation_id.clone(),
+        conversation_id,
         project_id,
         PR_NUMBER,
         Some("source-snapshot-head".to_string()),
@@ -121,7 +121,7 @@ async fn create_action(
         .app_state
         .agent_conversation_workspace_repo
         .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
-            conversation_id.clone(),
+            *conversation_id,
             PR_NUMBER,
             head_sha.to_string(),
             AgentWorkspacePrReviewActionKind::RequestChanges,
