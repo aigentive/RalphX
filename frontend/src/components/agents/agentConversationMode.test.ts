@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
+  buildConversationModeOptions,
   buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
@@ -124,12 +125,27 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     );
   });
 
-  it("excludes persona builder from selectable mode options", () => {
-    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  it("includes Persona as a label-only conversation mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona", disabled: true }),
     );
-    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  });
+
+  it.each(["automation", "persona_builder"] as const)(
+    "disables every conversation-mode option while %s is locked",
+    (mode) => {
+      const options = buildConversationModeOptions(
+        conversation({ agentMode: mode }),
+        null,
+      );
+      expect(options).not.toHaveLength(0);
+      expect(options.every((option) => option.disabled)).toBe(true);
+    },
+  );
+
+  it("keeps Persona in the starter registry for feature-gated rendering", () => {
+    expect(AGENT_START_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona" }),
     );
   });
 

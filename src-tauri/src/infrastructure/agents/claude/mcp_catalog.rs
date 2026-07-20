@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -8,6 +9,11 @@ use crate::domain::agents::{
     AgentHarnessKind, McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
 };
 use crate::utils::path_safety::validate_absolute_non_root_path;
+
+fn legacy_registration_cleanup_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 pub(crate) fn discover_native_mcp_servers(
     home_dir: &Path,
@@ -64,6 +70,82 @@ pub(crate) fn discover_native_mcp_servers(
     }
 
     Ok(servers.into_values().collect())
+}
+
+pub(crate) fn has_app_owned_legacy_user_registration(
+    home_dir: &Path,
+    app_data_dir: &Path,
+) -> Result<bool, String> {
+    let home_dir = validate_absolute_non_root_path(home_dir, "Claude config root")
+        .map_err(|error| error.to_string())?;
+    let app_data_dir = validate_absolute_non_root_path(app_data_dir, "RalphX app data root")
+        .map_err(|error| error.to_string())?;
+    let user_state_path = home_dir.join(".claude.json");
+    let Some(user_state) = read_fixed_json(&home_dir, &user_state_path, Path::new(".claude.json"))?
+    else {
+        return Ok(false);
+    };
+    let Some(registration) = user_state
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get("ralphx"))
+    else {
+        return Ok(false);
+    };
+
+    Ok(["release", "debug"].into_iter().any(|profile| {
+        registration
+            == &serde_json::json!({
+                "type": "stdio",
+                "command": "node",
+                "args": [
+                    app_data_dir
+                        .join("generated")
+                        .join(profile)
+                        .join("claude-plugin/ralphx-mcp-server/build/index.js"),
+                    "--trace-dir",
+                    app_data_dir.join("logs/mcp-proxy"),
+                ]
+            })
+    }))
+}
+
+pub(crate) async fn retire_app_owned_legacy_user_registration(
+    cli_path: &Path,
+    home_dir: &Path,
+    app_data_dir: &Path,
+    provider_env: &HashMap<String, String>,
+) -> Result<bool, String> {
+    let _guard = legacy_registration_cleanup_lock().lock().await;
+    if !has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
+        return Ok(false);
+    }
+
+    let mut command = tokio::process::Command::new(cli_path);
+    super::apply_common_spawn_env(&mut command);
+    command
+        .envs(provider_env)
+        .args(["mcp", "remove", "ralphx", "-s", "user"]);
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("Run Claude legacy MCP cleanup: {error}"))?;
+    if !output.status.success() {
+        if !has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
+            return Ok(true);
+        }
+        return Err(format!(
+            "Claude legacy MCP cleanup exited with status {}",
+            output.status
+        ));
+    }
+    if has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
+        return Err(
+            "Claude reported successful legacy MCP cleanup but the registration remains"
+                .to_string(),
+        );
+    }
+    Ok(true)
 }
 
 fn read_fixed_json(

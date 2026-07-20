@@ -67,8 +67,15 @@ describe("normalizePermissionToolInput", () => {
 describe("shouldAutoApprovePermission", () => {
     const tempDirs = [];
     const originalPwd = process.env.PWD;
+    const originalFilesystemReadRoots = process.env.RALPHX_FILESYSTEM_READ_ROOTS;
     afterEach(() => {
         process.env.PWD = originalPwd;
+        if (originalFilesystemReadRoots === undefined) {
+            delete process.env.RALPHX_FILESYSTEM_READ_ROOTS;
+        }
+        else {
+            process.env.RALPHX_FILESYSTEM_READ_ROOTS = originalFilesystemReadRoots;
+        }
         for (const dir of tempDirs.splice(0)) {
             fs.rmSync(dir, { recursive: true, force: true });
         }
@@ -163,6 +170,32 @@ describe("shouldAutoApprovePermission", () => {
         expect(shouldAutoApprovePermission("Read", {
             path: path.join(otherRepo, "package.json"),
         })).toBe(false);
+    });
+    it("auto-approves read tools under a realpath-resolved configured read root", () => {
+        const trustedRepo = makeTempGitRepo();
+        const readRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-read-root-")));
+        tempDirs.push(readRoot);
+        process.env.PWD = trustedRepo;
+        const rootLink = path.join(trustedRepo, "configured-root-link");
+        fs.symlinkSync(readRoot, rootLink);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([rootLink]);
+        const target = path.join(readRoot, "context.txt");
+        fs.writeFileSync(target, "context\n");
+        expect(shouldAutoApprovePermission("Read", { path: target })).toBe(true);
+        expect(shouldAutoApprovePermission("LS", { path: readRoot })).toBe(true);
+        expect(shouldAutoApprovePermission("Grep", { pattern: "context", path: readRoot })).toBe(true);
+        expect(shouldAutoApprovePermission("Glob", { pattern: `${readRoot}/**/*.txt` })).toBe(true);
+    });
+    it("does not extend configured read-root trust to Bash", () => {
+        const trustedRepo = makeTempGitRepo();
+        const readRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-read-root-")));
+        tempDirs.push(readRoot);
+        process.env.PWD = trustedRepo;
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([readRoot]);
+        const target = path.join(readRoot, "context.txt");
+        fs.writeFileSync(target, "context\n");
+        expect(shouldAutoApprovePermission("Read", { path: target })).toBe(true);
+        expect(shouldAutoApprovePermission("Bash", { command: `cat ${target}` })).toBe(false);
     });
 });
 //# sourceMappingURL=permission-handler.test.js.map

@@ -15,6 +15,28 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "scripts" / "baselines" / "layering.json"
 SCHEMA_VERSION = 1
 
+FILESYSTEM_ENFORCEMENT_SITE = re.compile(
+    r"\benforce_filesystem_roots\s*:|\blet\s+enforce_filesystem_roots\s*="
+)
+FILESYSTEM_ENFORCEMENT_ALLOWLIST = {
+    (
+        "src-tauri/src/application/chat_service/resolved_conversation_spawn_context.rs",
+        "pub enforce_filesystem_roots: bool,",
+    ): 1,
+    (
+        "src-tauri/src/application/chat_service/resolved_conversation_spawn_context.rs",
+        "let enforce_filesystem_roots = build_mcp_runtime_context(",
+    ): 2,
+    (
+        "src-tauri/src/application/chat_service/chat_service_context.rs",
+        "enforce_filesystem_roots: context_type == ChatContextType::Standalone",
+    ): 1,
+    (
+        "src-tauri/src/infrastructure/agents/mcp_runtime_context.rs",
+        "pub enforce_filesystem_roots: bool,",
+    ): 1,
+}
+
 RULES: list[dict[str, Any]] = [
     {
         "id": "root_domain_no_upward_imports",
@@ -117,6 +139,47 @@ def collect_rule_violations(rule: dict[str, Any]) -> list[dict[str, str]]:
 
 def collect_violations() -> dict[str, list[dict[str, str]]]:
     return {rule["id"]: collect_rule_violations(rule) for rule in RULES}
+
+
+def check_filesystem_enforcement_single_derivation() -> int:
+    remaining = dict(FILESYSTEM_ENFORCEMENT_ALLOWLIST)
+    unexpected: list[tuple[str, int, str]] = []
+    source_root = REPO_ROOT / "src-tauri" / "src"
+
+    for path in sorted(source_root.rglob("*.rs")):
+        if path.name.endswith("_tests.rs") or path.name == "tests.rs":
+            continue
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            text = normalized_line(line)
+            if not FILESYSTEM_ENFORCEMENT_SITE.search(text):
+                continue
+            key = (rel_path, text)
+            if remaining.get(key, 0) > 0:
+                remaining[key] -= 1
+            else:
+                unexpected.append((rel_path, line_number, text))
+
+    missing = sorted(key for key, count in remaining.items() if count != 0)
+    if not unexpected and not missing:
+        return 0
+
+    print(
+        "Filesystem enforcement single-derivation invariant failed:",
+        file=sys.stderr,
+    )
+    for path, line_number, text in unexpected:
+        print(f"- unexpected {path}:{line_number} | {text}", file=sys.stderr)
+    for path, text in missing:
+        print(f"- missing allowlisted site {path} | {text}", file=sys.stderr)
+    print(
+        "Derive enforce_filesystem_roots only in build_mcp_runtime_context; "
+        "forward that canonical value elsewhere.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def baseline_payload() -> dict[str, Any]:
@@ -230,6 +293,8 @@ def check_against_baseline(path: Path) -> int:
             print_delta("New layering violations", rule_id, new_entries)
             print_delta("Resolved baseline entries", rule_id, resolved_entries)
 
+    failures += check_filesystem_enforcement_single_derivation()
+
     if failures:
         print(
             "\nLayering ratchet failed. Remove new violations or regenerate the "
@@ -246,7 +311,8 @@ def check_against_baseline(path: Path) -> int:
     hard_zero_count = sum(1 for rule in RULES if rule["mode"] == "hard-zero")
     print(
         f"Layering ratchet passed: {baseline_count} tracked entries, "
-        f"{hard_zero_count} hard-zero rules clean."
+        f"{hard_zero_count} hard-zero rules and filesystem "
+        "single-derivation invariant clean."
     )
     return 0
 

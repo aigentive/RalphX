@@ -152,6 +152,7 @@ pub(super) fn is_pause_managed_chat_context(context_type: ChatContextType) -> bo
             | ChatContextType::Ideation
             | ChatContextType::Task
             | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 
@@ -240,6 +241,9 @@ pub(super) async fn queue_key_matches_project(
         ChatContextType::Project => Ok(resolve_project_queue_context(key, app_state)
             .await?
             .is_some_and(|(context_id, _)| context_id == project_id.as_str())),
+        // Standalone conversations are projectless (self-keyed by conversation id),
+        // so they never match a project filter.
+        ChatContextType::Standalone => Ok(false),
     }
 }
 
@@ -751,20 +755,32 @@ where
     let mut chat_keys = Vec::new();
 
     for key in queued_keys(app_state).await? {
-        if key.context_type != ChatContextType::Task {
+        // Task: task-linked chat queue, sorted by owning project. Standalone:
+        // self-keyed projectless chat queue (no project to sort by) — see
+        // `is_pause_managed_chat_context` / `should_requeue_after_provider_pause`,
+        // which both already admit Standalone at the pause layer; this is its
+        // matching resume-drain arm (pause-drain parity, Phase 4a.3).
+        if !matches!(
+            key.context_type,
+            ChatContextType::Task | ChatContextType::Standalone
+        ) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        let task_id = TaskId::from_string(key.context_id.clone());
-        let project_sort_key = app_state
-            .task_repo
-            .get_by_id(&task_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|task| task.project_id.as_str().to_string())
-            .unwrap_or_default();
+        let project_sort_key = if key.context_type == ChatContextType::Task {
+            let task_id = TaskId::from_string(key.context_id.clone());
+            app_state
+                .task_repo
+                .get_by_id(&task_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|task| task.project_id.as_str().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         chat_keys.push((
             project_sort_key,
             key.context_type.to_string(),

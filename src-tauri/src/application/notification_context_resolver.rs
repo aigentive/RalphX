@@ -55,10 +55,13 @@ impl NotificationContextResolver {
             let expected_project_id = self
                 .expected_project_id(task_id, context_type, context_id)
                 .await?;
+            let expected_context_type = context_type.and_then(|value| value.parse().ok());
             if let Some(resolved) = self
                 .resolve_trusted_agent_conversation_target(
                     conversation_id,
                     expected_project_id.as_deref(),
+                    expected_context_type,
+                    context_id,
                 )
                 .await?
             {
@@ -162,6 +165,8 @@ impl NotificationContextResolver {
                 .resolve_trusted_agent_conversation_target(
                     &workspace_conversation_id,
                     Some(session.project_id.as_str()),
+                    Some(ChatContextType::Ideation),
+                    Some(session.id.as_str()),
                 )
                 .await?
             {
@@ -228,10 +233,13 @@ impl NotificationContextResolver {
             let expected_project_id = self
                 .expected_project_id(None, Some(context_type), Some(context_id))
                 .await?;
+            let expected_context_type = context_type.parse().ok();
             if let Some(resolved) = self
                 .resolve_trusted_agent_conversation_target(
                     conversation_id,
                     expected_project_id.as_deref(),
+                    expected_context_type,
+                    Some(context_id),
                 )
                 .await?
             {
@@ -285,7 +293,7 @@ impl NotificationContextResolver {
                 .await?
                 .map(|session| session.project_id.to_string())),
             ChatContextType::Project => Ok(Some(conversation.context_id.clone())),
-            ChatContextType::Delegation => Ok(None),
+            ChatContextType::Delegation | ChatContextType::Standalone => Ok(None),
         }
     }
 
@@ -310,9 +318,9 @@ impl NotificationContextResolver {
                 ))
                 .await?
                 .and_then(|session| session.title)),
-            ChatContextType::Project | ChatContextType::Delegation => {
-                Ok(conversation.title.clone())
-            }
+            ChatContextType::Project
+            | ChatContextType::Delegation
+            | ChatContextType::Standalone => Ok(conversation.title.clone()),
         }
     }
 
@@ -334,8 +342,32 @@ impl NotificationContextResolver {
         &self,
         conversation_id: &str,
         expected_project_id: Option<&str>,
+        expected_context_type: Option<ChatContextType>,
+        expected_context_id: Option<&str>,
     ) -> AppResult<Option<ResolvedNotificationTarget>> {
         let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+        let Some(conversation) = self
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if conversation.archived_at.is_some() {
+            return Ok(None);
+        }
+        if conversation.context_type == ChatContextType::Standalone {
+            let stored_conversation_id = conversation.id.as_str();
+            if expected_context_type != Some(ChatContextType::Standalone)
+                || expected_context_id != Some(stored_conversation_id.as_str())
+                || conversation.context_id != stored_conversation_id
+            {
+                return Ok(None);
+            }
+            return Ok(Some(
+                self.resolve_conversation_target(&conversation_id).await?,
+            ));
+        }
         let Some(workspace) = self
             .agent_workspace_repo
             .get_by_conversation_id(&conversation_id)
@@ -347,16 +379,6 @@ impl NotificationContextResolver {
             || expected_project_id
                 .is_some_and(|project_id| workspace.project_id.as_str() != project_id)
         {
-            return Ok(None);
-        }
-        let Some(conversation) = self
-            .chat_conversation_repo
-            .get_by_id(&conversation_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if conversation.archived_at.is_some() {
             return Ok(None);
         }
         Ok(Some(
@@ -399,7 +421,7 @@ impl NotificationContextResolver {
                 .get_by_id(&TaskId::from_string(context_id.to_string()))
                 .await?
                 .map(|task| task.project_id.to_string())),
-            ChatContextType::Delegation => Ok(None),
+            ChatContextType::Delegation | ChatContextType::Standalone => Ok(None),
         }
     }
 }

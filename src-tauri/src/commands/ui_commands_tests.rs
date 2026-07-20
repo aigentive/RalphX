@@ -19,6 +19,10 @@ impl UiFeatureFlagOverridesRepository for FailingCapabilityOverridesRepository {
         Ok(())
     }
 
+    async fn set_composer_folder_references(&self, _value: Option<bool>) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_agent_capabilities(
         &self,
         _team: Option<bool>,
@@ -37,6 +41,14 @@ fn get_ui_feature_flags_includes_agent_personas() {
 
     assert_eq!(json.get("agentPersonas"), Some(&serde_json::json!(false)));
     assert_eq!(
+        json.get("composerFolderReferences"),
+        Some(&serde_json::json!(false))
+    );
+    assert!(matches!(
+        json.get("standaloneConversations"),
+        Some(serde_json::Value::Bool(_))
+    ));
+    assert_eq!(
         json.get("agentConversationTeam"),
         Some(&serde_json::json!(false))
     );
@@ -49,6 +61,14 @@ fn get_ui_feature_flags_includes_agent_personas() {
         Some(&serde_json::json!(false))
     );
     assert!(json.get("agent_personas").is_none());
+}
+
+#[test]
+fn get_ui_feature_flags_reports_the_effective_standalone_value() {
+    let state = AppState::new_test();
+
+    assert!(ui_feature_flags_response_with_standalone(&state, true).standalone_conversations);
+    assert!(!ui_feature_flags_response_with_standalone(&state, false).standalone_conversations);
 }
 
 #[test]
@@ -131,6 +151,7 @@ async fn updating_capabilities_persists_then_updates_the_live_gate() {
     let response = update_ui_feature_flags_for_state(
         UpdateUiFeatureFlagsInput {
             agent_personas: None,
+            composer_folder_references: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: Some(false),
             agent_conversation_autopilot: Some(true),
@@ -164,6 +185,7 @@ async fn failed_capability_write_leaves_the_live_gate_unchanged() {
     let error = update_ui_feature_flags_for_state(
         UpdateUiFeatureFlagsInput {
             agent_personas: None,
+            composer_folder_references: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: None,
             agent_conversation_autopilot: None,

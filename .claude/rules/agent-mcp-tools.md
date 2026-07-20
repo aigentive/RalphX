@@ -77,6 +77,10 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 
 `list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker, coder, and team-lead surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
 
+## Persona Builder Tools
+
+`ralphx-persona-extractor` gets bounded `fs_*` reads plus `ask_user_question`, `save_persona_draft`, and `get_persona_draft`; context enters through the standard composer/read-root contract, not bespoke ingest commands or tools.
+
 ## Failure Diagnosis
 
 | Symptom | Check |

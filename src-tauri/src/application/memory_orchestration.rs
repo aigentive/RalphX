@@ -31,7 +31,7 @@ impl MemoryCategory {
             ChatContextType::BranchUpdate => MemoryCategory::Execution,
             ChatContextType::Review => MemoryCategory::Review,
             ChatContextType::Merge => MemoryCategory::Merge,
-            ChatContextType::Project => MemoryCategory::ProjectChat,
+            ChatContextType::Project | ChatContextType::Standalone => MemoryCategory::ProjectChat,
         }
     }
 

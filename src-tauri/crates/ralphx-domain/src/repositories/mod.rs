@@ -29,6 +29,7 @@ pub mod branch_update_repository;
 pub mod automation_run_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
+pub mod conversation_folder_reference_repository;
 pub mod chat_message_repository;
 pub mod chat_timeline_repository;
 pub mod delegated_session_repository;
@@ -113,6 +114,7 @@ pub use branch_update_repository::{
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
+pub use conversation_folder_reference_repository::ConversationFolderReferenceRepository;
 pub use chat_message_repository::ChatMessageRepository;
 pub use chat_timeline_repository::ChatTimelineRepository;
 pub use delegated_session_repository::DelegatedSessionRepository;

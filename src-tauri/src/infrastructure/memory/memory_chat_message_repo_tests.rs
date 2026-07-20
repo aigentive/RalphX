@@ -148,3 +148,86 @@ async fn test_update_attribution_updates_message_attribution_fields() {
     assert_eq!(updated.logical_effort, Some(LogicalEffort::High));
     assert_eq!(updated.effective_effort.as_deref(), Some("high"));
 }
+
+// ── Standalone (self-keyed) context lookups ─────────────────────────────────
+
+fn standalone_user_message(conversation_id: ChatConversationId, content: &str) -> ChatMessage {
+    ChatMessage {
+        id: ChatMessageId::new(),
+        session_id: None,
+        project_id: None,
+        task_id: None,
+        conversation_id: Some(conversation_id),
+        role: MessageRole::User,
+        content: content.to_string(),
+        metadata: None,
+        parent_message_id: None,
+        tool_calls: None,
+        content_blocks: None,
+        attribution_source: None,
+        provider_harness: None,
+        provider_session_id: None,
+        upstream_provider: None,
+        provider_profile: None,
+        logical_model: None,
+        effective_model_id: None,
+        logical_effort: None,
+        effective_effort: None,
+        input_tokens: None,
+        output_tokens: None,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
+        estimated_usd: None,
+        created_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn test_get_first_user_message_by_context_returns_standalone_message() {
+    let repo = MemoryChatMessageRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let message = standalone_user_message(conversation_id, "First standalone message");
+    repo.create(message).await.unwrap();
+
+    let first = repo
+        .get_first_user_message_by_context("standalone", &conversation_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(first.as_deref(), Some("First standalone message"));
+}
+
+#[tokio::test]
+async fn test_get_first_user_message_by_context_standalone_returns_earliest_message() {
+    let repo = MemoryChatMessageRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let mut earlier = standalone_user_message(conversation_id, "Earlier message");
+    earlier.created_at = chrono::Utc::now() - chrono::Duration::seconds(60);
+    let later = standalone_user_message(conversation_id, "Later message");
+    repo.create(later).await.unwrap();
+    repo.create(earlier).await.unwrap();
+
+    let first = repo
+        .get_first_user_message_by_context("standalone", &conversation_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(first.as_deref(), Some("Earlier message"));
+}
+
+#[tokio::test]
+async fn test_get_first_user_message_by_context_standalone_does_not_leak_other_conversations() {
+    let repo = MemoryChatMessageRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let other_conversation_id = ChatConversationId::new();
+    repo.create(standalone_user_message(
+        other_conversation_id,
+        "Belongs to a different standalone conversation",
+    ))
+    .await
+    .unwrap();
+
+    let first = repo
+        .get_first_user_message_by_context("standalone", &conversation_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(first, None);
+}

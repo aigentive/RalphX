@@ -101,6 +101,9 @@ impl Drop for EnvVarGuard {
 fn persona_for_send_fixture(id: &str, status: PersonaStatus) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: format!("{id} persona"),
         description: "send failure fixture".to_string(),
@@ -1303,6 +1306,9 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
     let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
     let persona = Persona {
         id: PersonaId::from("queue-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queue-persona".to_string(),
         name: "Queue Persona".to_string(),
         description: "queue attribution fixture".to_string(),
@@ -1625,6 +1631,9 @@ async fn process_queue_resume_persona_block(
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     let persona = Persona {
         id: PersonaId::from("queued-resume-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-persona".to_string(),
         name: "Queued Resume Persona".to_string(),
         description: "queue resume fixture".to_string(),
@@ -1645,6 +1654,9 @@ async fn process_queue_resume_persona_block(
         .expect("seed queued resume persona");
     let replacement_persona = Persona {
         id: PersonaId::from("queued-resume-replacement-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-replacement-persona".to_string(),
         name: "Queued Resume Replacement Persona".to_string(),
         description: "queue resume replacement fixture".to_string(),

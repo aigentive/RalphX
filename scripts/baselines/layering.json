@@ -96,11 +96,6 @@
   "violations": {
     "root_application_no_commands_or_http_imports": [
       {
-        "path": "src-tauri/src/application/agent_conversation_start_service.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/application/app_setup.rs",
         "target": "crate::commands",
         "text": "crate::commands::agent_workspace_auto_publish::install_agent_workspace_auto_publish_listeners("

@@ -528,6 +528,15 @@ impl ChatMessageRepository for SqliteChatMessageRepository {
                          WHERE project_id = ?1 AND session_id IS NULL AND role = 'user' \
                          ORDER BY created_at ASC LIMIT 1"
                     }
+                    "standalone" => {
+                        // Standalone conversations are self-keyed
+                        // (context_id == conversation_id); the generic fallback
+                        // below queries by session_id, which standalone messages
+                        // never set — it would silently return None forever.
+                        "SELECT content FROM chat_messages \
+                         WHERE conversation_id = ?1 AND role = 'user' \
+                         ORDER BY created_at ASC LIMIT 1"
+                    }
                     _ => {
                         "SELECT content FROM chat_messages \
                          WHERE session_id = ?1 AND role = 'user' \

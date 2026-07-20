@@ -11,6 +11,7 @@ pub mod model_labels;
 pub mod model_resolver;
 pub(crate) mod mcp_catalog;
 pub mod node_utils;
+mod security_policy;
 mod stream_processor;
 
 #[cfg(test)]
@@ -25,12 +26,14 @@ pub use agent_config::team_config::{
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
     claude_runtime_config,
-    config_path, defer_merge_enabled, execution_defaults_config, external_mcp_config,
+    composer_folder_references_enabled, config_path, defer_merge_enabled,
+    execution_defaults_config, external_mcp_config,
     external_mcp_config_path, file_logging_enabled, get_agent_config, get_agent_config_for_profile,
     get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
     get_effective_settings_profile, get_preapproved_tools, get_preapproved_tools_for_profile,
     git_runtime_config, ideation_activity_threshold_secs, limits_config, process_mapping,
-    reconciliation_config, resolve_file_logging_early, scheduler_config, stream_timeouts,
+    reconciliation_config, resolve_file_logging_early, scheduler_config,
+    standalone_conversations_enabled, stream_timeouts,
     supervisor_runtime_config, team_constraints_config, ui_feature_flags_config,
     validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
@@ -38,7 +41,9 @@ pub use agent_config::{
     StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
 pub use agent_config::live_flags::{
-    reset_agent_personas_override_for_test, set_agent_personas_override,
+    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
+    reset_standalone_conversations_override_for_test, set_agent_personas_override,
+    set_composer_folder_references_override, set_standalone_conversations_override,
 };
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
@@ -96,8 +101,23 @@ use crate::infrastructure::agents::mcp_runtime_context::{
 };
 use crate::infrastructure::external_mcp_supervisor::ensure_tauri_mcp_bypass_token;
 
-const PRIMARY_PLUGIN_DIR_REL: &str = "plugins/app";
-const LEGACY_PLUGIN_DIR_REL: &str = "ralphx-plugin";
+pub(crate) const PRIMARY_PLUGIN_DIR_REL: &str = "plugins/app";
+pub(crate) const LEGACY_PLUGIN_DIR_REL: &str = "ralphx-plugin";
+pub(crate) use security_policy::ClaudePermissionPolicy;
+#[cfg(test)]
+pub(crate) use security_policy::CLAUDE_PROMPT_PERMISSION_MODE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudePromptDelivery {
+    NonInteractive,
+    Interactive,
+}
+
+impl ClaudePromptDelivery {
+    const fn is_interactive(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
 
 fn base_plugin_dir_override() -> &'static Mutex<Option<PathBuf>> {
     static OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -485,6 +505,26 @@ pub(crate) fn resolve_claude_permission_cli_options(
     }
 }
 
+fn resolve_claude_permission_cli_options_for_policy(
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
+) -> ClaudePermissionCliOptions {
+    policy.resolve_cli_options(resolve_claude_permission_cli_options(
+        agent_type,
+        agent_profile,
+    ))
+}
+
+fn preapproved_tools_for_permission_policy(
+    agent_name: &str,
+    agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
+) -> Option<String> {
+    let preapproved = get_preapproved_tools_for_profile(agent_name, agent_profile)?;
+    policy.filter_preapproved_tools(preapproved)
+}
+
 pub(crate) fn append_claude_permission_args(
     args: &mut Vec<String>,
     agent_type: Option<&str>,
@@ -509,8 +549,9 @@ fn apply_claude_permission_args(
     cmd: &mut Command,
     agent_type: Option<&str>,
     agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
 ) {
-    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
+    let options = resolve_claude_permission_cli_options_for_policy(agent_type, agent_profile, policy);
     cmd.args([
         "--permission-prompt-tool",
         &options.permission_prompt_tool,
@@ -607,6 +648,7 @@ fn build_base_cli_command_inner_with_runtime_context(
         model_override,
         mcp_runtime_context,
         enforce_spawn_guard,
+        ClaudePermissionPolicy::InheritConfigured,
     )
 }
 
@@ -621,6 +663,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
     enforce_spawn_guard: bool,
+    permission_policy: ClaudePermissionPolicy,
 ) -> Result<Command, String> {
     if enforce_spawn_guard {
         ensure_claude_spawn_allowed()?;
@@ -668,7 +711,12 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     }
 
     // Configure permission handling from config/harnesses/claude.yaml.
-    apply_claude_permission_args(&mut cmd, agent_type, agent_profile);
+    apply_claude_permission_args(
+        &mut cmd,
+        agent_type,
+        agent_profile,
+        permission_policy,
+    );
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -1504,6 +1552,7 @@ fn add_prompt_args(
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
+    permission_policy: ClaudePermissionPolicy,
 ) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
     if let Some(session_id) = resume_session {
@@ -1623,7 +1672,9 @@ fn add_prompt_args(
         }
 
         // Pre-approve tools to bypass permission prompts (MCP + CLI permissions)
-        if let Some(preapproved) = get_preapproved_tools_for_profile(agent_name, agent_profile) {
+        if let Some(preapproved) =
+            preapproved_tools_for_permission_policy(agent_name, agent_profile, permission_policy)
+        {
             cmd.args(["--allowedTools", &preapproved]);
             tracing::debug!(agent = agent_name, preapproved = %preapproved, "Agent pre-approved tools");
         }
@@ -1730,8 +1781,17 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         mcp_runtime_context,
         true,
     )?;
-    let prompt_args =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        None,
+        agent,
+        None,
+        resume_session,
+        false,
+        ClaudePermissionPolicy::InheritConfigured,
+    );
     configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
     Ok(
         SpawnableCommand::new_with_stdin_transport(
@@ -1761,6 +1821,116 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::NonInteractive,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Canonical profile-aware Claude command seam for backend-selected launch security.
+pub(crate) fn build_spawnable_profile_command_with_permission_policy(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy_inner(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        permission_policy,
+        prompt_delivery,
+        true,
+    )
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_spawnable_profile_command_with_permission_policy_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy_inner(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        permission_policy,
+        prompt_delivery,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_spawnable_profile_command_with_permission_policy_inner(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+    enforce_spawn_guard: bool,
+) -> Result<SpawnableCommand, String> {
     let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
         cli_path,
         plugin_dir,
@@ -1770,7 +1940,8 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         effort_override,
         model_override,
         mcp_runtime_context,
-        true,
+        enforce_spawn_guard,
+        permission_policy,
     )?;
     let prompt_args = add_prompt_args(
         &mut cmd,
@@ -1780,9 +1951,14 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         agent,
         agent_profile,
         resume_session,
-        false,
+        prompt_delivery.is_interactive(),
+        permission_policy,
     );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_delivery.is_interactive() || prompt_args.stdin_prompt.is_some(),
+    );
     Ok(
         SpawnableCommand::new_with_stdin_transport(
             cmd,
@@ -1843,8 +2019,17 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let prompt_args =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        None,
+        agent,
+        None,
+        resume_session,
+        false,
+        ClaudePermissionPolicy::InheritConfigured,
+    );
     configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
     Ok(
         SpawnableCommand::new_with_stdin_transport(
@@ -1875,38 +2060,21 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy_for_test(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        false,
-    )?;
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        false,
-    );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::NonInteractive,
     )
 }
 
@@ -1987,39 +2155,21 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        true,
-    )?;
-    // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        true,
-    );
-    configure_spawn(&mut cmd, working_directory, true);
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::Interactive,
     )
 }
 
@@ -2095,38 +2245,21 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy_for_test(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        false,
-    )?;
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        true,
-    );
-    configure_spawn(&mut cmd, working_directory, true);
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::Interactive,
     )
 }
 

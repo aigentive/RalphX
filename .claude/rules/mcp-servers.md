@@ -68,7 +68,7 @@ Tauri-owned Agent → loopback bypass token → ralphx-external-mcp (:3848) → 
 | Question | Internal (`ralphx-mcp-server`) | External (`ralphx-external-mcp`) |
 |----------|-------------------------------|----------------------------------|
 | Who calls it? | RalphX internal harness runtimes for private implementation helpers (today mostly Claude) | Third-party bots, external integrations, Tauri-owned agents for public orchestration |
-| How is it started? | Claude path is registered via `claude mcp add-json` by Tauri app; other harnesses may use different runtime adapters | Auto-started by `ExternalMcpSupervisor` when enabled in `config/external-mcp.yaml` |
+| How is it started? | RalphX injects the required Claude server per launch; upgrades retire only the exact legacy user registration previously written by RalphX | Auto-started by `ExternalMcpSupervisor` when enabled in `config/external-mcp.yaml` |
 | Where are tools defined? | Focused `src/*-tools.ts` modules + canonical agent capabilities; `src/tools.ts` composes the registry | `src/tools/*.ts` (discovery, ideation, pipeline, events, tasks, guide, projects) |
 | Domain logic? | ❌ Pure proxy + authz | ❌ Pure proxy + authz + rate limiting |
 | Both proxy to? | Tauri backend `:3847` | Tauri backend `:3847` |

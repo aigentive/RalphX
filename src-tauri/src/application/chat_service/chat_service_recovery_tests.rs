@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatMessage, IdeationSession, ProjectId, TaskId,
-    VerificationStatus,
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatMessage,
+    IdeationSession, ProjectId, TaskId, VerificationStatus,
 };
 use crate::domain::repositories::{
     AgentProviderSettingsRepository, IdeationSessionRepository, TaskProposalRepository,
@@ -250,6 +250,11 @@ async fn attempt_session_recovery_uses_managed_review_provider_settings_until_st
     let task_id = TaskId::new();
     let conversation = ChatConversation::new_review(task_id.clone());
     let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed review conversation");
     let mut historical_message = ChatMessage::user_about_task(task_id.clone(), "prior review turn");
     historical_message.conversation_id = Some(conversation_id.clone());
     state
@@ -315,6 +320,11 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
     let project_id = ProjectId::new();
     let conversation = ChatConversation::new_project(project_id.clone());
     let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed project conversation");
     let mut historical_message =
         ChatMessage::user_in_project(project_id.clone(), "prior project turn");
     historical_message.conversation_id = Some(conversation_id.clone());
@@ -372,6 +382,55 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         message.contains("Recovery failed")
             || message.contains("Recovery stream processing failed"),
         "project recovery should fail only after the provider gate on the inert stream: {message}"
+    );
+}
+
+#[tokio::test]
+async fn attempt_session_recovery_rejects_authoritative_mode_only_builder_identity_before_replay() {
+    let state = AppState::new_test();
+    let task_id = TaskId::new();
+    let mut conversation = ChatConversation::new_review(task_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let conversation_id = conversation.id;
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed invalid-context builder row");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let error = attempt_session_recovery::<MockRuntime>(
+        &conversation_id,
+        &conversation,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        task_id.as_str(),
+        "must not recover as a persona builder",
+        Path::new("/bin/echo"),
+        temp_dir.path(),
+        temp_dir.path(),
+        None,
+        false,
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.artifact_repo),
+        None,
+        None,
+        Arc::clone(&state.agent_run_repo),
+        "invalid-builder-recovery-run",
+        None,
+        true,
+        false,
+        "invalid-builder-session",
+        None,
+    )
+    .await
+    .expect_err("unsupported context must not acquire PersonaBuilder recovery authority");
+
+    assert!(
+        error.to_string().contains("Project or Standalone"),
+        "unexpected recovery rejection: {error}"
     );
 }
 

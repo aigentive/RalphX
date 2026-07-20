@@ -75,7 +75,7 @@ export async function handleRequestTeamPlan(
   contextType: string,
   contextId: string,
   leadSessionId: string | undefined,
-  runtimeContext: RuntimeContext = {}
+  runtimeContext: Pick<RuntimeContext, "conversationId"> = {}
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const teamName = args.team_name;
 

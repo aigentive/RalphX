@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
 use crate::domain::agents::ProviderSessionRef;
@@ -12,18 +12,24 @@ use crate::domain::entities::{
     ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// In-memory implementation of ChatConversationRepository for testing
 pub struct MemoryChatConversationRepository {
     conversations: RwLock<HashMap<ChatConversationId, ChatConversation>>,
+    failed_get_by_ids: RwLock<HashSet<ChatConversationId>>,
 }
 
 impl MemoryChatConversationRepository {
     pub fn new() -> Self {
         Self {
             conversations: RwLock::new(HashMap::new()),
+            failed_get_by_ids: RwLock::new(HashSet::new()),
         }
+    }
+
+    pub async fn fail_get_by_id(&self, id: ChatConversationId) {
+        self.failed_get_by_ids.write().await.insert(id);
     }
 }
 
@@ -36,12 +42,24 @@ impl Default for MemoryChatConversationRepository {
 #[async_trait]
 impl ChatConversationRepository for MemoryChatConversationRepository {
     async fn create(&self, conversation: ChatConversation) -> AppResult<ChatConversation> {
+        if conversation.context_type == ChatContextType::Standalone
+            && !conversation.is_valid_standalone_self_key()
+        {
+            return Err(AppError::Validation(
+                "Standalone conversation context_id must equal its conversation id".to_string(),
+            ));
+        }
         let mut convos = self.conversations.write().await;
         convos.insert(conversation.id, conversation.clone());
         Ok(conversation)
     }
 
     async fn get_by_id(&self, id: &ChatConversationId) -> AppResult<Option<ChatConversation>> {
+        if self.failed_get_by_ids.read().await.contains(id) {
+            return Err(AppError::Infrastructure(format!(
+                "injected conversation lookup failure for {id}"
+            )));
+        }
         let convos = self.conversations.read().await;
         Ok(convos.get(id).cloned())
     }
@@ -199,6 +217,31 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
                     && !conversation.is_archived()
                     && (conversation.provider_session_id.is_some()
                         || conversation.claude_session_id.is_some())
+            })
+            .cloned()
+            .collect();
+        filtered.sort_by(|left, right| {
+            right
+                .last_message_at
+                .unwrap_or(right.updated_at)
+                .cmp(&left.last_message_at.unwrap_or(left.updated_at))
+        });
+        filtered.truncate(limit as usize);
+        Ok(filtered)
+    }
+
+    async fn list_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        include_archived: bool,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|conversation| {
+                conversation.context_type == context_type
+                    && (include_archived || !conversation.is_archived())
             })
             .cloned()
             .collect();

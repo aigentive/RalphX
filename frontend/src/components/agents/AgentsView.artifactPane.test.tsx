@@ -271,6 +271,30 @@ describe("AgentsView artifact pane", () => {
     expect(pane).toHaveAttribute("data-automation-id", "automation-1");
   });
 
+  it("auto-opens the Persona artifact tab for persona builder chats", async () => {
+    mockAgentViewData(
+      conversation({
+        agentMode: "persona_builder",
+        builderDraftId: null,
+        builderResultPersonaId: null,
+      }),
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    await waitFor(() =>
+      expect(pane).toHaveAttribute("data-active-tab", "persona"),
+    );
+  });
+
   it("forwards automation-owned conversations to the automation artifact pane action", async () => {
     const onOpenAutomation = vi.fn();
     mockAgentViewData(

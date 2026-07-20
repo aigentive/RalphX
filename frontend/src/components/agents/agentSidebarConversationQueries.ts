@@ -28,6 +28,7 @@ export function useAgentSidebarGroup({
   minimumRowCount,
   pageSize,
   queryKey,
+  allowEmptyProjectIds = false,
 }: {
   groupBy: AgentSidebarGroupBy;
   groupKey: string;
@@ -42,6 +43,7 @@ export function useAgentSidebarGroup({
   minimumRowCount: number;
   pageSize?: number;
   queryKey: readonly unknown[];
+  allowEmptyProjectIds?: boolean;
 }) {
   const normalizedSearch = search.trim();
   const normalizedPageSize = Math.min(
@@ -85,7 +87,10 @@ export function useAgentSidebarGroup({
     getNextPageParam: (lastPage) =>
       lastPage.hasMore ? lastPage.offset + lastPage.rows.length : undefined,
     initialPageParam: 0,
-    enabled: enabled && projectIds.length > 0 && groupKey.length > 0,
+    enabled:
+      enabled &&
+      (allowEmptyProjectIds || projectIds.length > 0) &&
+      groupKey.length > 0,
     staleTime: 5_000,
   });
 
