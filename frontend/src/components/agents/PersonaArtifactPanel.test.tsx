@@ -39,6 +39,22 @@ const rawApproved = {
   status: "active",
 };
 
+const rawPersonaArtifact = {
+  id: "artifact-1",
+  name: "Support Voice",
+  artifact_type: "persona",
+  content_type: "inline",
+  content:
+    "---\nname: support-voice\nkind: persona\ndescription: Calm customer support.\n---\n\n# Support Voice\n\n## Voice\n\nEmpathetic, direct.",
+  created_at: "2026-07-17T08:00:00Z",
+  created_by: "agent",
+  version: 3,
+  bucket_id: "persona-library",
+  task_id: null,
+  process_id: null,
+  derived_from: [],
+};
+
 const rawHistory = [
   {
     id: "artifact-3",
@@ -127,6 +143,7 @@ function renderPanel(
 function mockPersonaQueries(persona = rawDraft) {
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "get_persona") return persona;
+    if (command === "get_artifact") return rawPersonaArtifact;
     if (command === "get_artifact_version_history") return rawHistory;
     if (command === "get_artifact_at_version") {
       return {
@@ -134,7 +151,8 @@ function mockPersonaQueries(persona = rawDraft) {
         name: "Support Voice",
         artifact_type: "persona",
         content_type: "inline",
-        content: "## Voice\n\nOriginal agent draft.",
+        content:
+          "---\nname: support-voice\nkind: persona\ndescription: Original support voice.\n---\n\n# Support Voice\n\n## Voice\n\nOriginal agent draft.",
         created_at: "2026-07-17T08:00:00Z",
         created_by: "agent",
         version: 1,
@@ -163,23 +181,30 @@ describe("PersonaArtifactPanel", () => {
   it("renders empty state without persona actions when no binding exists", () => {
     renderPanel(conversation());
 
-    expect(screen.getByRole("heading", { name: "Persona" })).toBeInTheDocument();
+    expect(screen.getByText("Persona not created yet")).toBeInTheDocument();
     expect(
       screen.getByText("The agent will draft the persona here after its first pass"),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Approve persona/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open in Settings" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
   });
 
-  it("renders draft state with current actions and no approved-only actions", async () => {
+  it("renders the draft through the canonical versioned artifact surface", async () => {
     mockPersonaQueries();
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
     expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
-    expect(screen.getByText("Global")).toBeInTheDocument();
-    expect(screen.getByText("Draft")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve persona" })).toBeInTheDocument();
+    expect(screen.getByTestId("plan-display-chromeless")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Support Voice" })).toBeInTheDocument();
+    expect(screen.queryByText("Global")).not.toBeInTheDocument();
+    expect(screen.queryByText("Draft")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("persona-version-history")).not.toBeInTheDocument();
+    expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
+      "Calm customer support.",
+    );
+    expect(screen.queryByText(/name: support-voice/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open in Settings" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refine with Agent" })).not.toBeInTheDocument();
   });
@@ -200,7 +225,31 @@ describe("PersonaArtifactPanel", () => {
     });
 
     expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve persona" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
+  });
+
+  it("renders a legacy null-artifact persona through the same document surface", async () => {
+    mockPersonaQueries({ ...rawDraft, artifact_id: null, version: 1 });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    expect(await screen.findByTestId("plan-display-chromeless")).toBeInTheDocument();
+    expect(screen.getByText("Empathetic, direct.")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("get_artifact", expect.anything());
+    expect(screen.queryByTitle("View version history")).not.toBeInTheDocument();
+  });
+
+  it("fails closed when a bound Persona artifact is missing", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") return null;
+      return [];
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Persona artifact unavailable",
+    );
+    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
   });
 
   it("renders approved and archived states with the correct action availability", async () => {
@@ -209,10 +258,9 @@ describe("PersonaArtifactPanel", () => {
       conversation({ builderResultPersonaId: "persona-1" }),
     );
 
-    expect(await screen.findByText("Approved")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refine with Agent" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: /Approve persona/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
 
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "get_persona") return { ...rawApproved, status: "archived" };
@@ -225,24 +273,36 @@ describe("PersonaArtifactPanel", () => {
       />,
     );
 
-    expect(await screen.findByText("Archived")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refine with Agent" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /Approve persona/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve Persona/ })).not.toBeInTheDocument();
   });
 
-  it("labels version attribution and makes historical selection read-only", async () => {
+  it("uses the canonical artifact version picker and makes history read-only", async () => {
+    const user = userEvent.setup();
     mockPersonaQueries();
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    const versions = await screen.findByLabelText("Persona version");
-    expect(screen.getByRole("option", { name: /v3 you \(manual edit\)/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /v2 agent/ })).toBeInTheDocument();
-    fireEvent.change(versions, { target: { value: "1" } });
+    await user.click(await screen.findByTitle("View version history"));
+    await user.click(await screen.findByText(/^v1\b/));
 
     expect(await screen.findByText("Original agent draft.")).toBeInTheDocument();
-    expect(screen.getByText("Historical version · read-only")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve persona" })).not.toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("get_artifact_at_version", {
+      id: "artifact-1",
+      version: 1,
+    });
+    expect(screen.getByText("Viewing version 1 of 3")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
+      "Original support voice.",
+    );
+    expect(screen.getByRole("button", { name: "Back to latest" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to latest" }));
+    expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
+      "Calm customer support.",
+    );
+    expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
   });
 
   it("approves through the existing command and transitions live to approved", async () => {
@@ -250,25 +310,25 @@ describe("PersonaArtifactPanel", () => {
     mockPersonaQueries();
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") return rawPersonaArtifact;
       if (command === "get_artifact_version_history") return rawHistory;
       if (command === "approve_persona") return rawApproved;
       return null;
     });
     const { rerender } = renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    await user.click(await screen.findByRole("button", { name: "Approve persona" }));
+    await user.click(await screen.findByRole("button", { name: "Approve Persona" }));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("approve_persona", {
         input: { id: "draft-1" },
       });
     });
-    expect(await screen.findByText("Approved")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve persona" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve Persona" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
 
     rerender(<PersonaArtifactPanel conversation={conversation()} />);
-    expect(screen.getByText("Approved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open in Settings" })).toBeInTheDocument();
   });
 
   it("offers approve-as-new only for seeded drafts", async () => {
@@ -277,13 +337,14 @@ describe("PersonaArtifactPanel", () => {
       if (command === "get_persona") {
         return { ...rawDraft, source_persona_id: "persona-source" };
       }
+      if (command === "get_artifact") return rawPersonaArtifact;
       if (command === "get_artifact_version_history") return rawHistory;
       if (command === "approve_persona_as_new") return rawApproved;
       return null;
     });
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    expect(await screen.findByRole("button", { name: "Approve persona" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve as new" }));
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("approve_persona_as_new", {
@@ -369,8 +430,7 @@ describe("PersonaArtifactPanel", () => {
 
     renderPanel(conversation({ builderDraftId: "draft-1" }));
 
-    expect(screen.getByRole("heading", { name: "Persona" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Loading persona")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading persona..." })).toBeInTheDocument();
     expect(screen.queryByText("Empathetic, direct.")).not.toBeInTheDocument();
     expect(resolvePersona).toBeTypeOf("function");
   });

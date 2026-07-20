@@ -457,20 +457,7 @@ const LazyPersonaArtifactPanel = lazy(() =>
 );
 
 function PersonaArtifactSkeletonFallback() {
-  return (
-    <section className="flex h-full min-h-0 flex-col" aria-labelledby="persona-artifact-loading-heading">
-      <div className="shrink-0 border-b border-[var(--border-subtle)] px-5 py-4">
-        <h2 id="persona-artifact-loading-heading" className="text-sm font-semibold text-[var(--text-primary)]">
-          Persona
-        </h2>
-      </div>
-      <div className="space-y-4 p-5" aria-label="Loading persona">
-        <div className="h-5 w-40 animate-pulse rounded bg-[var(--bg-elevated)]" />
-        <div className="h-8 w-full animate-pulse rounded bg-[var(--bg-elevated)]" />
-        <div className="h-24 w-full animate-pulse rounded bg-[var(--bg-elevated)]" />
-      </div>
-    </section>
-  );
+  return <ArtifactLoadingState title="Loading persona..." />;
 }
 
 const ARTIFACT_TABS: Array<{
