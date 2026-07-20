@@ -4388,6 +4388,15 @@ async fn resolve_agent_workspace_pr_fix_target(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> Result<Option<AgentWorkspacePrFixTarget>, JsonError> {
+    if !workspace.allows_owned_pr_mutation() {
+        let message = if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "PR fixer workflows are unavailable in Review PR mode"
+        } else {
+            "PR fixer workflows are unavailable for this workspace"
+        };
+        return Err(json_error(StatusCode::BAD_REQUEST, message, None));
+    }
+
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
             return Ok(None);

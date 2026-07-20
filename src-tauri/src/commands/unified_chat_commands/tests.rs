@@ -2738,6 +2738,76 @@ fn command_test_workspace() -> AgentConversationWorkspace {
     )
 }
 
+#[tokio::test]
+async fn review_pr_rejects_supervision_and_auto_publish_changes_without_mutation() {
+    let state = AppState::new_test();
+    let mut workspace = command_test_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 77,
+        url: Some("https://github.com/owner/repo/pull/77".to_string()),
+        title: Some("External PR".to_string()),
+        head_ref_name: "external/head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("external-head".to_string()),
+    });
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.auto_publish_enabled = false;
+    workspace.auto_publish_paused_pr_autofix_enabled = Some(true);
+    workspace.auto_publish_paused_pr_auto_merge_desired = Some(true);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let original = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+
+    let supervision_error = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Review PR supervision should fail closed");
+    let auto_publish_error = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Review PR Auto Publish changes should fail closed");
+
+    assert!(supervision_error.contains("Review PR"));
+    assert!(auto_publish_error.contains("Review PR"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        Some(original)
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+}
+
 fn command_test_pr_health(auto_merge_active: bool) -> PrHealth {
     PrHealth {
         sync_state: PrSyncState {

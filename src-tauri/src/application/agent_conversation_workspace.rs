@@ -495,6 +495,11 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         } else {
             (None, None, None)
         };
+    let pr_automation_defaults = if mode == AgentConversationWorkspaceMode::ReviewPr {
+        AgentConversationWorkspacePrAutomationDefaults::default()
+    } else {
+        pr_automation_defaults
+    };
 
     Ok(AgentConversationWorkspace {
         conversation_id: conversation_id.clone(),
