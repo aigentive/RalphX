@@ -776,6 +776,78 @@
         )
     }
 
+    #[tokio::test]
+    async fn review_pr_rejects_fixer_context_and_completion_before_github_reads() {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 267,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            title: Some("External PR".to_string()),
+            head_ref_name: "external/head".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("external-head".to_string()),
+        });
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.pr_autofix_enabled = true;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        let original = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let context_error = get_agent_workspace_pr_fix_context(
+            State(state.clone()),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect_err("Review PR fixer context should fail closed");
+        let completion_error = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Should never publish".to_string(),
+                blocker: None,
+            }),
+        )
+        .await
+        .expect_err("Review PR fixer completion should fail closed");
+
+        assert_eq!(context_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(completion_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(github.state().fetch_pr_health_calls, 0);
+        assert_eq!(github.state().check_pr_status_calls, 0);
+        assert_eq!(github.state().push_branch_calls, 0);
+        assert_eq!(
+            app_state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("workspace lookup should succeed"),
+            Some(original)
+        );
+        assert!(app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list")
+            .is_empty());
+    }
+
     fn test_workspace_review_target() -> AgentWorkspaceReviewTarget {
         AgentWorkspaceReviewTarget {
             scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,

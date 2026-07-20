@@ -487,6 +487,9 @@ async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller()
         "ralphx/test/startup-review-pr-monitor",
     )
     .await;
+    assert!(!fixture.workspace.pr_autofix_enabled);
+    assert!(!fixture.workspace.pr_auto_merge_desired);
+    assert!(fixture.workspace.auto_publish_enabled);
     let mut monitor = AgentWorkspacePrReviewMonitor::new(
         fixture.conversation_id.clone(),
         fixture.workspace.project_id.clone(),
