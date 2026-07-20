@@ -74,7 +74,7 @@ pub async fn start_step_http(
 
     // Validate step is Pending
     if step.status != TaskStepStatus::Pending {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -124,7 +124,7 @@ pub async fn complete_step_http(
 
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -223,7 +223,7 @@ pub async fn skip_step_http(
 
     // Validate step is Pending or InProgress
     if step.status != TaskStepStatus::Pending && step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
@@ -322,7 +322,7 @@ pub async fn fail_step_http(
 
     // Validate step is InProgress
     if step.status != TaskStepStatus::InProgress {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     // Update status
