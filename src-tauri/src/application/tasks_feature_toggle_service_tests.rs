@@ -14,7 +14,7 @@ use crate::domain::entities::{
 use crate::domain::ideation::TasksFeatureState;
 use crate::domain::repositories::{
     BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
-    ProjectRepository,
+    ProjectRepository, TaskRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryBranchUpdateRepository;
@@ -188,6 +188,41 @@ async fn disabling_tasks_pauses_all_active_tasks_including_attached_workspaces()
             .unwrap()
             .tasks_feature_state,
         TasksFeatureState::Disabled
+    );
+}
+
+#[tokio::test]
+async fn disabling_tasks_pauses_archived_active_tasks() {
+    let state = AppState::new_test();
+    enable_tasks(&state).await;
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Archived active task drain project".to_string(),
+            "/tmp/archived-active-task-drain-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Archived active task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task = state.task_repo.create(task).await.unwrap();
+    state.task_repo.archive(&task.id).await.unwrap();
+
+    state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect("Tasks-off drain must quiesce archived active work");
+
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("archived task must remain persisted")
+            .internal_status,
+        InternalStatus::Paused
     );
 }
 

@@ -276,7 +276,7 @@ impl<'a> TasksFeatureToggleService<'a> {
             let tasks = match self
                 .state
                 .task_repo
-                .get_by_project_filtered(&project.id, false)
+                .get_by_project_filtered(&project.id, true)
                 .await
             {
                 Ok(tasks) => tasks,
