@@ -3377,7 +3377,7 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         conversation: &ChatConversation,
         plugin_dir: &Path,
-        agent_name: Option<&str>,
+        effective_agent_name: &str,
         agent_profile: Option<&str>,
     ) -> Result<Option<String>, ChatServiceError> {
         let Some(workspace) = self
@@ -3391,19 +3391,15 @@ impl<R: Runtime> AppChatService<R> {
             return Ok(None);
         };
 
-        let include_automation_skill = agent_name
-            .map(|agent_name| {
-                let project_root = crate::infrastructure::agents::harness_agent_catalog::resolve_project_root_from_plugin_dir(
-                    plugin_dir,
-                );
-                crate::infrastructure::agents::harness_agent_catalog::canonical_agent_allows_internal_skill(
-                    &project_root,
-                    agent_name,
-                    agent_profile,
-                    chat_service_context::AGENT_WORKSPACE_AUTOMATION_SKILL_NAME,
-                )
-            })
-            .unwrap_or(false);
+        let project_root = crate::infrastructure::agents::harness_agent_catalog::resolve_project_root_from_plugin_dir(
+            plugin_dir,
+        );
+        let include_automation_skill = crate::infrastructure::agents::harness_agent_catalog::canonical_agent_allows_internal_skill(
+            &project_root,
+            effective_agent_name,
+            agent_profile,
+            chat_service_context::AGENT_WORKSPACE_AUTOMATION_SKILL_NAME,
+        );
 
         Ok(Some(
             chat_service_context::format_agent_workspace_prompt_context(
@@ -3893,7 +3889,7 @@ impl<R: Runtime> AppChatService<R> {
         conversation: &ChatConversation,
         message: &str,
         persona: Option<ResolvedPersona>,
-        agent_name_override: Option<&str>,
+        effective_agent_name: &str,
         agent_profile: Option<&str>,
         context_type: ChatContextType,
         context_id: &str,
@@ -3969,7 +3965,7 @@ impl<R: Runtime> AppChatService<R> {
                 context_type,
                 conversation,
                 &plugin_dir,
-                agent_name_override,
+                effective_agent_name,
                 agent_profile,
             )
             .await?;
@@ -4003,7 +3999,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             persona,
-            agent_name_override,
+            Some(effective_agent_name),
             agent_profile,
             context_type,
             context_id,
@@ -4037,9 +4033,6 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
-        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
-            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
-        });
         #[cfg(any(test, feature = "test-utils"))]
         let should_await_external_mcp = self.app_handle.is_some();
         #[cfg(not(any(test, feature = "test-utils")))]
@@ -6549,7 +6542,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     &conversation,
                     &runtime_message,
                     resolved_persona,
-                    Some(resolved_agent_name.as_str()),
+                    resolved_agent_name.as_str(),
                     agent_profile,
                     context_type,
                     context_id,

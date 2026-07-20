@@ -1108,13 +1108,20 @@ async fn agent_workspace_pr_fixer_codex_launch_uses_executable_pr_fix_request() 
 }
 
 #[tokio::test]
-async fn project_launch_plans_include_agent_workspace_prompt_context() {
+async fn edit_workspace_launches_include_automation_context_for_the_default_worker() {
     let temp = tempfile::tempdir().expect("tempdir");
     let plugin_dir = repo_plugin_dir();
     let project_id = ProjectId::new();
-    let agent_name = agent_names::AGENT_GENERAL_WORKER;
+    let agent_name = super::resolve_agent_name_for_send(
+        &ChatContextType::Project,
+        None,
+        false,
+        None,
+        Some(AgentConversationWorkspaceMode::Edit),
+    );
+    assert_eq!(agent_name, agent_names::AGENT_GENERAL_WORKER);
     let workspace_context =
-        "<agent_workspace_context><source_pull_request><number>123</number></source_pull_request></agent_workspace_context>";
+        "<agent_workspace_context><automation_state><pr_autofix_enabled>true</pr_autofix_enabled></automation_state><!-- ralphx_internal_skill=ralphx-agent-workspace-automation --></agent_workspace_context>";
     let harness_clis = [
         (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
         (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
@@ -1139,7 +1146,7 @@ async fn project_launch_plans_include_agent_workspace_prompt_context() {
             &cli_path,
             &plugin_dir,
             &conversation,
-            "review this PR",
+            "continue the Edit workspace",
             Some(agent_name),
             None,
             ChatContextType::Project,
@@ -1165,7 +1172,7 @@ async fn project_launch_plans_include_agent_workspace_prompt_context() {
             None,
         )
         .await
-        .expect("project launch plan should build");
+        .expect("Edit workspace launch plan should build");
 
         let spawnable = launch_spawnable(&launch_plan);
         let prompt = spawnable
@@ -1174,11 +1181,11 @@ async fn project_launch_plans_include_agent_workspace_prompt_context() {
             .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
         assert!(
             prompt.contains(workspace_context),
-            "{} launch prompt should include source PR context",
+            "{} launch prompt should include the default Edit worker automation context",
             harness
         );
         assert!(
-            prompt.contains("<user_message>review this PR</user_message>"),
+            prompt.contains("<user_message>continue the Edit workspace</user_message>"),
             "{} launch prompt should include the user message",
             harness
         );
