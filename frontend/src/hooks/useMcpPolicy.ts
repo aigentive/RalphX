@@ -4,6 +4,7 @@ import {
   mcpPolicyApi,
   type McpServerOverrideInput,
   type McpToolOverrideInput,
+  type RetryLegacyMcpRepairInput,
 } from "@/api/mcp-policy";
 import type { Harness } from "@/api/ideation-harness";
 
@@ -42,6 +43,11 @@ export function useMcpPolicy(
         : mcpPolicyApi.updateTool(input),
     onSuccess: invalidate,
   });
+  const repairMutation = useMutation({
+    mutationFn: (input: RetryLegacyMcpRepairInput) =>
+      mcpPolicyApi.retryLegacyRepair(input),
+    onSettled: invalidate,
+  });
 
   return {
     catalog: query.data,
@@ -55,6 +61,8 @@ export function useMcpPolicy(
     },
     updateServer: serverMutation.mutateAsync,
     updateTool: toolMutation.mutateAsync,
-    isUpdating: serverMutation.isPending || toolMutation.isPending,
+    retryLegacyRepair: repairMutation.mutateAsync,
+    isUpdating:
+      serverMutation.isPending || toolMutation.isPending || repairMutation.isPending,
   };
 }

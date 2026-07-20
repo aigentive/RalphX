@@ -30,7 +30,10 @@ import {
 } from "./agentsTestFixtures";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
-import { LINKED_SETUP_FAILURE_MARKER } from "./agentStartErrors";
+import {
+  LINKED_SETUP_FAILURE_MARKER,
+  MCP_SETUP_PREFLIGHT_MARKER,
+} from "./agentStartErrors";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
@@ -1184,6 +1187,116 @@ describe("AgentsView start conversation", () => {
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
         "conversation-linked-retry"
       )
+    );
+  });
+
+  it("shows actionable MCP recovery, preserves the draft, and opens the exact settings card", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"ambiguous_reserved_id","repair_status":"manual_only"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    const recovery = await screen.findByTestId("agents-start-mcp-setup-error");
+    expect(recovery).toHaveTextContent("MCP setup needs attention");
+    expect(recovery).toHaveTextContent("claude mcp remove ralphx -s user");
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue("keep this draft");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
+      expect.objectContaining({ kind: "mcp_setup", serverId: "ralphx" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open MCP settings" }));
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({
+      section: "mcp",
+      provider: "claude",
+      serverId: "ralphx",
+      scope: "user",
+    });
+  });
+
+  it("retries recognized legacy Claude MCP cleanup and keeps the draft ready to start", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await screen.findByTestId("agents-start-mcp-setup-error");
+    expect(screen.getByRole("button", { name: "Retry cleanup" })).toBeEnabled();
+
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce({ changed: true });
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        {
+          input: {
+            provider: "claude",
+            serverId: "ralphx",
+            scope: "user",
+          },
+        },
+      ),
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this cleanup draft",
+    );
+    expect(
+      await screen.findByText("Claude MCP cleanup completed. Start the agent again."),
+    ).toBeInTheDocument();
+    expect(useAgentSessionStore.getState().startConversationFailure).toBeNull();
+  });
+
+  it("keeps the MCP recovery actionable when cleanup retry fails", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this failed cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await screen.findByTestId("agents-start-mcp-setup-error");
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("cleanup unavailable"));
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByTestId("agents-start-mcp-setup-error")).toHaveTextContent(
+      "Retry cleanup",
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this failed cleanup draft",
     );
   });
 

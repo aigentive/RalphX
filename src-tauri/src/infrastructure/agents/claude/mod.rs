@@ -8,6 +8,7 @@ pub mod cli_capabilities;
 pub mod effort_resolver;
 mod generated_plugin;
 pub(crate) mod mcp_catalog;
+pub(crate) mod mcp_registration_repair;
 pub mod model_labels;
 pub mod model_resolver;
 pub mod node_utils;
@@ -15,6 +16,8 @@ mod stream_processor;
 
 #[cfg(test)]
 mod mcp_catalog_tests;
+#[cfg(test)]
+mod mcp_registration_repair_tests;
 
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use agent_config::live_flags::{
