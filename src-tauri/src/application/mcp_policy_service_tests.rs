@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use chrono::Utc;
 
 use crate::domain::agents::{
-    AgentHarnessKind, McpOverrideState, McpPolicyOverride, McpPolicySource, McpServerKey,
-    NativeMcpServerSnapshot, NativeMcpState,
+    AgentHarnessKind, AgentProviderSettings, McpOverrideState, McpPolicyOverride, McpPolicySource,
+    McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
 };
 
 use super::mcp_policy_service::{
@@ -502,6 +502,99 @@ async fn retry_without_a_legacy_registration_is_a_safe_noop() {
         .retry_legacy_claude_registration_repair()
         .await
         .unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_provider_cli_retires_legacy_registration_and_best_effort_stays_nonblocking() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Once};
+
+    use crate::domain::repositories::{AgentProviderSettingsRepository, McpPolicyRepository};
+    use crate::infrastructure::memory::{
+        MemoryAgentProviderSettingsRepository, MemoryMcpPolicyRepository,
+    };
+
+    static TRACING: Once = Once::new();
+    TRACING.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_test_writer()
+            .try_init();
+    });
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    let legacy_server_path = app_data
+        .path()
+        .join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
+    fs::create_dir_all(legacy_server_path.parent().unwrap()).unwrap();
+    fs::write(&legacy_server_path, "fixture").unwrap();
+    let config_path = home.path().join(".claude.json");
+    fs::write(
+        &config_path,
+        serde_json::json!({
+            "mcpServers": {"ralphx": {
+                "type": "stdio",
+                "command": "node",
+                "args": [
+                    legacy_server_path,
+                    "--trace-dir",
+                    app_data.path().join("logs/mcp-proxy")
+                ]
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let fake_cli = home.path().join("configured-claude");
+    fs::write(
+        &fake_cli,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo '2.1.142 (Claude Code)' ;;\n  --help) echo 'Options:'; echo '  --effort <level>  Effort level for the current session (low, medium, high)' ;;\n  mcp) [ \"$2\" = remove ] && [ \"$3\" = ralphx ] && [ \"$4\" = -s ] && [ \"$5\" = user ] || exit 2; printf '%s' '{{\"mcpServers\":{{}}}}' > '{}' ;;\n  *) exit 2 ;;\nesac\n",
+            config_path.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_cli, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(fake_cli.to_string_lossy().into_owned());
+    provider_repo.upsert(&settings).await.unwrap();
+    let policy_repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        policy_repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_provider_settings_repo(provider_repo)
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+
+    assert_eq!(
+        service
+            .provider_native_config_root(AgentHarnessKind::Claude)
+            .await
+            .unwrap(),
+        home.path()
+    );
+    assert!(service
+        .retry_legacy_claude_registration_repair()
+        .await
+        .unwrap());
+    assert_eq!(
+        fs::read_to_string(&config_path).unwrap(),
+        r#"{"mcpServers":{}}"#
+    );
+    assert!(
+        !service
+            .reconcile_legacy_claude_registration_best_effort()
+            .await
+            .unwrap(),
+        "best-effort reconciliation must not block after the exact entry is gone"
+    );
 }
 
 #[cfg(unix)]
