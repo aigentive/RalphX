@@ -1,3 +1,4 @@
+use crate::application::chat_service::harness_supports_team_mode;
 use crate::application::harness_runtime_registry::{
     probe_supported_harnesses, refresh_supported_harnesses, HarnessRuntimeProbe,
 };
@@ -49,6 +50,16 @@ pub(crate) const AGENT_LANES: [AgentLane; 9] = [
     AgentLane::ExecutionMerger,
     AgentLane::ExecutionBranchUpdater,
 ];
+
+pub(crate) async fn resolve_lane_harness_availability(
+    repo: &Arc<dyn AgentLaneSettingsRepository>,
+    project_id: Option<&str>,
+    lane: AgentLane,
+) -> LaneHarnessAvailability {
+    let config = resolve_lane_harness_config(repo, project_id, lane).await;
+    let probes = probe_supported_harnesses();
+    build_lane_harness_availability(config, &probes)
+}
 
 pub(crate) fn overlay_provider_runtime_probes(
     stored: &[AgentProviderSettings],
@@ -116,6 +127,24 @@ pub(crate) async fn resolve_primary_ideation_harness_availability_for_state(
     )
     .await;
     Ok(build_lane_harness_availability(config, &probes))
+}
+
+pub(crate) async fn resolve_primary_ideation_harness_availability(
+    repo: &Arc<dyn AgentLaneSettingsRepository>,
+    project_id: Option<&str>,
+) -> LaneHarnessAvailability {
+    resolve_lane_harness_availability(repo, project_id, AgentLane::IdeationPrimary).await
+}
+
+pub(crate) async fn ideation_team_mode_supported_for_project(
+    repo: &Arc<dyn AgentLaneSettingsRepository>,
+    project_id: Option<&str>,
+) -> bool {
+    harness_supports_team_mode(
+        resolve_primary_ideation_harness_availability(repo, project_id)
+            .await
+            .effective_harness,
+    )
 }
 
 fn format_harness_runtime_unavailable(surface_name: &str, harness: AgentHarnessKind) -> String {
@@ -205,6 +234,25 @@ pub(crate) async fn validate_chat_runtime_for_context_with_override(
             "Chat runtime unavailable"
         );
         Err(error)
+    }
+}
+
+pub(crate) async fn team_mode_supported_for_context(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> bool {
+    match resolve_context_runtime_availability(state, context_type, context_id, None).await {
+        Ok(availability) => harness_supports_team_mode(availability.effective_harness),
+        Err(error) => {
+            tracing::warn!(
+                context_type = %context_type,
+                context_id = %context_id,
+                %error,
+                "Failed to resolve chat runtime for team-mode support"
+            );
+            false
+        }
     }
 }
 

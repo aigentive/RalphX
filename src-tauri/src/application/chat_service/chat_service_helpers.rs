@@ -8,29 +8,47 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{ChatContextType, MessageRole};
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_BRANCH_UPDATER, AGENT_CHAT_PROJECT, AGENT_CHAT_TASK, AGENT_MERGER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_ORCHESTRATOR_IDEATION_READONLY, AGENT_REVIEWER,
-    AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER,
+    AGENT_BRANCH_UPDATER, AGENT_CHAT_PROJECT, AGENT_CHAT_TASK, AGENT_IDEATION_TEAM_LEAD,
+    AGENT_MERGER, AGENT_ORCHESTRATOR_IDEATION, AGENT_ORCHESTRATOR_IDEATION_READONLY,
+    AGENT_REVIEWER, AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER, AGENT_WORKER_TEAM,
 };
 
 /// Agent Resolution System
 ///
-/// Determines which agent to use based on context type and optionally entity status.
+/// Determines which agent to use based on context type AND optionally entity status.
 /// This enables dynamic agent switching based on workflow state.
+///
+/// When `team_mode` is true, the team-lead agent variant is returned if available.
+/// If no team variant exists, falls back to default.
 ///
 /// ## Examples
 ///
 /// - Review context + "reviewing" status → `ralphx-execution-reviewer` (AI performs review)
 /// - Review context + "review_passed" status → `ralphx-review-chat` (user discusses with AI)
+/// - Ideation context + team_mode=true → team-lead variant (if configured)
+///
 /// ## Adding New Rules
 ///
 /// 1. Add a pattern to `resolve_agent()` for status-specific behavior
 /// 2. Create the canonical agent definition under `agents/<agent>/`
 /// 3. Add tools to MCP allowlist in `ralphx-mcp-server/src/tools.ts`
 ///
-/// Priority: Status-specific rules are checked first, then defaults.
+/// Priority: Status-specific rules are checked first, then team_mode, then defaults.
 pub fn resolve_agent(context_type: &ChatContextType, entity_status: Option<&str>) -> &'static str {
-    // Status-specific rules are checked first.
+    resolve_agent_with_team_mode(context_type, entity_status, false)
+}
+
+/// Resolve agent with explicit team_mode flag.
+///
+/// When `team_mode` is true, returns the team-lead variant for the context type's
+/// process if one is configured via process mapping YAML. Falls back to the
+/// default agent otherwise.
+pub fn resolve_agent_with_team_mode(
+    context_type: &ChatContextType,
+    entity_status: Option<&str>,
+    team_mode: bool,
+) -> &'static str {
+    // Status-specific rules (checked first, even in team mode)
     if let Some(status) = entity_status {
         match (context_type, status) {
             // Review: after AI review passes, use chat agent for user discussion
@@ -46,7 +64,21 @@ pub fn resolve_agent(context_type: &ChatContextType, entity_status: Option<&str>
         }
     }
 
-    // Default rules.
+    // Team mode: resolve to team-lead variant
+    if team_mode {
+        match context_type {
+            ChatContextType::Ideation => return AGENT_IDEATION_TEAM_LEAD,
+            ChatContextType::TaskExecution => return AGENT_WORKER_TEAM,
+            _ => {
+                tracing::debug!(
+                    context_type = %context_type,
+                    "resolve_agent: team_mode=true, no team variant for context — using default"
+                );
+            }
+        }
+    }
+
+    // Default rules (context-only, backward compatible)
     match context_type {
         ChatContextType::Ideation => AGENT_ORCHESTRATOR_IDEATION,
         ChatContextType::Delegation => AGENT_CHAT_PROJECT,
@@ -61,6 +93,21 @@ pub fn resolve_agent(context_type: &ChatContextType, entity_status: Option<&str>
         // context-only fallback only applies when no mode/override is present.
         ChatContextType::Standalone => AGENT_CHAT_PROJECT,
     }
+}
+
+/// Codex phase 1 runs in solo mode even if the session metadata still carries
+/// a team-mode value. Claude remains the only harness that honors team mode.
+pub fn effective_team_mode_for_harness(
+    requested_team_mode: bool,
+    harness: AgentHarnessKind,
+) -> bool {
+    requested_team_mode && harness_supports_team_mode(harness)
+}
+
+pub fn harness_supports_team_mode(harness: AgentHarnessKind) -> bool {
+    standard_harness_behavior(harness)
+        .team
+        .legacy_native_team_tools
 }
 
 pub fn harness_supports_rx_native_team(harness: AgentHarnessKind) -> bool {

@@ -203,11 +203,6 @@ pub use granola_commands::{
     ListGranolaNotesResponse, RefreshAgentConversationGranolaNoteInput,
     SaveGranolaIntegrationSettingsInput,
 };
-pub use persona_builder_commands::{
-    create_persona_builder_conversation, get_persona_builder_ingest_status,
-    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
-    PersonaBuilderIngestStatusResponse,
-};
 // Re-export ConflictDiff from application for convenience
 #[allow(unused_imports)]
 pub use crate::application::ConflictDiff;

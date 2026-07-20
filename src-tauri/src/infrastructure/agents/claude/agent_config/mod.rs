@@ -1,6 +1,6 @@
 pub mod live_flags;
-pub mod process_config;
 pub mod runtime_config;
+pub mod team_config;
 mod tool_sets;
 mod ui_config;
 pub use live_flags::{
@@ -9,17 +9,17 @@ pub use live_flags::{
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
-    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
-    CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
-    CLAUDE_DEFAULT_PERMISSION_MODE,
+    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
+    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile, resolve_harness_agent_prompt_path,
-    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
-    try_load_canonical_claude_metadata, try_load_canonical_claude_metadata_for_profile,
-    AgentPromptHarness, CanonicalClaudeToolSpec,
+    load_canonical_agent_definition_for_profile,
+    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
+    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -28,9 +28,13 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tool_sets::canonical_claude_tool_sets;
 
-#[cfg(test)]
-pub use process_config::canonical_process_mapping;
-pub use process_config::{resolve_canonical_process_mapping, ProcessMapping};
+#[allow(unused_imports)]
+pub use team_config::{
+    canonical_process_mapping, resolve_canonical_process_mapping, ApprovedTeamPlan,
+    ApprovedTeammate, ProcessMapping, ProcessSlot, TeamConstraintError, TeamConstraints,
+    TeamConstraintsConfig, TeamMode, TeammateSpawnRequest, canonical_team_constraints_config,
+    resolve_canonical_team_constraints_config,
+};
 
 pub use runtime_config::{
     validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
@@ -239,6 +243,8 @@ struct RalphxConfig {
     agents: Vec<AgentConfigRaw>,
     #[serde(default)]
     process_mapping: ProcessMapping,
+    #[serde(default)]
+    team_constraints: TeamConstraintsConfig,
     /// If true (default), defers merges when conflicts exist or agents are running.
     /// If false, all merges proceed immediately without deferral.
     #[serde(default = "default_defer_merge_enabled")]
@@ -306,6 +312,8 @@ struct CodexConfigOverlay {
 struct ProcessConfigOverlay {
     #[serde(default)]
     process_mapping: Option<ProcessMapping>,
+    #[serde(default)]
+    team_constraints: Option<TeamConstraintsConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -333,10 +341,8 @@ struct ExternalMcpConfigOverlay {
     external_mcp: Option<ExternalMcpConfigRawOverlay>,
 }
 
-const EMBEDDED_CONFIG: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../config/ralphx.yaml"
-));
+const EMBEDDED_CONFIG: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
 const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../config/external-mcp.yaml"
@@ -355,6 +361,7 @@ struct LoadedConfig {
     claude: ClaudeRuntimeConfig,
     tool_sets: HashMap<String, Vec<String>>,
     process_mapping: ProcessMapping,
+    team_constraints: TeamConstraintsConfig,
     defer_merge_enabled: bool,
     file_logging: bool,
     runtime: AllRuntimeConfig,
@@ -512,8 +519,7 @@ fn load_claude_config_overlay() -> Option<(PathBuf, ClaudeConfigOverlay)> {
 }
 
 fn apply_codex_config_overlay(cfg: &mut RalphxConfig, overlay: CodexConfigOverlay) {
-    cfg.agent_harness_defaults
-        .extend(overlay.agent_harness_defaults);
+    cfg.agent_harness_defaults.extend(overlay.agent_harness_defaults);
 }
 
 fn parse_codex_config_overlay(yaml: &str) -> Option<CodexConfigOverlay> {
@@ -535,17 +541,18 @@ fn load_codex_config_overlay() -> Option<(PathBuf, CodexConfigOverlay)> {
 }
 
 fn parse_process_config_overlay(yaml: &str) -> Option<ProcessConfigOverlay> {
-    serde_yaml::from_str::<ProcessConfigOverlay>(yaml)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to parse process config overlay");
-            e
-        })
-        .ok()
+    serde_yaml::from_str::<ProcessConfigOverlay>(yaml).map_err(|e| {
+        tracing::warn!(error = %e, "Failed to parse process config overlay");
+        e
+    }).ok()
 }
 
 fn apply_process_config_overlay(cfg: &mut LoadedConfig, overlay: ProcessConfigOverlay) {
     if let Some(process_mapping) = overlay.process_mapping {
         cfg.process_mapping = resolve_canonical_process_mapping(&process_mapping);
+    }
+    if let Some(team_constraints) = overlay.team_constraints {
+        cfg.team_constraints = resolve_canonical_team_constraints_config(&team_constraints);
     }
 }
 
@@ -558,7 +565,10 @@ fn load_process_config_overlay() -> Option<(PathBuf, ProcessConfigOverlay)> {
     Some((path, overlay))
 }
 
-fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMcpConfigOverlay) {
+fn apply_external_mcp_config_overlay(
+    cfg: &mut RalphxConfig,
+    overlay: ExternalMcpConfigOverlay,
+) {
     let Some(overlay) = overlay.external_mcp else {
         return;
     };
@@ -599,9 +609,7 @@ fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMc
     if let Some(external_message_queue_cap) = overlay.external_message_queue_cap {
         cfg.external_mcp.external_message_queue_cap = external_message_queue_cap;
     }
-    if let Some(external_session_similarity_threshold) =
-        overlay.external_session_similarity_threshold
-    {
+    if let Some(external_session_similarity_threshold) = overlay.external_session_similarity_threshold {
         cfg.external_mcp.external_session_similarity_threshold =
             external_session_similarity_threshold;
     }
@@ -612,12 +620,10 @@ fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMc
 }
 
 fn parse_external_mcp_config_overlay(yaml: &str) -> Option<ExternalMcpConfigOverlay> {
-    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
-            e
-        })
-        .ok()
+    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml).map_err(|e| {
+        tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
+        e
+    }).ok()
 }
 
 fn load_external_mcp_config_overlay_from_path(
@@ -796,13 +802,16 @@ fn canonical_agent_project_root_from_config_path(
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
-    let canonical_prompt =
-        resolve_harness_agent_prompt_path(project_root, &raw.name, AgentPromptHarness::Claude)
-            .and_then(|path| {
-                path.strip_prefix(project_root)
-                    .ok()
-                    .map(|relative| relative.to_string_lossy().to_string())
-            });
+    let canonical_prompt = resolve_harness_agent_prompt_path(
+        project_root,
+        &raw.name,
+        AgentPromptHarness::Claude,
+    )
+    .and_then(|path| {
+        path.strip_prefix(project_root)
+            .ok()
+            .map(|relative| relative.to_string_lossy().to_string())
+    });
 
     if let Some(canonical_prompt) = canonical_prompt {
         if raw.system_prompt_file.as_deref().is_some()
@@ -1197,12 +1206,14 @@ fn resolve_loaded_config_with_lookup(
     apply_agent_harness_env_overrides_with(&mut agent_harness_defaults, lookup);
 
     let process_mapping = resolve_canonical_process_mapping(&parsed.process_mapping);
+    let team_constraints = resolve_canonical_team_constraints_config(&parsed.team_constraints);
 
     Some(LoadedConfig {
         agents: resolved,
         claude,
         tool_sets: parsed.tool_sets,
         process_mapping,
+        team_constraints,
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
         runtime,
@@ -1655,6 +1666,7 @@ fn load_config() -> LoadedConfig {
                 },
                 tool_sets: canonical_claude_tool_sets().clone(),
                 process_mapping: ProcessMapping::default(),
+                team_constraints: TeamConstraintsConfig::default(),
                 defer_merge_enabled: true,
                 file_logging: true,
                 runtime,
@@ -1706,17 +1718,11 @@ pub fn get_agent_config_for_profile(
         return Some(config);
     };
     let project_root = canonical_agent_project_root();
-    let definition = load_canonical_agent_definition_for_profile(
-        &project_root,
-        lookup_name,
-        Some(profile_name),
-    )?;
-    let metadata = try_load_canonical_claude_metadata_for_profile(
-        &project_root,
-        lookup_name,
-        Some(profile_name),
-    )
-    .ok()?;
+    let definition =
+        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
+    let metadata =
+        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
+            .ok()?;
 
     if !definition.capabilities.mcp_tools.is_empty() {
         config.allowed_mcp_tools = definition.capabilities.mcp_tools;
@@ -1724,7 +1730,8 @@ pub fn get_agent_config_for_profile(
     if let Some(spec) = metadata.tools.as_ref() {
         let tools = runtime_tools_spec_from_canonical(spec);
         config.mcp_only = tools.mcp_only;
-        config.resolved_cli_tools = resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+        config.resolved_cli_tools =
+            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
     }
     config.preapproved_cli_tools = metadata.preapproved_cli_tools;
     if metadata.model.is_some() {
@@ -1780,6 +1787,10 @@ pub fn get_allowed_tools_for_profile(
 
 pub fn process_mapping() -> &'static ProcessMapping {
     &LOADED_CONFIG_CELL.get_or_init(load_config).process_mapping
+}
+
+pub fn team_constraints_config() -> &'static TeamConstraintsConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).team_constraints
 }
 
 pub fn defer_merge_enabled() -> bool {
