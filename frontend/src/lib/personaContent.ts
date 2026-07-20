@@ -58,7 +58,18 @@ export function parsePersonaDocument(content: string): ParsedPersonaDocument | n
 
 /** Returns the editable Markdown body from a canonical persona document. */
 export function splitPersonaBody(content: string): string {
-  return parsePersonaDocument(content)?.body ?? content;
+  const lines = content.split(/\r?\n/);
+  if (lines[0] !== "---") return content;
+
+  const closingDelimiter = lines.findIndex(
+    (line, index) => index > 0 && line === "---",
+  );
+  if (closingDelimiter === -1) return content;
+
+  return lines
+    .slice(closingDelimiter + 1)
+    .join("\n")
+    .replace(/^\n/, "");
 }
 
 /** Composes the canonical persona document required by the draft-update command. */

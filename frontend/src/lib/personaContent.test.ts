@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePersonaDocument } from "./personaContent";
+import { parsePersonaDocument, splitPersonaBody } from "./personaContent";
 
 describe("parsePersonaDocument", () => {
   it("separates canonical persona frontmatter from Markdown", () => {
@@ -30,5 +30,11 @@ describe("parsePersonaDocument", () => {
 
   it("rejects incomplete frontmatter instead of hiding Markdown", () => {
     expect(parsePersonaDocument("---\nname: reviewer\n---\nBody")).toBeNull();
+  });
+
+  it("keeps the editor's tolerant partial-frontmatter stripping contract", () => {
+    expect(splitPersonaBody("---\nname: reviewer\n---\n\nReview carefully.")).toBe(
+      "Review carefully.",
+    );
   });
 });
