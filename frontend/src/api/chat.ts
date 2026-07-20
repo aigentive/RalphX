@@ -3607,10 +3607,16 @@ export async function getAgentWorkspacePrReviewContext(
 
 export async function getAgentWorkspaceReviewContext(
   conversationId: string,
+  options: {
+    signal?: AbortSignal;
+    refreshTarget?: boolean;
+  } = {},
 ): Promise<AgentWorkspaceReviewContext> {
+  const query = options.refreshTarget ? "?refresh_target=true" : "";
   const raw = await fetchAgentWorkspaceJson(
-    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context`,
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context${query}`,
     AgentWorkspaceReviewContextResponseSchema,
+    options.signal ? { signal: options.signal } : undefined,
   );
   return transformAgentWorkspaceReviewContext(raw);
 }

@@ -69,6 +69,9 @@ describe("useAgentSidebarPublicationPolling", () => {
       queryKey: ["agents", "conversation-workspace-publication-events", "conv-merged"],
     });
     expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ["agents", "workspace-review-context", "conv-merged"],
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: ["agents", "conversation-workspace", "conv-active"],
     });
   });
