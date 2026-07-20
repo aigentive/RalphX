@@ -12,7 +12,6 @@ export const AGENT_START_MODE_OPTIONS: Array<{
   { id: "chat", label: "Ask", description: "Ask read-only questions about the project.", requiresProject: false },
   { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow.", requiresProject: true },
   { id: "persona_builder", label: "Persona", description: "Build or refine a reusable agent persona.", requiresProject: false },
-  { id: "ideation", label: "Ideation", description: "Plan work before creating tasks.", requiresProject: true },
 ];
 
 export const PRIMARY_AGENT_START_MODE_IDS: readonly AgentConversationWorkspaceMode[] = [
