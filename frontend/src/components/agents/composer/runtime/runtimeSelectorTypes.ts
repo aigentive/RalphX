@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import type { CapabilityIntent } from "@/api/chat";
 import type { AgentProvider } from "@/stores/agentSessionStore";
 
 export interface ComposerRuntimeOption {
@@ -48,4 +49,15 @@ export interface ComposerRuntimeEffortField {
   disabled?: boolean;
   testId?: string;
   className?: string;
+}
+
+export interface ComposerRuntimeCapabilityField {
+  value: CapabilityIntent["coordinationMode"];
+  onValueChange: (
+    value: CapabilityIntent["coordinationMode"],
+  ) => void | Promise<unknown>;
+  options: ComposerRuntimeOption[];
+  disabled?: boolean;
+  pending?: boolean;
+  testId?: string;
 }
