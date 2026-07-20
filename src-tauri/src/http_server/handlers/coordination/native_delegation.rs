@@ -552,7 +552,7 @@ pub(crate) async fn start_delegate_impl(
         )
     })?;
     let harness = resolved_spawn.effective_harness;
-    let delegated_model = Some(resolved_spawn.model.clone());
+    let delegated_model = req.model.clone();
     let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
     let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
     let (_caller_definition, definition) = resolve_delegation_policy(
