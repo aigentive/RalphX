@@ -20,10 +20,14 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 async fn enable_tasks_for_progress(state: &AppState) {
+    let current = state.ideation_settings_repo.get_settings().await.unwrap();
+    if current.tasks_feature_state == crate::domain::ideation::TasksFeatureState::Enabled {
+        return;
+    }
     assert!(state
         .ideation_settings_repo
         .compare_and_set_tasks_feature_state(
-            crate::domain::ideation::TasksFeatureState::Disabled,
+            current.tasks_feature_state,
             crate::domain::ideation::TasksFeatureState::Enabled,
         )
         .await
@@ -1707,7 +1711,10 @@ async fn test_resume_relaunches_queued_standalone_chat_message() {
     );
     assert!(app_state
         .message_queue
-        .get_queued(ChatContextType::Standalone, conversation.id.as_str().as_str())
+        .get_queued(
+            ChatContextType::Standalone,
+            conversation.id.as_str().as_str()
+        )
         .is_empty());
 }
 
@@ -1722,7 +1729,10 @@ async fn test_resume_relaunches_durable_queued_standalone_chat_message() {
         .create(ChatConversation::new_standalone())
         .await
         .unwrap();
-    let key = QueueKey::new(ChatContextType::Standalone, conversation.id.as_str().as_str());
+    let key = QueueKey::new(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+    );
     let queued = QueuedMessage::with_id(
         "durable-standalone-chat".to_string(),
         "durable standalone chat".to_string(),
@@ -1781,19 +1791,24 @@ async fn test_resume_standalone_chat_queue_is_project_filter_scoped_out() {
 
     let project_id = ProjectId::from_string("resume-standalone-project-filter".to_string());
     let mock = Arc::new(MockChatService::new());
-    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(
-        Some(&project_id),
-        &app_state,
-        || Arc::clone(&mock) as Arc<dyn ChatService>,
-    )
-    .await
-    .expect("resume should not error even when nothing matches the project filter");
+    let resumed =
+        resume_paused_non_slot_chat_queues_with_chat_service(Some(&project_id), &app_state, || {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume should not error even when nothing matches the project filter");
 
-    assert_eq!(resumed, 0, "a project-scoped resume must not drain a standalone queue");
+    assert_eq!(
+        resumed, 0,
+        "a project-scoped resume must not drain a standalone queue"
+    );
     assert_eq!(mock.call_count(), 0);
     assert!(!app_state
         .message_queue
-        .get_queued(ChatContextType::Standalone, conversation.id.as_str().as_str())
+        .get_queued(
+            ChatContextType::Standalone,
+            conversation.id.as_str().as_str()
+        )
         .is_empty());
 }
 

@@ -49,6 +49,21 @@ async fn disable_tasks(state: &AppState) {
     }
 }
 
+async fn enable_tasks(state: &AppState) {
+    let current = state.ideation_settings_repo.get_settings().await.unwrap();
+    if current.tasks_feature_state == TasksFeatureState::Enabled {
+        return;
+    }
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            current.tasks_feature_state,
+            TasksFeatureState::Enabled
+        )
+        .await
+        .unwrap());
+}
+
 #[tokio::test]
 async fn tasks_policy_defaults_to_denied_for_standalone_work() {
     let state = AppState::new_test();
@@ -65,14 +80,7 @@ async fn tasks_policy_defaults_to_denied_for_standalone_work() {
 #[tokio::test]
 async fn tasks_policy_allows_all_work_when_globally_enabled() {
     let state = AppState::new_test();
-    assert!(state
-        .ideation_settings_repo
-        .compare_and_set_tasks_feature_state(
-            TasksFeatureState::Disabled,
-            TasksFeatureState::Enabled,
-        )
-        .await
-        .unwrap());
+    enable_tasks(&state).await;
 
     TasksFeaturePolicy::from_state(&state)
         .authorize_session(None, TasksFeatureAction::Progress)
@@ -149,14 +157,7 @@ async fn tasks_policy_allows_quiesce_in_every_state() {
         .await
         .expect("disabled Tasks must still allow explicit quiesce");
 
-    assert!(state
-        .ideation_settings_repo
-        .compare_and_set_tasks_feature_state(
-            TasksFeatureState::Disabled,
-            TasksFeatureState::Enabled,
-        )
-        .await
-        .unwrap());
+    enable_tasks(&state).await;
     policy
         .authorize_session(None, TasksFeatureAction::Quiesce)
         .await

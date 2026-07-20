@@ -22,10 +22,14 @@ use crate::infrastructure::memory::MemoryBranchUpdateRepository;
 struct FailingProjectRepository;
 
 async fn enable_tasks(state: &AppState) {
+    let current = state.ideation_settings_repo.get_settings().await.unwrap();
+    if current.tasks_feature_state == TasksFeatureState::Enabled {
+        return;
+    }
     assert!(state
         .ideation_settings_repo
         .compare_and_set_tasks_feature_state(
-            TasksFeatureState::Disabled,
+            current.tasks_feature_state,
             TasksFeatureState::Enabled,
         )
         .await
