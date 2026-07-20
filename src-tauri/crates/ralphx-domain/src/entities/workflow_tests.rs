@@ -417,11 +417,11 @@ fn workflow_column_with_groups_serializes() {
 fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
     let workflow = WorkflowSchema::default_ralphx();
 
-    // Ready column should include all idle/return-to-work groups.
+    // Ready column should include all idle/return-to-work and blocked groups.
     let ready_col = workflow.columns.iter().find(|c| c.id == "ready").unwrap();
     assert!(ready_col.groups.is_some());
     let ready_groups = ready_col.groups.as_ref().unwrap();
-    assert_eq!(ready_groups.len(), 4);
+    assert_eq!(ready_groups.len(), 6);
     assert!(ready_groups
         .iter()
         .any(|g| g.id == "fresh" && g.statuses.contains(&InternalStatus::Ready)));
@@ -434,8 +434,14 @@ fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
     assert!(ready_groups
         .iter()
         .any(|g| g.id == "paused" && g.statuses.contains(&InternalStatus::Paused)));
+    assert!(ready_groups
+        .iter()
+        .any(|g| g.id == "qa_failed" && g.statuses.contains(&InternalStatus::QaFailed)));
+    assert!(ready_groups.iter().any(|g| {
+        g.id == "branch_update_blocked" && g.statuses.contains(&InternalStatus::BranchUpdateBlocked)
+    }));
 
-    // In Progress column should have 2 groups: First Attempt, Revising
+    // In Progress column should include execution, QA, and branch-update groups.
     let progress_col = workflow
         .columns
         .iter()
@@ -443,13 +449,27 @@ fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
         .unwrap();
     assert!(progress_col.groups.is_some());
     let progress_groups = progress_col.groups.as_ref().unwrap();
-    assert_eq!(progress_groups.len(), 2);
+    assert_eq!(progress_groups.len(), 6);
     assert!(progress_groups
         .iter()
         .any(|g| g.id == "first_attempt" && g.statuses.contains(&InternalStatus::Executing)));
     assert!(progress_groups
         .iter()
         .any(|g| g.id == "revising" && g.statuses.contains(&InternalStatus::ReExecuting)));
+    assert!(progress_groups
+        .iter()
+        .any(|g| { g.id == "qa_refining" && g.statuses.contains(&InternalStatus::QaRefining) }));
+    assert!(progress_groups
+        .iter()
+        .any(|g| g.id == "qa_testing" && g.statuses.contains(&InternalStatus::QaTesting)));
+    assert!(progress_groups
+        .iter()
+        .any(|g| g.id == "qa_passed" && g.statuses.contains(&InternalStatus::QaPassed)));
+    assert!(progress_groups.iter().any(|g| {
+        g.id == "updating_branch"
+            && g.statuses.contains(&InternalStatus::UpdatingPlanBranch)
+            && g.statuses.contains(&InternalStatus::UpdatingTaskBranch)
+    }));
 
     // In Review column should include waiting/reviewing/approval/escalated groups.
     let review_col = workflow
