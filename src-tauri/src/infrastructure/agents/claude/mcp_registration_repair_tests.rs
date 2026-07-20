@@ -6,6 +6,27 @@ use super::mcp_registration_repair::{
     retire_exact_legacy_user_registration_for_test, LegacyMcpRepairFailureCode,
 };
 
+#[test]
+fn repair_failure_codes_have_stable_protocol_values() {
+    assert_eq!(
+        LegacyMcpRepairFailureCode::ConfigRead.to_string(),
+        "config_read_failed"
+    );
+    assert_eq!(
+        LegacyMcpRepairFailureCode::NoExactHistoricalMatch.to_string(),
+        "no_exact_historical_match"
+    );
+    assert_eq!(
+        LegacyMcpRepairFailureCode::CommandFailed.to_string(),
+        "command_failed"
+    );
+    assert_eq!(LegacyMcpRepairFailureCode::Timeout.to_string(), "timeout");
+    assert_eq!(
+        LegacyMcpRepairFailureCode::PostconditionFailed.to_string(),
+        "postcondition_failed"
+    );
+}
+
 fn write_exact_registration(home: &Path, app_data: &Path) {
     let script = app_data.join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
     fs::create_dir_all(script.parent().unwrap()).unwrap();

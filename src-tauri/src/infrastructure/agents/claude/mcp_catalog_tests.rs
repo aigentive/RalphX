@@ -124,6 +124,27 @@ fn classifies_plugin_template_user_registration() {
 }
 
 #[test]
+fn classifies_missing_and_unregistered_user_config_as_not_present() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::NotPresent
+    );
+
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"github":{"command":"provider-owned"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::NotPresent
+    );
+}
+
+#[test]
 fn rejects_plugin_template_one_field_deviations_and_internal_reserved_registration() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
