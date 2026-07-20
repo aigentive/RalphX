@@ -61,7 +61,6 @@ vi.mock("@/components/shared/branchBaseOptions", () => ({
 }));
 
 vi.mock("./AgentComposerSurface", () => ({
-  AgentComposerProjectCreateButton: () => null,
   AgentComposerProjectLine: () => null,
   AgentComposerSurface: ({
     mode,
@@ -370,7 +369,6 @@ describe("agent personas flag-off sweep", () => {
           claude: [],
           codex: [{ id: "gpt-5.5", label: "gpt-5.5", menuLabel: "gpt-5.5", defaultEffort: "xhigh", supportedEfforts: ["xhigh"] }],
         }}
-        onCreateProject={vi.fn()}
         onSubmit={onSubmit}
       />,
     );
@@ -418,7 +416,6 @@ describe("agent personas flag-off sweep", () => {
             },
           ],
         }}
-        onCreateProject={vi.fn()}
         onSubmit={vi.fn()}
       />,
     );
@@ -501,7 +498,6 @@ describe("agent persona start retries", () => {
           claude: [],
           codex: [{ id: "gpt-5.5", label: "gpt-5.5", menuLabel: "gpt-5.5", defaultEffort: "xhigh", supportedEfforts: ["xhigh"] }],
         }}
-        onCreateProject={vi.fn()}
         onSubmit={onSubmit}
       />,
     );

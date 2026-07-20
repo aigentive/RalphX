@@ -1534,7 +1534,6 @@ export function useAgentsViewController({
       onActiveProviderChange: handleActiveProviderChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onConversationModeSwitched: handleConversationModeSwitched,
-      onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
       onFocusIdeationSessionForConversation:
         handleFocusIdeationSessionForConversation,

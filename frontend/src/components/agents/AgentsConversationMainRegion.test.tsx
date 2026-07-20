@@ -55,7 +55,6 @@ function mainRegionProps(
     onActiveProviderChange: vi.fn(),
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
-    onCreateProject: vi.fn(),
     onFocusIdeationSession: vi.fn(),
     onFocusIdeationSessionForConversation: vi.fn(),
     onFocusWorkspaceReview: vi.fn(),
