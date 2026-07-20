@@ -398,6 +398,87 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
 }
 
 #[tokio::test]
+async fn startup_agent_workspace_pr_recovery_with_autofix_disabled_skips_review_dispatch() {
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Disabled Autofix Poller".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string("abababab-7777-8888-9999-cdcdcdcdcdcd");
+    let branch_name = "ralphx/test/startup-disabled-autofix-poller";
+    let mut workspace = published_workspace(&project, conversation_id.clone(), branch_name);
+    workspace.pr_autofix_enabled = false;
+    GitService::create_worktree(
+        &repo_path,
+        Path::new(&workspace.worktree_path),
+        branch_name,
+        "main",
+    )
+    .await
+    .expect("create workspace worktree");
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(crate::domain::services::github_service::PrReviewFeedback {
+        review_id: "startup-disabled-review".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-07-20T12:00:00Z".to_string()),
+        body: Some("Please address this review.".to_string()),
+        comments: Vec::new(),
+    });
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+    let chat = Arc::new(MockChatService::new());
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone(),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
 async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller() {
     init_tracing();
 
