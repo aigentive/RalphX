@@ -72,7 +72,7 @@ pub async fn external_task_transition_http(
             if task.internal_status.is_terminal() {
                 InternalStatus::Ready
             } else {
-                return Err(StatusCode::BAD_REQUEST);
+                return Err(StatusCode::BAD_REQUEST.into());
             }
         }
     };
