@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { typedInvoke } from "@/lib/tauri";
+
+vi.mock("@/lib/tauri", () => ({
+  typedInvoke: vi.fn(),
+}));
+
+import { mcpPolicyApi } from "./mcp-policy";
 import { RawMcpCatalogSchema } from "./mcp-policy.schemas";
 import { transformMcpCatalog } from "./mcp-policy.transforms";
 
@@ -61,5 +68,27 @@ describe("MCP policy API contract", () => {
         },
       ],
     });
+  });
+
+  it("routes a retry through the narrow legacy-cleanup command", async () => {
+    vi.mocked(typedInvoke).mockResolvedValue(null);
+
+    await mcpPolicyApi.retryLegacyRepair({
+      provider: "claude",
+      serverId: "ralphx",
+      scope: "user",
+    });
+
+    expect(typedInvoke).toHaveBeenCalledWith(
+      "retry_legacy_mcp_registration_repair",
+      {
+        input: {
+          provider: "claude",
+          serverId: "ralphx",
+          scope: "user",
+        },
+      },
+      expect.anything(),
+    );
   });
 });

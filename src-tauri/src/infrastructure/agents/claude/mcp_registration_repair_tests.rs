@@ -60,6 +60,45 @@ async fn successful_cli_without_absence_fails_the_postcondition() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn ambiguous_and_failed_cleanup_are_distinguished_without_mutating_config() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"ralphx":{"command":"user-owned"}}}"#,
+    )
+    .unwrap();
+    let cli = home.path().join("fake-claude");
+    write_executable(&cli, "#!/bin/sh\nexit 7\n");
+
+    let ambiguous = retire_exact_legacy_user_registration_for_test(
+        &cli,
+        home.path(),
+        app_data.path(),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        ambiguous,
+        LegacyMcpRepairFailureCode::NoExactHistoricalMatch
+    );
+
+    write_exact_registration(home.path(), app_data.path());
+    let command_failed = retire_exact_legacy_user_registration_for_test(
+        &cli,
+        home.path(),
+        app_data.path(),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(command_failed, LegacyMcpRepairFailureCode::CommandFailed);
+    assert!(home.path().join(".claude.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn timeout_kills_cleanup_and_preserves_the_registration() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();

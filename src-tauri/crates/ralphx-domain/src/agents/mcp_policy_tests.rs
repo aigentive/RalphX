@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 
-use super::{AgentHarnessKind, McpLaunchPolicy, McpOverrideState, McpPolicyOverride, McpServerKey};
+use super::{
+    AgentHarnessKind, McpLaunchPolicy, McpOverrideState, McpPolicyOverride, McpRepairStatus,
+    McpServerKey, McpSetupConflictKind, McpSetupPreflightFailure, MCP_SETUP_PREFLIGHT_MARKER,
+};
 
 #[test]
 fn identifiers_reject_path_and_shell_shaped_values() {
@@ -59,4 +62,46 @@ fn required_servers_reject_server_and_tool_disables() {
         ..server_disabled
     };
     assert!(tool_disabled.validate().is_err());
+}
+
+#[test]
+fn setup_preflight_failures_have_stable_safe_markers() {
+    let ambiguous = McpSetupPreflightFailure::ambiguous(
+        AgentHarnessKind::Codex,
+        "ralphx_internal",
+        Some("project".to_string()),
+    );
+    assert_eq!(
+        ambiguous.conflict_kind,
+        McpSetupConflictKind::AmbiguousReservedId
+    );
+    assert_eq!(ambiguous.repair_status, McpRepairStatus::ManualOnly);
+    assert_eq!(
+        ambiguous.to_start_error_marker(),
+        format!(
+            "{MCP_SETUP_PREFLIGHT_MARKER}{{\"conflict_kind\":\"ambiguous_reserved_id\",\"provider\":\"codex\",\"repair_status\":\"manual_only\",\"scope\":\"project\",\"server_id\":\"ralphx_internal\"}}"
+        )
+    );
+    assert!(ambiguous.to_string().contains("ralphx_internal"));
+
+    let failed = McpSetupPreflightFailure::legacy_repair_failed();
+    assert_eq!(
+        failed.conflict_kind,
+        McpSetupConflictKind::LegacyRepairFailed
+    );
+    assert_eq!(failed.repair_status, McpRepairStatus::Failed);
+    assert!(failed
+        .to_start_error_marker()
+        .contains("legacy_repair_failed"));
+    assert!(failed.to_string().contains("failed"));
+}
+
+#[test]
+fn setup_conflict_and_repair_statuses_serialize_to_protocol_values() {
+    assert_eq!(
+        McpSetupConflictKind::LegacyRegistration.to_string(),
+        "legacy_registration"
+    );
+    assert_eq!(McpRepairStatus::Repairable.to_string(), "repairable");
+    assert_eq!(McpRepairStatus::Repaired.to_string(), "repaired");
 }
