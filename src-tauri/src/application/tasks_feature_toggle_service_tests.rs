@@ -255,7 +255,7 @@ async fn disable_impact_counts_standalone_attached_and_paused_work() {
 }
 
 #[tokio::test]
-async fn disabling_tasks_pauses_branch_updates_through_their_authority_repository() {
+async fn disabling_tasks_pauses_plan_and_task_branch_updates_without_auto_resuming() {
     let mut state = AppState::new_test();
     let branch_repo = Arc::new(
         MemoryBranchUpdateRepository::new().with_task_repository(Arc::clone(&state.task_repo)),
@@ -270,13 +270,16 @@ async fn disabling_tasks_pauses_branch_updates_through_their_authority_repositor
         ))
         .await
         .unwrap();
-    let task = state
+    let plan_task = state
         .task_repo
-        .create(Task::new(project.id, "Branch update".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Plan branch update".to_string(),
+        ))
         .await
         .unwrap();
-    let operation = BranchUpdateOperation::new(
-        task.id.clone(),
+    let plan_operation = BranchUpdateOperation::new(
+        plan_task.id.clone(),
         BranchUpdateDirection::PlanBranch,
         BranchUpdateContinuation::ResumeExecution,
         "branch-drain-history",
@@ -294,9 +297,43 @@ async fn disabling_tasks_pauses_branch_updates_through_their_authority_repositor
     assert!(matches!(
         branch_repo
             .activate(BranchUpdateActivation {
-                operation,
+                operation: plan_operation,
                 expected_status: InternalStatus::Backlog,
                 update_status: InternalStatus::UpdatingPlanBranch,
+                trigger: "tasks-off-test".to_string(),
+            })
+            .await
+            .unwrap(),
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+
+    let task_task = state
+        .task_repo
+        .create(Task::new(project.id, "Task branch update".to_string()))
+        .await
+        .unwrap();
+    let task_operation = BranchUpdateOperation::new(
+        task_task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "task-branch-drain-history",
+        "main",
+        "ralphx/task-branch-drain",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        GitTargetIdentity::new(
+            PathBuf::from("/tmp/branch-drain-project/.git"),
+            "refs/heads/ralphx/task-branch-drain",
+        )
+        .unwrap(),
+        Utc::now(),
+    );
+    assert!(matches!(
+        branch_repo
+            .activate(BranchUpdateActivation {
+                operation: task_operation,
+                expected_status: InternalStatus::Backlog,
+                update_status: InternalStatus::UpdatingTaskBranch,
                 trigger: "tasks-off-test".to_string(),
             })
             .await
@@ -314,7 +351,43 @@ async fn disabling_tasks_pauses_branch_updates_through_their_authority_repositor
     assert_eq!(
         state
             .task_repo
-            .get_by_id(&task.id)
+            .get_by_id(&plan_task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Paused
+    );
+    let paused_plan_task = state
+        .task_repo
+        .get_by_id(&plan_task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(paused_plan_task
+        .metadata
+        .as_deref()
+        .is_some_and(|metadata| metadata.contains("tasks_feature_disabled")));
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&task_task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Paused
+    );
+
+    state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(true)
+        .await
+        .expect("re-enabling must not auto-resume paused branch updates");
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&plan_task.id)
             .await
             .unwrap()
             .unwrap()

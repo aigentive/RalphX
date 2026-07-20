@@ -1351,9 +1351,11 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
                     return Ok(BranchUpdateCasOutcome::Stale);
                 }
                 if conn.execute(
-                    "UPDATE tasks SET internal_status = 'paused', updated_at = ?1
-                     WHERE id = ?2 AND internal_status = ?3",
+                    "UPDATE tasks
+                     SET internal_status = 'paused', metadata = COALESCE(?1, metadata), updated_at = ?2
+                     WHERE id = ?3 AND internal_status = ?4",
                     params![
+                        request.task_metadata,
                         now,
                         request.task_id.as_str(),
                         request.update_status.as_str()

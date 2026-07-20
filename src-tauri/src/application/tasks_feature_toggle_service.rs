@@ -377,6 +377,10 @@ impl<'a> TasksFeatureToggleService<'a> {
                     owner: lease.owner().clone(),
                     fencing_epoch: lease.fencing_epoch(),
                     history_id: uuid::Uuid::new_v4().to_string(),
+                    task_metadata: Some(
+                        feature_disabled_pause_metadata(&current)?
+                            .merge_into(current.metadata.as_deref()),
+                    ),
                 })
                 .await?;
             if outcome != BranchUpdateCasOutcome::Applied {

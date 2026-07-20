@@ -1322,6 +1322,7 @@ pub async fn pause_task(
                 owner: lease.owner().clone(),
                 fencing_epoch: lease.fencing_epoch(),
                 history_id: uuid::Uuid::new_v4().to_string(),
+                task_metadata: None,
             })
             .await
             .map_err(|error| error.to_string())?;
