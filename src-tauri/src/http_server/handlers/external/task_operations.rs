@@ -2,7 +2,7 @@ use super::*;
 use crate::application::{
     merge_pipeline_visibility::ArchivedParentMergeVisibility,
     task_diff_base::read_task_diff_stats_from_resolved_base,
-    task_restart::prepare_terminal_task_for_ready_restart,
+    task_restart::build_terminal_ready_restart_plan,
 };
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +49,17 @@ pub async fn external_task_transition_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    let feature_action = match &req.action {
+        TransitionAction::Pause | TransitionAction::Cancel => {
+            crate::domain::ideation::TasksFeatureAction::Quiesce
+        }
+        TransitionAction::Retry => crate::domain::ideation::TasksFeatureAction::Progress,
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(task.ideation_session_id.as_ref(), feature_action)
+        .await
+        .map_err(|_| StatusCode::CONFLICT)?;
+
     let is_retry_restart =
         matches!(&req.action, TransitionAction::Retry) && task.internal_status.is_terminal();
 
@@ -65,36 +76,20 @@ pub async fn external_task_transition_http(
         }
     };
 
-    if is_retry_restart && target_status == InternalStatus::Ready {
-        match prepare_terminal_task_for_ready_restart(
-            &state.app_state.task_repo,
-            &state.app_state.task_step_repo,
-            &task,
-            None,
-        )
-        .await
-        {
-            Ok(preparation) => {
-                if task.internal_status == InternalStatus::Failed
-                    && preparation.cleared_failed_steps > 0
-                {
-                    tracing::info!(
-                        task_id = task_id.as_str(),
-                        cleared = preparation.cleared_failed_steps,
-                        "External retry cleared failed steps while preserving completed progress"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(
+    let terminal_restart_plan = if is_retry_restart && target_status == InternalStatus::Ready {
+        build_terminal_ready_restart_plan(&state.app_state.task_step_repo, &task, None)
+            .await
+            .map_err(|error| {
+                error!(
                     task_id = task_id.as_str(),
-                    error = %e,
-                    "External retry failed to prepare terminal task restart"
+                    error = %error,
+                    "External retry failed to build terminal restart plan"
                 );
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    }
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        None
+    };
 
     let mut transition_service_builder = state
         .app_state
@@ -110,13 +105,19 @@ pub async fn external_task_transition_http(
     let transition_service = transition_service_builder
         .with_external_events_repo(std::sync::Arc::clone(&state.app_state.external_events_repo));
 
-    let updated_task = transition_service
-        .transition_task(&task_id, target_status)
-        .await
-        .map_err(|e| {
-            error!("Failed to transition task {}: {}", task_id.as_str(), e);
-            StatusCode::UNPROCESSABLE_ENTITY
-        })?;
+    let updated_task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, None)
+            .await
+    } else {
+        transition_service
+            .transition_task(&task_id, target_status)
+            .await
+    }
+    .map_err(|error| {
+        error!("Failed to transition task {}: {}", task_id.as_str(), error);
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
 
     Ok(Json(TaskTransitionResponse {
         success: true,
