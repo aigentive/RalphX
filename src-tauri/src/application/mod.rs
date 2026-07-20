@@ -45,6 +45,7 @@ pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+pub mod agent_workspace_review_diff;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
 pub mod agent_workspace_review_auto_merge;

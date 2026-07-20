@@ -1,5 +1,8 @@
 //! Agent workspace HTTP handlers.
 
+mod workspace_review_diff;
+pub use workspace_review_diff::*;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -26,6 +29,9 @@ use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, review_gate_publish_blocker,
     start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
     AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+};
+use crate::application::agent_workspace_review_diff::{
+    ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
@@ -411,7 +417,9 @@ pub struct AgentWorkspaceReviewTargetResponse {
 pub struct AgentWorkspaceReviewPacketResponse {
     pub summary: AgentWorkspaceReviewDiffSummaryResponse,
     pub changed_files: Vec<AgentWorkspaceReviewChangedFileResponse>,
+    pub changed_files_truncated: bool,
     pub hunk_anchors: Vec<AgentWorkspaceReviewHunkAnchorResponse>,
+    pub hunk_anchors_truncated: bool,
     pub patch_excerpt: String,
     pub patch_excerpt_truncated: bool,
     pub notes: Vec<String>,
@@ -489,11 +497,13 @@ impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewPacket
                     sources: file.sources,
                 })
                 .collect(),
+            changed_files_truncated: value.changed_files_truncated,
             hunk_anchors: value
                 .hunk_anchors
                 .into_iter()
                 .map(AgentWorkspaceReviewHunkAnchorResponse::from)
                 .collect(),
+            hunk_anchors_truncated: value.hunk_anchors_truncated,
             patch_excerpt: value.patch_excerpt,
             patch_excerpt_truncated: value.patch_excerpt_truncated,
             notes: value.notes,
@@ -1974,6 +1984,19 @@ pub async fn write_agent_workspace_review_hunk_annotations(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::NOT_FOUND,
+                format!("Project not found: {}", workspace.project_id),
+                None,
+            )
+        })?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
@@ -2021,9 +2044,24 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             req.diff_fingerprint.as_deref(),
             "workspace Review hunk annotations write",
         )?;
+    let hunk_selections = req
+        .annotations
+        .iter()
+        .map(|annotation| (annotation.path.clone(), annotation.source.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut validation_target = target.clone();
+    let (full_hunk_anchors, source_fingerprint) = full_hunk_anchors_for_requests(
+        &workspace,
+        &project,
+        &target_diff_fingerprint,
+        &hunk_selections,
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
+    validation_target.review_packet.hunk_anchors = full_hunk_anchors;
     let validation = validate_workspace_review_hunk_annotation_requests(
         req.annotations,
-        Some(target),
+        Some(&validation_target),
         target_scope,
         target_head_sha.as_deref(),
         &target_diff_fingerprint,
@@ -2069,6 +2107,14 @@ pub async fn write_agent_workspace_review_hunk_annotations(
         .map(AgentWorkspaceReviewHunkAnchorResponse::from)
         .collect::<Vec<_>>();
     let missing_required_count = missing_required_hunks.len();
+    ensure_workspace_review_snapshot_current(
+        &workspace,
+        &project,
+        &target_diff_fingerprint,
+        &source_fingerprint,
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
     state
         .app_state
         .agent_conversation_workspace_repo

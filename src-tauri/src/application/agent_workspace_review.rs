@@ -93,7 +93,9 @@ pub struct AgentWorkspaceReviewTarget {
 pub struct AgentWorkspaceReviewPacket {
     pub summary: AgentWorkspaceReviewDiffSummary,
     pub changed_files: Vec<AgentWorkspaceReviewChangedFile>,
+    pub changed_files_truncated: bool,
     pub hunk_anchors: Vec<AgentWorkspaceReviewHunkAnchor>,
+    pub hunk_anchors_truncated: bool,
     pub patch_excerpt: String,
     pub patch_excerpt_truncated: bool,
     pub notes: Vec<String>,
@@ -106,14 +108,14 @@ pub struct AgentWorkspaceReviewDiffSummary {
     pub deletions: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct AgentWorkspaceReviewChangedFile {
     pub path: String,
     pub status: String,
     pub sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AgentWorkspaceReviewHunkAnchor {
     pub path: String,
     pub source: String,
@@ -2972,18 +2974,18 @@ fn build_review_packet(
     let mut notes = Vec::new();
     if files.values().any(|entry| entry.status == "untracked") {
         notes.push(
-            "Untracked files are listed from git status; read them with fs_read_file when they are relevant because they are not present in git diff output."
+            "Untracked files are listed from git status; retrieve their exact synthetic added-file evidence through the unstaged Workspace Review diff source when relevant."
                 .to_string(),
         );
     }
     if files_count > WORKSPACE_REVIEW_MAX_CHANGED_FILES {
         notes.push(format!(
-            "Changed file list is limited to the first {WORKSPACE_REVIEW_MAX_CHANGED_FILES} paths."
+            "Changed file list is limited to the first {WORKSPACE_REVIEW_MAX_CHANGED_FILES} paths; page the full inventory when relevant."
         ));
     }
     if hunk_anchors_truncated {
         notes.push(format!(
-            "Review hunk anchors are limited to the first {WORKSPACE_REVIEW_MAX_HUNK_ANCHORS} hunks; describe only anchors present in target.review_packet.hunk_anchors."
+            "Review hunk anchors are limited to the first {WORKSPACE_REVIEW_MAX_HUNK_ANCHORS} hunks; retrieve exact file diff pages for additional anchors when relevant."
         ));
     }
 
@@ -3010,7 +3012,9 @@ fn build_review_packet(
             deletions,
         },
         changed_files,
+        changed_files_truncated: files_count > WORKSPACE_REVIEW_MAX_CHANGED_FILES,
         hunk_anchors,
+        hunk_anchors_truncated,
         patch_excerpt,
         patch_excerpt_truncated,
         notes,
@@ -3317,7 +3321,34 @@ async fn resolve_workspace_delta_target(
 }
 
 async fn workspace_delta_content_fingerprint(repo: &Path, base_ref: &str) -> AppResult<String> {
+    let trees = workspace_delta_tree_fingerprints(repo, base_ref).await?;
+    Ok(fingerprint_parts([
+        "workspace_delta_content_v1",
+        &trees.base_tree,
+        &trees.target_tree,
+    ]))
+}
+
+struct WorkspaceDeltaTreeFingerprints {
+    base_tree: String,
+    head_tree: String,
+    index_tree: String,
+    target_tree: String,
+}
+
+async fn workspace_delta_tree_fingerprints(
+    repo: &Path,
+    base_ref: &str,
+) -> AppResult<WorkspaceDeltaTreeFingerprints> {
     let base_tree = rev_parse(repo, &format!("{base_ref}^{{tree}}")).await?;
+    let head_tree = rev_parse(repo, "HEAD^{tree}").await?;
+    let index_tree = git_stdout_lossy(&["write-tree"], repo).await?;
+    let index_tree = index_tree.trim().to_string();
+    if index_tree.is_empty() {
+        return Err(AppError::GitOperation(
+            "git write-tree returned an empty workspace Review index tree".to_string(),
+        ));
+    }
     let object_dir = git_stdout_lossy(&["rev-parse", "--git-path", "objects"], repo).await?;
     let object_dir = git_path_output(repo, &object_dir)?;
     let temp_index_dir = tempfile::Builder::new()
@@ -3364,11 +3395,32 @@ async fn workspace_delta_content_fingerprint(repo: &Path, base_ref: &str) -> App
         ));
     }
 
-    Ok(fingerprint_parts([
-        "workspace_delta_content_v1",
-        &base_tree,
-        target_tree,
-    ]))
+    Ok(WorkspaceDeltaTreeFingerprints {
+        base_tree,
+        head_tree,
+        index_tree,
+        target_tree: target_tree.to_string(),
+    })
+}
+
+pub(crate) async fn workspace_review_source_snapshot_fingerprint(
+    target: &AgentWorkspaceReviewTarget,
+) -> AppResult<String> {
+    match target.scope {
+        AgentWorkspaceReviewTargetScope::SelectedSource => Ok(target.diff_fingerprint.clone()),
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
+            let trees =
+                workspace_delta_tree_fingerprints(&target.working_directory, &target.base_ref)
+                    .await?;
+            Ok(fingerprint_parts([
+                "workspace_delta_sources_v1",
+                &trees.base_tree,
+                &trees.head_tree,
+                &trees.index_tree,
+                &trees.target_tree,
+            ]))
+        }
+    }
 }
 
 fn git_path_output(repo: &Path, output: &str) -> AppResult<PathBuf> {
@@ -3630,7 +3682,7 @@ fn build_review_request_message(
          - Workspace conversation: {conversation_id}\n\n\
          {goal_context_block}\n\n\
          RalphX scopes workspace Review tools to this parent conversation from runtime context. \
-         Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
+         Use the `target.review_packet` returned by `get_workspace_review_context` as the primary compact diff input. When its typed flags report truncation, page the full inventory with `list_workspace_review_files`; retrieve exact risk-relevant file/source evidence with `get_workspace_review_diff_page`. Use bounded read-only filesystem tools only for targeted current-file context. \
          Do not run shell commands, tests, linters, or validation suites. \
          Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, write hunk descriptions with `write_workspace_review_hunk_annotations`, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
          Use the target scope, head SHA, and diff fingerprint returned by `get_workspace_review_context` as tool arguments only; do not repeat that provenance as artifact body prose. Do not modify files.",

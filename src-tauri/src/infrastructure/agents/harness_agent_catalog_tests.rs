@@ -1464,6 +1464,8 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "fs_grep",
         "fs_glob",
         "get_workspace_review_context",
+        "list_workspace_review_files",
+        "get_workspace_review_diff_page",
         "write_workspace_review_artifact",
         "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",

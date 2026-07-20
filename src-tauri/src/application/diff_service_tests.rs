@@ -1216,6 +1216,22 @@ fn unstaged_file_diff_rejects_empty_file_path() {
 }
 
 #[test]
+fn externally_reachable_file_diff_sources_reject_unsafe_paths_before_git_reads() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+    let svc = DiffService::new();
+
+    for unsafe_path in ["", "/etc/passwd", "../secret", "src/../../secret"] {
+        assert!(svc.get_staged_file_diff(unsafe_path, &repo_str).is_err());
+        assert!(svc.get_unstaged_file_diff(unsafe_path, &repo_str).is_err());
+        assert!(svc
+            .get_file_diff_between_refs(unsafe_path, &repo_str, &head, "HEAD")
+            .is_err());
+    }
+}
+
+#[test]
 fn get_file_content_range_reads_working_tree_lines() {
     let (_tmp, repo) = create_staged_unstaged_repo();
     let repo_str = repo.to_string_lossy().to_string();
