@@ -173,7 +173,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     // Workflow modes live on the Mode chip popover, not the "+" action menu.

@@ -6,6 +6,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AtlassianIntegrationSettings } from "@/api/atlassian";
+import type { GranolaIntegrationSettings } from "@/api/granola";
+import type {
+  TicketingProvider,
+  TicketingProviderSummary,
+} from "@/api/ticketing";
 import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import {
   AgentComposerProjectLine,
@@ -32,6 +38,101 @@ vi.mock("@/hooks/useFeatureFlags", () => ({
 }));
 
 type ComposerProps = Parameters<typeof AgentComposerSurface>[0];
+
+const INTEGRATION_UPDATED_AT = "2026-07-20T00:00:00Z";
+
+function ticketingProvider(
+  provider: TicketingProvider,
+  overrides: Partial<TicketingProviderSummary> = {},
+): TicketingProviderSummary {
+  return {
+    provider,
+    label: provider === "clickup" ? "ClickUp" : `${provider[0]?.toUpperCase()}${provider.slice(1)}`,
+    enabled: true,
+    connectionStatus: "connected",
+    capabilities: {
+      supportsBoards: false,
+      supportsKanban: false,
+      kanbanWrite: false,
+      statusWrite: false,
+      assignmentWrite: false,
+      commentWrite: false,
+      labelWrite: false,
+      freshness: "manual",
+    },
+    ...overrides,
+  };
+}
+
+function atlassianSettings(
+  overrides: Partial<AtlassianIntegrationSettings> = {},
+): AtlassianIntegrationSettings {
+  return {
+    enabled: true,
+    authMethod: "api_token",
+    siteUrl: "https://example.atlassian.net",
+    email: "dev@example.com",
+    hasApiToken: true,
+    hasOauthClientSecret: false,
+    hasOauthToken: false,
+    validationStatus: "valid",
+    jiraAvailable: true,
+    confluenceAvailable: true,
+    updatedAt: INTEGRATION_UPDATED_AT,
+    ...overrides,
+  };
+}
+
+function granolaSettings(
+  overrides: Partial<GranolaIntegrationSettings> = {},
+): GranolaIntegrationSettings {
+  return {
+    enabled: true,
+    hasApiToken: true,
+    validationStatus: "valid",
+    updatedAt: INTEGRATION_UPDATED_AT,
+    ...overrides,
+  };
+}
+
+function defaultComposerInvokeResponse(cmd: string): unknown {
+  if (cmd === "list_conversation_folder_references") return [];
+  if (cmd === "list_agent_composer_skills") return { skills: [] };
+  if (cmd === "search_agent_composer_entries") {
+    return { entries: [], truncated: false };
+  }
+  if (cmd === "search_agent_composer_plan_references") {
+    return { plans: [], truncated: false };
+  }
+  if (cmd === "search_atlassian_resources") return { resources: [] };
+  if (cmd === "resolve_atlassian_resource_urls") return { results: [] };
+  return undefined;
+}
+
+function mockComposerIntegrationAvailability({
+  providers = [
+    ticketingProvider("jira"),
+    ticketingProvider("linear"),
+    ticketingProvider("clickup"),
+  ],
+  atlassian = atlassianSettings(),
+  granola = granolaSettings(),
+}: {
+  providers?: TicketingProviderSummary[];
+  atlassian?: AtlassianIntegrationSettings;
+  granola?: GranolaIntegrationSettings;
+} = {}) {
+  vi.mocked(invoke).mockImplementation((cmd) => {
+    if (cmd === "list_ticketing_providers") return Promise.resolve(providers);
+    if (cmd === "get_atlassian_integration_settings") {
+      return Promise.resolve(atlassian);
+    }
+    if (cmd === "get_granola_integration_settings") {
+      return Promise.resolve(granola);
+    }
+    return Promise.resolve(defaultComposerInvokeResponse(cmd));
+  });
+}
 
 function renderComposer(overrides: Partial<ComposerProps> = {}) {
   const queryClient = new QueryClient({
@@ -150,27 +251,7 @@ describe("AgentComposerSurface", () => {
   beforeEach(() => {
     vi.useRealTimers();
     setRalphxTerminalDockDragActive(false);
-    vi.mocked(invoke).mockImplementation((cmd) => {
-      if (cmd === "list_conversation_folder_references") {
-        return Promise.resolve([]);
-      }
-      if (cmd === "list_agent_composer_skills") {
-        return Promise.resolve({ skills: [] });
-      }
-      if (cmd === "search_agent_composer_entries") {
-        return Promise.resolve({ entries: [], truncated: false });
-      }
-      if (cmd === "search_agent_composer_plan_references") {
-        return Promise.resolve({ plans: [], truncated: false });
-      }
-      if (cmd === "search_atlassian_resources") {
-        return Promise.resolve({ resources: [] });
-      }
-      if (cmd === "resolve_atlassian_resource_urls") {
-        return Promise.resolve({ results: [] });
-      }
-      return Promise.resolve(undefined);
-    });
+    mockComposerIntegrationAvailability();
   });
 
   it("shows Add folder directly after Add files for a Project conversation", async () => {
@@ -182,21 +263,18 @@ describe("AgentComposerSurface", () => {
         onValueChange: vi.fn(),
         options: [{ id: "project-1", label: "RalphX" }],
         placeholder: "Project",
-        endAction: <button type="button">New project</button>,
       },
     });
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     const addFiles = screen.getByRole("button", { name: "Add files" });
     const addFolder = screen.getByRole("button", { name: "Add folder" });
-    const newProject = screen.getByRole("button", { name: "New project" });
     expect(
       addFiles.compareDocumentPosition(addFolder) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
     expect(
-      addFolder.compareDocumentPosition(newProject) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+      screen.queryByRole("button", { name: "New project" }),
+    ).not.toBeInTheDocument();
     normal.unmount();
 
     // Persona mode needs the Personas flag in addition to folder references.
@@ -207,6 +285,61 @@ describe("AgentComposerSurface", () => {
     });
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+  });
+
+  it("shows only integrations that are active in Settings", async () => {
+    mockComposerIntegrationAvailability({
+      providers: [
+        ticketingProvider("jira"),
+        ticketingProvider("linear", { enabled: false }),
+        ticketingProvider("clickup"),
+      ],
+      atlassian: atlassianSettings({ confluenceAvailable: false }),
+      granola: granolaSettings({ validationStatus: "invalid" }),
+    });
+
+    renderComposer();
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+
+    expect(await screen.findByRole("button", { name: "Jira" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ClickUp" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confluence" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Linear" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Granola" })).not.toBeInTheDocument();
+  });
+
+  it("hides the Integrations section when no configured integration is active", async () => {
+    mockComposerIntegrationAvailability({
+      providers: [
+        ticketingProvider("jira", {
+          enabled: false,
+          connectionStatus: "disconnected",
+        }),
+      ],
+      atlassian: atlassianSettings({
+        enabled: false,
+        hasApiToken: false,
+        validationStatus: "not_configured",
+        jiraAvailable: false,
+        confluenceAvailable: false,
+      }),
+      granola: granolaSettings({
+        enabled: false,
+        hasApiToken: false,
+        validationStatus: "not_configured",
+      }),
+    });
+
+    renderComposer();
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "get_granola_integration_settings",
+        {},
+      ),
+    );
+
+    expect(screen.queryByText("Integrations")).not.toBeInTheDocument();
   });
 
   it("adds a picked folder and renders the hydrated chip after invalidation", async () => {
@@ -2374,7 +2507,7 @@ describe("AgentComposerSurface", () => {
       renderComposer();
 
       fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-      fireEvent.click(screen.getByText(label));
+      fireEvent.click(await screen.findByRole("button", { name: label }));
 
       const textarea = screen.getByLabelText("Message input");
       expect(textarea).toHaveValue(expectedValue);
@@ -2394,7 +2527,7 @@ describe("AgentComposerSurface", () => {
     renderComposer();
 
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    fireEvent.click(screen.getByText("ClickUp"));
+    fireEvent.click(await screen.findByRole("button", { name: "ClickUp" }));
 
     const textarea = screen.getByLabelText("Message input");
     expect(textarea).toHaveValue("@clickup:");

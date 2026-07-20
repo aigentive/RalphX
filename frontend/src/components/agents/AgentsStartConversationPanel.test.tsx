@@ -21,7 +21,6 @@ describe("AgentsStartConversationPanel", () => {
         defaultRuntime={null}
         isLoadingProjects={false}
         modelRegistry={{ claude: [], codex: [] }}
-        onCreateProject={vi.fn()}
         onStartAgentConversation={async () => {
           throw new Error(`${PERSONA_UNAVAILABLE_PREFIX} reviewer was archived]`);
         }}
