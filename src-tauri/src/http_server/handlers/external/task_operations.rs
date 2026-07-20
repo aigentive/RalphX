@@ -4,6 +4,7 @@ use crate::application::{
     task_diff_base::read_task_diff_stats_from_resolved_base,
     task_restart::build_terminal_ready_restart_plan,
 };
+use crate::error::AppError;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +33,7 @@ pub async fn external_task_transition_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<TaskTransitionRequest>,
-) -> Result<Json<TaskTransitionResponse>, StatusCode> {
+) -> Result<Json<TaskTransitionResponse>, HttpError> {
     let task_id = TaskId::from_string(req.task_id.clone());
 
     // Load task and enforce scope
@@ -58,7 +59,7 @@ pub async fn external_task_transition_http(
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
         .authorize_session(task.ideation_session_id.as_ref(), feature_action)
         .await
-        .map_err(|_| StatusCode::CONFLICT)?;
+        .map_err(tasks_feature_http_error)?;
 
     let is_retry_restart =
         matches!(&req.action, TransitionAction::Retry) && task.internal_status.is_terminal();
@@ -116,7 +117,7 @@ pub async fn external_task_transition_http(
     }
     .map_err(|error| {
         error!("Failed to transition task {}: {}", task_id.as_str(), error);
-        StatusCode::UNPROCESSABLE_ENTITY
+        tasks_feature_http_error(error)
     })?;
 
     Ok(Json(TaskTransitionResponse {
@@ -124,6 +125,16 @@ pub async fn external_task_transition_http(
         task_id: updated_task.id.to_string(),
         new_status: updated_task.internal_status.to_string(),
     }))
+}
+
+fn tasks_feature_http_error(error: AppError) -> HttpError {
+    match error {
+        AppError::FeatureDisabled(message) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(message),
+        },
+        _ => HttpError::from(StatusCode::UNPROCESSABLE_ENTITY),
+    }
 }
 
 #[derive(Debug, Serialize)]

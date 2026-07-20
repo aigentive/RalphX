@@ -20,7 +20,8 @@ fn setup_tasks_authorization_db() -> Connection {
             ext_require_accept_for_finalize INTEGER,
             auto_verify_plans INTEGER NOT NULL DEFAULT 0,
             ext_auto_verify_plans INTEGER,
-            tasks_enabled INTEGER NOT NULL DEFAULT 0
+            tasks_enabled INTEGER NOT NULL DEFAULT 0,
+            tasks_feature_state TEXT NOT NULL DEFAULT 'disabled'
         );
         INSERT INTO ideation_settings (id, tasks_enabled) VALUES (1, 0);
         CREATE TABLE ideation_sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
@@ -70,7 +71,8 @@ async fn test_update_settings() {
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
     assert_eq!(updated.plan_mode, IdeationPlanMode::Required);
-    assert!(updated.tasks_enabled);
+    assert!(!updated.tasks_enabled);
+    assert_eq!(updated.tasks_feature_state, TasksFeatureState::Disabled);
     assert!(updated.require_plan_approval);
     assert!(!updated.suggest_plans_for_complex);
     assert!(!updated.auto_link_proposals);
@@ -78,7 +80,7 @@ async fn test_update_settings() {
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.plan_mode, IdeationPlanMode::Required);
-    assert!(retrieved.tasks_enabled);
+    assert!(!retrieved.tasks_enabled);
     assert!(retrieved.require_plan_approval);
     assert!(!retrieved.suggest_plans_for_complex);
     assert!(!retrieved.auto_link_proposals);
@@ -338,10 +340,13 @@ async fn test_both_verification_fields_toggle_independently() {
 #[test]
 fn tasks_authorization_allows_any_task_when_enabled() {
     let conn = setup_tasks_authorization_db();
-    conn.execute("UPDATE ideation_settings SET tasks_enabled = 1", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE ideation_settings SET tasks_enabled = 1, tasks_feature_state = 'enabled'",
+        [],
+    )
+    .unwrap();
 
-    authorize_tasks_session_sync(&conn, None)
+    authorize_tasks_session_sync(&conn, None, TasksFeatureAction::Progress)
         .expect("enabled Tasks must allow standalone work without a pipeline session");
 }
 
@@ -349,24 +354,21 @@ fn tasks_authorization_allows_any_task_when_enabled() {
 fn tasks_authorization_rejects_standalone_and_unentitled_sessions_when_disabled() {
     let conn = setup_tasks_authorization_db();
 
-    let standalone_error = authorize_tasks_session_sync(&conn, None)
+    let standalone_error = authorize_tasks_session_sync(&conn, None, TasksFeatureAction::Progress)
         .expect_err("disabled Tasks must reject standalone work");
-    assert!(standalone_error.to_string().contains("standalone Task"));
+    assert!(standalone_error.to_string().contains("Progress"));
 
     conn.execute(
         "INSERT INTO ideation_sessions (id, project_id) VALUES ('session-1', 'project-1')",
         [],
     )
     .unwrap();
-    let missing_workspace_error = authorize_tasks_session_sync(&conn, Some("session-1"))
-        .expect_err("a pipeline session without an active workspace is not entitled");
-    assert!(missing_workspace_error
-        .to_string()
-        .contains("active Agent pipeline"));
+    authorize_tasks_session_sync(&conn, Some("session-1"), TasksFeatureAction::Progress)
+        .expect_err("disabled Tasks must reject every pipeline session");
 }
 
 #[test]
-fn tasks_authorization_requires_an_active_workspace_for_the_session_project() {
+fn tasks_authorization_never_grandfathers_attached_workspaces_but_allows_quiesce() {
     let conn = setup_tasks_authorization_db();
     conn.execute(
         "INSERT INTO ideation_sessions (id, project_id) VALUES ('session-1', 'project-1')",
@@ -381,20 +383,28 @@ fn tasks_authorization_requires_an_active_workspace_for_the_session_project() {
     )
     .unwrap();
 
-    assert!(authorize_tasks_session_sync(&conn, Some("session-1")).is_err());
+    assert!(
+        authorize_tasks_session_sync(&conn, Some("session-1"), TasksFeatureAction::Progress,)
+            .is_err()
+    );
 
     conn.execute(
         "UPDATE agent_conversation_workspaces SET project_id = 'project-1', status = 'archived'",
         [],
     )
     .unwrap();
-    assert!(authorize_tasks_session_sync(&conn, Some("session-1")).is_err());
+    assert!(
+        authorize_tasks_session_sync(&conn, Some("session-1"), TasksFeatureAction::Progress,)
+            .is_err()
+    );
 
     conn.execute(
         "UPDATE agent_conversation_workspaces SET status = 'active'",
         [],
     )
     .unwrap();
-    authorize_tasks_session_sync(&conn, Some("session-1"))
-        .expect("an active workspace linked to the session's project is entitled");
+    authorize_tasks_session_sync(&conn, Some("session-1"), TasksFeatureAction::Progress)
+        .expect_err("an active attached workspace must not retain progress rights");
+    authorize_tasks_session_sync(&conn, Some("session-1"), TasksFeatureAction::Quiesce)
+        .expect("explicit quiesce remains available");
 }

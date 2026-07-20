@@ -14,7 +14,6 @@ import {
   Sparkles,
   Square,
   Ticket,
-  UserRound,
   Workflow,
   X,
 } from "lucide-react";
@@ -92,7 +91,11 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
-import { taskKeys, useTasks } from "@/hooks/useTasks";
+import {
+  taskKeys,
+  useSessionTaskHistoryAvailability,
+  useTasks,
+} from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { validateDependencyGraph } from "@/hooks/useDependencyGraphComplete";
 import {
@@ -102,10 +105,7 @@ import {
 import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
-import type {
-  IdeationSession,
-  TaskProposal,
-} from "@/types/ideation";
+import type { IdeationSession, TaskProposal } from "@/types/ideation";
 import type { Task } from "@/types/task";
 import {
   getStatusCounts,
@@ -128,7 +128,6 @@ import {
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
-import { isPersonaArtifactConversation } from "./personaArtifactTab";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -140,7 +139,10 @@ import {
 } from "./agentArtifactTabs";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
-import { ArtifactLoadingState, EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import {
+  ArtifactLoadingState,
+  EmptyArtifactState,
+} from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -180,6 +182,10 @@ import {
   type AutomationConversationPolicyTab,
 } from "@/components/automations/automationConversationTabPolicy";
 import { isAutomationRunComposerReadOnly } from "@/components/automations/automationRunView";
+import {
+  deriveTasksSurfaceCapabilities,
+  type TasksSurfaceCapabilities,
+} from "./tasksSurfaceCapabilities";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 const PLAN_CONTROL_RUNNING_STATUSES = new Set<InternalStatus>([
@@ -345,15 +351,6 @@ const LazyAgentsAutomationPanel = lazy(() =>
     default: module.AgentsAutomationPanel,
   })),
 );
-const LazyPersonaArtifactPanel = lazy(() =>
-  import("@/components/agents/PersonaArtifactPanel").then((module) => ({
-    default: module.PersonaArtifactPanel,
-  })),
-);
-
-function PersonaArtifactSkeletonFallback() {
-  return <ArtifactLoadingState title="Loading persona..." />;
-}
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -375,12 +372,6 @@ const AUTOMATION_TAB = {
   id: "automation" as const,
   label: "Automation",
   icon: Workflow,
-};
-
-const PERSONA_TAB = {
-  id: "persona" as const,
-  label: "Persona",
-  icon: UserRound,
 };
 
 const PUBLISH_TAB = {
@@ -422,7 +413,6 @@ const PR_TAB = {
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
-  PERSONA_TAB,
   PR_TAB,
   JIRA_TAB,
   LINEAR_TAB,
@@ -438,7 +428,6 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
-  persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
   jira: "Appears when Jira is connected and a ticket is attached.",
   linear: "Appears when Linear is connected and a ticket is attached.",
@@ -462,15 +451,13 @@ function visibleTab(
   return { ...tab, enabled: true };
 }
 
-function baseTabDefinition(id: AgentArtifactTab): Omit<
-  VisibleArtifactTab,
-  "enabled" | "disabledReason"
-> {
+function baseTabDefinition(
+  id: AgentArtifactTab,
+): Omit<VisibleArtifactTab, "enabled" | "disabledReason"> {
   const tab = [
     ...ARTIFACT_TABS,
     REVIEW_TAB,
     AUTOMATION_TAB,
-    PERSONA_TAB,
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
@@ -562,11 +549,11 @@ interface AgentsArtifactPaneProps {
   onConversationModeSwitched?: (
     conversationId: string,
     mode: AgentConversationWorkspaceMode,
-    workspace: AgentConversationWorkspace | null
+    workspace: AgentConversationWorkspace | null,
   ) => void;
   onFocusIdeationSessionForConversation?: (
     conversationId: string,
-    sessionId: string
+    sessionId: string,
   ) => void;
   onFocusAutomationRun?: (
     automationId: string,
@@ -579,7 +566,7 @@ interface AgentsArtifactPaneProps {
   onFocusWorkspaceReview?: (conversationId: string) => void;
   onFocusTaskRuntime?: (
     taskId: string,
-    contextType: AgentTaskRuntimeContextType
+    contextType: AgentTaskRuntimeContextType,
   ) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
@@ -620,6 +607,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     !ideationSettingsQuery.isLoading &&
     !ideationSettingsQuery.isError &&
     ideationSettingsQuery.settings.tasksEnabled;
+  const tasksFeatureState =
+    !ideationSettingsQuery.isLoading && !ideationSettingsQuery.isError
+      ? ideationSettingsQuery.settings.tasksFeatureState
+      : "disabled";
   const automationId = conversation?.automationId ?? null;
   const focusedRunTarget =
     automationRunFocusTarget?.automationId === automationId
@@ -634,7 +625,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const focusedRunWorkspaceQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspace(focusedAutomationRunConversationId),
     queryFn: () =>
-      chatApi.getAgentConversationWorkspace(focusedAutomationRunConversationId!),
+      chatApi.getAgentConversationWorkspace(
+        focusedAutomationRunConversationId!,
+      ),
     enabled: Boolean(focusedRunTarget && focusedAutomationRunConversationId),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
@@ -652,7 +645,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     scopedWorkspace?.linkedIdeationSessionId ||
     scopedWorkspace?.linkedPlanBranchId,
   );
-  const showPublishTab = shouldShowAgentWorkspacePublishSurface(scopedWorkspace);
+  const showPublishTab =
+    shouldShowAgentWorkspacePublishSurface(scopedWorkspace);
   const showPullRequestTab = workspaceHasPullRequest(scopedWorkspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
   const conversationQuery = useConversationHistoryWindow(
@@ -715,9 +709,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     enabled: Boolean(conversationId && jiraIntegrationAvailable),
     staleTime: 5_000,
   });
-  const showJiraTab = Boolean(
-    jiraIntegrationAvailable && jiraIssueQuery.data,
-  );
+  const showJiraTab = Boolean(jiraIntegrationAvailable && jiraIssueQuery.data);
   const linearSettingsQuery = useQuery({
     queryKey: ["linear", "settings"],
     queryFn: () => linearApi.getSettings(),
@@ -746,9 +738,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   });
   const showClickUpTab = Boolean(
     clickupSettingsQuery.data?.enabled &&
-      clickupSettingsQuery.data.hasApiToken &&
-      clickupSettingsQuery.data.validationStatus === "valid" &&
-      clickupSettingsQuery.data.taskSearchAvailable,
+    clickupSettingsQuery.data.hasApiToken &&
+    clickupSettingsQuery.data.validationStatus === "valid" &&
+    clickupSettingsQuery.data.taskSearchAvailable,
   );
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],
@@ -772,7 +764,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     granolaIntegrationAvailable && granolaNoteQuery.data,
   );
   const conversationProjectId =
-    conversation?.projectId ?? scopedWorkspace?.projectId ?? workspace?.projectId ?? null;
+    conversation?.projectId ??
+    scopedWorkspace?.projectId ??
+    workspace?.projectId ??
+    null;
   const canStartPlan = Boolean(
     conversationId &&
     conversationProjectId &&
@@ -831,9 +826,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       setAutoApprovePreference((previous) =>
         previous?.conversationId === variables.conversationId ? null : previous,
       );
-      toast.error(
-        extractErrorMessage(error, "Failed to update Auto Approve"),
-      );
+      toast.error(extractErrorMessage(error, "Failed to update Auto Approve"));
     },
   });
   const prReviewMonitoringMutation = useMutation({
@@ -1063,7 +1056,26 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     scopedWorkspace?.projectId ??
     workspace?.projectId ??
     null;
-  const activePlanSessionId = usePlanStore(selectActivePlanId(taskProjectId ?? ""));
+  const taskHistoryQuery = useSessionTaskHistoryAvailability(
+    taskProjectId ?? "",
+    attachedSessionId,
+  );
+  const tasksSurfaceCapabilities = useMemo(
+    () =>
+      deriveTasksSurfaceCapabilities({
+        featureState: tasksFeatureState,
+        hasHistory: taskHistoryQuery.data?.hasHistory ?? false,
+        historyUnavailable: taskHistoryQuery.isError,
+      }),
+    [
+      taskHistoryQuery.data?.hasHistory,
+      taskHistoryQuery.isError,
+      tasksFeatureState,
+    ],
+  );
+  const activePlanSessionId = usePlanStore(
+    selectActivePlanId(taskProjectId ?? ""),
+  );
   const projectActiveExecutionPlanId = usePlanStore(
     selectActiveExecutionPlanId(taskProjectId ?? ""),
   );
@@ -1176,11 +1188,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasPlanArtifact: Boolean(planArtifactId),
         canStartPlan,
         hasVerificationEvidence: false,
-        hasExecutionTasks: hasImplementationAttempt,
+        hasExecutionTasks: tasksSurfaceCapabilities.hasHistory,
       }),
     [
       canStartPlan,
-      hasImplementationAttempt,
+      tasksSurfaceCapabilities.hasHistory,
       planArtifactId,
       sessionData,
     ],
@@ -1192,7 +1204,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : availableIdeationTabIds;
     const shouldShowReviewTab = isReviewPrWorkspace
       ? Boolean(prReviewContext)
-      : Boolean(reviewArtifactId) || Boolean(workspaceReviewContext?.shouldShowTab);
+      : Boolean(reviewArtifactId) ||
+        Boolean(workspaceReviewContext?.shouldShowTab);
     if (!shouldShowReviewTab || tabs.includes("review")) {
       return tabs;
     }
@@ -1206,34 +1219,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
-  const personaArtifactOnly = isPersonaArtifactConversation(conversation);
   const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
-      personaArtifactOnly
-        ? [visibleTab(PERSONA_TAB)]
-        : isAutomationRunConversation
-          ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
-          : [
-              ...ARTIFACT_TABS.filter((tab) =>
-                availableArtifactTabIds.includes(tab.id),
-              ).map(visibleTab),
-              ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
-              ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
-              ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
-              ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
-              ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
-              ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-              ...(availableArtifactTabIds.includes("review")
-                ? [visibleTab(REVIEW_TAB)]
-                : []),
-              ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
-            ],
+      isAutomationRunConversation
+        ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
+        : [
+            ...ARTIFACT_TABS.filter((tab) =>
+              availableArtifactTabIds.includes(tab.id),
+            ).map(visibleTab),
+            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
+            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+            ...(availableArtifactTabIds.includes("review")
+              ? [visibleTab(REVIEW_TAB)]
+              : []),
+            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+          ],
     [
       availableArtifactTabIds,
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
-      personaArtifactOnly,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,
@@ -1243,11 +1252,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const shownTabs = useMemo(
-    () =>
-      personaArtifactOnly
-        ? availableTabs
-        : availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
-    [availableTabs, hiddenTabs, personaArtifactOnly],
+    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs],
   );
   const shownEnabledTabs = useMemo(
     () => shownTabs.filter((tab) => tab.enabled),
@@ -1275,29 +1281,31 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
-  const requestedFallbackActiveTab = ((): AgentArtifactTab => {
-    if (personaArtifactOnly) return "persona";
-    if (isAutomationRunConversation) return automationRunTabPolicy.defaultTab;
-    if (automationId && conversation?.agentMode === "automation") {
-      return "automation";
-    }
-    if (
-      isReviewPrWorkspace ||
-      workspaceReviewContext?.shouldShowTab ||
-      reviewArtifactId
-    ) {
-      return "review";
-    }
-    if (showPullRequestTab) return "pr";
-    if (showJiraTab) return "jira";
-    if (showLinearTab) return "linear";
-    if (showClickUpTab) return "clickup";
-    if (showGranolaTab) return "granola";
-    if (shownTabs.some((tab) => tab.id === "plan")) return "plan";
-    if (shownTabs.some((tab) => tab.id === "issues")) return "issues";
-    if (shownTabs.some((tab) => tab.id === "review")) return "review";
-    return "plan";
-  })();
+  const requestedFallbackActiveTab = isAutomationRunConversation
+    ? automationRunTabPolicy.defaultTab
+    : automationId && conversation?.agentMode === "automation"
+      ? "automation"
+      : isReviewPrWorkspace ||
+          workspaceReviewContext?.shouldShowTab ||
+          reviewArtifactId
+        ? "review"
+        : showPullRequestTab
+          ? "pr"
+          : showJiraTab
+            ? "jira"
+            : showLinearTab
+              ? "linear"
+              : showClickUpTab
+                ? "clickup"
+                : showGranolaTab
+                  ? "granola"
+                  : shownTabs.some((tab) => tab.id === "plan")
+                    ? "plan"
+                    : shownTabs.some((tab) => tab.id === "issues")
+                      ? "issues"
+                      : shownTabs.some((tab) => tab.id === "review")
+                        ? "review"
+                        : "plan";
   const fallbackActiveTab =
     shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
@@ -1332,7 +1340,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? startWorkspaceReviewMutation.error
       : null;
   const workspaceReviewFixIssuesError =
-    startWorkspaceReviewFixerMutation.variables?.conversationId === conversationId
+    startWorkspaceReviewFixerMutation.variables?.conversationId ===
+    conversationId
       ? startWorkspaceReviewFixerMutation.error
       : null;
   const isWorkspaceReviewApproveAnywayPending =
@@ -1411,9 +1420,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
   const verificationQuery = useVerificationStatus(
-    shouldLoadIdeationData &&
-      effectiveActiveTab === "plan" &&
-      planArtifactId
+    shouldLoadIdeationData && effectiveActiveTab === "plan" && planArtifactId
       ? (attachedSessionId ?? undefined)
       : undefined,
   );
@@ -1602,414 +1609,423 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   }, [onOpenPublish, onTabChange]);
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {
-      if (conversationId) stageComposerExcerptReference(conversationId, reference);
+      if (conversationId)
+        stageComposerExcerptReference(conversationId, reference);
     },
     [conversationId],
   );
   const artifactSelectionEnabled = Boolean(
     conversationId &&
-      effectiveActiveTab !== "persona" &&
-      (!isAutomationRunConversation ||
-        (focusedAutomationRun &&
-          !isAutomationRunComposerReadOnly(focusedAutomationRun))),
+    (!isAutomationRunConversation ||
+      (focusedAutomationRun &&
+        !isAutomationRunComposerReadOnly(focusedAutomationRun))),
   );
 
   return (
     <>
       <aside
-      className="h-full w-full min-w-0 flex flex-col overflow-hidden border-l"
-      style={{
-        background: "var(--bg-surface)",
-        borderColor: "var(--overlay-faint)",
-      }}
-      data-testid="agents-artifact-pane"
-    >
-      <div
-        data-testid="agents-artifact-tab-row"
-        className="h-11 px-4 flex items-center gap-0 border-b shrink-0"
+        className="h-full w-full min-w-0 flex flex-col overflow-hidden border-l"
         style={{
-          background: withAlpha("var(--bg-surface)", 60),
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
+          background: "var(--bg-surface)",
           borderColor: "var(--overlay-faint)",
         }}
+        data-testid="agents-artifact-pane"
       >
-        <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
-          {shownTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
-            const isActive = effectiveActiveTab === id;
-            const count = id === "tasks" ? visibleImplementationTaskCount : 0;
+        <div
+          data-testid="agents-artifact-tab-row"
+          className="h-11 px-4 flex items-center gap-0 border-b shrink-0"
+          style={{
+            background: withAlpha("var(--bg-surface)", 60),
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            borderColor: "var(--overlay-faint)",
+          }}
+        >
+          <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
+            {shownTabs.map(
+              ({ id, label, icon: Icon, enabled, disabledReason }) => {
+                const isActive = effectiveActiveTab === id;
+                const count =
+                  id === "tasks" ? visibleImplementationTaskCount : 0;
 
-            let iconColor: string | undefined;
-            let iconPulse = false;
-            let tabStatusColor: string | null = null;
-            if (id === "review") {
-              iconColor = reviewTabIconColor ?? undefined;
-              iconPulse = isWorkspaceReviewRunning;
-              tabStatusColor = reviewTabStatusColor;
-            }
+                let iconColor: string | undefined;
+                let iconPulse = false;
+                let tabStatusColor: string | null = null;
+                if (id === "review") {
+                  iconColor = reviewTabIconColor ?? undefined;
+                  iconPulse = isWorkspaceReviewRunning;
+                  tabStatusColor = reviewTabStatusColor;
+                }
 
-            const tabButton = (
-              <button
-                key={id}
-                type="button"
-                aria-disabled={enabled ? undefined : "true"}
-                onClick={() => {
-                  if (!enabled) {
-                    return;
-                  }
-                  if (
-                    id === "tasks" &&
-                    effectiveActiveTab === "tasks" &&
-                    taskArtifactSelectedId
-                  ) {
-                    setTaskArtifactSelectedId(null);
-                    return;
-                  }
-                  if (id === "review") {
-                    handleOpenReview();
-                    return;
-                  }
-                  onTabChange(id);
-                }}
-                className={cn(
-                  "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
-                  id === "tasks" ? "hidden xl:flex" : "",
-                  !enabled ? "cursor-not-allowed opacity-60" : "",
-                )}
-                style={{
-                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-                  background: "transparent",
-                  boxShadow: "none",
-                }}
-                data-testid={`agents-artifact-tab-${id}`}
-                data-theme-button-skip="true"
-              >
-                <Icon
-                  className={cn(
-                    "w-4 h-4 shrink-0",
-                    iconPulse ? "animate-pulse" : "",
-                  )}
-                  style={iconColor ? { color: iconColor } : undefined}
-                />
-                <span>{label}</span>
-                {tabStatusColor && (
-                  <span
-                    aria-hidden="true"
-                    className="h-1.5 w-1.5 rounded-full"
-                    style={{ backgroundColor: tabStatusColor }}
-                  />
-                )}
-                {count > 0 && (
-                  <span
-                    className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
-                    style={{
-                      background: isActive
-                        ? withAlpha("var(--accent-primary)", 15)
-                        : "var(--overlay-weak)",
-                      color: isActive
-                        ? "var(--accent-primary)"
-                        : "var(--text-muted)",
+                const tabButton = (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-disabled={enabled ? undefined : "true"}
+                    onClick={() => {
+                      if (!enabled) {
+                        return;
+                      }
+                      if (
+                        id === "tasks" &&
+                        effectiveActiveTab === "tasks" &&
+                        taskArtifactSelectedId
+                      ) {
+                        setTaskArtifactSelectedId(null);
+                        return;
+                      }
+                      if (id === "review") {
+                        handleOpenReview();
+                        return;
+                      }
+                      onTabChange(id);
                     }}
+                    className={cn(
+                      "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
+                      id === "tasks" ? "hidden xl:flex" : "",
+                      !enabled ? "cursor-not-allowed opacity-60" : "",
+                    )}
+                    style={{
+                      color: isActive
+                        ? "var(--text-primary)"
+                        : "var(--text-muted)",
+                      background: "transparent",
+                      boxShadow: "none",
+                    }}
+                    data-testid={`agents-artifact-tab-${id}`}
+                    data-theme-button-skip="true"
                   >
-                    {count}
-                  </span>
-                )}
-                {isActive && (
-                  <span
-                    className="absolute -bottom-px left-3 right-3 h-[2px] rounded-full"
-                    style={{ background: "var(--accent-primary)" }}
-                  />
-                )}
-              </button>
-            );
-            if (!enabled && disabledReason) {
-              return (
-                <Tooltip key={id}>
-                  <TooltipTrigger asChild>{tabButton}</TooltipTrigger>
+                    <Icon
+                      className={cn(
+                        "w-4 h-4 shrink-0",
+                        iconPulse ? "animate-pulse" : "",
+                      )}
+                      style={iconColor ? { color: iconColor } : undefined}
+                    />
+                    <span>{label}</span>
+                    {tabStatusColor && (
+                      <span
+                        aria-hidden="true"
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: tabStatusColor }}
+                      />
+                    )}
+                    {count > 0 && (
+                      <span
+                        className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
+                        style={{
+                          background: isActive
+                            ? withAlpha("var(--accent-primary)", 15)
+                            : "var(--overlay-weak)",
+                          color: isActive
+                            ? "var(--accent-primary)"
+                            : "var(--text-muted)",
+                        }}
+                      >
+                        {count}
+                      </span>
+                    )}
+                    {isActive && (
+                      <span
+                        className="absolute -bottom-px left-3 right-3 h-[2px] rounded-full"
+                        style={{ background: "var(--accent-primary)" }}
+                      />
+                    )}
+                  </button>
+                );
+                if (!enabled && disabledReason) {
+                  return (
+                    <Tooltip key={id}>
+                      <TooltipTrigger asChild>{tabButton}</TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">
+                        {disabledReason}
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                }
+                return (
+                  <ContextMenu key={id}>
+                    <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
+                    <ContextMenuContent
+                      style={{
+                        backgroundColor: "var(--bg-elevated)",
+                        borderColor: "var(--overlay-medium)",
+                        borderWidth: 1,
+                        borderStyle: "solid",
+                      }}
+                    >
+                      <ContextMenuItem
+                        onSelect={() => onHideTab?.(id, enabledAvailableTabIds)}
+                      >
+                        Hide “{label}”
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                );
+              },
+            )}
+          </div>
+
+          <div className="ml-auto flex items-center gap-1">
+            {availableTabs.length > 0 ? (
+              <AgentsArtifactTabCustomizer
+                tabs={customizerTabs}
+                hiddenTabs={hiddenTabs}
+                onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+                onShow={(tab) => onShowTab?.(tab)}
+              />
+            ) : null}
+            {effectiveActiveTab === "tasks" && (
+              <div
+                className="h-8 p-0.5 flex items-center rounded-md border"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-base)",
+                }}
+                data-testid="agents-task-mode-toggle"
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onTaskModeChange("graph")}
+                      className="h-7 w-7 p-0"
+                      style={{
+                        color:
+                          taskMode === "graph"
+                            ? "var(--accent-primary)"
+                            : "var(--text-muted)",
+                        background:
+                          taskMode === "graph"
+                            ? "var(--accent-muted)"
+                            : "transparent",
+                      }}
+                      aria-label="Graph"
+                    >
+                      <Network className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
                   <TooltipContent side="bottom" className="text-xs">
-                    {disabledReason}
+                    Graph
                   </TooltipContent>
                 </Tooltip>
-              );
-            }
-            if (personaArtifactOnly) {
-              return tabButton;
-            }
-            return (
-              <ContextMenu key={id}>
-                <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
-                <ContextMenuContent
-                  style={{
-                    backgroundColor: "var(--bg-elevated)",
-                    borderColor: "var(--overlay-medium)",
-                    borderWidth: 1,
-                    borderStyle: "solid",
-                  }}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onTaskModeChange("kanban")}
+                      className="h-7 w-7 p-0"
+                      style={{
+                        color:
+                          taskMode === "kanban"
+                            ? "var(--accent-primary)"
+                            : "var(--text-muted)",
+                        background:
+                          taskMode === "kanban"
+                            ? "var(--accent-muted)"
+                            : "transparent",
+                      }}
+                      aria-label="Kanban"
+                    >
+                      <LayoutGrid className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    Kanban
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onClose}
+                  className="h-8 w-8 p-0"
+                  aria-label="Close artifacts"
+                  data-testid="agents-artifact-close"
                 >
-                  <ContextMenuItem
-                    onSelect={() => onHideTab?.(id, enabledAvailableTabIds)}
-                  >
-                    Hide “{label}”
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-            );
-          })}
-        </div>
-
-        <div className="ml-auto flex items-center gap-1">
-          {availableTabs.length > 0 && !personaArtifactOnly ? (
-            <AgentsArtifactTabCustomizer
-              tabs={customizerTabs}
-              hiddenTabs={hiddenTabs}
-              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
-              onShow={(tab) => onShowTab?.(tab)}
-            />
-          ) : null}
-          {effectiveActiveTab === "tasks" && (
-            <div
-              className="h-8 p-0.5 flex items-center rounded-md border"
-              style={{
-                borderColor: "var(--border-subtle)",
-                background: "var(--bg-base)",
-              }}
-              data-testid="agents-task-mode-toggle"
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onTaskModeChange("graph")}
-                    className="h-7 w-7 p-0"
-                    style={{
-                      color:
-                        taskMode === "graph"
-                          ? "var(--accent-primary)"
-                          : "var(--text-muted)",
-                      background:
-                        taskMode === "graph"
-                          ? "var(--accent-muted)"
-                          : "transparent",
-                    }}
-                    aria-label="Graph"
-                  >
-                    <Network className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  Graph
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onTaskModeChange("kanban")}
-                    className="h-7 w-7 p-0"
-                    style={{
-                      color:
-                        taskMode === "kanban"
-                          ? "var(--accent-primary)"
-                          : "var(--text-muted)",
-                      background:
-                        taskMode === "kanban"
-                          ? "var(--accent-muted)"
-                          : "transparent",
-                    }}
-                    aria-label="Kanban"
-                  >
-                    <LayoutGrid className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  Kanban
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onClose}
-                className="h-8 w-8 p-0"
-                aria-label="Close artifacts"
-                data-testid="agents-artifact-close"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              Close artifacts
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
-
-      <div
-        key={
-          personaArtifactOnly
-            ? (conversationId ?? "no-conversation")
-            : "artifact-content"
-        }
-        className="flex-1 min-h-0 overflow-y-auto"
-        data-testid={
-          allAvailableTabsHidden
-            ? "agents-artifact-content-hidden"
-            : `agents-artifact-content-${effectiveActiveTab}`
-        }
-      >
-        {allAvailableTabsHidden ? (
-          <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-3 px-6 text-center">
-            <div>
-              <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                All tabs are hidden
-              </h2>
-              <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
-                Choose which artifact tabs you want to see in this conversation.
-              </p>
-            </div>
-            <AgentsArtifactTabCustomizer
-              triggerVariant="button"
-              tabs={customizerTabs}
-              hiddenTabs={hiddenTabs}
-              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
-              onShow={(tab) => onShowTab?.(tab)}
-            />
+                  <X className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                Close artifacts
+              </TooltipContent>
+            </Tooltip>
           </div>
-        ) : (
-          <ArtifactSelectionProvider
-            enabled={artifactSelectionEnabled}
-            onAddExcerpt={handleAddArtifactExcerpt}
-          >
-            <ArtifactContent
-              activeTab={effectiveActiveTab}
-              tasksEnabled={tasksEnabled}
-              conversation={conversation}
-              workspace={scopedWorkspace}
-              conversationId={conversationId}
-              activeWorkspaceFreshness={activeWorkspaceFreshness}
-              conversationTitle={conversation?.title ?? null}
-              automationId={automationId}
-              isAutomationRunConversation={isAutomationRunConversation}
-              {...(onOpenAutomation ? { onOpenAutomation } : {})}
-              {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
-              projectBaseBranch={projectBaseBranch}
-              isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
-              attachedSessionId={attachedSessionId}
-              projectId={conversationProjectId}
-              canStartPlan={canStartPlan}
-              session={session}
-              sessionTitle={sessionData?.session.title ?? null}
-              taskMode={taskMode}
-              reviewArtifact={reviewArtifact}
-              reviewContext={
-                isReviewPrWorkspace ? null : workspaceReviewContext
-              }
-              isReviewPrWorkspace={isReviewPrWorkspace}
-              autoApproveEnabled={autoApproveEnabled}
-              isAutoApproveSaving={autoApproveMutation.isPending}
-              onAutoApproveChange={(enabled) => {
-                if (!prReviewConversationId) return;
-                setAutoApprovePreference({
-                  conversationId: prReviewConversationId,
-                  enabled,
-                });
-                autoApproveMutation.mutate({
-                  conversationId: prReviewConversationId,
-                  enabled,
-                });
-              }}
-              prReviewMonitor={prReviewContext?.monitor ?? null}
-              isPrReviewMonitorSaving={prReviewMonitoringMutation.isPending}
-              onPrReviewMonitorChange={async (
-                enabled,
-                activeReviewPolicy,
-              ) => {
-                if (!prReviewConversationId) {
-                  throw new Error("PR review monitoring is unavailable");
+        </div>
+
+        <div
+          className="flex-1 min-h-0 overflow-y-auto"
+          data-testid={
+            allAvailableTabsHidden
+              ? "agents-artifact-content-hidden"
+              : `agents-artifact-content-${effectiveActiveTab}`
+          }
+        >
+          {allAvailableTabsHidden ? (
+            <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-3 px-6 text-center">
+              <div>
+                <h2
+                  className="text-sm font-semibold"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  All tabs are hidden
+                </h2>
+                <p
+                  className="mt-1 text-sm"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Choose which artifact tabs you want to see in this
+                  conversation.
+                </p>
+              </div>
+              <AgentsArtifactTabCustomizer
+                triggerVariant="button"
+                tabs={customizerTabs}
+                hiddenTabs={hiddenTabs}
+                onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+                onShow={(tab) => onShowTab?.(tab)}
+              />
+            </div>
+          ) : (
+            <ArtifactSelectionProvider
+              enabled={artifactSelectionEnabled}
+              onAddExcerpt={handleAddArtifactExcerpt}
+            >
+              <ArtifactContent
+                activeTab={effectiveActiveTab}
+                tasksEnabled={tasksEnabled}
+                tasksSurfaceCapabilities={tasksSurfaceCapabilities}
+                workspace={scopedWorkspace}
+                conversationId={conversationId}
+                activeWorkspaceFreshness={activeWorkspaceFreshness}
+                conversationTitle={conversation?.title ?? null}
+                automationId={automationId}
+                isAutomationRunConversation={isAutomationRunConversation}
+                {...(onOpenAutomation ? { onOpenAutomation } : {})}
+                {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
+                projectBaseBranch={projectBaseBranch}
+                isLoading={
+                  conversationQuery.isLoading || sessionQuery.isLoading
                 }
-                await prReviewMonitoringMutation.mutateAsync({
-                  conversationId: prReviewConversationId,
+                attachedSessionId={attachedSessionId}
+                projectId={conversationProjectId}
+                canStartPlan={canStartPlan}
+                session={session}
+                sessionTitle={sessionData?.session.title ?? null}
+                taskMode={taskMode}
+                reviewArtifact={reviewArtifact}
+                reviewContext={
+                  isReviewPrWorkspace ? null : workspaceReviewContext
+                }
+                isReviewPrWorkspace={isReviewPrWorkspace}
+                autoApproveEnabled={autoApproveEnabled}
+                isAutoApproveSaving={autoApproveMutation.isPending}
+                onAutoApproveChange={(enabled) => {
+                  if (!prReviewConversationId) return;
+                  setAutoApprovePreference({
+                    conversationId: prReviewConversationId,
+                    enabled,
+                  });
+                  autoApproveMutation.mutate({
+                    conversationId: prReviewConversationId,
+                    enabled,
+                  });
+                }}
+                prReviewMonitor={prReviewContext?.monitor ?? null}
+                isPrReviewMonitorSaving={prReviewMonitoringMutation.isPending}
+                onPrReviewMonitorChange={async (
                   enabled,
-                  ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
-                });
-              }}
-              reviewStartResult={
-                isReviewPrWorkspace ? null : workspaceReviewStartResult
-              }
-              reviewStartError={
-                isReviewPrWorkspace
-                  ? null
-                  : (workspaceReviewStartError ?? workspaceReviewFixIssuesError)
-              }
-              isReviewLoading={
-                Boolean(reviewArtifactId) &&
-                !reviewArtifact &&
-                reviewArtifactQuery.isFetching
-              }
-              isReviewActionPending={
-                isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
-              }
-              isFixIssuesActionPending={
-                isReviewPrWorkspace ? false : isWorkspaceReviewFixIssuesPending
-              }
-              isApproveAnywayActionPending={
-                isReviewPrWorkspace
-                  ? false
-                  : isWorkspaceReviewApproveAnywayPending
-              }
-              isWorkspaceRuntimeGenerating={
-                isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
-              }
-              onStartReview={
-                isReviewPrWorkspace ? () => {} : handleStartReview
-              }
-              onFixIssues={
-                isReviewPrWorkspace ? () => {} : handleFixReviewIssues
-              }
-              onApproveAnyway={
-                isReviewPrWorkspace
-                  ? async () => {}
-                  : handleApproveReviewAnyway
-              }
-              planArtifact={planArtifact}
-              isPlanLoading={isPlanHydrating}
-              onPlanUpdated={handlePlanUpdated}
-              onPlanSeeded={handlePlanSeeded}
-              dependencyGraph={dependencyGraph}
-              proposals={proposals}
-              visibleImplementationTasks={visibleImplementationTasks}
-              activeExecutionPlanId={activeExecutionPlanId}
-              implementationTaskCounts={implementationTaskCounts}
-              hasImplementationAttempt={hasImplementationAttempt}
-              onPublishWorkspace={onPublishWorkspace}
-              isPublishingWorkspace={isPublishingWorkspace}
-              publishFocusRequest={publishFocusRequest}
-              onConversationModeSwitched={onConversationModeSwitched}
-              onFocusIdeationSessionForConversation={
-                onFocusIdeationSessionForConversation
-              }
-              onFocusVerificationSession={onFocusVerificationSession}
-              {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
-              verificationState={verificationState}
-              verificationInProgress={verificationInProgress}
-              onOpenReview={handleOpenReview}
-              onOpenPublish={handleOpenPublish}
-              onOpenTasks={() => onTabChange("tasks")}
-              taskArtifactSelectedId={taskArtifactSelectedId}
-              onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
-            />
-          </ArtifactSelectionProvider>
-        )}
-      </div>
+                  activeReviewPolicy,
+                ) => {
+                  if (!prReviewConversationId) {
+                    throw new Error("PR review monitoring is unavailable");
+                  }
+                  await prReviewMonitoringMutation.mutateAsync({
+                    conversationId: prReviewConversationId,
+                    enabled,
+                    ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
+                  });
+                }}
+                reviewStartResult={
+                  isReviewPrWorkspace ? null : workspaceReviewStartResult
+                }
+                reviewStartError={
+                  isReviewPrWorkspace
+                    ? null
+                    : (workspaceReviewStartError ??
+                      workspaceReviewFixIssuesError)
+                }
+                isReviewLoading={
+                  Boolean(reviewArtifactId) &&
+                  !reviewArtifact &&
+                  reviewArtifactQuery.isFetching
+                }
+                isReviewActionPending={
+                  isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
+                }
+                isFixIssuesActionPending={
+                  isReviewPrWorkspace
+                    ? false
+                    : isWorkspaceReviewFixIssuesPending
+                }
+                isApproveAnywayActionPending={
+                  isReviewPrWorkspace
+                    ? false
+                    : isWorkspaceReviewApproveAnywayPending
+                }
+                isWorkspaceRuntimeGenerating={
+                  isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
+                }
+                onStartReview={
+                  isReviewPrWorkspace ? () => {} : handleStartReview
+                }
+                onFixIssues={
+                  isReviewPrWorkspace ? () => {} : handleFixReviewIssues
+                }
+                onApproveAnyway={
+                  isReviewPrWorkspace
+                    ? async () => {}
+                    : handleApproveReviewAnyway
+                }
+                planArtifact={planArtifact}
+                isPlanLoading={isPlanHydrating}
+                onPlanUpdated={handlePlanUpdated}
+                onPlanSeeded={handlePlanSeeded}
+                dependencyGraph={dependencyGraph}
+                proposals={proposals}
+                visibleImplementationTasks={visibleImplementationTasks}
+                activeExecutionPlanId={activeExecutionPlanId}
+                implementationTaskCounts={implementationTaskCounts}
+                hasImplementationAttempt={hasImplementationAttempt}
+                onPublishWorkspace={onPublishWorkspace}
+                isPublishingWorkspace={isPublishingWorkspace}
+                publishFocusRequest={publishFocusRequest}
+                onConversationModeSwitched={onConversationModeSwitched}
+                onFocusIdeationSessionForConversation={
+                  onFocusIdeationSessionForConversation
+                }
+                onFocusVerificationSession={onFocusVerificationSession}
+                {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
+                verificationState={verificationState}
+                verificationInProgress={verificationInProgress}
+                onOpenReview={handleOpenReview}
+                onOpenPublish={handleOpenPublish}
+                onOpenTasks={() => onTabChange("tasks")}
+                taskArtifactSelectedId={taskArtifactSelectedId}
+                onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+              />
+            </ArtifactSelectionProvider>
+          )}
+        </div>
       </aside>
       <WorkspaceReviewConfirmationDialog
         {...workspaceReviewConfirmationDialogProps}
@@ -2021,7 +2037,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   tasksEnabled: boolean;
-  conversation: AgentConversation | null;
+  tasksSurfaceCapabilities: TasksSurfaceCapabilities;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -2082,17 +2098,16 @@ type ArtifactContentProps = {
     | ((
         conversationId: string,
         mode: AgentConversationWorkspaceMode,
-        workspace: AgentConversationWorkspace | null
+        workspace: AgentConversationWorkspace | null,
       ) => void)
     | undefined;
   onFocusIdeationSessionForConversation:
-    | ((conversationId: string, sessionId: string) => void)
-    | undefined;
+    ((conversationId: string, sessionId: string) => void) | undefined;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusTaskRuntime?: (
     taskId: string,
-    contextType: AgentTaskRuntimeContextType
+    contextType: AgentTaskRuntimeContextType,
   ) => void;
   verificationState: VerificationStatusResponse["status"] | null;
   verificationInProgress: boolean;
@@ -2106,7 +2121,7 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   tasksEnabled,
-  conversation,
+  tasksSurfaceCapabilities,
   workspace,
   conversationId,
   activeWorkspaceFreshness,
@@ -2167,21 +2182,6 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
-  if (
-    activeTab === "persona" &&
-    conversation &&
-    isPersonaArtifactConversation(conversation)
-  ) {
-    return (
-      <Suspense fallback={<PersonaArtifactSkeletonFallback />}>
-        <LazyPersonaArtifactPanel
-          key={conversation.id}
-          conversation={conversation}
-        />
-      </Suspense>
-    );
-  }
-
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense
@@ -2260,7 +2260,9 @@ function ArtifactContent({
 
   if (activeTab === "pr") {
     return (
-      <Suspense fallback={<ArtifactLoadingState title="Loading pull request..." />}>
+      <Suspense
+        fallback={<ArtifactLoadingState title="Loading pull request..." />}
+      >
         <LazyPullRequestDetailPanel workspace={workspace} />
       </Suspense>
     );
@@ -2380,6 +2382,7 @@ function ArtifactContent({
       mode={taskMode}
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
+      capabilities={tasksSurfaceCapabilities}
       {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
     />
   );
@@ -2428,12 +2431,11 @@ function AgentPlanPanel({
     | ((
         conversationId: string,
         mode: AgentConversationWorkspaceMode,
-        workspace: AgentConversationWorkspace | null
+        workspace: AgentConversationWorkspace | null,
       ) => void)
     | undefined;
   onFocusIdeationSessionForConversation:
-    | ((conversationId: string, sessionId: string) => void)
-    | undefined;
+    ((conversationId: string, sessionId: string) => void) | undefined;
   onOpenTasks: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -2594,10 +2596,11 @@ function AgentPlanPanel({
   const canShowManualPlanContinuationActions =
     canShowApprovedPlanActions && !isAutomationRunConversation;
   const canRetryTaskDecomposition = Boolean(
+    tasksEnabled &&
     workspace?.mode === "tasks" &&
-      session !== null &&
-      workspace.taskPipelineSessionId === session.id &&
-      !hasImplementationAttempt,
+    session !== null &&
+    workspace.taskPipelineSessionId === session.id &&
+    !hasImplementationAttempt,
   );
   const isPlanVerificationSatisfied = verificationState === "verified";
   const canVerifyPlan =
@@ -2605,14 +2608,11 @@ function AgentPlanPanel({
     isOwnedCurrentPlan &&
     verificationState !== null &&
     !isPlanVerificationSatisfied;
-  const isTasksPipelineEntitled = Boolean(
-    session?.id && workspace?.taskPipelineSessionId === session.id,
-  );
   const canCreateProposals =
     (canShowManualPlanContinuationActions || canRetryTaskDecomposition) &&
     session !== null &&
     (!isPlanningSession || isPlanApproved) &&
-    (tasksEnabled || isTasksPipelineEntitled);
+    tasksEnabled;
   const canImplementDirectly = Boolean(
     canShowManualPlanContinuationActions &&
     isOwnedCurrentPlan &&
@@ -2639,20 +2639,23 @@ function AgentPlanPanel({
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
-  const isPlanRecommendationPending = tasksEnabled && isPlanRecommendationCheckPending({
-    assessment: planComplexityQuery.data,
-    isFetching:
-      (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
-      !planComplexityQuery.data,
-    approvedAt: planArtifact?.planApproval?.approvedAt,
-  });
-  const planActionHint = !tasksEnabled && isPlanApproved
-    ? "Tasks is off. Implement this approved plan directly."
-    : buildPlanActionHint({
-        assessment: planComplexityQuery.data,
-        isAssessing: isPlanRecommendationPending,
-        canChoose: canImplementDirectly && canCreateProposals,
-      });
+  const isPlanRecommendationPending =
+    tasksEnabled &&
+    isPlanRecommendationCheckPending({
+      assessment: planComplexityQuery.data,
+      isFetching:
+        (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
+        !planComplexityQuery.data,
+      approvedAt: planArtifact?.planApproval?.approvedAt,
+    });
+  const planActionHint =
+    !tasksEnabled && isPlanApproved
+      ? "Tasks is off. Implement this approved plan directly."
+      : buildPlanActionHint({
+          assessment: planComplexityQuery.data,
+          isAssessing: isPlanRecommendationPending,
+          canChoose: canImplementDirectly && canCreateProposals,
+        });
   const primaryPlanAction = tasksEnabled
     ? planComplexityQuery.data?.recommendedAction
     : "implement_directly";
@@ -2663,25 +2666,24 @@ function AgentPlanPanel({
   );
   const canRestartImplementation = Boolean(
     isAcceptedPlan &&
-      implementationTaskCounts.total > 0 &&
-      session?.id &&
-      (tasksEnabled || isTasksPipelineEntitled),
+    implementationTaskCounts.total > 0 &&
+    session?.id &&
+    tasksEnabled,
   );
   const canPauseExecutionPlan = Boolean(
     isAcceptedPlan &&
-      session?.id &&
-      session.projectId &&
-      (tasksEnabled || isTasksPipelineEntitled) &&
-      planRuntimeControlCounts.running > 0,
+    session?.id &&
+    session.projectId &&
+    planRuntimeControlCounts.running > 0,
   );
   const canStopExecutionPlan = canPauseExecutionPlan;
   const canResumeExecutionPlan = Boolean(
     isAcceptedPlan &&
-      session?.id &&
-      session.projectId &&
-      (tasksEnabled || isTasksPipelineEntitled) &&
-      planRuntimeControlCounts.running === 0 &&
-      planRuntimeControlCounts.paused > 0,
+    session?.id &&
+    session.projectId &&
+    tasksEnabled &&
+    planRuntimeControlCounts.running === 0 &&
+    planRuntimeControlCounts.paused > 0,
   );
   const isExecutionPlanControlPending =
     pauseExecutionPlanMutation.isPending ||
@@ -2827,12 +2829,7 @@ function AgentPlanPanel({
     } finally {
       setIsStartingPlanVerification(false);
     }
-  }, [
-    canVerifyPlan,
-    queryClient,
-    session,
-    verificationInProgress,
-  ]);
+  }, [canVerifyPlan, queryClient, session, verificationInProgress]);
 
   const handleRestartImplementation = useCallback(() => {
     if (!session || !canRestartImplementation) {
@@ -3051,12 +3048,13 @@ function AgentPlanPanel({
     [dependencyGraph, proposals],
   );
   const canStartTasks = Boolean(
+    tasksEnabled &&
     workspace?.mode === "tasks" &&
-      session?.id &&
-      workspace.taskPipelineSessionId === session.id &&
-      proposals.length > 0 &&
-      taskGraphValidation.isComplete &&
-      !hasImplementationAttempt,
+    session?.id &&
+    workspace.taskPipelineSessionId === session.id &&
+    proposals.length > 0 &&
+    taskGraphValidation.isComplete &&
+    !hasImplementationAttempt,
   );
   const handleStartTasks = useCallback(async () => {
     if (!canStartTasks || !session || !workspace?.conversationId) {
@@ -3110,8 +3108,7 @@ function AgentPlanPanel({
       });
       return actions;
     }
-    const verifyPending =
-      isStartingPlanVerification || verificationInProgress;
+    const verifyPending = isStartingPlanVerification || verificationInProgress;
     const verifyAction = canVerifyPlan
       ? ({
           key: "verify",
@@ -3146,26 +3143,29 @@ function AgentPlanPanel({
       return actions;
     }
 
-    const createAction: PlanLifecycleAction | null = showCreateProposalsLifecycleAction
-      ? ({
-          key: "create-proposals",
-          label: "Create Proposals",
-          onClick: () => {
-            void handleCreateProposals();
-          },
-          icon: ListPlus,
-          disabled: isPlanRecommendationPending,
-          primary:
-            !isPlanRecommendationPending &&
-            (primaryPlanAction === "create_proposals" ||
-              (!canImplementDirectly && showCreateProposalsLifecycleAction)),
-          testId: "plan-lifecycle-create-proposals-button",
-        } satisfies PlanLifecycleAction)
-      : null;
+    const createAction: PlanLifecycleAction | null =
+      showCreateProposalsLifecycleAction
+        ? ({
+            key: "create-proposals",
+            label: "Create Proposals",
+            onClick: () => {
+              void handleCreateProposals();
+            },
+            icon: ListPlus,
+            disabled: isPlanRecommendationPending,
+            primary:
+              !isPlanRecommendationPending &&
+              (primaryPlanAction === "create_proposals" ||
+                (!canImplementDirectly && showCreateProposalsLifecycleAction)),
+            testId: "plan-lifecycle-create-proposals-button",
+          } satisfies PlanLifecycleAction)
+        : null;
     const implementAction: PlanLifecycleAction | null = canImplementDirectly
       ? ({
           key: "implement-directly",
-          label: isImplementingPlanDirectly ? "Starting..." : "Implement Directly",
+          label: isImplementingPlanDirectly
+            ? "Starting..."
+            : "Implement Directly",
           onClick: () => {
             void handleImplementDirectly();
           },
@@ -3354,9 +3354,11 @@ function AgentPlanPanel({
                 onBodyModeChange={setPlanBodyMode}
                 onEdit={() => setIsEditing(true)}
                 onExport={() => setExportDialogOpen(true)}
-                {...(planReferenceSessionId && !isAutomationRunConversation && {
-                  onStartNewConversationWithPlan: handleStartNewConversationWithPlan,
-                })}
+                {...(planReferenceSessionId &&
+                  !isAutomationRunConversation && {
+                    onStartNewConversationWithPlan:
+                      handleStartNewConversationWithPlan,
+                  })}
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}
                 chromeless
@@ -3442,6 +3444,7 @@ function TaskArtifactSurface({
   selectedTaskId,
   onSelectedTaskIdChange,
   onFocusTaskRuntime,
+  capabilities,
 }: {
   projectId: string | null;
   sessionId: string;
@@ -3450,8 +3453,9 @@ function TaskArtifactSurface({
   onSelectedTaskIdChange: (id: string | null) => void;
   onFocusTaskRuntime?: (
     taskId: string,
-    contextType: AgentTaskRuntimeContextType
+    contextType: AgentTaskRuntimeContextType,
   ) => void;
+  capabilities: TasksSurfaceCapabilities;
 }) {
   const handleTaskSelect = useCallback(
     (taskId: string) => {
@@ -3477,14 +3481,36 @@ function TaskArtifactSurface({
         backLabel={backLabel}
         onBack={handleCloseTaskDetail}
         constrainContent
+        readOnly={capabilities.isReadOnly}
         {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
       />
     </Suspense>
   ) : null;
 
+  const readOnlyBanner = capabilities.isReadOnly ? (
+    <div
+      data-testid="tasks-read-only-banner"
+      className="shrink-0 px-4 py-2 text-sm"
+      style={{
+        backgroundColor: "var(--status-warning-muted)",
+        borderBottomColor: "var(--status-warning)",
+        borderBottomStyle: "solid",
+        borderBottomWidth: "1px",
+        color: "var(--text-primary)",
+      }}
+    >
+      {capabilities.reason === "history_unavailable"
+        ? "Task history could not be checked. History remains visible in read-only mode while you retry."
+        : capabilities.reason === "tasks_draining"
+          ? "Tasks are shutting down. Existing history is read-only while active work is paused."
+          : "Tasks are off. Existing task history is available here in read-only mode."}
+    </div>
+  ) : null;
+
   if (mode === "kanban") {
     return (
-      <div className="relative h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
+      <div className="relative flex h-full min-h-[520px] flex-col overflow-hidden bg-[var(--bg-base)]">
+        {readOnlyBanner}
         <Suspense
           fallback={<EmptyArtifactState title="Loading task board..." />}
         >
@@ -3493,6 +3519,7 @@ function TaskArtifactSurface({
             ideationSessionId={sessionId}
             onTaskSelect={handleTaskSelect}
             fillWidth
+            readOnly={capabilities.isReadOnly}
           />
         </Suspense>
         {detailOverlay}
@@ -3501,13 +3528,15 @@ function TaskArtifactSurface({
   }
 
   return (
-    <div className="relative h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
+    <div className="relative flex h-full min-h-[520px] flex-col overflow-hidden bg-[var(--bg-base)]">
+      {readOnlyBanner}
       <Suspense fallback={<EmptyArtifactState title="Loading task graph..." />}>
         <LazyTaskGraphView
           projectId={projectId}
           ideationSessionId={sessionId}
           hidePlanSelector
           onTaskSelect={handleTaskSelect}
+          readOnly={capabilities.isReadOnly}
         />
       </Suspense>
       {detailOverlay}

@@ -1,15 +1,27 @@
-use tauri::AppHandle;
+use std::collections::HashSet;
+use tauri::{AppHandle, Emitter};
 
 use crate::application::chat_service::PauseReason;
 use crate::application::task_cleanup_service::{is_agent_active_status, TaskCleanupService};
-use crate::application::tasks_feature_policy::TasksFeaturePolicy;
 use crate::application::{AppState, TaskTransitionService};
 use crate::domain::entities::{InternalStatus, Task};
-use crate::domain::ideation::IdeationSettings;
+use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
+use crate::domain::repositories::{BranchUpdateCasOutcome, PauseBranchUpdate};
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::error::{AppError, AppResult};
 
 pub const TASKS_DRAIN_INCOMPLETE_ERROR_CODE: &str = "ralphx:tasks_drain_incomplete";
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TasksDisableImpact {
+    pub active_standalone_tasks: usize,
+    pub active_attached_agent_workspaces: usize,
+    pub paused_or_blocked_tasks: usize,
+    pub active_branch_update_operations: usize,
+    pub affected_task_ids: Vec<String>,
+    pub affected_conversation_ids: Vec<String>,
+    pub affected_project_ids: Vec<String>,
+}
 
 pub(crate) struct TasksFeatureToggleService<'a> {
     state: &'a AppState,
@@ -33,44 +45,187 @@ impl<'a> TasksFeatureToggleService<'a> {
         }
     }
 
-    pub(crate) async fn update_settings(
-        &self,
-        settings: IdeationSettings,
-    ) -> AppResult<IdeationSettings> {
-        let previous = self
+    pub(crate) async fn get_disable_impact(&self) -> AppResult<TasksDisableImpact> {
+        let projects = self
+            .state
+            .project_repo
+            .get_all()
+            .await
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut active_standalone_tasks = 0;
+        let mut attached_conversations = HashSet::new();
+        let mut paused_or_blocked_tasks = 0;
+        let mut affected_task_ids = Vec::new();
+        let mut affected_projects = HashSet::new();
+        let mut known_task_ids = HashSet::new();
+        let mut branch_updates_requiring_quiesce = HashSet::new();
+
+        for project in projects {
+            let tasks = self
+                .state
+                .task_repo
+                .get_by_project_filtered(&project.id, true)
+                .await?;
+            for task in tasks {
+                known_task_ids.insert(task.id.as_str().to_string());
+                if matches!(
+                    task.internal_status,
+                    InternalStatus::Paused
+                        | InternalStatus::Blocked
+                        | InternalStatus::BranchUpdateBlocked
+                ) {
+                    paused_or_blocked_tasks += 1;
+                }
+                if matches!(
+                    task.internal_status,
+                    InternalStatus::UpdatingPlanBranch
+                        | InternalStatus::UpdatingTaskBranch
+                        | InternalStatus::BranchUpdateBlocked
+                ) {
+                    branch_updates_requiring_quiesce.insert(task.id.as_str().to_string());
+                }
+                if !is_agent_active_status(task.internal_status) {
+                    continue;
+                }
+                affected_task_ids.push(task.id.as_str().to_string());
+                affected_projects.insert(project.id.as_str().to_string());
+                let workspace = match task.ideation_session_id.as_ref() {
+                    Some(session_id) => self
+                        .state
+                        .agent_conversation_workspace_repo
+                        .get_by_task_pipeline_session_id(session_id)
+                        .await
+                        .map_err(|error| AppError::Database(error.to_string()))?,
+                    None => None,
+                };
+                if let Some(workspace) = workspace {
+                    attached_conversations.insert(workspace.conversation_id.as_str().to_string());
+                } else {
+                    active_standalone_tasks += 1;
+                }
+            }
+        }
+
+        let active_branch_update_operations = self
+            .state
+            .branch_update_repo
+            .list_active_operations()
+            .await?
+            .into_iter()
+            .filter(|operation| {
+                let task_id = operation.task_id.as_str();
+                branch_updates_requiring_quiesce.contains(task_id)
+                    || !known_task_ids.contains(task_id)
+            })
+            .count();
+        let mut affected_conversation_ids = attached_conversations.into_iter().collect::<Vec<_>>();
+        affected_conversation_ids.sort();
+        let mut affected_project_ids = affected_projects.into_iter().collect::<Vec<_>>();
+        affected_project_ids.sort();
+        affected_task_ids.sort();
+
+        Ok(TasksDisableImpact {
+            active_standalone_tasks,
+            active_attached_agent_workspaces: affected_conversation_ids.len(),
+            paused_or_blocked_tasks,
+            active_branch_update_operations,
+            affected_task_ids,
+            affected_conversation_ids,
+            affected_project_ids,
+        })
+    }
+
+    pub(crate) async fn set_tasks_enabled(&self, enabled: bool) -> AppResult<IdeationSettings> {
+        let current = self
             .state
             .ideation_settings_repo
             .get_settings()
             .await
             .map_err(|error| AppError::Database(error.to_string()))?;
-        let updated = self
+
+        if enabled {
+            match current.tasks_feature_state {
+                TasksFeatureState::Enabled => return Ok(current),
+                TasksFeatureState::Draining => {
+                    return Err(drain_incomplete_error(
+                        &["shutdown-in-progress".to_string()],
+                    ));
+                }
+                TasksFeatureState::Disabled => {}
+            }
+            if !self
+                .state
+                .ideation_settings_repo
+                .compare_and_set_tasks_feature_state(
+                    TasksFeatureState::Disabled,
+                    TasksFeatureState::Enabled,
+                )
+                .await
+                .map_err(|error| AppError::Database(error.to_string()))?
+            {
+                return Err(AppError::Conflict(
+                    "Tasks feature state changed while enabling".to_string(),
+                ));
+            }
+            self.reconcile_missing_assessments();
+            return self.current_settings().await;
+        }
+
+        match current.tasks_feature_state {
+            TasksFeatureState::Disabled => {
+                let failures = self.drain_active_tasks().await;
+                if failures.is_empty() {
+                    return Ok(current);
+                }
+                return Err(drain_incomplete_error(&failures));
+            }
+            TasksFeatureState::Enabled => {
+                if !self
+                    .state
+                    .ideation_settings_repo
+                    .compare_and_set_tasks_feature_state(
+                        TasksFeatureState::Enabled,
+                        TasksFeatureState::Draining,
+                    )
+                    .await
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                {
+                    return Err(AppError::Conflict(
+                        "Tasks feature state changed while disabling".to_string(),
+                    ));
+                }
+            }
+            TasksFeatureState::Draining => {}
+        }
+
+        let failures = self.drain_active_tasks().await;
+        if !failures.is_empty() {
+            tracing::error!(task_ids = ?failures, "Tasks drain remains incomplete");
+            return Err(drain_incomplete_error(&failures));
+        }
+        if !self
             .state
             .ideation_settings_repo
-            .update_settings(&settings)
+            .compare_and_set_tasks_feature_state(
+                TasksFeatureState::Draining,
+                TasksFeatureState::Disabled,
+            )
             .await
-            .map_err(|error| AppError::Database(error.to_string()))?;
-
-        if updated.tasks_enabled {
-            if !previous.tasks_enabled {
-                self.reconcile_missing_assessments();
-            }
-            return Ok(updated);
+            .map_err(|error| AppError::Database(error.to_string()))?
+        {
+            return Err(AppError::Conflict(
+                "Tasks feature state changed before shutdown completed".to_string(),
+            ));
         }
+        self.current_settings().await
+    }
 
-        let failures = self.drain_unentitled_active_tasks().await;
-        if failures.is_empty() {
-            return Ok(updated);
-        }
-
-        tracing::error!(
-            task_ids = ?failures,
-            was_enabled = previous.tasks_enabled,
-            "Tasks stayed disabled but some active runtime contexts could not be drained"
-        );
-        Err(AppError::FeatureDisabled(format!(
-            "{TASKS_DRAIN_INCOMPLETE_ERROR_CODE}: Tasks are disabled, but cleanup must be retried for task(s): {}",
-            failures.join(", ")
-        )))
+    async fn current_settings(&self) -> AppResult<IdeationSettings> {
+        self.state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .map_err(|error| AppError::Database(error.to_string()))
     }
 
     fn reconcile_missing_assessments(&self) {
@@ -107,9 +262,7 @@ impl<'a> TasksFeatureToggleService<'a> {
         });
     }
 
-    pub(crate) async fn drain_unentitled_active_tasks(&self) -> Vec<String> {
-        let policy = TasksFeaturePolicy::from_state(self.state);
-
+    pub(crate) async fn drain_active_tasks(&self) -> Vec<String> {
         let projects = match self.state.project_repo.get_all().await {
             Ok(projects) => projects,
             Err(error) => {
@@ -139,11 +292,32 @@ impl<'a> TasksFeatureToggleService<'a> {
             };
 
             for task in tasks {
-                if !is_agent_active_status(task.internal_status) {
+                let has_unpaused_branch_update = if task.internal_status == InternalStatus::Paused {
+                    false
+                } else {
+                    match self
+                        .state
+                        .branch_update_repo
+                        .get_active_operation(&task.id)
+                        .await
+                    {
+                        Ok(operation) => operation.is_some(),
+                        Err(error) => {
+                            tracing::error!(
+                                task_id = task.id.as_str(),
+                                error = %error,
+                                "Failed to inspect branch-update authority during Tasks OFF drain"
+                            );
+                            failures.push(task.id.as_str().to_string());
+                            continue;
+                        }
+                    }
+                };
+                if !is_agent_active_status(task.internal_status) && !has_unpaused_branch_update {
                     continue;
                 }
                 if self
-                    .drain_one_task(&policy, &self.transition_service, &self.cleanup, &task)
+                    .drain_one_task(&self.transition_service, &self.cleanup, &task)
                     .await
                     .is_err()
                 {
@@ -156,7 +330,6 @@ impl<'a> TasksFeatureToggleService<'a> {
 
     async fn drain_one_task(
         &self,
-        policy: &TasksFeaturePolicy,
         transition_service: &crate::application::TaskTransitionService,
         cleanup: &TaskCleanupService,
         candidate: &Task,
@@ -164,11 +337,66 @@ impl<'a> TasksFeatureToggleService<'a> {
         let Some(current) = self.state.task_repo.get_by_id(&candidate.id).await? else {
             return Ok(());
         };
-        if !is_agent_active_status(current.internal_status)
-            || policy
-                .is_session_authorized(current.ideation_session_id.as_ref())
-                .await
+        if !is_agent_active_status(current.internal_status) {
+            let has_active_branch_update = self
+                .state
+                .branch_update_repo
+                .get_active_operation(&current.id)
+                .await?
+                .is_some();
+            if !has_active_branch_update || current.internal_status == InternalStatus::Paused {
+                return Ok(());
+            }
+        }
+
+        if let Some(operation) = self
+            .state
+            .branch_update_repo
+            .get_active_operation(&current.id)
+            .await?
         {
+            let lease = self
+                .state
+                .branch_update_repo
+                .get_target_lease(&operation.target_identity)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "Branch-update target authority is missing for task {}",
+                        current.id.as_str()
+                    ))
+                })?;
+            let outcome = self
+                .state
+                .branch_update_repo
+                .pause_operation(PauseBranchUpdate {
+                    operation_id: operation.id,
+                    task_id: current.id.clone(),
+                    originating_history_id: operation.originating_history_id,
+                    update_status: current.internal_status,
+                    owner: lease.owner().clone(),
+                    fencing_epoch: lease.fencing_epoch(),
+                    history_id: uuid::Uuid::new_v4().to_string(),
+                })
+                .await?;
+            if outcome != BranchUpdateCasOutcome::Applied {
+                return Err(AppError::Conflict(format!(
+                    "Branch-update pause lost authority for task {}: {outcome:?}",
+                    current.id.as_str()
+                )));
+            }
+            cleanup
+                .stop_task_runtime_contexts_strict(&current.id)
+                .await?;
+            if let Some(app_handle) = self.app_handle.as_ref() {
+                let _ = app_handle.emit(
+                    "task:paused",
+                    serde_json::json!({
+                        "taskId": current.id.as_str(),
+                        "projectId": current.project_id.as_str(),
+                    }),
+                );
+            }
             return Ok(());
         }
 
@@ -194,6 +422,13 @@ impl<'a> TasksFeatureToggleService<'a> {
             .await?;
         Ok(())
     }
+}
+
+fn drain_incomplete_error(failures: &[String]) -> AppError {
+    AppError::FeatureDisabled(format!(
+        "{TASKS_DRAIN_INCOMPLETE_ERROR_CODE}: Tasks shutdown must be retried for: {}",
+        failures.join(", ")
+    ))
 }
 
 fn feature_disabled_pause_metadata(task: &Task) -> AppResult<MetadataUpdate> {

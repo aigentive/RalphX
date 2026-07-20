@@ -37,6 +37,7 @@ use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::error::AppError;
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +216,21 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         app_state,
         pr_fix_review_publish_resumer,
     } = deps;
+
+    let tasks_settings = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
+        app_state
+            .build_tasks_feature_toggle_service(
+                Arc::clone(&execution_state),
+                Some(app_handle.clone()),
+            )
+            .set_tasks_enabled(false)
+            .await?;
+    }
 
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
     match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
