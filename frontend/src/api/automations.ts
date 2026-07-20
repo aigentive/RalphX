@@ -107,6 +107,10 @@ function createDraftArgs(input: CreateAutomationDraftInput): {
   projectId: string;
   name?: string;
   authoringMode?: AutomationAuthoringMode;
+  baseRefKind?: string;
+  baseBranchMode?: string;
+  baseRef?: string;
+  baseDisplayName?: string;
 } {
   return {
     projectId: input.projectId,
@@ -114,6 +118,16 @@ function createDraftArgs(input: CreateAutomationDraftInput): {
     ...(input.authoringMode !== undefined && {
       authoringMode: input.authoringMode,
     }),
+    ...(input.base
+      ? {
+          baseRefKind: input.base.kind,
+          ...(input.base.branchMode
+            ? { baseBranchMode: input.base.branchMode }
+            : {}),
+          baseRef: input.base.ref,
+          baseDisplayName: input.base.displayName,
+        }
+      : {}),
   };
 }
 

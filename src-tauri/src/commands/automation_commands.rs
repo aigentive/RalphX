@@ -43,6 +43,14 @@ pub struct CreateAutomationDraftInput {
     pub name: Option<String>,
     #[serde(default)]
     pub authoring_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref_kind: Option<String>,
+    #[serde(default)]
+    pub base_branch_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +157,22 @@ pub(crate) async fn create_automation_draft_for_state(
     {
         return Err("automation name cannot be empty".to_string());
     }
+    let base_ref_kind = input
+        .base_ref_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<IdeationAnalysisBaseRefKind>)
+        .transpose()?;
+    let base_branch_mode = input
+        .base_branch_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
+        .transpose()?;
+    let base_ref = trim_optional(input.base_ref);
+    let base_display_name = trim_optional(input.base_display_name);
     let project = state
         .project_repo
         .get_by_id(&project_id)
@@ -178,10 +202,10 @@ pub(crate) async fn create_automation_draft_for_state(
         &setup_conversation_id,
         AgentConversationWorkspaceMode::Automation,
         AgentConversationWorkspaceBaseSelection {
-            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-            branch_mode: Some(AgentConversationWorkspaceBranchMode::Isolated),
-            base_ref: None,
-            display_name: None,
+            kind: base_ref_kind.or(Some(IdeationAnalysisBaseRefKind::ProjectDefault)),
+            branch_mode: base_branch_mode.or(Some(AgentConversationWorkspaceBranchMode::Isolated)),
+            base_ref,
+            display_name: base_display_name,
             source_pull_request: None,
         },
         AgentConversationWorkspaceSetupMode::Deferred,
