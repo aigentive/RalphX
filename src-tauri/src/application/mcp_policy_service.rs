@@ -44,7 +44,7 @@ impl McpPolicyService {
         self
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub(crate) fn with_legacy_claude_mcp_cleanup_cli_for_test(mut self, cli_path: PathBuf) -> Self {
         self.legacy_claude_mcp_cleanup_cli_override = Some(cli_path);
         self
