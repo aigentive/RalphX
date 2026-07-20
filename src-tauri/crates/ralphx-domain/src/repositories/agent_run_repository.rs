@@ -78,6 +78,26 @@ pub trait AgentRunRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Get a running action for one exact owner conversation and action tuple.
+    async fn get_active_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .find(|run| {
+                run.status == AgentRunStatus::Running
+                    && run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            }))
+    }
+
     /// Get all runs for a conversation, ordered by started_at DESC
     async fn get_by_conversation(
         &self,
@@ -110,6 +130,18 @@ pub trait AgentRunRepository: Send + Sync {
 
     /// Complete a run (set status to Completed and completed_at timestamp)
     async fn complete(&self, id: &AgentRunId) -> AppResult<()>;
+
+    /// Complete only when this caller owns the current Running -> Completed transition.
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        let Some(run) = self.get_by_id(id).await? else {
+            return Ok(false);
+        };
+        if run.status != AgentRunStatus::Running {
+            return Ok(false);
+        }
+        self.complete(id).await?;
+        Ok(true)
+    }
 
     /// Fail a run (set status to Failed, completed_at timestamp, and error message)
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()>;

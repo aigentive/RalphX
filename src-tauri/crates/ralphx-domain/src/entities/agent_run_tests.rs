@@ -91,6 +91,14 @@ fn test_new_agent_run() {
 
 #[test]
 fn verify_plan_action_metadata_is_typed_and_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":"artifact-1"}"#,
+    ))
+    .expect("complete action tuple");
+    assert_eq!(parsed.kind, AgentRunActionKind::VerifyPlan);
+    assert_eq!(parsed.context_id, "session-1");
+    assert_eq!(parsed.target_id, "artifact-1");
+
     let mut run = AgentRun::new(ChatConversationId::new());
     run.apply_action_metadata_json(Some(
         r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":"artifact-1"}"#,

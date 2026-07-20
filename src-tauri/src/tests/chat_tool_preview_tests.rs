@@ -6,8 +6,8 @@ use crate::application::chat_service::tool_result_preview::{
     build_live_tool_argument_preview, build_live_tool_result_preview,
     build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
     build_tool_result_preview_payload, live_tool_result_activity_content,
-    live_tool_result_activity_metadata, preview_tool_result_object, should_skip_tool_result_preview,
-    tool_detail_ref,
+    live_tool_result_activity_metadata, preview_tool_result_object,
+    should_skip_tool_result_preview, tool_detail_ref,
 };
 use crate::application::chat_service::{
     process_stream_background, AgentToolCallPayload, AgentToolCallPreviewFields,
@@ -365,10 +365,7 @@ fn live_preview_payloads_preserve_parseable_json_mcp_text_content() {
             .len()
             < artifact_content.len()
     );
-    assert_eq!(
-        preview.paths,
-        vec!["$.content[0].text.content".to_string()]
-    );
+    assert_eq!(preview.paths, vec!["$.content[0].text.content".to_string()]);
 }
 
 #[test]
@@ -664,7 +661,12 @@ fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
     let argument_preview = build_live_tool_argument_preview(
         &tool_call,
         Some(&diff_context),
-        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-write-new"), None)),
+        Some(tool_detail_ref(
+            "conv-1",
+            "msg-1",
+            Some("tool-write-new"),
+            None,
+        )),
     )
     .expect("new-file write arguments should preview");
 
@@ -687,7 +689,10 @@ fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
     assert_eq!(value["diff_context"]["old_file_exists"], false);
     assert_eq!(value["diff_preview"]["old_total_lines"], 0);
     assert_eq!(value["diff_preview"]["new_total_lines"], 2);
-    assert_eq!(value["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
+    assert_eq!(
+        value["diff_preview"]["hunks"][0]["lines"][0]["kind"],
+        "addition"
+    );
 }
 
 #[test]
@@ -1013,6 +1018,9 @@ async fn stream_background_previews_heavy_live_tool_result() {
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
     .expect("stream should process");

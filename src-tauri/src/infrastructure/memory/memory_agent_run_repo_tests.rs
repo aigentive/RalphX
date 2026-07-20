@@ -107,6 +107,60 @@ async fn test_complete() {
 }
 
 #[tokio::test]
+async fn complete_if_running_is_compare_and_set() {
+    let repo = MemoryAgentRunRepository::new();
+    let running = AgentRun::new(ChatConversationId::new());
+    let running_id = running.id;
+    repo.create(running).await.unwrap();
+
+    assert!(repo.complete_if_running(&running_id).await.unwrap());
+    assert!(!repo.complete_if_running(&running_id).await.unwrap());
+
+    let mut failed = AgentRun::new(ChatConversationId::new());
+    failed.status = AgentRunStatus::Failed;
+    let failed_id = failed.id;
+    repo.create(failed).await.unwrap();
+    assert!(!repo.complete_if_running(&failed_id).await.unwrap());
+    assert_eq!(
+        repo.get_by_id(&failed_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Failed
+    );
+    assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+}
+
+#[tokio::test]
+async fn active_action_is_scoped_to_owning_conversation() {
+    let repo = MemoryAgentRunRepository::new();
+    let owner = ChatConversationId::new();
+    let detached = ChatConversationId::new();
+    let mut owner_run = AgentRun::new(owner);
+    owner_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    owner_run.action_context_id = Some("session-1".to_string());
+    owner_run.action_target_id = Some("artifact-1".to_string());
+    let owner_id = owner_run.id;
+    repo.create(owner_run).await.unwrap();
+
+    let mut detached_run = AgentRun::new(detached);
+    detached_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_run.action_context_id = Some("session-1".to_string());
+    detached_run.action_target_id = Some("artifact-1".to_string());
+    detached_run.started_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+    repo.create(detached_run).await.unwrap();
+
+    let found = repo
+        .get_active_action(
+            &owner,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("owner action");
+    assert_eq!(found.id, owner_id);
+}
+
+#[tokio::test]
 async fn test_update_usage() {
     let repo = MemoryAgentRunRepository::new();
     let conversation_id = ChatConversationId::new();

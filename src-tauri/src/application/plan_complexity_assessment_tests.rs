@@ -76,6 +76,7 @@ fn setup_db() -> Connection {
             ext_require_verification_for_proposals INTEGER,
             ext_require_accept_for_finalize INTEGER,
             auto_verify_plans INTEGER NOT NULL DEFAULT 0,
+            auto_verify_draft_plans INTEGER NOT NULL DEFAULT 1,
             ext_auto_verify_plans INTEGER,
             tasks_enabled INTEGER NOT NULL DEFAULT 1
         );

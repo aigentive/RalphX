@@ -224,6 +224,13 @@ export function IdeationSettingsPanel() {
     });
   };
 
+  const handleAutoVerifyDraftPlansChange = (checked: boolean) => {
+    updateSettings({
+      ...settings,
+      autoVerifyDraftPlans: checked,
+    });
+  };
+
   const handleRequireVerificationForAcceptChange = (checked: boolean) => {
     updateSettings({
       ...settings,
@@ -276,11 +283,20 @@ export function IdeationSettingsPanel() {
           onChange={handleRequireAcceptForFinalizeChange}
         />
 
-        {/* Require verification before accepting proposals */}
+        <CheckboxSettingRow
+          id="auto-verify-draft-plans"
+          label="Verify draft plans automatically"
+          description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation"
+          checked={settings.autoVerifyDraftPlans}
+          disabled={isUpdating}
+          onChange={handleAutoVerifyDraftPlansChange}
+        />
+
+        {/* Acceptance-time fallback remains independent. */}
         <CheckboxSettingRow
           id="auto-verify-plans"
-          label="Verify automatically on acceptance"
-          description="When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting"
+          label="Queue missing verification on acceptance"
+          description="When verification is required, an acceptance attempt queues a visible Verify Plan turn"
           checked={settings.autoVerifyPlans}
           disabled={isUpdating}
           onChange={handleAutoVerifyPlansChange}

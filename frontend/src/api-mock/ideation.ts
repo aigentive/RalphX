@@ -477,6 +477,7 @@ export const mockIdeationApi = {
       return {
         tasksEnabled: false,
         autoVerifyPlans: false,
+        autoVerifyDraftPlans: true,
         requireAcceptForFinalize: false,
         requireVerificationForAccept: false,
         externalOverrides: {

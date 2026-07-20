@@ -307,6 +307,9 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
 }
@@ -346,6 +349,9 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
             None,
             false,
             false,
+            None,
+            None,
+            None,
         ),
     )
     .await
@@ -791,6 +797,9 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
     .expect("stream should complete");

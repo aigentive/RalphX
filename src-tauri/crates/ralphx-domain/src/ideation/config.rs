@@ -52,6 +52,9 @@ pub struct IdeationSettings {
     /// Queue model-native verification when required acceptance lacks exact proof.
     #[serde(default)]
     pub auto_verify_plans: bool,
+    /// Queue model-native verification after a successful Agent Plan turn.
+    #[serde(default = "default_true")]
+    pub auto_verify_draft_plans: bool,
     /// If true, the exact current plan must be verified before accepting proposals.
     #[serde(default)]
     pub require_verification_for_accept: bool,
@@ -75,12 +78,17 @@ impl Default for IdeationSettings {
             suggest_plans_for_complex: true,
             auto_link_proposals: true,
             auto_verify_plans: false,
+            auto_verify_draft_plans: true,
             require_verification_for_accept: false, // Opt-in feature
             require_verification_for_proposals: false, // Opt-in feature
             require_accept_for_finalize: false,     // Opt-in feature
             external_overrides: ExternalIdeationOverrides::default(),
         }
     }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     let auto_verify_plans: i64 = row.get(10)?;
     let ext_auto_verify_plans: Option<i64> = row.get(11)?;
     let tasks_enabled: i64 = row.get(12)?;
+    let auto_verify_draft_plans: i64 = row.get(13)?;
 
     let plan_mode = match plan_mode_str.as_str() {
         "required" => IdeationPlanMode::Required,
@@ -54,6 +55,7 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
         suggest_plans_for_complex: suggest_plans_for_complex != 0,
         auto_link_proposals: auto_link_proposals != 0,
         auto_verify_plans: auto_verify_plans != 0,
+        auto_verify_draft_plans: auto_verify_draft_plans != 0,
         require_verification_for_accept: require_verification_for_accept != 0,
         require_verification_for_proposals: require_verification_for_proposals != 0,
         require_accept_for_finalize: require_accept_for_finalize.map(|v| v != 0).unwrap_or(false),
@@ -79,7 +81,8 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
                 ext_require_accept_for_finalize,
                 auto_verify_plans,
                 ext_auto_verify_plans,
-                tasks_enabled
+                tasks_enabled,
+                auto_verify_draft_plans
          FROM ideation_settings WHERE id = 1
          LIMIT 1",
         [],
@@ -171,6 +174,7 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                  auto_verify_plans = ?11,
                  ext_auto_verify_plans = ?12,
                  tasks_enabled = ?13,
+                 auto_verify_draft_plans = ?14,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -199,6 +203,7 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                             .auto_verify_plans
                             .map(|v| v as i64),
                         settings.tasks_enabled as i64,
+                        settings.auto_verify_draft_plans as i64,
                     ],
                 )?;
 

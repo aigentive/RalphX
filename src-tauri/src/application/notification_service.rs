@@ -370,6 +370,13 @@ impl NotificationService {
         Arc::clone(&self.repo)
     }
     pub async fn record(&self, input: NewNotification) {
+        if let Err(error) = self.record_result(input).await {
+            tracing::warn!(error = %error, "Failed to record notification");
+        }
+    }
+    /// Records a durable notification and reports whether a new row was inserted.
+    /// A deduplicated row is still a successful durable outcome.
+    pub async fn record_result(&self, input: NewNotification) -> AppResult<bool> {
         let notification = input.into_notification(Utc::now());
         match self.repo.create_with_dedupe(notification.clone()).await {
             Ok(true) => {
@@ -377,11 +384,13 @@ impl NotificationService {
                     tracing::warn!(error = %error, notification_id = %notification.id, "Failed to emit notification:created");
                 }
                 self.dispatch_desktop(&notification).await;
+                Ok(true)
             }
             Ok(false) => {
-                tracing::debug!(dedupe_key = ?notification.dedupe_key, "Notification deduplicated")
+                tracing::debug!(dedupe_key = ?notification.dedupe_key, "Notification deduplicated");
+                Ok(false)
             }
-            Err(error) => tracing::warn!(error = %error, "Failed to record notification"),
+            Err(error) => Err(error),
         }
     }
     pub async fn record_ephemeral(&self, input: NewNotification) {

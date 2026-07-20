@@ -41,6 +41,12 @@ describe("useNotificationEvents", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
 
     subscribers.get("notification:created")?.();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: notificationKeys.all });
+
+    invalidate.mockClear();
+    subscribers.get("notification:updated")?.();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: notificationKeys.all });
   });
 

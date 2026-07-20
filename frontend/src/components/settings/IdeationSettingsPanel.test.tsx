@@ -28,6 +28,7 @@ vi.mock("@/stores/uiStore", () => ({
 
 const defaultSettings: IdeationSettings = {
   tasksEnabled: false,
+  autoVerifyDraftPlans: true,
   autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
@@ -64,19 +65,41 @@ describe("IdeationSettingsPanel", () => {
     expect(screen.getByText("Configure acceptance and verification gates")).toBeInTheDocument();
   });
 
-  it("renders automatic and acceptance verification controls", async () => {
+  it("renders independent completion and acceptance verification controls", async () => {
     render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId("require-accept-for-finalize")).toBeInTheDocument();
       expect(screen.getByTestId("require-verification-for-accept")).toBeInTheDocument();
       expect(screen.getByTestId("auto-verify-plans")).toBeInTheDocument();
-      expect(screen.getByText("Verify automatically on acceptance")).toBeInTheDocument();
+      expect(screen.getByTestId("auto-verify-draft-plans")).toBeChecked();
+      expect(screen.getByText("Verify draft plans automatically")).toBeInTheDocument();
+      expect(screen.getByText("Queue missing verification on acceptance")).toBeInTheDocument();
       expect(
         screen.getByText(
-          "When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting",
+          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation",
         ),
       ).toBeInTheDocument();
+    });
+  });
+
+  it("persists completion-triggered verification without changing the acceptance fallback", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.update).mockResolvedValue({
+      ...defaultSettings,
+      autoVerifyDraftPlans: false,
+    });
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    await user.click(await screen.findByTestId("auto-verify-draft-plans"));
+
+    await waitFor(() => {
+      expect(ideationApi.settings.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoVerifyDraftPlans: false,
+          autoVerifyPlans: false,
+        }),
+      );
     });
   });
 

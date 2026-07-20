@@ -152,6 +152,7 @@ fn interactive_run_started_provider_session_prefers_process_metadata_harness() {
     let (harness, provider_session_id) = interactive_run_started_provider_session(
         &conversation,
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: Some(AgentHarnessKind::Codex),
             provider_session_id: None,
             persona_id: None,
@@ -185,6 +186,7 @@ fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch()
         Some(AgentHarnessKind::Codex),
         None,
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: Some(AgentHarnessKind::Claude),
             provider_session_id: Some("claude-session-123".to_string()),
             persona_id: None,
@@ -208,6 +210,7 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
         Some(AgentHarnessKind::Codex),
         Some(&conversation),
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: None,
             provider_session_id: Some("legacy-session-123".to_string()),
             persona_id: None,
@@ -222,6 +225,7 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
 fn persona_invalidation_for_content_hash_mismatch() {
     let resolved = resolved_persona("persona-a", "new-hash");
     let process = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: Some(AgentHarnessKind::Claude),
         provider_session_id: Some("claude-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),
@@ -238,6 +242,7 @@ fn persona_invalidation_for_content_hash_mismatch() {
 fn persona_invalidation_for_persona_id_mismatch() {
     let resolved = resolved_persona("persona-b", "hash-b");
     let bound = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: None,
         provider_session_id: None,
         persona_id: Some("persona-a".to_string()),
@@ -272,6 +277,7 @@ fn persona_invalidation_skipped_when_both_unbound() {
 fn persona_invalidation_independent_of_harness_override() {
     let resolved = resolved_persona("persona-a", "hash-a");
     let process = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: Some(AgentHarnessKind::Codex),
         provider_session_id: Some("codex-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),

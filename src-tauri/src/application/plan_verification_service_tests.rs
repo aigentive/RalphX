@@ -1,11 +1,19 @@
 use crate::application::chat_service::MockChatService;
 use crate::application::plan_verification_service::{
-    ensure_plan_verification_for_acceptance, request_plan_verification,
+    admit_automatic_plan_verification, ensure_plan_verification_for_acceptance,
+    request_plan_verification, source_allows_verified_retry, AutomaticPlanVerificationDisposition,
     PlanVerificationRequestSource,
 };
 use crate::application::AppState;
-use crate::domain::entities::{ArtifactId, IdeationSession, ProjectId};
+use crate::domain::entities::{
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    ArtifactId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, ProjectId,
+};
 use crate::domain::services::EffectiveGatePolicy;
+
+fn mock_chat(state: &AppState) -> MockChatService {
+    MockChatService::with_agent_run_repo(std::sync::Arc::clone(&state.agent_run_repo))
+}
 
 fn policy(auto_verify_plans: bool, require_verification_for_accept: bool) -> EffectiveGatePolicy {
     EffectiveGatePolicy {
@@ -13,6 +21,19 @@ fn policy(auto_verify_plans: bool, require_verification_for_accept: bool) -> Eff
         require_verification_for_accept,
         require_accept_for_finalize: false,
     }
+}
+
+#[test]
+fn only_manual_requests_may_retry_exact_verified_artifacts() {
+    assert!(source_allows_verified_retry(
+        PlanVerificationRequestSource::Manual
+    ));
+    assert!(!source_allows_verified_retry(
+        PlanVerificationRequestSource::Automatic
+    ));
+    assert!(!source_allows_verified_retry(
+        PlanVerificationRequestSource::External
+    ));
 }
 
 async fn session_with_plan(state: &AppState) -> IdeationSession {
@@ -34,11 +55,71 @@ async fn session_with_plan(state: &AppState) -> IdeationSession {
         .expect("session should exist")
 }
 
+async fn completed_plan_workspace_run(
+    state: &AppState,
+    action_kind: Option<AgentRunActionKind>,
+) -> (IdeationSession, ChatConversation, AgentRun) {
+    let project_id = ProjectId::new();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project_id.clone()))
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base".to_string()),
+        "plan-workspace".to_string(),
+        "/tmp/plan-workspace".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation.id);
+    run.action_kind = action_kind;
+    let run = state.agent_run_repo.create(run).await.unwrap();
+    assert!(state
+        .agent_run_repo
+        .complete_if_running(&run.id)
+        .await
+        .unwrap());
+    let run = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    (session, conversation, run)
+}
+
 #[tokio::test]
 async fn acceptance_queues_required_automatic_verification_and_remains_blocked() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
 
     let error =
         ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(true, true))
@@ -69,7 +150,7 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
 async fn acceptance_does_not_auto_verify_when_verification_is_advisory() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
 
     ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(true, false))
         .await
@@ -86,7 +167,7 @@ async fn acceptance_does_not_auto_verify_when_verification_is_advisory() {
 async fn acceptance_requires_manual_verification_when_auto_trigger_is_disabled() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
 
     let error =
         ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(false, true))
@@ -102,7 +183,7 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
     let state = AppState::new_test();
     let mut session = session_with_plan(&state).await;
     session.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
 
     ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(true, true))
         .await
@@ -119,7 +200,7 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
 async fn concurrent_verification_requests_admit_exactly_one_turn() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
 
     let (first, second) = tokio::join!(
         request_plan_verification(
@@ -149,7 +230,7 @@ async fn concurrent_verification_requests_admit_exactly_one_turn() {
 async fn failed_verification_launch_releases_admission_without_writing_proof() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    let chat = MockChatService::new();
+    let chat = mock_chat(&state);
     chat.set_available(false).await;
 
     request_plan_verification(
@@ -170,4 +251,108 @@ async fn failed_verification_launch_releases_admission_without_writing_proof() {
         .expect("session should exist");
     assert_eq!(stored.verified_plan_artifact_id, None);
     assert_eq!(stored.verified_plan_agent_run_id, None);
+}
+
+#[tokio::test]
+async fn nominal_send_without_typed_run_or_durable_queue_fails_closed() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+
+    let error = request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .expect_err("nominal send without action authority must fail");
+
+    assert!(error.to_string().contains("matching typed run"));
+    assert!(state.plan_verification_admissions.is_empty());
+}
+
+#[tokio::test]
+async fn manual_reverification_preserves_exact_proof_while_automatic_is_idempotent() {
+    let state = AppState::new_test();
+    let mut session = IdeationSession::new(ProjectId::new());
+    session.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+
+    let automatic = request_plan_verification(
+        &state,
+        &mock_chat(&state),
+        &session.id,
+        PlanVerificationRequestSource::Automatic,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        automatic,
+        crate::application::plan_verification_service::PlanVerificationRequestOutcome::AlreadyVerified
+    );
+
+    let manual = request_plan_verification(
+        &state,
+        &mock_chat(&state),
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        manual,
+        crate::application::plan_verification_service::PlanVerificationRequestOutcome::Queued
+    );
+    let stored = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.verified_plan_artifact_id, session.plan_artifact_id);
+}
+
+#[tokio::test]
+async fn completed_current_plain_plan_run_admits_one_automatic_verifier() {
+    let state = AppState::new_test();
+    let (_session, conversation, run) = completed_plan_workspace_run(&state, None).await;
+    let chat = mock_chat(&state);
+
+    let disposition =
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        disposition,
+        AutomaticPlanVerificationDisposition::VerificationPending
+    );
+    assert_eq!(chat.call_count(), 1);
+}
+
+#[tokio::test]
+async fn automatic_admission_rejects_typed_and_non_winning_finalizers() {
+    let state = AppState::new_test();
+    let (_session, conversation, run) =
+        completed_plan_workspace_run(&state, Some(AgentRunActionKind::VerifyPlan)).await;
+    let chat = mock_chat(&state);
+
+    for completion_applied in [true, false] {
+        let disposition = admit_automatic_plan_verification(
+            &state,
+            &chat,
+            &conversation.id,
+            &run.id,
+            completion_applied,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            disposition,
+            AutomaticPlanVerificationDisposition::NotEligible
+        );
+    }
+    assert_eq!(chat.call_count(), 0);
 }
