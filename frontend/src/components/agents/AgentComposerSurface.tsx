@@ -11,9 +11,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   useAgentComposerEntries,
+  useAgentComposerIntegrationAvailability,
   useAgentComposerIntegrationResources,
   useAgentComposerPlanReferences,
   useAgentComposerSkills,
+  type AgentComposerIntegrationAvailability,
 } from "@/hooks/useAgentComposerResources";
 import { atlassianApi, type AtlassianResourceSummary } from "@/api/atlassian";
 import {
@@ -115,6 +117,17 @@ type ComposerOption = ComposerRuntimeOption;
 const PLAN_REFINE_COMMAND_MESSAGE =
   "Please verify and refine the current plan.";
 
+const COMPOSER_INTEGRATION_ACTIONS: ReadonlyArray<{
+  kind: AgentComposerIntegrationKind;
+  label: string;
+}> = [
+  { kind: "jira", label: "Jira" },
+  { kind: "confluence", label: "Confluence" },
+  { kind: "linear", label: "Linear" },
+  { kind: "clickup", label: "ClickUp" },
+  { kind: "granola", label: "Granola" },
+];
+
 function integrationReferenceKey(
   reference: AgentComposerIntegrationReference,
 ): string {
@@ -184,7 +197,6 @@ interface ProjectFieldConfig {
   options: ComposerOption[];
   placeholder: string;
   disabled?: boolean;
-  endAction?: ReactNode;
   testId?: string;
   className?: string;
   allowNoProject?: boolean;
@@ -435,6 +447,10 @@ export function AgentComposerSurface({
   const latestValueRef = useRef(value);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const integrationAvailability = useAgentComposerIntegrationAvailability({
+    projectId: project.value,
+    enabled: actionMenuOpen,
+  });
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
@@ -2046,7 +2062,6 @@ export function AgentComposerSurface({
             )}
 
             <ComposerActionMenu
-              project={project}
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
@@ -2063,6 +2078,7 @@ export function AgentComposerSurface({
                 : {})}
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
+              integrationAvailability={integrationAvailability}
               onInsertIntegrationTrigger={(kind) => {
                 restoreTextareaFocusOnActionMenuCloseRef.current = true;
                 markComposerFocused();
@@ -2204,7 +2220,6 @@ export function AgentComposerSurface({
 }
 
 function ComposerActionMenu({
-  project,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
@@ -2215,11 +2230,11 @@ function ComposerActionMenu({
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
+  integrationAvailability,
   onInsertPlanTrigger,
   onCloseAutoFocus,
   compact = false,
 }: {
-  project: ProjectFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
@@ -2230,15 +2245,18 @@ function ComposerActionMenu({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
+  integrationAvailability: AgentComposerIntegrationAvailability;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
   compact?: boolean;
 }) {
+  const availableIntegrationActions = COMPOSER_INTEGRATION_ACTIONS.filter(
+    ({ kind }) => integrationAvailability[kind],
+  );
   const hasPersistentActions = true;
   const hasPrimaryActions =
     enableAttachments ||
     showAddFolder ||
-    Boolean(project.endAction) ||
     Boolean(onForkSession);
   const setOpen = onOpenChange;
 
@@ -2310,21 +2328,9 @@ function ComposerActionMenu({
           </button>
         )}
 
-        {project.endAction && (
-          <>
-            {(enableAttachments || showAddFolder) && (
-              <div
-                className="my-1 h-px"
-                style={{ background: "var(--overlay-weak)" }}
-              />
-            )}
-            <div className="px-1 py-1">{project.endAction}</div>
-          </>
-        )}
-
         {onForkSession && (
           <>
-            {(enableAttachments || showAddFolder || project.endAction) && (
+            {(enableAttachments || showAddFolder) && (
               <div
                 className="my-1 h-px"
                 style={{ background: "var(--overlay-weak)" }}
@@ -2367,57 +2373,32 @@ function ComposerActionMenu({
             Plan
           </button>
         </div>
-        <div
-          className="my-1 h-px"
-          style={{ background: "var(--overlay-weak)" }}
-        />
-        <div className="py-1">
-          <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Integrations
-          </div>
-          <div className="space-y-1">
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("jira")}
-            >
-              <Search className="h-4 w-4" />
-              Jira
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("confluence")}
-            >
-              <Search className="h-4 w-4" />
-              Confluence
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("linear")}
-            >
-              <Search className="h-4 w-4" />
-              Linear
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("clickup")}
-            >
-              <Search className="h-4 w-4" />
-              ClickUp
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("granola")}
-            >
-              <Search className="h-4 w-4" />
-              Granola
-            </button>
-          </div>
-        </div>
+        {availableIntegrationActions.length > 0 && (
+          <>
+            <div
+              className="my-1 h-px"
+              style={{ background: "var(--overlay-weak)" }}
+            />
+            <div className="py-1">
+              <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                Integrations
+              </div>
+              <div className="space-y-1">
+                {availableIntegrationActions.map(({ kind, label }) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+                    onClick={() => onInsertIntegrationTrigger(kind)}
+                  >
+                    <Search className="h-4 w-4" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -2962,33 +2943,6 @@ function ComposerTeamSwitch({
         className="data-[state=checked]:bg-[var(--accent-primary)]"
       />
     </label>
-  );
-}
-
-export function AgentComposerProjectCreateButton({
-  onClick,
-  testId,
-  label = "New project",
-}: {
-  onClick: () => void;
-  testId?: string;
-  label?: string;
-}) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className="h-7 shrink-0 rounded-[10px] px-2 text-[0.625rem] font-medium"
-      style={{
-        color: "var(--text-secondary)",
-        background: "transparent",
-      }}
-      onClick={onClick}
-      data-testid={testId}
-    >
-      <Plus className="h-3.5 w-3.5" />
-      {label}
-    </Button>
   );
 }
 

@@ -59,7 +59,6 @@ import {
   codexFastModeAvailabilityForProvider,
 } from "@/lib/codex-fast-mode";
 import {
-  AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
@@ -131,7 +130,6 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   modelRegistry: AgentModelRegistry;
-  onCreateProject: () => void;
   onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
   onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
@@ -228,7 +226,6 @@ export function AgentsStartComposer({
   isLoadingProjects,
   isSubmitting,
   modelRegistry,
-  onCreateProject,
   onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
@@ -1668,12 +1665,6 @@ export function AgentsStartComposer({
                 (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
               className: "max-w-[300px] flex-none",
-              endAction: (
-                <AgentComposerProjectCreateButton
-                  onClick={onCreateProject}
-                  testId="agents-start-new-project"
-                />
-              ),
             }}
             provider={{
               value: provider,

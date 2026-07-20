@@ -33,7 +33,6 @@ interface AgentsConversationMainRegionProps {
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
-  onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
   onFocusIdeationSessionForConversation: ActiveConversationPanelProps[
     "onFocusIdeationSessionForConversation"
@@ -97,7 +96,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onActiveProviderChange,
   onAgentUserMessageSent,
   onConversationModeSwitched,
-  onCreateProject,
   onFocusIdeationSession,
   onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
@@ -198,7 +196,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
       modelRegistry={modelRegistry}
-      onCreateProject={onCreateProject}
       onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
     />
