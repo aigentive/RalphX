@@ -72,42 +72,52 @@ pub(crate) fn trim_optional_input(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+impl AgentWorkspaceSourcePullRequestInput {
+    pub(crate) fn normalize(
+        self,
+        base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
+        base_ref: Option<&str>,
+    ) -> Result<AgentWorkspaceSourcePullRequest, String> {
+        if self.number <= 0 {
+            return Err("Source pull request number must be positive".to_string());
+        }
+        if base_ref_kind != Some(IdeationAnalysisBaseRefKind::LocalBranch) {
+            return Err(
+                "Source pull request metadata requires a local_branch base ref".to_string(),
+            );
+        }
+
+        let head_ref_name = self.head_ref_name.trim().to_string();
+        if head_ref_name.is_empty() {
+            return Err("Source pull request head branch is required".to_string());
+        }
+        if let Some(base_ref) = base_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            if base_ref != head_ref_name {
+                return Err(
+                    "Source pull request head branch must match the selected base ref".to_string(),
+                );
+            }
+        }
+
+        Ok(AgentWorkspaceSourcePullRequest {
+            number: self.number,
+            url: trim_optional_input(self.url),
+            title: trim_optional_input(self.title),
+            head_ref_name,
+            base_ref_name: trim_optional_input(self.base_ref_name),
+            head_ref_oid: trim_optional_input(self.head_ref_oid),
+        })
+    }
+}
+
 pub(crate) fn normalize_agent_workspace_source_pull_request(
     input: Option<AgentWorkspaceSourcePullRequestInput>,
     base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
     base_ref: Option<&str>,
 ) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
-    let Some(input) = input else {
-        return Ok(None);
-    };
-
-    if input.number <= 0 {
-        return Err("Source pull request number must be positive".to_string());
-    }
-    if base_ref_kind != Some(IdeationAnalysisBaseRefKind::LocalBranch) {
-        return Err("Source pull request metadata requires a local_branch base ref".to_string());
-    }
-
-    let head_ref_name = input.head_ref_name.trim().to_string();
-    if head_ref_name.is_empty() {
-        return Err("Source pull request head branch is required".to_string());
-    }
-    if let Some(base_ref) = base_ref.map(str::trim).filter(|value| !value.is_empty()) {
-        if base_ref != head_ref_name {
-            return Err(
-                "Source pull request head branch must match the selected base ref".to_string(),
-            );
-        }
-    }
-
-    Ok(Some(AgentWorkspaceSourcePullRequest {
-        number: input.number,
-        url: trim_optional_input(input.url),
-        title: trim_optional_input(input.title),
-        head_ref_name,
-        base_ref_name: trim_optional_input(input.base_ref_name),
-        head_ref_oid: trim_optional_input(input.head_ref_oid),
-    }))
+    input
+        .map(|input| input.normalize(base_ref_kind, base_ref))
+        .transpose()
 }
 
 pub(crate) fn first_ticket_branch_name_hint(
