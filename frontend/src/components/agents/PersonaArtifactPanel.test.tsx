@@ -7,11 +7,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
+import { personaKeys } from "@/hooks/usePersonas";
 import { EventProvider } from "@/providers/EventProvider";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 import type { FeatureFlags } from "@/types/feature-flags";
+import { PersonaResponseSchema, transformPersona } from "@/types/persona";
 
 import { PersonaArtifactPanel } from "./PersonaArtifactPanel";
 
@@ -303,6 +305,56 @@ describe("PersonaArtifactPanel", () => {
       "Calm customer support.",
     );
     expect(screen.getByRole("button", { name: "Approve Persona" })).toBeInTheDocument();
+  });
+
+  it("switches an open Agent pane to the artifact tip returned by a manual Persona save", async () => {
+    const updatedArtifact = {
+      ...rawPersonaArtifact,
+      id: "artifact-4",
+      content:
+        "---\nname: support-voice\nkind: persona\ndescription: Updated support guidance.\n---\n\n# Support Voice\n\nManual v4 content.",
+      created_at: "2026-07-17T11:00:00Z",
+      created_by: "user",
+      version: 4,
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "get_persona") return rawApproved;
+      if (command === "get_artifact") {
+        return (args as { id: string }).id === "artifact-4"
+          ? updatedArtifact
+          : rawPersonaArtifact;
+      }
+      if (command === "get_artifact_version_history") return rawHistory;
+      return null;
+    });
+    const { queryClient } = renderPanel(
+      conversation({ builderResultPersonaId: "persona-1" }),
+    );
+    expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
+
+    act(() => {
+      queryClient.setQueryData(
+        personaKeys.detail("persona-1"),
+        transformPersona(
+          PersonaResponseSchema.parse({
+            ...rawApproved,
+            artifact_id: "artifact-4",
+            content: updatedArtifact.content,
+            description: "Updated support guidance.",
+            version: 4,
+            content_hash: "hash-4",
+            updated_at: "2026-07-17T11:00:00Z",
+          }),
+        ),
+      );
+    });
+
+    expect(await screen.findByText("Manual v4 content.")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-frontmatter")).toHaveTextContent(
+      "Updated support guidance.",
+    );
+    expect(invoke).toHaveBeenCalledWith("get_artifact", { id: "artifact-4" });
+    expect(screen.getByTitle("View version history")).toHaveTextContent("v4");
   });
 
   it("approves through the existing command and transitions live to approved", async () => {

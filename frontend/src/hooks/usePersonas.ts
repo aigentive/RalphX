@@ -156,10 +156,11 @@ function usePersonaListInvalidation() {
   };
 }
 
-function invalidatePersonaArtifact(
+function publishPersonaUpdate(
   queryClient: QueryClient,
   persona: Persona,
 ) {
+  queryClient.setQueryData(personaKeys.detail(persona.id), persona);
   if (!persona.artifactId) return;
   void queryClient.invalidateQueries({
     queryKey: personaArtifactKeys.detail(persona.artifactId),
@@ -181,7 +182,7 @@ export function useUpdatePersona() {
     mutationFn: updatePersona,
     onSuccess: (persona) => {
       invalidateList();
-      invalidatePersonaArtifact(queryClient, persona);
+      publishPersonaUpdate(queryClient, persona);
     },
   });
 }
@@ -193,7 +194,7 @@ export function useUpdatePersonaDraft() {
     mutationFn: updatePersonaDraft,
     onSuccess: (persona) => {
       invalidateList();
-      invalidatePersonaArtifact(queryClient, persona);
+      publishPersonaUpdate(queryClient, persona);
     },
   });
 }
@@ -204,10 +205,9 @@ export function useApprovePersona() {
   return useMutation<Persona, Error, string>({
     mutationFn: approvePersona,
     onSuccess: (persona) => {
-      queryClient.setQueryData(personaKeys.detail(persona.id), persona);
+      publishPersonaUpdate(queryClient, persona);
       invalidateList();
       void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
-      invalidatePersonaArtifact(queryClient, persona);
     },
   });
 }
@@ -218,10 +218,9 @@ export function useApprovePersonaAsNew() {
   return useMutation<Persona, Error, ApprovePersonaAsNewInput>({
     mutationFn: approvePersonaAsNew,
     onSuccess: (persona) => {
-      queryClient.setQueryData(personaKeys.detail(persona.id), persona);
+      publishPersonaUpdate(queryClient, persona);
       invalidateList();
       void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
-      invalidatePersonaArtifact(queryClient, persona);
     },
   });
 }

@@ -225,6 +225,10 @@ describe("persona mutations", () => {
       expect(invalidateQueries).toHaveBeenCalledWith({
         queryKey: personaArtifactKeys.detail("artifact-1"),
       });
+      expect(queryClient.getQueryData(personaKeys.detail("persona-1"))).toMatchObject({
+        id: "persona-1",
+        artifactId: "artifact-1",
+      });
     },
   );
 });
