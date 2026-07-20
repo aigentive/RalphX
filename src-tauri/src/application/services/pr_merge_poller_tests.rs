@@ -331,12 +331,16 @@ async fn review_pr_autofix_route_rejects_stale_automation_before_github_or_side_
     assert!(!routed);
     assert!(chat.get_sent_messages().await.is_empty());
     assert!(chat.get_sent_options().await.is_empty());
-    let github_state = github.state();
-    assert_eq!(github_state.fetch_pr_health_calls, 0);
-    assert_eq!(github_state.mark_pr_ready_calls, 0);
-    assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
-    assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
-    drop(github_state);
+    let github_calls = {
+        let github_state = github.state();
+        (
+            github_state.fetch_pr_health_calls,
+            github_state.mark_pr_ready_calls,
+            github_state.enable_pr_auto_merge_calls,
+            github_state.disable_pr_auto_merge_calls,
+        )
+    };
+    assert_eq!(github_calls, (0, 0, 0, 0));
     assert_eq!(
         workspace_repo
             .get_by_conversation_id(&conversation_id)
