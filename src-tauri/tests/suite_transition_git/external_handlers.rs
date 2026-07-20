@@ -2330,6 +2330,98 @@ async fn test_review_action_approve_review_allows_review_passed() {
 }
 
 #[tokio::test]
+async fn test_review_action_preserves_tasks_disabled_error_without_transition() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-review-action-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Review Action Tasks Disabled"))
+        .await
+        .unwrap();
+    let mut task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Review passed task".to_string(),
+    );
+    task.internal_status = InternalStatus::ReviewPassed;
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+    let history_before = state
+        .app_state
+        .task_repo
+        .get_status_history(&task.id)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = review_action_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        Json(ReviewActionRequest {
+            task_id: task.id.to_string(),
+            action: ReviewActionType::ApproveReview,
+            resolution: None,
+            feedback: None,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off review action must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("task must remain persisted")
+            .internal_status,
+        InternalStatus::ReviewPassed
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_status_history(&task.id)
+            .await
+            .unwrap()
+            .len(),
+        history_before.len()
+    );
+}
+
+#[tokio::test]
 async fn test_review_action_approve_review_rejects_reviewing() {
     let state = setup_test_state().await;
 
@@ -2363,7 +2455,7 @@ async fn test_review_action_approve_review_rejects_reviewing() {
 
     assert!(result.is_err());
     assert_eq!(
-        result.unwrap_err(),
+        result.unwrap_err().status,
         axum::http::StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -2411,7 +2503,7 @@ async fn test_review_action_approve_review_rejects_merged() {
 
     assert!(result.is_err());
     assert_eq!(
-        result.unwrap_err(),
+        result.unwrap_err().status,
         axum::http::StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -2423,6 +2515,79 @@ async fn test_review_action_approve_review_rejects_merged() {
         .unwrap()
         .unwrap();
     assert_eq!(updated.internal_status, InternalStatus::Merged);
+}
+
+#[tokio::test]
+async fn test_create_task_note_preserves_tasks_disabled_error_without_mutation() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-task-note-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Task Note Tasks Disabled"))
+        .await
+        .unwrap();
+    let task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Task with a note".to_string(),
+    );
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = create_task_note_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        Json(CreateTaskNoteRequest {
+            task_id: task.id.to_string(),
+            note: "must not be saved".to_string(),
+        }),
+    )
+    .await
+    .expect_err("Tasks-off note mutation must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("task must remain persisted")
+            .description,
+        task.description
+    );
 }
 
 // ============================================================================
