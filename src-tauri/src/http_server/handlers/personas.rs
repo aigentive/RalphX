@@ -10,7 +10,9 @@ use crate::application::personas::{
     builder_draft_updated_payload, PersonaService, SavePersonaDraftInput,
     PERSONA_FEATURE_DISABLED_PREFIX,
 };
-use crate::domain::entities::{ChatContextType, ChatConversationId, Persona, PersonaId, ProjectId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversation, ChatConversationId, Persona, PersonaId, ProjectId,
+};
 use crate::error::AppError;
 use crate::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
 use crate::http_server::types::{HttpError, HttpServerState};
@@ -34,30 +36,8 @@ pub async fn save_persona_draft(
 ) -> Result<Json<Persona>, HttpError> {
     ensure_enabled()?;
     let service = service(&state);
-    // This caller identity is supplied by the unauthenticated loopback MCP bridge.
-    let caller_conversation_id = caller_session_id(&headers).ok_or_else(|| {
-        HttpError::validation(format!(
-            "save_persona_draft requires a valid {CALLER_SESSION_ID_HEADER} caller-session header"
-        ))
-    })?;
-    let conversation = state
-        .app_state
-        .chat_conversation_repo
-        .get_by_id(&ChatConversationId::from_string(caller_conversation_id))
-        .await
-        .map_err(map_app_error)?
-        .ok_or_else(|| {
-            HttpError::validation(
-                "save_persona_draft caller conversation was not found; start or resume the persona builder conversation and retry"
-                    .to_string(),
-            )
-        })?;
-    if !conversation.is_persona_builder() {
-        return Err(HttpError::validation(
-            "save_persona_draft caller is not a valid persona builder conversation; use PersonaBuilder mode with Project or Standalone context"
-                .to_string(),
-        ));
-    }
+    let conversation =
+        require_persona_builder_caller(&state, &headers, "save_persona_draft").await?;
     if conversation.builder_draft_id.is_none() && conversation.builder_result_persona_id.is_some() {
         return Err(map_app_error(AppError::PersonaAlreadyApproved));
     }
@@ -123,14 +103,53 @@ pub async fn save_persona_draft(
 
 pub async fn get_persona_draft(
     State(state): State<HttpServerState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Persona>, HttpError> {
     ensure_enabled()?;
+    let draft_id = persona_id(id)?;
+    let conversation =
+        require_persona_builder_caller(&state, &headers, "get_persona_draft").await?;
+    if conversation.builder_draft_id.as_deref() != Some(draft_id.as_str()) {
+        return Err(HttpError::validation(
+            "PersonaBuilder conversation cannot read outside its bound draft".to_string(),
+        ));
+    }
     service(&state)
-        .get_draft(true, &persona_id(id)?)
+        .get_draft(true, &draft_id)
         .await
         .map(Json)
         .map_err(map_app_error)
+}
+
+async fn require_persona_builder_caller(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+    operation: &str,
+) -> Result<ChatConversation, HttpError> {
+    // This caller identity is supplied by the unauthenticated loopback MCP bridge.
+    let caller_conversation_id = caller_session_id(headers).ok_or_else(|| {
+        HttpError::validation(format!(
+            "{operation} requires a valid {CALLER_SESSION_ID_HEADER} caller-session header"
+        ))
+    })?;
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(caller_conversation_id))
+        .await
+        .map_err(map_app_error)?
+        .ok_or_else(|| {
+            HttpError::validation(format!(
+                "{operation} caller conversation was not found; start or resume the persona builder conversation and retry"
+            ))
+        })?;
+    if !conversation.is_persona_builder() {
+        return Err(HttpError::validation(format!(
+            "{operation} caller is not a valid persona builder conversation; use PersonaBuilder mode with Project or Standalone context"
+        )));
+    }
+    Ok(conversation)
 }
 
 fn service(state: &HttpServerState) -> PersonaService {

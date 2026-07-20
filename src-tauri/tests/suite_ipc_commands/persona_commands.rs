@@ -12,12 +12,64 @@ use ralphx_lib::commands::persona_commands::{
     update_persona_for_state, CreatePersonaDraftInput, ListPersonasInput, PersonaIdInput,
     UpdatePersonaDraftInput, UpdatePersonaInput,
 };
-use ralphx_lib::domain::entities::PersonaStatus;
+use ralphx_lib::domain::entities::{ArtifactContent, Persona, PersonaStatus};
 use ralphx_lib::infrastructure::sqlite::SqlitePersonaRepository;
 use tauri::Manager;
 
 fn persona_content(slug: &str, body: &str) -> String {
     format!("---\nname: {slug}\nkind: persona\ndescription: Test persona\n---\n{body}")
+}
+
+fn persona_content_with_description(slug: &str, description: &str, body: &str) -> String {
+    format!("---\nname: {slug}\nkind: persona\ndescription: {description}\n---\n{body}")
+}
+
+async fn replace_structured_fields_with_stale_values(state: &AppState, persona: &Persona) {
+    let id = persona.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE personas SET name = 'Stale name', description = 'Stale description'
+                 WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("stale structured persona fixture should persist");
+}
+
+async fn assert_persona_artifact_matches_structured_update(state: &AppState, persona: &Persona) {
+    let parsed = validate_persona_content(&persona.slug, &persona.content)
+        .expect("updated persona should retain canonical markdown");
+    assert_eq!(persona.name, parsed.frontmatter.name);
+    assert_eq!(persona.description, parsed.frontmatter.description);
+
+    let artifact = state
+        .artifact_repo
+        .get_by_id(
+            persona
+                .artifact_id
+                .as_ref()
+                .expect("updated persona should have an artifact tip"),
+        )
+        .await
+        .expect("artifact lookup should succeed")
+        .expect("updated persona artifact should exist");
+    assert_eq!(artifact.name, persona.name);
+    assert_eq!(artifact.metadata.created_by, "user");
+    assert_eq!(i64::from(artifact.metadata.version), persona.version);
+    let metadata = artifact
+        .metadata
+        .custom_metadata
+        .expect("persona artifact should carry custom metadata");
+    assert_eq!(metadata["persona_version"], persona.version);
+    assert_eq!(metadata["created_by"], "user");
+    assert_eq!(
+        artifact.content,
+        ArtifactContent::inline(persona.content.clone())
+    );
 }
 
 fn command_app() -> (tauri::App<tauri::test::MockRuntime>, RecordingEventSink) {
@@ -98,12 +150,19 @@ async fn update_persona_draft_command_enforces_cas_and_emits_only_after_success(
     )
     .await
     .expect("fixture draft should create");
+    replace_structured_fields_with_stale_values(state.inner(), &draft).await;
     let events_after_create = events.events().len();
+
+    let updated_content = persona_content_with_description(
+        "manual-draft",
+        "Updated draft description",
+        "Manual edit",
+    );
 
     let updated = update_persona_draft_for_state(
         UpdatePersonaDraftInput {
             id: draft.id.as_str().to_string(),
-            content: persona_content("manual-draft", "Manual edit"),
+            content: updated_content.clone(),
             expected_content_hash: Some(draft.content_hash.clone()),
         },
         state.inner(),
@@ -112,6 +171,22 @@ async fn update_persona_draft_command_enforces_cas_and_emits_only_after_success(
     .await
     .expect("matching draft hash should update through the command path");
     assert_eq!(updated.version, draft.version + 1);
+    assert_eq!(updated.name, "manual-draft");
+    assert_eq!(updated.description, "Updated draft description");
+    assert_eq!(updated.content, updated_content);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect("updated draft should reload"),
+        updated
+    );
+    assert_persona_artifact_matches_structured_update(state.inner(), &updated).await;
     let emitted = events.events();
     assert_eq!(emitted.len(), events_after_create + 1);
     assert_eq!(emitted.last().unwrap().event, "persona:draft_updated");
@@ -474,10 +549,26 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     .await
     .expect("fixture draft should approve");
 
+    let active_before_update = get_persona_for_state(
+        PersonaIdInput {
+            id: draft.id.as_str().to_string(),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("active fixture should reload");
+    replace_structured_fields_with_stale_values(state.inner(), &active_before_update).await;
+    let updated_content = persona_content_with_description(
+        "update-persona",
+        "Updated active description",
+        "Updated active body",
+    );
+
     let updated = update_persona_for_state(
         UpdatePersonaInput {
             id: draft.id.as_str().to_string(),
-            content: Some(persona_content("update-persona", "Updated active body")),
+            content: Some(updated_content.clone()),
             description: None,
             body: None,
         },
@@ -486,11 +577,23 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     )
     .await
     .expect("enabled update command should update the active persona");
-    assert_eq!(
-        updated.content,
-        persona_content("update-persona", "Updated active body")
-    );
+    assert_eq!(updated.name, "update-persona");
+    assert_eq!(updated.description, "Updated active description");
+    assert_eq!(updated.content, updated_content);
     assert_eq!(updated.version, 3);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect("updated active persona should reload"),
+        updated
+    );
+    assert_persona_artifact_matches_structured_update(state.inner(), &updated).await;
 
     assert_eq!(
         update_persona_for_state(

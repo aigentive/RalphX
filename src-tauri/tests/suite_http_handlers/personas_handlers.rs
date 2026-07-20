@@ -721,7 +721,124 @@ async fn save_draft_handler_rejects_when_flag_off() {
 }
 
 #[tokio::test]
-async fn get_persona_draft_handler_round_trips() {
+async fn get_persona_draft_rejects_missing_caller_identity() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let (_, headers) = persona_builder_headers(&state).await;
+    let draft = save_persona_draft(
+        State(state.clone()),
+        headers,
+        Json(request(
+            "missing-read-identity",
+            persona_content("missing-read-identity", "Body"),
+        )),
+    )
+    .await
+    .expect("draft should save")
+    .0;
+
+    let error = get_persona_draft(
+        State(state),
+        HeaderMap::new(),
+        Path(draft.id.as_str().to_string()),
+    )
+    .await
+    .expect_err("missing caller identity must reject");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains(CALLER_SESSION_ID_HEADER)));
+}
+
+#[tokio::test]
+async fn get_persona_draft_rejects_non_builder_caller() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let (_, builder_headers) = persona_builder_headers(&state).await;
+    let draft = save_persona_draft(
+        State(state.clone()),
+        builder_headers,
+        Json(request(
+            "non-builder-reader",
+            persona_content("non-builder-reader", "Body"),
+        )),
+    )
+    .await
+    .expect("draft should save")
+    .0;
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::from_string(
+            "non-builder-reader-project".to_string(),
+        )))
+        .await
+        .expect("seed non-builder caller");
+
+    let error = get_persona_draft(
+        State(state),
+        conversation_headers(&conversation),
+        Path(draft.id.as_str().to_string()),
+    )
+    .await
+    .expect_err("non-builder caller must reject");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not a valid persona builder conversation")));
+}
+
+#[tokio::test]
+async fn get_persona_draft_rejects_draft_outside_caller_binding() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let (_, first_headers) = persona_builder_headers(&state).await;
+    let first_draft = save_persona_draft(
+        State(state.clone()),
+        first_headers,
+        Json(request(
+            "first-bound-reader",
+            persona_content("first-bound-reader", "Body"),
+        )),
+    )
+    .await
+    .expect("first draft should save")
+    .0;
+    let (_, second_headers) = persona_builder_headers(&state).await;
+    let second_draft = save_persona_draft(
+        State(state.clone()),
+        second_headers.clone(),
+        Json(request(
+            "second-bound-reader",
+            persona_content("second-bound-reader", "Body"),
+        )),
+    )
+    .await
+    .expect("second draft should save")
+    .0;
+
+    let error = get_persona_draft(
+        State(state),
+        second_headers,
+        Path(first_draft.id.as_str().to_string()),
+    )
+    .await
+    .expect_err("builder must not read outside its bound draft");
+
+    assert_ne!(first_draft.id, second_draft.id);
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("outside its bound draft")));
+}
+
+#[tokio::test]
+async fn get_persona_draft_allows_bound_builder_read() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let (conversation, headers) = persona_builder_headers(&state).await;
@@ -734,10 +851,14 @@ async fn get_persona_draft_handler_round_trips() {
     .expect("draft should save")
     .0;
 
-    let loaded = get_persona_draft(State(state), Path(draft.id.as_str().to_string()))
-        .await
-        .expect("draft should load")
-        .0;
+    let loaded = get_persona_draft(
+        State(state),
+        conversation_headers(&conversation),
+        Path(draft.id.as_str().to_string()),
+    )
+    .await
+    .expect("draft should load")
+    .0;
 
     assert_eq!(loaded.id, draft.id);
     let source_session_id = conversation.id.as_str();

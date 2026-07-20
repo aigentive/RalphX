@@ -1,6 +1,7 @@
 use super::{
     clear_manual_role_persona_defaults_sync, ensure_enabled, PersonaService, SavePersonaDraftInput,
 };
+use ralphx_domain::personas::validation::ParsedPersona;
 use serde_json::{json, Map, Value};
 
 use crate::domain::entities::{
@@ -141,14 +142,13 @@ impl PersonaService {
         &self,
         id: &PersonaId,
         content: &str,
-        content_hash: &str,
+        parsed: ParsedPersona,
         expected_content_hash: Option<&str>,
         required_status: PersonaStatus,
         created_by: &'static str,
     ) -> AppResult<Persona> {
         let id = id.as_str().to_string();
         let content = content.to_string();
-        let content_hash = content_hash.to_string();
         let expected = expected_content_hash.map(str::to_string);
         self.db
             .run_transaction(move |conn| {
@@ -169,12 +169,14 @@ impl PersonaService {
                 }
                 let changed = conn.execute(
                     "UPDATE personas
-                     SET content = ?1, content_hash = ?2, version = version + 1,
-                         updated_at = ?3
-                     WHERE id = ?4 AND status = ?5",
+                     SET name = ?1, description = ?2, content = ?3, content_hash = ?4,
+                         version = version + 1, updated_at = ?5
+                     WHERE id = ?6 AND status = ?7",
                     rusqlite::params![
+                        parsed.frontmatter.name,
+                        parsed.frontmatter.description,
                         content,
-                        content_hash,
+                        parsed.content_hash,
                         chrono::Utc::now().to_rfc3339(),
                         id,
                         required_status.to_string(),

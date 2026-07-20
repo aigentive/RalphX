@@ -281,7 +281,7 @@ impl PersonaService {
         self.update_content_with_artifact(
             id,
             content,
-            &parsed.content_hash,
+            parsed,
             expected_content_hash,
             PersonaStatus::Draft,
             CREATED_BY_USER,
@@ -301,7 +301,7 @@ impl PersonaService {
         self.update_content_with_artifact(
             id,
             content,
-            &parsed.content_hash,
+            parsed,
             None,
             PersonaStatus::Draft,
             CREATED_BY_AGENT,
@@ -342,7 +342,7 @@ impl PersonaService {
         self.update_content_with_artifact(
             id,
             content,
-            &parsed.content_hash,
+            parsed,
             None,
             PersonaStatus::Active,
             CREATED_BY_USER,
