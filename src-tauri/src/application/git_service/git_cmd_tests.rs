@@ -1,5 +1,7 @@
 use super::*;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{oneshot, Notify, Semaphore};
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -387,6 +389,60 @@ async fn test_run_background_basic_git_version() {
         "background git --version should succeed: {:?}",
         result
     );
+}
+
+#[tokio::test]
+async fn background_global_admission_does_not_overtake_registered_foreground_work() {
+    let process_permits = Arc::new(Semaphore::new(1));
+    let foreground_in_flight = Arc::new(AtomicUsize::new(0));
+    let background_waiting = Arc::new(Notify::new());
+    let foreground_release = Arc::new(Notify::new());
+    let held_permit = process_permits.acquire().await.unwrap();
+
+    let (background_admitted_tx, mut background_admitted_rx) = oneshot::channel();
+    let background_permits = process_permits.clone();
+    let background_foreground = foreground_in_flight.clone();
+    let background_waiting_signal = background_waiting.clone();
+    let background = tokio::spawn(async move {
+        let permit = acquire_background_global_permit_with_wait_hook(
+            &background_permits,
+            &background_foreground,
+            || background_waiting_signal.notify_one(),
+        )
+        .await
+        .unwrap();
+        background_admitted_tx.send(()).unwrap();
+        drop(permit);
+    });
+
+    background_waiting.notified().await;
+
+    let (foreground_registered_tx, foreground_registered_rx) = oneshot::channel();
+    let (foreground_admitted_tx, mut foreground_admitted_rx) = oneshot::channel();
+    let foreground_permits = process_permits.clone();
+    let foreground_count = foreground_in_flight.clone();
+    let foreground_release_signal = foreground_release.clone();
+    let foreground = tokio::spawn(async move {
+        foreground_count.fetch_add(1, Ordering::SeqCst);
+        foreground_registered_tx.send(()).unwrap();
+        let permit = foreground_permits.acquire().await.unwrap();
+        foreground_admitted_tx.send(()).unwrap();
+        foreground_release_signal.notified().await;
+        drop(permit);
+        foreground_count.fetch_sub(1, Ordering::SeqCst);
+    });
+
+    foreground_registered_rx.await.unwrap();
+    drop(held_permit);
+
+    tokio::select! {
+        _ = &mut foreground_admitted_rx => {}
+        _ = &mut background_admitted_rx => panic!("background work overtook registered foreground work"),
+    }
+
+    foreground_release.notify_one();
+    foreground.await.unwrap();
+    background.await.unwrap();
 }
 
 #[tokio::test]

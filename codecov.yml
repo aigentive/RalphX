@@ -108,6 +108,12 @@ coverage:
           # repository atomicity tests; keep patch coverage focused on those
           # deterministic units instead of every orchestration error branch.
           - "!src-tauri/src/application/agent_workspace_review_auto_merge.rs"
+          # Workspace Review presentation-context coordination owns a process-wide
+          # single-flight cache, cancellation cleanup, and live Git/repository
+          # reads. The public status, cache, refresh, and coalescing outcomes are
+          # covered in its sidecar suite; exclude unobservable coordinator plumbing
+          # from the patch gate, consistent with the adjacent auto-merge coordinator.
+          - "!src-tauri/src/application/agent_workspace_review_context.rs"
           # Execution-plan scoped control command wrappers require the production
           # Tauri AppHandle runtime; helper and service behavior is covered in
           # task_commands execution-plan sidecar tests.
