@@ -6,6 +6,7 @@ import { isPersonaUnavailableError } from "@/lib/personaErrors";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
 import { AgentsStartComposer } from "./AgentsStartComposer";
+import { parseMcpSetupPreflightFailure } from "./agentStartErrors";
 
 type StartComposerProps = ComponentProps<typeof AgentsStartComposer>;
 type StartConversationInput = Parameters<StartComposerProps["onSubmit"]>[0];
@@ -57,7 +58,10 @@ export function AgentsStartConversationPanel({
               err instanceof Error
                 ? err.message
                 : "Failed to start agent conversation";
-            if (!isPersonaUnavailableError(message)) {
+            if (
+              !isPersonaUnavailableError(message) &&
+              !parseMcpSetupPreflightFailure(err)
+            ) {
               toast.error(message);
             }
             throw err;

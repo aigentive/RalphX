@@ -18,6 +18,7 @@ import type {
   CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
+import { mcpPolicyApi } from "@/api/mcp-policy";
 import type { AutomationAuthoringMode } from "@/api/automations";
 import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
@@ -66,6 +67,8 @@ import {
 import {
   buildAgentStartConversationRetryInput,
   parseLinkedSetupFailure,
+  parseMcpSetupPreflightFailure,
+  type McpSetupPreflightFailureDetails,
 } from "./agentStartErrors";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import type { AgentQueueHaltState } from "./agentExecutionPause";
@@ -155,6 +158,7 @@ type StarterTypingPhase = "holding" | "typing" | "deleting";
 type StartComposerError =
   | { kind: "plain"; message: string }
   | { kind: "linked_setup"; message: string }
+  | { kind: "mcp_setup"; details: McpSetupPreflightFailureDetails }
   | { kind: "persona_unavailable"; message: string };
 
 function isPendingAttachment(
@@ -192,6 +196,10 @@ function startComposerErrorFromUnknown(error: unknown): StartComposerError {
   const linked = parseLinkedSetupFailure(error);
   if (linked) {
     return { kind: "linked_setup", message: linked.message };
+  }
+  const mcpSetup = parseMcpSetupPreflightFailure(error);
+  if (mcpSetup) {
+    return { kind: "mcp_setup", details: mcpSetup };
   }
   return plainStartComposerError(message);
 }
@@ -278,6 +286,7 @@ export function AgentsStartComposer({
   const [personaId, setPersonaId] = useState<string | null>(null);
   const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
+  const [isRepairingMcp, setIsRepairingMcp] = useState(false);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
@@ -624,10 +633,23 @@ export function AgentsStartComposer({
     if (retryInput.base) {
       setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
     }
-    setError({
-      kind: "linked_setup",
-      message: startConversationFailure.message,
-    });
+    setError(
+      startConversationFailure.kind === "linked_setup"
+        ? {
+            kind: "linked_setup",
+            message: startConversationFailure.message,
+          }
+        : {
+            kind: "mcp_setup",
+            details: {
+              provider: startConversationFailure.provider,
+              serverId: startConversationFailure.serverId,
+              scope: startConversationFailure.scope,
+              conflictKind: startConversationFailure.conflictKind,
+              repairStatus: startConversationFailure.repairStatus,
+            },
+          },
+    );
   }, [startConversationFailure]);
 
   useEffect(() => {
@@ -1202,6 +1224,12 @@ export function AgentsStartComposer({
             message: nextError.message,
             retryInput: buildAgentStartConversationRetryInput(launchInput),
           });
+        } else if (nextError.kind === "mcp_setup") {
+          setStartConversationFailure({
+            kind: "mcp_setup",
+            ...nextError.details,
+            retryInput: buildAgentStartConversationRetryInput(launchInput),
+          });
         }
       }
     },
@@ -1215,6 +1243,52 @@ export function AgentsStartComposer({
       providerStatusMessage,
       setStartConversationFailure,
     ]
+  );
+
+  const openMcpSettings = useCallback(
+    (details: McpSetupPreflightFailureDetails) => {
+      openModal("settings", {
+        section: "mcp",
+        provider: details.provider,
+        serverId: details.serverId,
+        scope: details.scope,
+      });
+    },
+    [openModal],
+  );
+
+  const retryLegacyMcpRepair = useCallback(
+    async (details: McpSetupPreflightFailureDetails) => {
+      if (
+        details.provider !== "claude" ||
+        details.serverId !== "ralphx" ||
+        details.scope !== "user"
+      ) {
+        return;
+      }
+      setIsRepairingMcp(true);
+      try {
+        await mcpPolicyApi.retryLegacyRepair({
+          provider: "claude",
+          serverId: "ralphx",
+          scope: "user",
+        });
+        setStartConversationFailure(null);
+        setError(
+          plainStartComposerError("Claude MCP cleanup completed. Start the agent again."),
+        );
+      } catch (repairError) {
+        const parsed = startComposerErrorFromUnknown(repairError);
+        setError(
+          parsed.kind === "mcp_setup"
+            ? parsed
+            : { kind: "mcp_setup", details },
+        );
+      } finally {
+        setIsRepairingMcp(false);
+      }
+    },
+    [setStartConversationFailure],
   );
 
   const handleRetryWithIsolatedBranch = useCallback(async () => {
@@ -1690,7 +1764,71 @@ export function AgentsStartComposer({
             />
           </div>
 
-          {error?.kind === "linked_setup" ? (
+          {error?.kind === "mcp_setup" ? (
+            <div
+              role="alert"
+              className="mx-auto mt-4 flex max-w-[620px] flex-col items-start gap-3 rounded-md px-4 py-3 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--status-warning)",
+                backgroundColor: "var(--bg-elevated)",
+                borderColor: "var(--status-warning-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
+              }}
+              data-testid="agents-start-mcp-setup-error"
+            >
+              <div>
+                <p className="font-medium leading-snug">
+                  {error.details.provider === "claude" ? "Claude" : "Codex"} MCP setup needs attention
+                </p>
+                <p className="mt-1 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                  The provider already defines the reserved MCP server ID
+                  {" "}<code>{error.details.serverId}</code>
+                  {error.details.scope ? ` at ${error.details.scope} scope` : ""}.
+                  {error.details.repairStatus === "manual_only"
+                    ? " RalphX cannot safely identify it as an obsolete registration, so it was left unchanged. Rename or remove that provider-native server before retrying."
+                    : " RalphX recognized an obsolete registration, but Claude did not complete the safe cleanup. Retry cleanup or remove it manually."}
+                </p>
+                {error.details.provider === "claude" &&
+                  error.details.serverId === "ralphx" &&
+                  error.details.scope === "user" && (
+                    <code className="mt-2 block rounded px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-surface)]">
+                      claude mcp remove ralphx -s user
+                    </code>
+                  )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                  style={{
+                    color: "var(--accent-primary)",
+                    backgroundColor: "var(--accent-muted)",
+                  }}
+                  onClick={() => openMcpSettings(error.details)}
+                >
+                  Open MCP settings
+                </button>
+                {error.details.repairStatus !== "manual_only" &&
+                  error.details.provider === "claude" &&
+                  error.details.serverId === "ralphx" &&
+                  error.details.scope === "user" && (
+                    <button
+                      type="button"
+                      className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                      style={{
+                        color: "var(--text-primary)",
+                        backgroundColor: "var(--bg-surface)",
+                      }}
+                      onClick={() => void retryLegacyMcpRepair(error.details)}
+                      disabled={isRepairingMcp || isSubmitting}
+                    >
+                      {isRepairingMcp ? "Retrying cleanup…" : "Retry cleanup"}
+                    </button>
+                  )}
+              </div>
+            </div>
+          ) : error?.kind === "linked_setup" ? (
             <div
               className="mx-auto mt-4 flex max-w-[620px] flex-col items-start gap-2 rounded-md border px-4 py-3 text-left text-[0.8125rem]"
               style={{

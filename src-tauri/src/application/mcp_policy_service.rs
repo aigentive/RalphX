@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::domain::agents::{
     AgentHarnessKind, EffectiveMcpServerPolicy, McpLaunchPolicy, McpOverrideState,
-    McpPolicyOverride, McpPolicySource, McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
+    McpPolicyOverride, McpPolicySource, McpServerKey, McpSetupPreflightFailure,
+    NativeMcpServerSnapshot, NativeMcpState,
 };
 use crate::domain::repositories::{AgentProviderSettingsRepository, McpPolicyRepository};
 use crate::error::{AppError, AppResult};
@@ -16,6 +17,8 @@ pub struct McpPolicyService {
     repo: Arc<dyn McpPolicyRepository>,
     global_policy_path: PathBuf,
     provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    legacy_claude_mcp_app_data_dir: Option<PathBuf>,
+    legacy_claude_mcp_cleanup_cli_override: Option<PathBuf>,
 }
 
 impl McpPolicyService {
@@ -24,7 +27,20 @@ impl McpPolicyService {
             repo,
             global_policy_path,
             provider_settings_repo: None,
+            legacy_claude_mcp_app_data_dir: None,
+            legacy_claude_mcp_cleanup_cli_override: None,
         }
+    }
+
+    pub fn with_legacy_claude_mcp_cleanup(mut self, app_data_dir: PathBuf) -> Self {
+        self.legacy_claude_mcp_app_data_dir = Some(app_data_dir);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_legacy_claude_mcp_cleanup_cli_for_test(mut self, cli_path: PathBuf) -> Self {
+        self.legacy_claude_mcp_cleanup_cli_override = Some(cli_path);
+        self
     }
 
     pub fn with_provider_settings_repo(
@@ -159,15 +175,17 @@ impl McpPolicyService {
         project_id: Option<&str>,
         project_root: Option<&Path>,
     ) -> AppResult<McpLaunchPolicy> {
-        let provider_config_root = self.provider_native_config_root(provider).await?;
+        let (provider_config_root, provider_env) = self.provider_native_context(provider).await?;
+        if provider == AgentHarnessKind::Claude {
+            self.reconcile_legacy_claude_registration(&provider_config_root, &provider_env, false)
+                .await?;
+        }
         crate::infrastructure::agents::ensure_no_reserved_native_mcp_collision_at(
             provider,
             &provider_config_root,
             project_root,
         )
-        .map_err(|error| {
-            AppError::Infrastructure(format!("MCP launch preflight failed: {error}"))
-        })?;
+        .map_err(|error| AppError::Infrastructure(error.safe_message()))?;
         let (global_yaml, project_yaml) = self.load_policy_configs(project_id, project_root)?;
         ensure_valid_policy_config("global", &global_yaml)?;
         ensure_valid_policy_config("project", &project_yaml)?;
@@ -228,6 +246,117 @@ impl McpPolicyService {
             }
         }
         Ok(launch)
+    }
+
+    pub(crate) async fn retry_legacy_claude_registration_repair(&self) -> AppResult<bool> {
+        let (provider_config_root, provider_env) = self
+            .provider_native_context(AgentHarnessKind::Claude)
+            .await?;
+        self.reconcile_legacy_claude_registration(&provider_config_root, &provider_env, true)
+            .await
+    }
+
+    pub(crate) async fn reconcile_legacy_claude_registration_best_effort(&self) -> AppResult<bool> {
+        let (provider_config_root, provider_env) = self
+            .provider_native_context(AgentHarnessKind::Claude)
+            .await?;
+        self.reconcile_legacy_claude_registration(&provider_config_root, &provider_env, false)
+            .await
+    }
+
+    async fn reconcile_legacy_claude_registration(
+        &self,
+        provider_config_root: &Path,
+        provider_env: &HashMap<String, String>,
+        require_exact_match: bool,
+    ) -> AppResult<bool> {
+        use crate::infrastructure::agents::claude::mcp_catalog::{
+            classify_legacy_user_registration, LegacyClaudeRegistration,
+        };
+
+        let Some(app_data_dir) = self.legacy_claude_mcp_app_data_dir.as_deref() else {
+            return Ok(false);
+        };
+        let classification = classify_legacy_user_registration(provider_config_root, app_data_dir)
+            .map_err(|_| legacy_repair_preflight_error())?;
+        match classification {
+            LegacyClaudeRegistration::NotPresent => return Ok(false),
+            LegacyClaudeRegistration::AmbiguousCollision if require_exact_match => {
+                return Err(AppError::Infrastructure(
+                    McpSetupPreflightFailure::ambiguous(
+                        AgentHarnessKind::Claude,
+                        "ralphx",
+                        Some("user".to_string()),
+                    )
+                    .to_start_error_marker(),
+                ));
+            }
+            LegacyClaudeRegistration::AmbiguousCollision => return Ok(false),
+            LegacyClaudeRegistration::ExactHistorical => {}
+        }
+
+        let cli_path = self.resolve_claude_cleanup_cli().await?;
+        let started_at = std::time::Instant::now();
+        match crate::infrastructure::agents::claude::mcp_registration_repair::retire_exact_legacy_user_registration(
+            &cli_path,
+            provider_config_root,
+            app_data_dir,
+            provider_env,
+        )
+        .await
+        {
+            Ok(changed) => {
+                tracing::info!(
+                    provider = "claude",
+                    server_id = "ralphx",
+                    scope = "user",
+                    matcher_version = 1,
+                    changed,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    "Legacy RalphX MCP registration reconciliation completed"
+                );
+                Ok(changed)
+            }
+            Err(code) => {
+                tracing::warn!(
+                    provider = "claude",
+                    server_id = "ralphx",
+                    scope = "user",
+                    matcher_version = 1,
+                    failure_code = %code,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    "Legacy RalphX MCP registration reconciliation failed"
+                );
+                Err(legacy_repair_preflight_error())
+            }
+        }
+    }
+
+    async fn resolve_claude_cleanup_cli(&self) -> AppResult<PathBuf> {
+        if let Some(path) = self.legacy_claude_mcp_cleanup_cli_override.as_ref() {
+            return Ok(path.clone());
+        }
+        if let Some(repo) = self.provider_settings_repo.as_ref() {
+            let settings = repo
+                .get(AgentHarnessKind::Claude)
+                .await
+                .map_err(|_| legacy_repair_preflight_error())?;
+            if let Some(settings) = settings {
+                if let Some(path) =
+                    crate::application::managed_provider_cli::checked_provider_cli_launch_path(
+                        &settings,
+                        "Claude legacy MCP cleanup",
+                    )
+                {
+                    return path.map_err(|_| legacy_repair_preflight_error());
+                }
+            }
+        }
+        tokio::task::spawn_blocking(crate::infrastructure::agents::claude::find_claude_cli)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(legacy_repair_preflight_error)
     }
 
     fn load_global_yaml(&self) -> AppResult<McpPolicyConfigSnapshot> {
@@ -301,6 +430,12 @@ impl McpPolicyService {
             .await
             .map_err(repository_error)
     }
+}
+
+fn legacy_repair_preflight_error() -> AppError {
+    AppError::Infrastructure(
+        McpSetupPreflightFailure::legacy_repair_failed().to_start_error_marker(),
+    )
 }
 
 fn resolve_provider_native_config_root(

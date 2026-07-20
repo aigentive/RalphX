@@ -280,6 +280,7 @@ macro_rules! register_tauri_commands {
             commands::harness_provider_commands::update_agent_provider_settings,
             commands::mcp_policy_commands::get_mcp_catalog,
             commands::mcp_policy_commands::refresh_mcp_catalog,
+            commands::mcp_policy_commands::retry_legacy_mcp_registration_repair,
             commands::mcp_policy_commands::update_mcp_server_override,
             commands::mcp_policy_commands::clear_mcp_server_override,
             commands::mcp_policy_commands::update_mcp_tool_override,

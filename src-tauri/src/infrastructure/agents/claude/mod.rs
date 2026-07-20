@@ -10,11 +10,14 @@ mod generated_plugin;
 pub mod model_labels;
 pub mod model_resolver;
 pub(crate) mod mcp_catalog;
+pub(crate) mod mcp_registration_repair;
 pub mod node_utils;
 mod stream_processor;
 
 #[cfg(test)]
 mod mcp_catalog_tests;
+#[cfg(test)]
+mod mcp_registration_repair_tests;
 
 #[allow(unused_imports)]
 pub use agent_config::team_config::{

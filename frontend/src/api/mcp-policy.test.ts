@@ -32,6 +32,8 @@ describe("MCP policy API contract", () => {
           ],
           disabled_tools: ["search"],
           locked: false,
+          conflict_kind: "ambiguous_reserved_id",
+          repair_status: "manual_only",
           command: "/secret/provider-command",
           env: { TOKEN: "secret" },
         },
@@ -47,6 +49,8 @@ describe("MCP policy API contract", () => {
         {
           serverId: "github",
           configuredState: "follow",
+          conflictKind: "ambiguous_reserved_id",
+          repairStatus: "manual_only",
           knownTools: [
             {
               toolName: "search",

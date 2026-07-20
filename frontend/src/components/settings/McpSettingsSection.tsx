@@ -83,21 +83,44 @@ function PolicySelect({
 function ServerPolicyCard({
   server,
   disabled,
+  focused,
   onServerChange,
   onToolChange,
+  onRepair,
 }: {
   server: McpServer;
   disabled: boolean;
+  focused: boolean;
   onServerChange: (state: McpOverrideState) => Promise<void>;
   onToolChange: (toolName: string, state: McpOverrideState) => Promise<void>;
+  onRepair: () => Promise<void>;
 }) {
-  const status = server.locked
-    ? "Required"
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    cardRef.current?.focus();
+    cardRef.current?.scrollIntoView({ block: "center" });
+  }, [focused]);
+  const status = server.conflictKind
+    ? "Reserved ID conflict"
+    : server.locked
+      ? "Required"
     : server.effectiveEnabled
       ? "Enabled"
       : "Disabled";
   return (
-    <article className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+    <article
+      ref={cardRef}
+      tabIndex={-1}
+      data-mcp-server-id={server.serverId}
+      className="rounded-lg bg-[var(--bg-surface)] p-4 outline-none"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: focused ? "var(--accent-primary)" : "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: focused ? 2 : 1,
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -133,6 +156,22 @@ function ServerPolicyCard({
         <p className="mt-3 rounded-md border border-[var(--status-warning-border)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--status-warning)]">
           {server.diagnostic}
         </p>
+      )}
+      {server.repairStatus === "repairable" && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => void onRepair()}
+          >
+            Retry safe cleanup
+          </Button>
+          <code className="text-xs text-[var(--text-muted)]">
+            claude mcp remove ralphx -s user
+          </code>
+        </div>
       )}
       {server.knownTools.length > 0 && (
         <div className="mt-4 divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
@@ -173,6 +212,10 @@ export function McpSettingsSection() {
   const [provider, setProvider] = useState<Harness | null>(null);
   const [exactServer, setExactServer] = useState("");
   const [exactTool, setExactTool] = useState("");
+  const focusedServerId =
+    typeof modalContext?.["serverId"] === "string"
+      ? modalContext["serverId"]
+      : null;
 
   useEffect(() => {
     const job = scheduleAfterPaint(() => setReady(true));
@@ -197,6 +240,15 @@ export function McpSettingsSection() {
     const fallback = preferred ?? bootstrapEligibleProviders[0];
     if (fallback) setProvider(fallback.provider);
   }, [bootstrapEligibleProviders, provider, providerState.settings.defaultProvider]);
+  useEffect(() => {
+    if (!ready || modalContext?.["section"] !== "mcp") return;
+    const requestedProvider = modalContext["provider"];
+    if (requestedProvider === "claude" || requestedProvider === "codex") {
+      setProvider(requestedProvider);
+    }
+    const requestedScope = modalContext["scope"];
+    setScope(requestedScope === "project" || requestedScope === "local" ? "project" : "global");
+  }, [modalContext, ready]);
 
   const projectId = scope === "project" ? activeProject?.id ?? null : null;
   const policy = useMcpPolicy(
@@ -337,11 +389,28 @@ export function McpSettingsSection() {
               key={`${server.provider}:${server.serverId}`}
               server={server}
               disabled={policy.isUpdating}
+              focused={server.serverId === focusedServerId}
               onServerChange={(state) =>
                 run(() => policy.updateServer({ projectId, provider: server.provider, serverId: server.serverId, state }))
               }
               onToolChange={(toolName, state) =>
                 run(() => policy.updateTool({ projectId, provider: server.provider, serverId: server.serverId, toolName, state }))
+              }
+              onRepair={() =>
+                run(async () => {
+                  if (
+                    server.provider !== "claude" ||
+                    server.serverId !== "ralphx" ||
+                    server.nativeScope !== "user"
+                  ) {
+                    throw new Error("This MCP registration is not eligible for automatic cleanup.");
+                  }
+                  await policy.retryLegacyRepair({
+                    provider: "claude",
+                    serverId: "ralphx",
+                    scope: "user",
+                  });
+                })
               }
             />
           ))}

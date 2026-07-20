@@ -67,6 +67,49 @@ fn rejects_provider_native_reserved_server_collision_before_launch() {
         ensure_no_reserved_native_mcp_collision_at(AgentHarnessKind::Claude, home.path(), None)
             .unwrap_err();
 
-    assert!(error.contains("reserved RalphX server ID"));
-    assert!(!error.contains("user-owned"));
+    let collision = error.collision().expect("typed collision");
+    assert_eq!(collision.provider, AgentHarnessKind::Claude);
+    assert_eq!(collision.server_id, "ralphx");
+    assert_eq!(collision.native_scope.as_deref(), Some("user"));
+    assert!(!error.safe_message().contains("user-owned"));
+}
+
+#[test]
+fn internal_reserved_collision_is_typed_and_never_repairable() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"ralphx_internal":{"command":"user-owned"}}}"#,
+    )
+    .unwrap();
+
+    let error =
+        ensure_no_reserved_native_mcp_collision_at(AgentHarnessKind::Claude, home.path(), None)
+            .unwrap_err();
+
+    let collision = error.collision().expect("typed collision");
+    assert_eq!(collision.server_id, "ralphx_internal");
+    assert_eq!(collision.repair_status.to_string(), "manual_only");
+}
+
+#[test]
+fn codex_reserved_collision_remains_fail_closed_without_repair() {
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "[mcp_servers.ralphx]\ncommand = \"user-owned\"\n",
+    )
+    .unwrap();
+
+    let error = ensure_no_reserved_native_mcp_collision_at(
+        AgentHarnessKind::Codex,
+        codex_home.path(),
+        None,
+    )
+    .unwrap_err();
+
+    let collision = error.collision().expect("typed collision");
+    assert_eq!(collision.provider, AgentHarnessKind::Codex);
+    assert_eq!(collision.server_id, "ralphx");
+    assert_eq!(collision.repair_status.to_string(), "manual_only");
 }
