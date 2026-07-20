@@ -59,7 +59,6 @@ fn notification_category_group_mapping_is_exhaustive() {
         NotificationCategory::PermissionRequest,
         NotificationCategory::AgentQuestion,
         NotificationCategory::PlanApproval,
-        NotificationCategory::TeamPlanApproval,
         NotificationCategory::AutomationPlanApproval,
         NotificationCategory::AutomationPaused,
         NotificationCategory::AutomationRunFailed,

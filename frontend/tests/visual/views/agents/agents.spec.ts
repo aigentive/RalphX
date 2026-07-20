@@ -360,8 +360,6 @@ async function seedConversationWithWorkspace(
             planArtifactId: linkedPlanArtifactId,
             seedTaskId: null,
             parentSessionId: null,
-            teamMode: null,
-            teamConfig: null,
             createdAt: now,
             updatedAt: now,
             archivedAt: null,

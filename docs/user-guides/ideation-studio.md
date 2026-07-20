@@ -340,7 +340,7 @@ Each task merges into the plan branch. When all tasks in the plan are merged, Ra
 **What to do:**
 1. Check the session chat for error messages from the orchestrator
 2. You can message the orchestrator to ask for a status update
-3. In team mode, check the Team Activity panel — a stalled teammate status indicator will show
+3. In RX-native Team mode, check the delegated task cards and activity stream for stalled work
 
 ### Orchestrator asked a question but I didn't answer
 

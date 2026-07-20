@@ -240,7 +240,7 @@ Core work:
 
 - task execution harness routing
 - reviewer/merger harness routing
-- explicit disabling for unsupported team-mode paths
+- RX-native Team capability routing through provider-neutral delegation
 
 Acceptance criteria:
 
@@ -275,11 +275,11 @@ Recommended commit boundaries:
 7. Codex ideation/verification routing
 8. recovery/reconciliation follow-through
 
-## 5. Explicit phase-1 exclusions
+## 5. Historical phase-1 exclusions
 
 Do not include in the first implementation milestone:
 
-- Codex team-mode parity
+- vendor-specific Team parity (superseded by RX-native Team)
 - Codex worker/reviewer/merger rollout
 - removal of legacy Claude compatibility fields before all consumers are migrated
 - aggressive prompt-source refactor beyond what is needed to generate Codex-compatible runtime config

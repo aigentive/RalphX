@@ -1,5 +1,8 @@
 use super::*;
-use crate::domain::entities::{ArtifactRelation, ArtifactRelationId, ArtifactRelationType};
+use crate::domain::entities::{
+    AgentRunId, AgentRunStatus, ArtifactRelation, ArtifactRelationId, ArtifactRelationType,
+    ChatContextType, ChatConversationId,
+};
 use tracing::info;
 
 const PLACEHOLDER_SESSION_IDS: &[&str] = &["SESSION_ID", "unknown", "<session_id>"];
@@ -25,6 +28,9 @@ pub(super) fn artifact_author(
             "Invalid caller agent attribution header".to_string(),
         )
     })?;
+    if agent_type.is_empty() || agent_type.eq_ignore_ascii_case("unknown") {
+        return Ok("system".to_string());
+    }
     let Some(config) = crate::infrastructure::agents::claude::get_agent_config(agent_type) else {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -32,6 +38,121 @@ pub(super) fn artifact_author(
         ));
     };
     Ok(config.name.clone())
+}
+
+pub(super) async fn authorized_team_artifact_author(
+    app_state: &crate::application::AppState,
+    headers: &axum::http::HeaderMap,
+    resolved_session_id: &str,
+) -> Result<String, (StatusCode, String)> {
+    let author = artifact_author(headers)?;
+    if author == "system" {
+        return Ok(author);
+    }
+
+    let config = crate::infrastructure::agents::claude::get_agent_config(&author)
+        .expect("artifact_author already validated the canonical agent");
+    if !config
+        .allowed_mcp_tools
+        .iter()
+        .any(|tool| tool == "create_team_artifact" || tool.ends_with("__create_team_artifact"))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("Caller agent '{author}' cannot create team artifacts"),
+        ));
+    }
+
+    let authority = resolve_artifact_mutation_authority(headers).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Canonical agent attribution requires runtime run and conversation authority"
+                .to_string(),
+        )
+    })?;
+    let run = app_state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(&authority.agent_run_id))
+        .await
+        .map_err(|error| {
+            error!(%error, "Failed to validate team artifact run authority");
+            (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                "Team artifact run authority is stale or missing".to_string(),
+            )
+        })?;
+    if run.status != AgentRunStatus::Running
+        || run.conversation_id.as_str() != authority.conversation_id
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "Team artifact run authority is not current for the conversation".to_string(),
+        ));
+    }
+
+    let conversation = app_state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(&authority.conversation_id))
+        .await
+        .map_err(|error| {
+            error!(%error, "Failed to validate team artifact conversation authority");
+            (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                "Team artifact conversation authority is stale or missing".to_string(),
+            )
+        })?;
+
+    let parent_conversation = if conversation.context_type == ChatContextType::Delegation {
+        if conversation.bound_agent_name.as_deref() != Some(author.as_str()) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Caller agent does not match the delegated conversation binding".to_string(),
+            ));
+        }
+        let parent_conversation_id =
+            conversation
+                .parent_conversation_id
+                .as_deref()
+                .ok_or_else(|| {
+                    (
+                        StatusCode::CONFLICT,
+                        "Delegated team artifact conversation has no parent lineage".to_string(),
+                    )
+                })?;
+        app_state
+            .chat_conversation_repo
+            .get_by_id(&ChatConversationId::from_string(parent_conversation_id))
+            .await
+            .map_err(|error| {
+                error!(%error, "Failed to validate team artifact parent conversation");
+                (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })?
+            .ok_or_else(|| {
+                (
+                    StatusCode::CONFLICT,
+                    "Delegated team artifact parent conversation is missing".to_string(),
+                )
+            })?
+    } else {
+        conversation
+    };
+
+    if parent_conversation.context_type != ChatContextType::Ideation
+        || parent_conversation.context_id != resolved_session_id
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Team artifact session does not match the caller conversation lineage".to_string(),
+        ));
+    }
+
+    Ok(author)
 }
 
 async fn validate_team_artifact_session_id(
@@ -117,7 +238,8 @@ pub async fn create_team_artifact(
     };
 
     // Create the artifact
-    let author = artifact_author(&headers)?;
+    let author =
+        authorized_team_artifact_author(&state.app_state, &headers, &resolved_session_id).await?;
     let mut artifact = Artifact::new_inline(&req.title, artifact_type, &req.content, "system");
 
     // Set bucket to team-findings

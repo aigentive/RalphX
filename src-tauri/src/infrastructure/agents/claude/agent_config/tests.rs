@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
+use crate::infrastructure::agents::claude::agent_config::process_config::canonical_process_mapping;
 use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR,
     SHORT_AUTOMATION_DECOMPOSITION_VERIFIER, SHORT_AUTOMATION_JUDGE, SHORT_AUTOMATION_PLAN_JUDGE,

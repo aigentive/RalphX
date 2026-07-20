@@ -82,27 +82,120 @@ fn migrate_inner(conn: &Connection) -> AppResult<()> {
     )
     .map_err(|error| AppError::Database(error.to_string()))?;
 
-    // Remove relations and version links before deleting the retired artifact type so
-    // the cleanup is deterministic even when foreign-key enforcement is disabled.
     conn.execute(
-        "DELETE FROM artifact_relations
-         WHERE from_artifact_id IN (SELECT id FROM artifacts WHERE type = 'verification_finding')
-            OR to_artifact_id IN (SELECT id FROM artifacts WHERE type = 'verification_finding')",
+        "DELETE FROM notifications WHERE category = 'team_plan_approval'",
         [],
     )
     .map_err(|error| AppError::Database(error.to_string()))?;
-    conn.execute(
-        "UPDATE artifacts
+
+    // Materialize the retiring ids before deleting the artifacts. Foreign keys are
+    // disabled for the table rewrites below, so every FK and denormalized artifact
+    // pointer must be cleaned explicitly before the final integrity check.
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS temp.retired_legacy_team_artifact_ids;
+         CREATE TEMP TABLE retired_legacy_team_artifact_ids (
+             id TEXT PRIMARY KEY
+         ) WITHOUT ROWID;
+         INSERT INTO retired_legacy_team_artifact_ids (id)
+         SELECT id FROM artifacts WHERE type = 'verification_finding';
+
+         DELETE FROM artifact_relations
+         WHERE from_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+            OR to_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE artifacts
          SET previous_version_id = NULL
-         WHERE previous_version_id IN (
-             SELECT id FROM artifacts WHERE type = 'verification_finding'
-         )",
-        [],
-    )
-    .map_err(|error| AppError::Database(error.to_string()))?;
-    conn.execute(
-        "DELETE FROM artifacts WHERE type = 'verification_finding'",
-        [],
+         WHERE previous_version_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         DELETE FROM plan_artifact_approvals
+         WHERE artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         DELETE FROM plan_complexity_assessments
+         WHERE artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         DELETE FROM agent_workspace_review_hunk_annotations
+         WHERE artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         UPDATE tasks
+         SET plan_artifact_id = NULL
+         WHERE plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE ideation_sessions
+         SET plan_artifact_id = CASE
+                 WHEN plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE plan_artifact_id END,
+             inherited_plan_artifact_id = CASE
+                 WHEN inherited_plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE inherited_plan_artifact_id END,
+             verified_plan_artifact_id = CASE
+                 WHEN verified_plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE verified_plan_artifact_id END,
+             verified_plan_agent_run_id = CASE
+                 WHEN verified_plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE verified_plan_agent_run_id END
+         WHERE plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+            OR inherited_plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+            OR verified_plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE task_proposals
+         SET plan_artifact_id = NULL
+         WHERE plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         UPDATE agent_conversation_workspaces
+         SET linked_plan_branch_id = NULL
+         WHERE linked_plan_branch_id IN (
+             SELECT id FROM plan_branches
+             WHERE plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+         );
+         DELETE FROM plan_branches
+         WHERE plan_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         UPDATE automations
+         SET spec_artifact_id = NULL
+         WHERE spec_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE automation_runs
+         SET plan_last_parked_artifact_id = NULL
+         WHERE plan_last_parked_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE personas
+         SET artifact_id = NULL
+         WHERE artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         UPDATE agent_workspace_pr_review_monitors
+         SET review_artifact_id = NULL,
+             review_artifact_version = NULL,
+             review_artifact_head_sha = NULL,
+             review_artifact_updated_at = NULL
+         WHERE review_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         UPDATE agent_workspace_review_monitors
+         SET review_artifact_id = CASE
+                 WHEN review_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_artifact_id END,
+             review_artifact_version = CASE
+                 WHEN review_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_artifact_version END,
+             review_artifact_updated_at = CASE
+                 WHEN review_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_artifact_updated_at END,
+             previous_version_id = CASE
+                 WHEN previous_version_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE previous_version_id END,
+             review_gate_bypassed_at = CASE
+                 WHEN review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_gate_bypassed_at END,
+             review_gate_bypassed_target_scope = CASE
+                 WHEN review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_gate_bypassed_target_scope END,
+             review_gate_bypassed_diff_fingerprint = CASE
+                 WHEN review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_gate_bypassed_diff_fingerprint END,
+             review_gate_bypassed_artifact_id = CASE
+                 WHEN review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_gate_bypassed_artifact_id END,
+             review_gate_bypassed_artifact_version = CASE
+                 WHEN review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+                 THEN NULL ELSE review_gate_bypassed_artifact_version END
+         WHERE review_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+            OR previous_version_id IN (SELECT id FROM retired_legacy_team_artifact_ids)
+            OR review_gate_bypassed_artifact_id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+
+         DELETE FROM artifacts
+         WHERE id IN (SELECT id FROM retired_legacy_team_artifact_ids);
+         DROP TABLE retired_legacy_team_artifact_ids;",
     )
     .map_err(|error| AppError::Database(error.to_string()))?;
 

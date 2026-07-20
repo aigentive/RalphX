@@ -1,7 +1,6 @@
 /**
  * Agent short names used by MCP authorization resolution.
- * Most match canonical ids under `agents/<agent>/agent.yaml` directly; a few
- * legacy teammate aliases are resolved to canonical ids by the metadata loader.
+ * Every value matches a canonical id under `agents/<agent>/agent.yaml` directly.
  */
 export const ORCHESTRATOR_IDEATION = "ralphx-ideation";
 export const ORCHESTRATOR_IDEATION_READONLY = "ralphx-ideation-readonly";

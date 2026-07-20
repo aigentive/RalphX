@@ -6,7 +6,7 @@ Today RalphX supports two harnesses:
 
 | Harness | Best fit today | Notes |
 |---|---|---|
-| `claude` | Full execution pipeline, team mode, mature plugin/MCP flows | Still the default harness |
+| `claude` | Full execution pipeline, RX-native Team, mature plugin/MCP flows | Still the default harness |
 | `codex` | Ideation plus execution, review, and merge lanes when explicitly configured | Uses Codex CLI semantics, not Claude plugin semantics |
 
 ---

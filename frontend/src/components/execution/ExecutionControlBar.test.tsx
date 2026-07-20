@@ -11,13 +11,6 @@ import type { MergePipelineTask } from "@/api/merge-pipeline";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-  }),
-}));
-
 vi.mock("./RunningProcessPopover", () => ({
   RunningProcessPopover: ({
     children,

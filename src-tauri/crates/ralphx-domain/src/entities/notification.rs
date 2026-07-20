@@ -18,7 +18,6 @@ pub enum NotificationCategory {
     PermissionRequest,
     AgentQuestion,
     PlanApproval,
-    TeamPlanApproval,
     AutomationPlanApproval,
     AutomationPaused,
     AutomationRunFailed,
@@ -59,8 +58,7 @@ pub const fn notification_category_group(
         }
         NotificationCategory::ReviewNeeded
         | NotificationCategory::ReviewEscalated
-        | NotificationCategory::PlanApproval
-        | NotificationCategory::TeamPlanApproval => NotificationCategoryGroup::Reviews,
+        | NotificationCategory::PlanApproval => NotificationCategoryGroup::Reviews,
         NotificationCategory::QaFailed
         | NotificationCategory::MergeConflict
         | NotificationCategory::MergeIncomplete

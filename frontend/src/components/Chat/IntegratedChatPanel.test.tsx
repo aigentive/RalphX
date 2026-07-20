@@ -28,14 +28,6 @@ import type {
   StreamingTask,
 } from "@/types/streaming-task";
 
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
-  }),
-}));
-
 // ============================================================================
 // Hoisted mutable state for useChat mock (vi.hoisted runs before vi.mock)
 // ============================================================================

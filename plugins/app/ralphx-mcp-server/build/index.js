@@ -840,7 +840,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 artifact_type,
                 related_artifact_id,
             }, {
-                headers: { "x-ralphx-agent-type": AGENT_TYPE },
+                headers: {
+                    ...(buildArtifactMutationTransportHeaders(runtimeContext) ?? {}),
+                    "x-ralphx-agent-type": AGENT_TYPE,
+                },
             });
         }
         else if (name === "get_team_artifacts") {

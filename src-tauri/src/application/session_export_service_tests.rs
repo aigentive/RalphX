@@ -187,7 +187,7 @@ async fn seed_dependency(
 
 fn build_minimal_export() -> SessionExport {
     SessionExport {
-        schema_version: 1,
+        schema_version: 2,
         exported_at: "2026-03-13T00:00:00Z".into(),
         source_instance: SourceInstance {
             project_name: "Test Project".into(),
@@ -270,7 +270,7 @@ async fn export_session_no_plan_returns_empty_versions() {
     let export = service.export("session-1", "project-1").await.unwrap();
 
     assert_eq!(export.plan_versions.len(), 0);
-    assert_eq!(export.schema_version, 1);
+    assert_eq!(export.schema_version, 2);
 }
 
 #[tokio::test]
@@ -580,6 +580,23 @@ async fn import_unsupported_schema_version_returns_error() {
     assert!(matches!(
         result,
         Err(AppError::ImportVersionUnsupported { version: 99 })
+    ));
+}
+
+#[tokio::test]
+async fn import_legacy_schema_version_returns_error() {
+    let app_state = AppState::new_sqlite_test();
+    seed_project(&app_state, "project-1", "Project 1").await;
+    let service = make_service(&app_state);
+
+    let mut export = build_minimal_export();
+    export.schema_version = 1;
+    let json = serde_json::to_string(&export).unwrap();
+
+    let result = service.import(&json, "project-1").await;
+    assert!(matches!(
+        result,
+        Err(AppError::ImportVersionUnsupported { version: 1 })
     ));
 }
 

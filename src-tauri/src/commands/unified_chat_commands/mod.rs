@@ -204,10 +204,6 @@ pub struct SendAgentMessageInput {
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
-    /// Optional target for team message routing.
-    /// When set to a teammate name, the message is routed to that teammate's stdin
-    /// instead of the lead's. "lead" or None routes to the lead (default behavior).
-    pub target: Option<String>,
 }
 
 fn hidden_user_message_metadata() -> String {
@@ -1704,8 +1700,6 @@ pub struct QueueAgentMessageInput {
     pub content: String,
     /// Client-provided ID for tracking (optional, allows frontend/backend to use same ID)
     pub client_id: Option<String>,
-    /// Optional target for team message routing (teammate name or "lead").
-    pub target: Option<String>,
 }
 
 /// Response for queued message
@@ -3818,7 +3812,6 @@ pub async fn send_agent_message(
         context_type = %input.context_type,
         context_id = %input.context_id,
         content_len = input.content.len(),
-        target = ?input.target,
         "[SEND_MSG] send_agent_message command invoked"
     );
     let context_type = parse_context_type(&input.context_type)?;

@@ -408,7 +408,6 @@ async fn attempt_session_recovery_rejects_authoritative_mode_only_builder_identi
         temp_dir.path(),
         temp_dir.path(),
         None,
-        false,
         Arc::clone(&state.chat_message_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.chat_attachment_repo),

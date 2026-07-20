@@ -55,6 +55,8 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+#[cfg(test)]
+mod team_tests;
 pub mod ticket_canonical_branch;
 pub mod types;
 pub mod validation_run;
@@ -229,10 +231,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
-    TeamMessageRecord,
-    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
-    TeammateSnapshot,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageTarget,
+    TeamMessageTargetKind,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{

@@ -1,6 +1,8 @@
 use super::{
+    get_schema_version,
     helpers::{column_exists, table_exists},
-    run_migrations_through, v20260720140000_remove_legacy_claude_team,
+    run_migrations, run_migrations_through, v20260720140000_remove_legacy_claude_team,
+    SCHEMA_VERSION,
 };
 use crate::infrastructure::sqlite::open_memory_connection;
 
@@ -53,11 +55,125 @@ fn migration_removes_legacy_state_and_preserves_native_team_artifacts() {
         [],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO plan_artifact_approvals
+            (session_id, artifact_id, artifact_version, approved_at)
+         VALUES ('session-1', 'finding-1', 1, '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO plan_complexity_assessments
+            (id, session_id, artifact_id, artifact_version, level, score,
+             recommended_action, confidence, reason_summary, created_at, updated_at)
+         VALUES
+            ('assessment-1', 'session-1', 'finding-1', 1, 'simple', 10,
+             'implement_directly', 1.0, 'retired',
+             '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO plan_branches
+            (id, plan_artifact_id, session_id, project_id, branch_name, source_branch)
+         VALUES ('branch-1', 'finding-1', 'session-1', 'project-1', 'finding', 'main')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_conversation_workspaces
+            (conversation_id, project_id, mode, base_ref_kind, base_ref, branch_name,
+             worktree_path, linked_plan_branch_id, created_at, updated_at)
+         VALUES
+            ('conversation-1', 'project-1', 'edit', 'project_default', 'main',
+             'review-branch', '/tmp/review', 'branch-1',
+             '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_workspace_pr_review_monitors
+            (conversation_id, project_id, pr_number, review_artifact_id,
+             review_artifact_version, review_artifact_head_sha, review_artifact_updated_at,
+             created_at, updated_at)
+         VALUES
+            ('conversation-1', 'project-1', 810, 'finding-1', 1, 'head-sha',
+             '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_workspace_review_monitors
+            (conversation_id, project_id, review_artifact_id, review_artifact_version,
+             review_artifact_updated_at, previous_version_id,
+             review_gate_bypassed_at, review_gate_bypassed_target_scope,
+             review_gate_bypassed_diff_fingerprint, review_gate_bypassed_artifact_id,
+             review_gate_bypassed_artifact_version, created_at, updated_at)
+         VALUES
+            ('conversation-1', 'project-1', 'finding-1', 1,
+             '2026-07-20T00:00:00Z', 'finding-1',
+             '2026-07-20T00:00:00Z', 'branch', 'diff', 'finding-1', 1,
+             '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_workspace_review_hunk_annotations
+            (id, conversation_id, project_id, artifact_id, artifact_version,
+             target_scope, diff_fingerprint, path, diff_source, hunk_header,
+             old_start, old_lines, new_start, new_lines, message, level, created_at)
+         VALUES
+            ('annotation-1', 'conversation-1', 'project-1', 'finding-1', 1,
+             'branch', 'diff', 'src/lib.rs', 'local', '@@',
+             1, 1, 1, 1, 'retired', 'warning', '2026-07-20T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tasks SET plan_artifact_id = 'finding-1' WHERE id = 'task-1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE ideation_sessions
+         SET plan_artifact_id = 'finding-1',
+             inherited_plan_artifact_id = 'finding-1',
+             verified_plan_artifact_id = 'finding-1',
+             verified_plan_agent_run_id = 'run-1'
+         WHERE id = 'session-1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO notifications
+            (id, created_at, project_id, category, severity, title)
+         VALUES
+            ('team-plan-notification-1', '2026-07-20T00:00:00Z', 'project-1',
+             'team_plan_approval', 'action_required', 'Retired team plan')",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE INDEX idx_chat_conversations_cleanup_test
+             ON chat_conversations(context_type);
+         CREATE TRIGGER trg_chat_conversations_cleanup_test
+             AFTER INSERT ON chat_conversations
+             BEGIN
+                 SELECT 1;
+             END;",
+    )
+    .unwrap();
+    conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+    conn.execute("PRAGMA legacy_alter_table = OFF", []).unwrap();
 
-    v20260720140000_remove_legacy_claude_team::migrate(&conn).expect("remove legacy team state");
+    run_migrations(&conn).expect("registered cleanup migration must run during upgrade");
     v20260720140000_remove_legacy_claude_team::migrate(&conn)
         .expect("legacy cleanup is idempotent");
+    run_migrations(&conn).expect("completed migration chain is idempotent");
 
+    assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    assert!(super::v20260521222911_agent_plan_mode::foreign_keys_enabled(&conn).unwrap());
+    assert!(!super::v20260521222911_agent_plan_mode::legacy_alter_table_enabled(&conn).unwrap());
     assert!(!table_exists(&conn, "team_messages"));
     assert!(!table_exists(&conn, "team_sessions"));
     assert!(!column_exists(&conn, "ideation_sessions", "team_mode"));
@@ -92,6 +208,100 @@ fn migration_removes_legacy_state_and_preserves_native_team_artifacts() {
         .unwrap(),
         0
     );
+    for table in [
+        "plan_artifact_approvals",
+        "plan_complexity_assessments",
+        "agent_workspace_review_hunk_annotations",
+        "plan_branches",
+    ] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                .get::<_, i64>(0),)
+                .unwrap(),
+            0,
+            "dependent rows in {table} should be removed"
+        );
+    }
+    let task_plan_artifact_id: Option<String> = conn
+        .query_row(
+            "SELECT plan_artifact_id FROM tasks WHERE id = 'task-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(task_plan_artifact_id, None);
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM notifications WHERE category = 'team_plan_approval'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    let session_artifact_ids: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT plan_artifact_id, inherited_plan_artifact_id,
+                    verified_plan_artifact_id, verified_plan_agent_run_id
+             FROM ideation_sessions WHERE id = 'session-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(session_artifact_ids, (None, None, None, None));
+    let linked_plan_branch_id: Option<String> = conn
+        .query_row(
+            "SELECT linked_plan_branch_id FROM agent_conversation_workspaces
+             WHERE conversation_id = 'conversation-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked_plan_branch_id, None);
+    let pr_review_artifact: (Option<String>, Option<i64>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT review_artifact_id, review_artifact_version,
+                    review_artifact_head_sha, review_artifact_updated_at
+             FROM agent_workspace_pr_review_monitors
+             WHERE conversation_id = 'conversation-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(pr_review_artifact, (None, None, None, None));
+    let review_artifact: (
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+    ) = conn
+        .query_row(
+            "SELECT review_artifact_id, review_artifact_version, previous_version_id,
+                    review_gate_bypassed_at, review_gate_bypassed_artifact_id,
+                    review_gate_bypassed_artifact_version
+             FROM agent_workspace_review_monitors
+             WHERE conversation_id = 'conversation-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(review_artifact, (None, None, None, None, None, None));
     let preserved: (String, String, Option<String>) = conn
         .query_row(
             "SELECT created_by, metadata_json, previous_version_id FROM artifacts WHERE id = 'summary-1'",
@@ -122,6 +332,41 @@ fn migration_removes_legacy_state_and_preserves_native_team_artifacts() {
         )
         .unwrap();
     assert!(!create_sql.contains("legacy_claude_team"));
+    for coordination_mode in [
+        "solo",
+        "rx_native_team",
+        "rx_native_workflow",
+        "codex_native_ultra",
+    ] {
+        conn.execute(
+            "UPDATE chat_conversations SET coordination_mode = ?1 WHERE id = 'conversation-1'",
+            [coordination_mode],
+        )
+        .unwrap();
+    }
+    assert!(conn
+        .execute(
+            "UPDATE chat_conversations
+             SET coordination_mode = 'legacy_claude_team'
+             WHERE id = 'conversation-1'",
+            [],
+        )
+        .is_err());
+    for object_name in [
+        "idx_chat_conversations_cleanup_test",
+        "trg_chat_conversations_cleanup_test",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                [object_name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "dependent object {object_name} should survive the CHECK rewrite"
+        );
+    }
 }
 
 #[test]
@@ -155,6 +400,8 @@ fn migration_rolls_back_all_state_when_destructive_cleanup_fails() {
          END;",
     )
     .unwrap();
+    conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+    conn.execute("PRAGMA legacy_alter_table = OFF", []).unwrap();
 
     let error = v20260720140000_remove_legacy_claude_team::migrate(&conn)
         .expect_err("injected failure must abort migration");
@@ -181,4 +428,6 @@ fn migration_rolls_back_all_state_when_destructive_cleanup_fails() {
     assert!(table_exists(&conn, "team_sessions"));
     assert!(!table_exists(&conn, "chat_conversations_new_plan_mode"));
     assert!(!table_exists(&conn, "chat_conversations_old_plan_mode"));
+    assert!(super::v20260521222911_agent_plan_mode::foreign_keys_enabled(&conn).unwrap());
+    assert!(!super::v20260521222911_agent_plan_mode::legacy_alter_table_enabled(&conn).unwrap());
 }
