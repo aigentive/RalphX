@@ -1982,6 +1982,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       </div>
 
       <div
+        key={
+          personaArtifactOnly
+            ? (conversationId ?? "no-conversation")
+            : "artifact-content"
+        }
         className="flex-1 min-h-0 overflow-y-auto"
         data-testid={
           allAvailableTabsHidden
