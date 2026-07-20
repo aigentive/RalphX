@@ -564,7 +564,7 @@ pub async fn review_action_http(
             current_status = task.internal_status.as_str(),
             "Rejected external review action due to invalid task status"
         );
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        return Err(StatusCode::UNPROCESSABLE_ENTITY.into());
     }
 
     let target_status = match &req.action {
