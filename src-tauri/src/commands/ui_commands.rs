@@ -9,7 +9,7 @@ use crate::application::{
 };
 use crate::infrastructure::agents::{
     agent_personas_enabled, composer_folder_references_enabled, set_agent_personas_override,
-    set_composer_folder_references_override,
+    set_composer_folder_references_override, standalone_conversations_enabled,
 };
 
 /// Response struct for UI feature flags.
@@ -27,6 +27,7 @@ pub struct UiFeatureFlagsResponse {
     pub ticketing_dashboard: bool,
     pub agent_personas: bool,
     pub composer_folder_references: bool,
+    pub standalone_conversations: bool,
     pub agent_conversation_team: bool,
     pub agent_conversation_workflows: bool,
     pub agent_conversation_autopilot: bool,
@@ -43,6 +44,13 @@ pub struct UpdateUiFeatureFlagsInput {
 }
 
 fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
+    ui_feature_flags_response_with_standalone(state, standalone_conversations_enabled())
+}
+
+fn ui_feature_flags_response_with_standalone(
+    state: &AppState,
+    standalone_conversations: bool,
+) -> UiFeatureFlagsResponse {
     let flags = default_ui_feature_flags();
     let agent_capabilities = state.agent_capability_gate.snapshot();
     UiFeatureFlagsResponse {
@@ -56,6 +64,7 @@ fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
         ticketing_dashboard: flags.ticketing_dashboard,
         agent_personas: agent_personas_enabled(),
         composer_folder_references: composer_folder_references_enabled(),
+        standalone_conversations,
         agent_conversation_team: agent_capabilities.team,
         agent_conversation_workflows: agent_capabilities.workflows,
         agent_conversation_autopilot: agent_capabilities.autopilot,

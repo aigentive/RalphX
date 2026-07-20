@@ -173,15 +173,33 @@ describe("AgentComposerSurface", () => {
     });
   });
 
-  it("shows Add folder for a Project conversation and hides it for persona builder", async () => {
+  it("shows Add folder directly after Add files for a Project conversation", async () => {
     const normal = renderComposer({
       conversationId: "conversation-1",
       enableAttachments: true,
+      project: {
+        value: "project-1",
+        onValueChange: vi.fn(),
+        options: [{ id: "project-1", label: "RalphX" }],
+        placeholder: "Project",
+        endAction: <button type="button">New project</button>,
+      },
     });
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
+    const addFiles = screen.getByRole("button", { name: "Add files" });
+    const addFolder = screen.getByRole("button", { name: "Add folder" });
+    const newProject = screen.getByRole("button", { name: "New project" });
+    expect(
+      addFiles.compareDocumentPosition(addFolder) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      addFolder.compareDocumentPosition(newProject) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     normal.unmount();
 
+    // Persona mode needs the Personas flag in addition to folder references.
     renderComposer({
       conversationId: "conversation-2",
       enableAttachments: true,
@@ -228,6 +246,11 @@ describe("AgentComposerSurface", () => {
       return Promise.resolve(undefined);
     });
     renderComposer({ conversationId: "conversation-1" });
+    const folderChip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    expect(folderChip).toHaveTextContent("Folder");
+    expect(folderChip).toHaveTextContent("brand-kit");
     const remove = await screen.findByRole("button", { name: "Remove folder brand-kit" });
     expect(remove).toBeInTheDocument();
     fireEvent.click(remove);
@@ -261,7 +284,7 @@ describe("AgentComposerSurface", () => {
     );
   });
 
-  it("shows the full folder path in a hover tooltip on the persisted chip", async () => {
+  it("shows the full folder path from the keyboard-focusable persisted chip", async () => {
     const references = [
       {
         id: "folder-1",
@@ -275,10 +298,13 @@ describe("AgentComposerSurface", () => {
       if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
       return Promise.resolve(undefined);
     });
-    const user = userEvent.setup();
     renderComposer({ conversationId: "conversation-1" });
-    const chip = await screen.findByText("design-notes");
-    await user.hover(chip);
+    const chip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    const pathTrigger = chip.querySelector<HTMLElement>('[tabindex="0"]');
+    expect(pathTrigger).not.toBeNull();
+    fireEvent.focus(pathTrigger!);
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip.textContent).toContain("/work/very/long/path/design-notes");
   });

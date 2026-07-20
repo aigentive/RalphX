@@ -32,7 +32,6 @@ import {
   ScrollText,
   Square,
   Ticket,
-  X,
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
@@ -68,11 +67,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
@@ -98,6 +92,7 @@ import {
   type AgentComposerMenuItem,
 } from "./composer/AgentComposerCommandMenu";
 import { ComposerRuntimeSelector } from "./composer/runtime/ComposerRuntimeSelector";
+import { ComposerReferencePill } from "./ComposerReferencePill";
 import { FolderReferenceChips } from "./FolderReferenceChips";
 import { subscribeToComposerExcerptReferences } from "./artifact-selection/composerExcerptBridge";
 import {
@@ -1519,21 +1514,40 @@ export function AgentComposerSurface({
     const selected = await openDialog({ directory: true, multiple: false });
     const folderPath = Array.isArray(selected) ? selected[0] : selected;
     if (!folderPath) return;
-    const displayName = folderPath.split(/[\\/]/).filter(Boolean).pop() ?? folderPath;
+    const displayName =
+      folderPath.split(/[\\/]/).filter(Boolean).pop() ?? folderPath;
     setFolderError(null);
     if (conversationId) {
       try {
-        await addFolderReference.mutateAsync({ conversationId, folderPath, displayName });
+        await addFolderReference.mutateAsync({
+          conversationId,
+          folderPath,
+          displayName,
+        });
       } catch (error) {
-        setFolderError(extractErrorMessage(error, "Unable to add folder."));
+        setFolderError(
+          extractErrorMessage(error, "Unable to add folder."),
+        );
       }
       return;
     }
     onFoldersSelected?.([
       ...folders,
-      { id: globalThis.crypto?.randomUUID?.() ?? `${folderPath}-${Date.now()}`, folderPath, displayName },
+      {
+        id:
+          globalThis.crypto?.randomUUID?.() ??
+          `${folderPath}-${Date.now()}`,
+        folderPath,
+        displayName,
+      },
     ]);
-  }, [addFolderReference, attachmentDisabled, conversationId, folders, onFoldersSelected]);
+  }, [
+    addFolderReference,
+    attachmentDisabled,
+    conversationId,
+    folders,
+    onFoldersSelected,
+  ]);
 
   useEffect(() => {
     if (!folderReferencesSupported || !conversationId) return;
@@ -2209,7 +2223,10 @@ function ComposerActionMenu({
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments || showAddFolder || Boolean(project.endAction) || Boolean(onForkSession);
+    enableAttachments ||
+    showAddFolder ||
+    Boolean(project.endAction) ||
+    Boolean(onForkSession);
   const setOpen = onOpenChange;
 
   return (
@@ -2265,7 +2282,16 @@ function ComposerActionMenu({
         )}
 
         {showAddFolder && (
-          <button type="button" disabled={attachmentDisabled} className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors disabled:opacity-50" style={{ color: "var(--text-primary)" }} onClick={() => { onAddFolder?.(); setOpen(false); }}>
+          <button
+            type="button"
+            disabled={attachmentDisabled}
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors disabled:opacity-50"
+            style={{ color: "var(--text-primary)" }}
+            onClick={() => {
+              onAddFolder?.();
+              setOpen(false);
+            }}
+          >
             <FolderOpen className="h-4 w-4" />
             Add folder
           </button>
@@ -2273,7 +2299,7 @@ function ComposerActionMenu({
 
         {project.endAction && (
           <>
-            {enableAttachments && (
+            {(enableAttachments || showAddFolder) && (
               <div
                 className="my-1 h-px"
                 style={{ background: "var(--overlay-weak)" }}
@@ -2285,7 +2311,7 @@ function ComposerActionMenu({
 
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction) && (
+            {(enableAttachments || showAddFolder || project.endAction) && (
               <div
                 className="my-1 h-px"
                 style={{ background: "var(--overlay-weak)" }}
@@ -2558,70 +2584,6 @@ function ComposerReferencePills({
         );
       })}
     </div>
-  );
-}
-
-function ComposerReferencePill({
-  testId,
-  icon: Icon,
-  typeLabel,
-  label,
-  description,
-  removeLabel,
-  onRemove,
-}: {
-  testId: string;
-  icon: ComponentType<{ className?: string }>;
-  typeLabel: string;
-  label: string;
-  description?: string;
-  removeLabel: string;
-  onRemove: () => void;
-}) {
-  return (
-    <span
-      data-testid={testId}
-      className="inline-flex h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-[0.75rem]"
-      style={{
-        background: "var(--bg-surface)",
-        borderColor: "var(--bg-hover)",
-        color: "var(--text-primary)",
-      }}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
-      <span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase text-[var(--text-muted)]">
-        {typeLabel}
-      </span>
-      <span
-        className="min-w-0 max-w-[16rem] truncate font-medium"
-        title={label}
-      >
-        {label}
-      </span>
-      {description && description !== label ? (
-        <span
-          className="hidden min-w-0 max-w-[18rem] truncate text-[var(--text-muted)] sm:inline"
-          title={description}
-        >
-          {description}
-        </span>
-      ) : null}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            aria-label={removeLabel}
-            onClick={onRemove}
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="text-xs">
-          {removeLabel}
-        </TooltipContent>
-      </Tooltip>
-    </span>
   );
 }
 

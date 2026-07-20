@@ -12,6 +12,8 @@ Agent Personas are reusable, prompt-only behavior profiles for Agent conversatio
 
 Persona building now uses the normal Agents conversation. Add text files or folder references from the composer, describe the desired persona, and answer the builder's questions. The Persona tab shows the conversation-bound draft and approval actions; there is no separate Settings ingestion screen.
 
+Folder references are default-off during rollout. Enable **Settings → Capabilities → Folder context** to show **Add folder** directly below **Add files** in supported Agent composers. Standalone conversations remain controlled by the `standalone_conversations` config/env flag.
+
 ## Scope and Context
 
 | Build or use case | Behavior |

@@ -269,6 +269,24 @@ describe("useFeatureFlags", () => {
 });
 
 describe("useUpdateFeatureFlags", () => {
+  it("updates folder references independently", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      composerFolderReferences: true,
+    });
+
+    const { result } = renderHook(() => useUpdateFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate({ composerFolderReferences: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { composerFolderReferences: true },
+    });
+  });
+
   it("updates Team independently without writing Workflows", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       activityPage: true,
