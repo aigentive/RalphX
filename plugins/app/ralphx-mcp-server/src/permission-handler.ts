@@ -12,6 +12,7 @@
  */
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { safeError } from "./redact.js";
@@ -21,6 +22,7 @@ import {
   type RuntimeContext,
 } from "./runtime-context.js";
 import {
+  getConfiguredFilesystemReadRoots,
   isWithin,
   normalizePathLike,
 } from "./path-policy.js";
@@ -113,6 +115,23 @@ function isTrustedReadPath(targetPath: string): boolean {
   }
 
   return false;
+}
+
+function isTrustedReadRootPath(targetPath: string): boolean {
+  try {
+    const realTarget = fs.realpathSync(normalizePathLike(targetPath));
+    if (isSensitivePath(realTarget)) return false;
+
+    return getConfiguredFilesystemReadRoots().some((root) => {
+      try {
+        return isWithin(fs.realpathSync(root), realTarget);
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
 }
 
 function isTrustedClaudeProjectMemoryPath(targetPath: string): boolean {
@@ -218,17 +237,25 @@ export function shouldAutoApprovePermission(
     }
     case "Read": {
       const targetPath = getStringField(toolInput, ["file_path", "filePath", "path"]);
-      return Boolean(targetPath && isTrustedReadPath(targetPath));
+      return Boolean(
+        targetPath &&
+          (isTrustedReadPath(targetPath) || isTrustedReadRootPath(targetPath))
+      );
     }
     case "LS":
     case "Grep": {
       const targetPath = getStringField(toolInput, ["file_path", "filePath", "path"]);
-      return Boolean(targetPath && isTrustedReadPath(targetPath));
+      return Boolean(
+        targetPath &&
+          (isTrustedReadPath(targetPath) || isTrustedReadRootPath(targetPath))
+      );
     }
     case "Glob": {
       const pattern = getStringField(toolInput, ["pattern"]);
       const root = pattern ? extractGlobRoot(pattern) : null;
-      return Boolean(root && isTrustedReadPath(root));
+      return Boolean(
+        root && (isTrustedReadPath(root) || isTrustedReadRootPath(root))
+      );
     }
     case "Bash": {
       const command = getStringField(toolInput, ["command"]);
@@ -304,7 +331,7 @@ function normalizePermissionArgs(
  */
 export async function handlePermissionRequest(
   args: Record<string, unknown>,
-  runtimeContext: RuntimeContext = {}
+  runtimeContext: Pick<RuntimeContext, "conversationId"> = {}
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const { tool_name, tool_input, context } = normalizePermissionArgs(args);
   const normalizedToolInput = normalizePermissionToolInput(tool_name, tool_input);

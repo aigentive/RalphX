@@ -390,7 +390,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     try {
-      const result = await handleFilesystemToolCall(name, args);
+      const result = await handleFilesystemToolCall(name, args, runtimeContext);
       safeTrace("tool.success", {
         name,
         result: summarizeResult(result),

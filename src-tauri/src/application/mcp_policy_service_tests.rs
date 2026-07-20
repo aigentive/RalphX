@@ -321,6 +321,133 @@ async fn provider_native_reserved_id_collision_fails_closed() {
     assert!(effective.native.diagnostic.is_some());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn launch_policy_retires_exact_app_owned_legacy_claude_registration() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    let config_path = home.path().join(".claude.json");
+    let cleaned_path = home.path().join("cleaned-claude.json");
+    let marker_path = home.path().join("legacy-cleanup-ran");
+    let legacy_server_path = app_data
+        .path()
+        .join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
+    let trace_dir = app_data.path().join("logs/mcp-proxy");
+    fs::write(
+        &config_path,
+        serde_json::json!({
+            "mcpServers": {
+                "ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [legacy_server_path, "--trace-dir", trace_dir]
+                },
+                "github": {"command": "provider-owned"}
+            },
+            "unrelatedMetadata": {"keep": true}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let cleaned = serde_json::json!({
+        "mcpServers": {"github": {"command": "provider-owned"}},
+        "unrelatedMetadata": {"keep": true}
+    });
+    fs::write(&cleaned_path, cleaned.to_string()).unwrap();
+    let fake_cli = home.path().join("fake-claude");
+    fs::write(
+        &fake_cli,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = mcp ] && [ \"$2\" = remove ] && [ \"$3\" = ralphx ] && [ \"$4\" = -s ] && [ \"$5\" = user ] || exit 2\n/bin/cp '{}' '{}'\nprintf x >> '{}'\n",
+            cleaned_path.display(),
+            config_path.display(),
+            marker_path.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_cli, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf())
+    .with_legacy_claude_mcp_cleanup_cli_for_test(fake_cli);
+
+    service
+        .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
+        .await
+        .unwrap();
+    service
+        .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(marker_path).unwrap(),
+        "x",
+        "the provider-owned removal path must run exactly once"
+    );
+    let remaining: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(remaining, cleaned);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn launch_policy_preserves_and_rejects_user_owned_reserved_claude_registration() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    use crate::domain::repositories::McpPolicyRepository;
+    use crate::infrastructure::memory::MemoryMcpPolicyRepository;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ralphx")).unwrap();
+    let config_path = home.path().join(".claude.json");
+    let original = r#"{"mcpServers":{"ralphx":{"command":"user-owned"}}}"#;
+    fs::write(&config_path, original).unwrap();
+    let marker_path = home.path().join("unexpected-cleanup");
+    let fake_cli = home.path().join("fake-claude");
+    fs::write(
+        &fake_cli,
+        format!("#!/bin/sh\n/usr/bin/touch '{}'\n", marker_path.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_cli, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
+    let service = super::mcp_policy_service::McpPolicyService::new(
+        repo,
+        home.path().join(".ralphx/mcp.yaml"),
+    )
+    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf())
+    .with_legacy_claude_mcp_cleanup_cli_for_test(fake_cli);
+
+    let error = service
+        .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("reserved RalphX server ID"));
+    assert!(
+        !marker_path.exists(),
+        "user-owned entries must not be removed"
+    );
+    assert_eq!(fs::read_to_string(config_path).unwrap(), original);
+}
+
 #[tokio::test]
 async fn launch_policy_merges_global_and_project_denies_for_one_provider() {
     use std::sync::Arc;

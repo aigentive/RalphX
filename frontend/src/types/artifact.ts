@@ -17,8 +17,8 @@ import {
 // ============================================
 
 /**
- * All 19 artifact types organized by category:
- * - Documents: prd, research_document, design_doc, specification
+ * All 20 artifact types organized by category:
+ * - Documents: prd, persona, research_document, design_doc, specification
  * - Code: code_change, diff, test_result
  * - Process: task_spec, review_feedback, approval, findings, recommendations, pr_review
  * - Context: context, previous_work, research_brief
@@ -27,6 +27,7 @@ import {
 export const ArtifactTypeSchema = z.enum([
   // Documents
   "prd",
+  "persona",
   "research_document",
   "design_doc",
   "specification",
@@ -63,6 +64,7 @@ export const ARTIFACT_TYPE_VALUES = ArtifactTypeSchema.options;
  */
 export const DOCUMENT_ARTIFACT_TYPES: readonly ArtifactType[] = [
   "prd",
+  "persona",
   "research_document",
   "design_doc",
   "specification",
@@ -493,6 +495,8 @@ export const ArtifactVersionSummarySchema = z.object({
   version: z.number(),
   name: z.string(),
   created_at: z.string(),
+  created_by: z.string().default("system"),
+  metadata: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
 export type ArtifactVersionSummary = z.infer<typeof ArtifactVersionSummarySchema>;

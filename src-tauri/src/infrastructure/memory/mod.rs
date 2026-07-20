@@ -26,6 +26,7 @@ mod memory_automation_repo_tests;
 pub mod memory_branch_update_repo;
 pub mod memory_chat_attachment_repo;
 pub mod memory_chat_conversation_repo;
+pub mod memory_conversation_folder_reference_repo;
 pub mod memory_chat_message_repo;
 pub mod memory_chat_timeline_repo;
 pub mod memory_clickup_integration_settings_repo;
@@ -109,6 +110,7 @@ pub use memory_atlassian_integration_settings_repo::MemoryAtlassianIntegrationSe
 pub use memory_automation_repo::{MemoryAutomationRepository, MemoryAutomationRunRepository};
 pub use memory_branch_update_repo::MemoryBranchUpdateRepository;
 pub use memory_chat_attachment_repo::MemoryChatAttachmentRepository;
+pub use memory_conversation_folder_reference_repo::MemoryConversationFolderReferenceRepository;
 pub use memory_chat_conversation_repo::MemoryChatConversationRepository;
 pub use memory_chat_message_repo::MemoryChatMessageRepository;
 pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;

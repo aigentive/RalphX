@@ -3757,9 +3757,10 @@ fn ticket_start_input(
 ) -> StartRalphxWorkFromTicketInput {
     StartRalphxWorkFromTicketInput {
         start: StartAgentConversationInput {
-            project_id: project_id.as_str().to_string(),
+            project_id: Some(project_id.as_str().to_string()),
             content: "Start work from the ticket".to_string(),
             persona_id: None,
+            source_persona_id: None,
             conversation_id: None,
             parent_conversation_id: None,
             title: None,
@@ -3873,7 +3874,10 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
     .expect("clickup ticket start should validate and persist its link");
 
     assert_eq!(response.conversation.context_id, project_id.as_str());
-    assert_eq!(response.conversation.title.as_deref(), Some("CU-42"));
+    assert!(
+        matches!(response.conversation.title.as_deref(), Some("CU-42")),
+        "the conversation title must retain the ClickUp key"
+    );
     assert!(response.send_result.was_queued);
     let queued = app
         .state::<AppState>()
@@ -3886,9 +3890,12 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
         "clickup"
     );
     assert_eq!(queued[0].composer_integration_references[0].kind, "clickup");
-    assert_eq!(
-        queued[0].composer_integration_references[0].key.as_deref(),
-        Some("CU-42")
+    assert!(
+        matches!(
+            queued[0].composer_integration_references[0].key.as_deref(),
+            Some("CU-42")
+        ),
+        "the queued provider-neutral reference must retain the ClickUp key"
     );
     let links = app
         .state::<AppState>()
@@ -3898,7 +3905,10 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
         .expect("ClickUp links should load");
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].external_id, "8689abc");
-    assert_eq!(links[0].external_key.as_deref(), Some("CU-42"));
+    assert!(
+        matches!(links[0].external_key.as_deref(), Some("CU-42")),
+        "the persisted conversation link must retain the ClickUp key"
+    );
 }
 
 #[tokio::test]
@@ -3924,9 +3934,10 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start from attached ticket".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: None,
         parent_conversation_id: None,
         title: None,
@@ -3972,8 +3983,7 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
         workspace
             .branch_name
             .starts_with("ralphx/ticket-start-service-project/agent-jira-RX-77-"),
-        "unexpected workspace branch: {}",
-        workspace.branch_name
+        "workspace branch must use the ticket-derived prefix"
     );
     assert_eq!(github.state().push_branch_calls, 0);
     assert!(result.send_result.was_queued);
@@ -4010,9 +4020,10 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.to_string(),
+        project_id: Some(project_id.to_string()),
         content: "Continue existing ClickUp work".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: None,
         parent_conversation_id: None,
         title: None,
@@ -4077,9 +4088,10 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start Team chat".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: None,
         parent_conversation_id: None,
         title: None,
@@ -4158,9 +4170,10 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Use the current role default".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: None,
         parent_conversation_id: None,
         title: None,
@@ -4225,9 +4238,10 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
-        project_id: project_id.as_str().to_string(),
+        project_id: Some(project_id.as_str().to_string()),
         content: "Start seeded Team chat".to_string(),
         persona_id: None,
+        source_persona_id: None,
         conversation_id: Some(seeded.id.as_str().to_string()),
         parent_conversation_id: None,
         title: None,

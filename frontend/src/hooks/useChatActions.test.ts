@@ -413,6 +413,13 @@ describe("useChatActions", () => {
 
       await act(async () => {
         await result.current.handleSend("review this", undefined, undefined, {
+          folderReferences: [
+            {
+              id: "folder-1",
+              folderPath: "/work/brand-kit",
+              displayName: "brand-kit",
+            },
+          ],
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           integrationReferences: [
             {
@@ -432,6 +439,13 @@ describe("useChatActions", () => {
         "review this",
         {
           metadata: JSON.stringify({
+            composer_folder_references: [
+              {
+                id: "folder-1",
+                folderPath: "/work/brand-kit",
+                displayName: "brand-kit",
+              },
+            ],
             composer_project_references: [
               { path: "src/main.ts", kind: "file" },
             ],

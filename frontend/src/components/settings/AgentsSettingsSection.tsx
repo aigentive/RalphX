@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import type { ManualRoleCatalogEntry } from "@/api/manual-role-defaults.types";
+import { AGENT_START_MODE_OPTIONS } from "@/components/agents/agentStartModeOptions";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
@@ -10,11 +11,21 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
 import { fetchPersonas, personaKeys } from "@/hooks/usePersonas";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
+import {
+  isAgentDefaultStartMode,
+  useAgentSessionStore,
+  type AgentDefaultStartMode,
+} from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { AgentRoleDefaultRow } from "./AgentRoleDefaultRow";
 import type { AgentsTabValue } from "./settings-ui-state";
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import {
+  ErrorBanner,
+  SectionCard,
+  SelectSettingRow,
+  type SelectOption,
+} from "./SettingsView.shared";
 import { useAgentsSettingsUiState } from "./useAgentsSettingsUiState";
 
 interface FamilyGroup {
@@ -25,6 +36,19 @@ interface FamilyGroup {
   overrideCount: number;
   diagnosticCount: number;
 }
+
+const DEFAULT_START_MODE_OPTIONS: SelectOption<AgentDefaultStartMode>[] =
+  AGENT_START_MODE_OPTIONS.flatMap((option) =>
+    isAgentDefaultStartMode(option.id)
+      ? [
+          {
+            value: option.id,
+            label: option.label,
+            description: option.description,
+          },
+        ]
+      : [],
+  );
 
 function roleMatchesSearch(
   role: ManualRoleCatalogEntry,
@@ -41,6 +65,12 @@ function roleMatchesSearch(
 export function AgentsSettingsSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const openModal = useUiStore((state) => state.openModal);
+  const defaultStartMode = useAgentSessionStore(
+    (state) => state.defaultStartMode,
+  );
+  const setDefaultStartMode = useAgentSessionStore(
+    (state) => state.setDefaultStartMode,
+  );
   const [search, setSearch] = useState("");
   const [overridesOnly, setOverridesOnly] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
@@ -52,7 +82,7 @@ export function AgentsSettingsSection() {
   const { data: featureFlags } = useFeatureFlags();
   const personasQuery = useQuery({
     queryKey: personaKeys.list(),
-    queryFn: fetchPersonas,
+    queryFn: () => fetchPersonas(),
     enabled: featureFlags.agentPersonas ?? false,
   });
 
@@ -112,9 +142,18 @@ export function AgentsSettingsSection() {
     <SectionCard
       icon={<Bot className="h-5 w-5" />}
       title="Agents"
-      description="Configure backend-owned defaults for every agent role."
+      description="Configure new-run behavior and backend-owned defaults for every agent role."
     >
       <div className="agents-settings-content space-y-4">
+        <SelectSettingRow
+          id="agent-default-start-mode"
+          label="Default new-run mode"
+          description="Choose the mode selected when you open Agents > New run"
+          value={defaultStartMode}
+          options={DEFAULT_START_MODE_OPTIONS}
+          disabled={false}
+          onChange={setDefaultStartMode}
+        />
         <div className="agents-settings-toolbar">
           <Tabs
             value={scope}

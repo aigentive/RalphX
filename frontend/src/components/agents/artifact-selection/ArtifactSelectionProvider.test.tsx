@@ -108,6 +108,100 @@ describe("ArtifactSelectionProvider", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("rejects unregistered lifecycle text and dismisses a previously open action", () => {
+    render(
+      <ArtifactSelectionProvider enabled onAddExcerpt={vi.fn()}>
+        <ArtifactSelectableRegion
+          source={{
+            sourceKind: "plan",
+            sourceId: "artifact-1",
+            sourceLabel: "Plan",
+            version: 4,
+          }}
+        >
+          <p>Ship the native selection flow</p>
+        </ArtifactSelectableRegion>
+        <p>Plan needs approval</p>
+      </ArtifactSelectionProvider>,
+    );
+
+    const planText = screen.getByText("Ship the native selection flow");
+    mockSelection(planText.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(planText);
+    expect(
+      screen.getByRole("button", { name: "Add selection to conversation" }),
+    ).toBeInTheDocument();
+
+    const lifecycleText = screen.getByText("Plan needs approval");
+    mockSelection(lifecycleText.firstChild!, "Plan needs approval");
+    fireEvent.pointerUp(lifecycleText);
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses a pending action when its registered region unmounts", () => {
+    const { rerender } = render(
+      <ArtifactSelectionProvider enabled onAddExcerpt={vi.fn()}>
+        <ArtifactSelectableRegion
+          source={{ sourceKind: "plan", sourceId: "artifact-1", sourceLabel: "Plan" }}
+        >
+          <p>Ship the native selection flow</p>
+        </ArtifactSelectableRegion>
+      </ArtifactSelectionProvider>,
+    );
+
+    const planText = screen.getByText("Ship the native selection flow");
+    mockSelection(planText.firstChild!, "Ship the native selection flow");
+    fireEvent.pointerUp(planText);
+    expect(
+      screen.getByRole("button", { name: "Add selection to conversation" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <ArtifactSelectionProvider enabled onAddExcerpt={vi.fn()}>
+        <p>Plan needs approval</p>
+      </ArtifactSelectionProvider>,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer an action when selection crosses from a region into chrome", () => {
+    render(
+      <ArtifactSelectionProvider enabled onAddExcerpt={vi.fn()}>
+        <ArtifactSelectableRegion
+          source={{ sourceKind: "plan", sourceId: "artifact-1", sourceLabel: "Plan" }}
+        >
+          <p>Ship the native selection flow</p>
+        </ArtifactSelectableRegion>
+        <p>Plan needs approval</p>
+      </ArtifactSelectionProvider>,
+    );
+
+    const planText = screen.getByText("Ship the native selection flow").firstChild!;
+    const lifecycleText = screen.getByText("Plan needs approval").firstChild!;
+    const range = {
+      cloneContents: () => document.createDocumentFragment(),
+      getBoundingClientRect: () => ({ bottom: 80, left: 40, width: 140 }),
+    } as unknown as Range;
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      anchorNode: planText,
+      focusNode: lifecycleText,
+      isCollapsed: false,
+      rangeCount: 1,
+      getRangeAt: () => range,
+      toString: () => "Ship the native selection flow Plan needs approval",
+    } as unknown as Selection);
+
+    fireEvent.pointerUp(screen.getByText("Plan needs approval"));
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
   function renderRegion(onAdd = vi.fn()) {
     render(
       <ArtifactSelectionProvider enabled onAddExcerpt={onAdd}>
@@ -174,6 +268,26 @@ describe("ArtifactSelectionProvider", () => {
     } as unknown as Selection);
 
     fireEvent.pointerUp(text);
+    expect(
+      screen.queryByRole("button", { name: "Add selection to conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer an action when selection endpoints are inside a control", () => {
+    render(
+      <ArtifactSelectionProvider enabled onAddExcerpt={vi.fn()}>
+        <ArtifactSelectableRegion
+          source={{ sourceKind: "plan", sourceId: "artifact-1", sourceLabel: "Plan" }}
+        >
+          <button type="button">Approve Plan</button>
+        </ArtifactSelectableRegion>
+      </ArtifactSelectionProvider>,
+    );
+
+    const button = screen.getByRole("button", { name: "Approve Plan" });
+    mockSelection(button.firstChild!, "Approve Plan");
+    fireEvent.pointerUp(button);
+
     expect(
       screen.queryByRole("button", { name: "Add selection to conversation" }),
     ).not.toBeInTheDocument();

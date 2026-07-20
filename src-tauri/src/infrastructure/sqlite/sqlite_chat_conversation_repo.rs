@@ -16,7 +16,7 @@ use crate::domain::entities::{
     ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
 /// Parse datetime string handling both RFC3339 and SQLite's CURRENT_TIMESTAMP formats
@@ -52,6 +52,10 @@ fn row_to_conversation(row: &rusqlite::Row) -> rusqlite::Result<ChatConversation
     let bound_agent_name: Option<String> = row.get("bound_agent_name")?;
     let persona_id: Option<String> = row.get("persona_id")?;
     let builder_draft_id: Option<String> = row.get("builder_draft_id")?;
+    let builder_result_persona_id = row
+        .get::<_, Option<String>>("builder_result_persona_id")
+        .ok()
+        .flatten();
     let coordination_mode = row
         .get::<_, Option<String>>("coordination_mode")
         .ok()
@@ -105,6 +109,7 @@ fn row_to_conversation(row: &rusqlite::Row) -> rusqlite::Result<ChatConversation
         bound_agent_name,
         persona_id,
         builder_draft_id,
+        builder_result_persona_id,
         coordination_mode,
         automation_id,
         automation_run_id,
@@ -169,6 +174,37 @@ pub(crate) fn update_builder_draft_binding_sync(
     Ok(())
 }
 
+pub(crate) fn claim_builder_draft_binding_sync(
+    conn: &rusqlite::Connection,
+    conversation_id: &str,
+    builder_draft_id: &str,
+) -> AppResult<()> {
+    let changed = conn.execute(
+        "UPDATE chat_conversations
+         SET builder_draft_id = ?1, updated_at = ?2
+         WHERE id = ?3
+           AND builder_draft_id IS NULL
+           AND builder_result_persona_id IS NULL",
+        rusqlite::params![builder_draft_id, Utc::now().to_rfc3339(), conversation_id],
+    )?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let exists = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chat_conversations WHERE id = ?1)",
+        [conversation_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists {
+        return Err(crate::error::AppError::NotFound(format!(
+            "Chat conversation not found: {conversation_id}"
+        )));
+    }
+    Err(crate::error::AppError::Conflict(format!(
+        "PersonaBuilder conversation {conversation_id} already has a draft or result binding"
+    )))
+}
+
 pub(crate) fn clear_builder_draft_bindings_sync(
     conn: &rusqlite::Connection,
     draft_id: &str,
@@ -178,6 +214,19 @@ pub(crate) fn clear_builder_draft_bindings_sync(
          SET builder_draft_id = NULL, updated_at = ?1
          WHERE builder_draft_id = ?2",
         rusqlite::params![Utc::now().to_rfc3339(), draft_id],
+    )? as u64)
+}
+
+pub(crate) fn finish_builder_binding_sync(
+    conn: &rusqlite::Connection,
+    draft_id: &str,
+    result_persona_id: &str,
+) -> AppResult<u64> {
+    Ok(conn.execute(
+        "UPDATE chat_conversations
+         SET builder_draft_id = NULL, builder_result_persona_id = ?1, updated_at = ?2
+         WHERE builder_draft_id = ?3",
+        rusqlite::params![result_persona_id, Utc::now().to_rfc3339(), draft_id],
     )? as u64)
 }
 
@@ -205,6 +254,13 @@ impl SqliteChatConversationRepository {
 #[async_trait]
 impl ChatConversationRepository for SqliteChatConversationRepository {
     async fn create(&self, conversation: ChatConversation) -> AppResult<ChatConversation> {
+        if conversation.context_type == ChatContextType::Standalone
+            && !conversation.is_valid_standalone_self_key()
+        {
+            return Err(AppError::Validation(
+                "Standalone conversation context_id must equal its conversation id".to_string(),
+            ));
+        }
         let id = conversation.id.as_str().to_string();
         let context_type = conversation.context_type.to_string();
         let context_id = conversation.context_id.clone();
@@ -217,6 +273,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         let bound_agent_name = conversation.bound_agent_name.clone();
         let persona_id = conversation.persona_id.clone();
         let builder_draft_id = conversation.builder_draft_id.clone();
+        let builder_result_persona_id = conversation.builder_result_persona_id.clone();
         let coordination_mode = conversation.coordination_mode.to_string();
         let automation_id = conversation
             .automation_id
@@ -253,19 +310,19 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 "INSERT INTO chat_conversations (
                     id, context_type, context_id, claude_session_id, provider_session_id,
                     provider_harness, upstream_provider, provider_profile, agent_mode,
-                    bound_agent_name, persona_id,
-                    builder_draft_id, coordination_mode,
+                    bound_agent_name, persona_id, builder_draft_id,
+                    builder_result_persona_id, coordination_mode,
                     automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                     updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                     attribution_backfill_source, attribution_backfill_source_path,
                     attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
                     attribution_backfill_error_summary
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
                 rusqlite::params![
                     id, context_type, context_id, claude_session_id, provider_session_id,
                     provider_harness, upstream_provider, provider_profile, agent_mode,
-                    bound_agent_name, persona_id,
-                    builder_draft_id, coordination_mode,
+                    bound_agent_name, persona_id, builder_draft_id,
+                    builder_result_persona_id, coordination_mode,
                     automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                     updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                     attribution_backfill_source, attribution_backfill_source_path,
@@ -284,7 +341,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.query_optional(move |conn| {
             conn.query_row(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -306,7 +363,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 conn.query_row(
                     "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
                             provider_harness, upstream_provider, provider_profile, agent_mode,
-                            bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id,
+                            bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id,
                             automation_run_id, title, message_count, last_message_at, created_at,
                             updated_at, archived_at, parent_conversation_id,
                             attribution_backfill_status, attribution_backfill_source,
@@ -332,7 +389,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -354,7 +411,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -384,7 +441,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             };
             let sql = format!(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -440,7 +497,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 );
                 let list_sql = format!(
                     "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                            provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                            provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                             updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                             attribution_backfill_source, attribution_backfill_source_path,
                             attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -517,7 +574,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.query_optional(move |conn| {
             conn.query_row(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -538,7 +595,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -550,6 +607,49 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                  ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
                  LIMIT ?2",
             )?;
+            let conversations = stmt
+                .query_map(
+                    rusqlite::params![context_type_str, i64::from(limit)],
+                    row_to_conversation,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(conversations)
+        }).await
+    }
+
+    async fn list_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        include_archived: bool,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let context_type_str = context_type.to_string();
+        self.db.run(move |conn| {
+            let sql = if include_archived {
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations
+                 WHERE context_type = ?1
+                 ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                 LIMIT ?2"
+            } else {
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations
+                 WHERE context_type = ?1
+                   AND archived_at IS NULL
+                 ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                 LIMIT ?2"
+            };
+            let mut stmt = conn.prepare(sql)?;
             let conversations = stmt
                 .query_map(
                     rusqlite::params![context_type_str, i64::from(limit)],
@@ -846,7 +946,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                            provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                            provider_harness, upstream_provider, provider_profile, agent_mode, bound_agent_name, persona_id, builder_draft_id, builder_result_persona_id, coordination_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                             updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                             attribution_backfill_source, attribution_backfill_source_path,
                             attribution_backfill_last_attempted_at, attribution_backfill_completed_at,

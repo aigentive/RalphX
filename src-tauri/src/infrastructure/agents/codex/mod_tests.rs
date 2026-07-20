@@ -1001,6 +1001,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: vec![root.join("project-root")],
+        enforce_filesystem_roots: false,
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
         agent_run_id: Some("run-123".to_string()),
@@ -1106,6 +1107,59 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("run-123"),
         "expected agent run id value in overrides: {args_override}"
+    );
+}
+
+#[test]
+fn build_codex_mcp_overrides_emits_filesystem_enforcement_only_when_enabled() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let plugin_dir = create_plugin_dir(temp_dir.path());
+    std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build"))
+        .expect("create fake mcp build dir");
+    std::fs::write(
+        plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    )
+    .expect("write fake mcp server");
+
+    let enforced = CodexMcpRuntimeContext {
+        enforce_filesystem_roots: true,
+        ..Default::default()
+    };
+    let enforced_overrides =
+        build_codex_mcp_overrides(&plugin_dir, "ralphx-plan-verifier", false, Some(&enforced))
+            .expect("enforced overrides");
+    let enforced_args = enforced_overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.") && entry.contains(".args="))
+        .expect("enforced args override");
+    assert!(
+        enforced_args.contains("--filesystem-enforced") && enforced_args.contains("\"1\""),
+        "enforced Codex MCP args must carry the CLI-only flag: {enforced_args}"
+    );
+
+    let unenforced = CodexMcpRuntimeContext::default();
+    let unenforced_overrides = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx-plan-verifier",
+        false,
+        Some(&unenforced),
+    )
+    .expect("unenforced overrides");
+    let unenforced_args = unenforced_overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.") && entry.contains(".args="))
+        .expect("unenforced args override");
+    assert!(
+        !unenforced_args.contains("--filesystem-enforced"),
+        "unenforced Codex MCP args must preserve the prior shape: {unenforced_args}"
+    );
+    assert!(
+        enforced_overrides
+            .iter()
+            .chain(unenforced_overrides.iter())
+            .all(|entry| !entry.contains("RALPHX_FILESYSTEM_ENFORCED")),
+        "filesystem enforcement must never be delivered through process env"
     );
 }
 
@@ -1287,6 +1341,14 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
     )
     .expect("overrides");
     let args = codex_mcp_args_override(&overrides);
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("Plan spawn args");
 
     assert!(
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
@@ -1294,26 +1356,71 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_freeform=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_freeform=false"
+        }),
         "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "features.apply_patch_streaming_events=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "features.apply_patch_streaming_events=false"
+        }),
         "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them; override keys: {:?}",
         override_keys(&overrides)
     );
     assert!(
-        overrides
-            .iter()
-            .any(|entry| entry == "include_apply_patch_tool=false"),
+        spawn_args.windows(2).any(|pair| {
+            pair[0] == "-c" && pair[1] == "include_apply_patch_tool=false"
+        }),
         "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it; override keys: {:?}",
         override_keys(&overrides)
     );
+}
+
+#[test]
+fn build_codex_mcp_overrides_disables_apply_patch_for_persona_extractor() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(&plugin_dir, "ralphx-persona-extractor", false, None)
+        .expect("persona extractor overrides");
+    let spawn_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            config_overrides: overrides.clone(),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("PersonaExtractor spawn args");
+
+    assert!(
+        spawn_args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "features.shell_tool=false"),
+        "Codex PersonaExtractor must disable the native shell; override keys: {:?}",
+        override_keys(&overrides)
+    );
+
+    assert!(
+        overrides.iter().any(|entry| entry
+            == "mcp_servers.ralphx.enabled_tools=[\"fs_read_file\",\"fs_list_dir\",\"fs_grep\",\"fs_glob\",\"ask_user_question\",\"save_persona_draft\",\"get_persona_draft\"]"),
+        "Codex PersonaExtractor must receive exactly its canonical MCP grants"
+    );
+
+    for expected in [
+        "features.apply_patch_freeform=false",
+        "features.apply_patch_streaming_events=false",
+        "include_apply_patch_tool=false",
+    ] {
+        assert!(
+            spawn_args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == expected),
+            "Codex PersonaExtractor must disable {expected}; override keys: {:?}",
+            override_keys(&overrides)
+        );
+    }
 }
 
 #[test]
@@ -1509,6 +1616,7 @@ harnesses:
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: Vec::new(),
+        enforce_filesystem_roots: false,
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
         agent_run_id: Some("run 789".to_string()),

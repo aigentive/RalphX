@@ -27,11 +27,13 @@ export function useAgentsSessionBindings({
   const setTaskHistoryState = useUiStore((s) => s.setTaskHistoryState);
   const selectProject = useProjectStore((s) => s.selectProject);
   const selectConversation = useCallback(
-    (projectId: string, conversationId: string) => {
+    (projectId: string | null, conversationId: string) => {
       if (selectedProjectId !== projectId || storedSelectedConversationId !== conversationId) {
         setTaskHistoryState(null);
       }
-      selectProject(projectId);
+      if (projectId) {
+        selectProject(projectId);
+      }
       selectAgentConversation(projectId, conversationId);
     },
     [

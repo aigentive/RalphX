@@ -104,6 +104,11 @@ fn agent_waiting_allows_user_attended_interactive_conversations() {
         false,
         false,
     ));
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Standalone,
+        false,
+        false,
+    ));
 }
 
 #[async_trait::async_trait]

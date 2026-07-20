@@ -57,6 +57,12 @@ describe("buildStoreKey", () => {
     expect(buildStoreKey("project", "proj-789")).toBe("project:proj-789");
   });
 
+  it("formats standalone keys as standalone:{id}", () => {
+    expect(buildStoreKey("standalone", "conversation-1")).toBe(
+      "standalone:conversation-1",
+    );
+  });
+
   it("formats task_execution keys as task_execution:{id}", () => {
     expect(buildStoreKey("task_execution", "task-456")).toBe("task_execution:task-456");
   });

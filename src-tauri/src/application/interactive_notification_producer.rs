@@ -161,6 +161,7 @@ fn question_context_kind(context_type: &ChatContextType) -> Option<&'static str>
     match context_type {
         ChatContextType::Ideation => Some("ideation"),
         ChatContextType::Project => Some("project"),
+        ChatContextType::Standalone => Some("standalone"),
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review

@@ -1,6 +1,6 @@
 name: ralphx-persona-extractor
 role: persona_extractor
-description: "Distills app-owned ingested context into a reusable user persona draft"
+description: "Distills scoped filesystem context and user input into a reusable persona draft"
 capabilities:
   mcp_tools:
     - fs_read_file

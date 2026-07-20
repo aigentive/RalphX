@@ -54,6 +54,7 @@ import {
   type TeamIntent,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
+import type { MessageFolderReference } from "./MessageReferences.parse";
 import { api } from "@/lib/tauri";
 import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
@@ -137,6 +138,7 @@ type PersonaRetryAttempt = {
   message: string;
   options:
     | {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
@@ -175,7 +177,10 @@ function automationProposalApplyOptionIndex(
 
 interface IntegratedChatPanelProps {
   /** Project ID for context */
-  projectId: string;
+  projectId: string | null;
+  /** Explicit non-project conversation context owned by the host. */
+  contextTypeOverride?: ContextType | undefined;
+  contextIdOverride?: string | undefined;
   /** Optional ideation session ID - when set, uses ideation context */
   ideationSessionId?: string;
   /** Custom empty state component */
@@ -239,6 +244,8 @@ interface IntegratedChatPanelProps {
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+  /** Opens a project-locked Persona Builder from the current project conversation. */
+  onBuildPersona?: () => void;
   renderComposer?: (
     props: IntegratedChatComposerRenderProps,
   ) => React.ReactNode;
@@ -258,6 +265,7 @@ export interface IntegratedChatComposerRenderProps {
   onSend: (
     message: string,
     options?: {
+      folderReferences?: MessageFolderReference[];
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
       artifactReferences?: ComposerArtifactReference[];
@@ -292,6 +300,8 @@ export interface IntegratedChatComposerRenderProps {
 
 export function IntegratedChatPanel({
   projectId,
+  contextTypeOverride,
+  contextIdOverride,
   ideationSessionId,
   emptyState,
   showHelperTextAlways = false,
@@ -315,6 +325,7 @@ export function IntegratedChatPanel({
   agentProcessContextIdOverride,
   sendOptions,
   onChildSessionNavigate,
+  onBuildPersona,
   renderComposer,
   onUserMessageSent,
   onQuestionAnswered,
@@ -357,8 +368,8 @@ export function IntegratedChatPanel({
     : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data
-  const { data: tasks = EMPTY_TASKS } = useTasks(projectId, {
-    enabled: Boolean(selectedTaskId),
+  const { data: tasks = EMPTY_TASKS } = useTasks(projectId ?? "", {
+    enabled: Boolean(projectId && selectedTaskId),
   });
 
   // Read from Zustand store (event-updated, sync) — same pattern as TaskDetailOverlay
@@ -461,6 +472,8 @@ export function IntegratedChatPanel({
     // overrideAgentRunId is available but we use taskHistoryState.timestamp for scroll positioning
   } = useChatPanelContext({
     projectId,
+    contextTypeOverride,
+    contextIdOverride,
     ideationSessionId,
     selectedTaskId: selectedTaskId ?? undefined,
     isExecutionMode,
@@ -1015,6 +1028,7 @@ export function IntegratedChatPanel({
     async (
       message: string,
       options?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
@@ -1322,6 +1336,7 @@ export function IntegratedChatPanel({
         conversationId={effectiveConversationId}
         personaId={activeConversationMeta?.personaId}
         isAgentRunning={isAgentRunning}
+        {...(onBuildPersona ? { onBuildPersona } : {})}
         lastRunPersonaId={
           personaAttributedRun?.personaId ??
           activeConversationMeta?.lastRunPersonaId ??
@@ -1478,7 +1493,7 @@ export function IntegratedChatPanel({
                               ? "task"
                               : "project"
                   }
-                  contextId={ideationSessionId || selectedTaskId || projectId}
+                  contextId={currentContextId}
                   conversations={conversations.data ?? []}
                   activeConversationId={activeConversationId}
                   onSelectConversation={handleSelectConversation}

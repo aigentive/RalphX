@@ -33,6 +33,7 @@ fn queued_agent_run_inherits_exact_continuation_runtime_attribution() {
         None,
         &codex_continuation_runtime(),
         &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.5"));
@@ -59,6 +60,7 @@ fn queued_agent_run_records_explicit_runtime_overrides() {
         None,
         &codex_continuation_runtime(),
         &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.6"));
@@ -529,4 +531,16 @@ fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
         Some(agent_names::AGENT_ORCHESTRATOR_IDEATION.to_string())
     );
     assert_eq!(identity.agent_profile, Some("plan"));
+}
+
+#[test]
+fn queued_agent_identity_for_persona_builder_uses_extractor_agent() {
+    let identity =
+        queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+
+    assert_eq!(
+        identity.agent_name,
+        Some(agent_names::AGENT_PERSONA_EXTRACTOR.to_string())
+    );
+    assert_eq!(identity.agent_profile, None);
 }

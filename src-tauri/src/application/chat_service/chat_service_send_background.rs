@@ -312,7 +312,7 @@ pub(crate) fn should_recover_silent_completion(
 ) -> bool {
     matches!(
         context_type,
-        ChatContextType::Project | ChatContextType::Ideation
+        ChatContextType::Project | ChatContextType::Ideation | ChatContextType::Standalone
     ) && has_session_for_queue
         && turns_finalized == 0
         && !silent_interactive_exit

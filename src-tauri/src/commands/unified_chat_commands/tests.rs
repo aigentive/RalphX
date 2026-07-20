@@ -51,6 +51,7 @@ use super::{
     CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
     ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
     UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+    STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -688,8 +689,9 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
     let response = create_agent_conversation(
         CreateAgentConversationInput {
             context_type: ChatContextType::Project.to_string(),
-            context_id: project_id.as_str().to_string(),
+            context_id: Some(project_id.as_str().to_string()),
             title: Some("Team conversation".to_string()),
+            mode: None,
             team_intent: Some(TeamIntent::rx_native(None)),
         },
         app.state(),
@@ -706,6 +708,119 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
         .expect("stored conversation should load")
         .expect("stored conversation should exist");
     assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+struct StandaloneConversationsFlagOverrideReset;
+
+impl Drop for StandaloneConversationsFlagOverrideReset {
+    fn drop(&mut self) {
+        crate::infrastructure::agents::reset_standalone_conversations_override_for_test();
+    }
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let response = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: Some("Standalone chat".to_string()),
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("standalone conversation should be created");
+
+    assert_eq!(response.context_type, "standalone");
+    assert_eq!(response.context_id, response.id);
+
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(response.id))
+        .await
+        .expect("stored conversation should load")
+        .expect("stored conversation should exist");
+    assert!(stored.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_flag_off_is_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(false));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: None,
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must be rejected while the flag is off");
+
+    assert!(error.contains("standalone_conversations"));
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: Some("caller-supplied-id".to_string()),
+            title: None,
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must reject a caller-supplied context_id");
+
+    assert!(error.contains("does not accept a context_id"));
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_rejects_team_intent() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: None,
+            mode: None,
+            team_intent: Some(TeamIntent::rx_native(None)),
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must reject team intent");
+
+    assert_eq!(error, STANDALONE_TEAM_INTENT_REJECTED_ERROR);
+    assert!(app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .list_by_context_type(ChatContextType::Standalone, true, 10)
+        .await
+        .expect("standalone conversations should list")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -6201,8 +6316,9 @@ async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attributio
     let created = create_agent_conversation(
         CreateAgentConversationInput {
             context_type: ChatContextType::Project.to_string(),
-            context_id: project_id.as_str().to_string(),
+            context_id: Some(project_id.as_str().to_string()),
             title: Some("Created from command".to_string()),
+            mode: None,
             team_intent: None,
         },
         app.state(),

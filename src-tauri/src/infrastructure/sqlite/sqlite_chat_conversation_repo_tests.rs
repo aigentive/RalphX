@@ -32,6 +32,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
+        builder_result_persona_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,
@@ -49,6 +50,37 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         attribution_backfill_completed_at: None,
         attribution_backfill_error_summary: None,
     }
+}
+
+#[tokio::test]
+async fn create_accepts_valid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = ChatConversation::new_standalone();
+
+    let created = repo
+        .create(conversation.clone())
+        .await
+        .expect("valid standalone self-key should persist");
+
+    assert_eq!(created.id, conversation.id);
+    assert!(created.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_standalone_self_key() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-the-conversation-id".to_string();
+
+    let error = repo
+        .create(conversation.clone())
+        .await
+        .expect_err("mismatched standalone self-key must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert!(repo.get_by_id(&conversation.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -322,6 +354,7 @@ async fn test_create_preserves_optional_fields() {
         bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
+        builder_result_persona_id: None,
         coordination_mode: CoordinationMode::RxNativeTeam,
         automation_id: None,
         automation_run_id: None,
@@ -869,6 +902,7 @@ async fn test_clear_claude_session_id() {
         bound_agent_name: None,
         persona_id: None,
         builder_draft_id: None,
+        builder_result_persona_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,

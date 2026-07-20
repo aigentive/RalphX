@@ -479,12 +479,24 @@ mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
 #[cfg(test)]
 mod v20260716154318_manual_role_defaults_tests;
+mod v20260716170840_persona_project_scope;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
 mod v20260716202015_workspace_review_bypass_and_bound_agent;
 #[cfg(test)]
 mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716204027_conversation_folder_references;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260717152713_persona_builder_result_binding;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+mod v20260717152714_persona_artifact_history;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
 mod v20260717235338_github_cli_token_environment_setting;
 #[cfg(test)]
 mod v20260717235338_github_cli_token_environment_setting_tests;
@@ -1605,14 +1617,34 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260716154318_manual_role_defaults::migrate,
     },
     Migration {
+        version: 20260716170840,
+        name: "persona_project_scope",
+        migrate: v20260716170840_persona_project_scope::migrate,
+    },
+    Migration {
         version: 20260716202015,
         name: "workspace_review_bypass_and_bound_agent",
         migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
     },
     Migration {
+        version: 20260716204027,
+        name: "conversation_folder_references",
+        migrate: v20260716204027_conversation_folder_references::migrate,
+    },
+    Migration {
         version: 20260716210000,
         name: "supervised_native_task_pipeline",
         migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260717152713,
+        name: "persona_builder_result_binding",
+        migrate: v20260717152713_persona_builder_result_binding::migrate,
+    },
+    Migration {
+        version: 20260717152714,
+        name: "persona_artifact_history",
+        migrate: v20260717152714_persona_artifact_history::migrate,
     },
     Migration {
         version: 20260717235338,

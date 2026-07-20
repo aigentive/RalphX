@@ -1,6 +1,7 @@
 pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
 pub(crate) mod mcp_catalog;
+mod security_policy;
 pub mod stream_processor;
 
 #[cfg(test)]
@@ -22,7 +23,7 @@ use crate::infrastructure::agents::claude::{
     SpawnableCommand, SpawnableStdinTransport,
 };
 use crate::infrastructure::agents::claude::{
-    claude_runtime_config, external_mcp_config, filter_interactive_tools,
+    agent_names, claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
@@ -39,9 +40,10 @@ use crate::infrastructure::external_mcp_supervisor::{
     ensure_tauri_mcp_bypass_token, TAURI_MCP_BYPASS_TOKEN_ENV,
 };
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
+pub(crate) use security_policy::CodexLaunchSecurityPolicy;
 
 const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
-const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
+const CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES: &[&str] = &[
     "features.apply_patch_freeform=false",
     "features.apply_patch_streaming_events=false",
     "include_apply_patch_tool=false",
@@ -178,12 +180,12 @@ impl Default for CodexExecCliConfig {
 
 pub type CodexMcpRuntimeContext = McpRuntimeContext;
 
-fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_APPROVAL_POLICY
+fn effective_codex_approval_policy(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.approval_policy()
 }
 
-fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_SANDBOX_MODE
+fn effective_codex_sandbox_mode(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.sandbox_mode()
 }
 
 fn codex_service_tier_overrides(config: &CodexExecCliConfig) -> Result<Vec<String>, String> {
@@ -244,6 +246,7 @@ pub fn build_codex_mcp_overrides_for_profile(
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
     let codex_metadata =
         try_load_canonical_codex_metadata_for_profile(&project_root, short_name, agent_profile)?;
+    let shell_tool_disabled = codex_metadata.runtime_features.get("shell_tool") == Some(&false);
     if codex_metadata.mcp_transport.as_deref() == Some("external") {
         let mut overrides = build_codex_external_mcp_overrides(
             &mcp_server_name,
@@ -261,7 +264,12 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
-        append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+        append_codex_apply_patch_disable_overrides(
+            &mut overrides,
+            short_name,
+            agent_profile,
+            shell_tool_disabled,
+        );
         return Ok(overrides);
     }
 
@@ -278,21 +286,33 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
-    append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+    append_codex_apply_patch_disable_overrides(
+        &mut overrides,
+        short_name,
+        agent_profile,
+        shell_tool_disabled,
+    );
 
     Ok(overrides)
 }
 
-fn append_codex_plan_read_only_feature_overrides(
+fn append_codex_apply_patch_disable_overrides(
     overrides: &mut Vec<String>,
+    agent_name: &str,
     agent_profile: Option<&str>,
+    shell_tool_disabled: bool,
 ) {
-    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE) {
+    if !shell_tool_disabled
+        && agent_profile != Some(CODEX_PLAN_AGENT_PROFILE)
+        && agent_name != mcp_agent_type(agent_names::AGENT_PERSONA_EXTRACTOR)
+    {
         return;
     }
-    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature gates, while -c accepts the top-level include_apply_patch_tool override.
+    // A canonical agent without shell access is read-only across native Codex tools too.
+    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature
+    // gates, while -c accepts the top-level include_apply_patch_tool override.
     overrides.extend(
-        CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES
+        CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES
             .iter()
             .map(|entry| (*entry).to_string()),
     );
@@ -933,6 +953,18 @@ pub fn build_codex_exec_args(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<Vec<String>, String> {
+    build_codex_exec_args_with_security_policy(
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
     }
@@ -952,7 +984,9 @@ pub fn build_codex_exec_args(
 
     require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
     args.push("-s".to_string());
-    args.push(normalize_cli_token(effective_codex_sandbox_mode(config)));
+    args.push(normalize_cli_token(effective_codex_sandbox_mode(
+        security_policy,
+    )));
 
     if let Some(cwd) = config.cwd.as_ref() {
         args.push("-C".to_string());
@@ -996,7 +1030,7 @@ pub fn build_codex_exec_args(
     args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     Ok(args)
@@ -1006,6 +1040,20 @@ pub fn build_codex_exec_resume_args(
     capabilities: &CodexCliCapabilities,
     session_id: &str,
     config: &CodexExecCliConfig,
+) -> Result<Vec<String>, String> {
+    build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_resume_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    session_id: &str,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
 ) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
@@ -1057,14 +1105,14 @@ pub fn build_codex_exec_resume_args(
     args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
     args.push(format!(
         "sandbox_mode=\"{}\"",
-        normalize_cli_token(effective_codex_sandbox_mode(config))
+        normalize_cli_token(effective_codex_sandbox_mode(security_policy))
     ));
 
     Ok(args)
@@ -1088,7 +1136,23 @@ pub fn build_spawnable_codex_exec_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_args(capabilities, config)?;
+    build_spawnable_codex_exec_command_with_security_policy(
+        cli_path,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_exec_command_with_security_policy(
+    cli_path: &Path,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_args_with_security_policy(capabilities, config, security_policy)?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");
@@ -1115,7 +1179,30 @@ pub fn build_spawnable_codex_resume_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_resume_args(capabilities, session_id, config)?;
+    build_spawnable_codex_resume_command_with_security_policy(
+        cli_path,
+        session_id,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_resume_command_with_security_policy(
+    cli_path: &Path,
+    session_id: &str,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        security_policy,
+    )?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");

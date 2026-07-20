@@ -8,7 +8,7 @@ use crate::application::persona_resolver::PersonaError;
 use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
 use crate::domain::entities::{ChatContextType, ChatConversationId, InternalStatus};
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::limits_config;
+use crate::infrastructure::agents::limits_config;
 use crate::utils::truncate_str;
 use chrono::{Datelike, Duration, LocalResult, TimeZone, Utc};
 use chrono_tz::Tz;

@@ -173,6 +173,38 @@ describe("useChatPanelContext", () => {
         );
       });
     });
+
+    it("routes a projectless panel through its standalone self-keyed context", () => {
+      const { result } = renderHook(
+        (props) => useChatPanelContext(props),
+        {
+          wrapper,
+          initialProps: {
+            projectId: null,
+            contextTypeOverride: "standalone" as const,
+            contextIdOverride: "standalone-1",
+            ideationSessionId: undefined,
+            selectedTaskId: undefined,
+            isExecutionMode: false,
+            isReviewMode: false,
+            isMergeMode: false,
+            isHistoryMode: false,
+            overrideConversationId: "standalone-1",
+            storeContextKeyOverride: "standalone:standalone-1",
+          },
+        },
+      );
+
+      expect(result.current.currentContextType).toBe("standalone");
+      expect(result.current.currentContextId).toBe("standalone-1");
+      expect(result.current.storeContextKey).toBe("standalone:standalone-1");
+      expect(result.current.chatContext).toEqual(
+        expect.objectContaining({
+          contextTypeOverride: "standalone",
+          contextIdOverride: "standalone-1",
+        }),
+      );
+    });
   });
 
   describe("context switching", () => {

@@ -925,15 +925,18 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           if (ideationState.activeVerificationChildId[parsedKey.contextId]) continue;
         }
 
-        // Project agent conversations are runtime-keyed by conversation id. Before
+        // Project and standalone agent conversations are runtime-keyed by conversation id. Before
         // clearing their UI status, ask the backend registry whether that process
         // is still alive; otherwise long but healthy Agents runs can lose Stop
         // state until the user reselects the conversation.
-        if (parsedKey?.contextType === "project") {
+        if (
+          parsedKey?.contextType === "project" ||
+          parsedKey?.contextType === "standalone"
+        ) {
           if (projectLivenessChecksInFlight.has(key)) continue;
           projectLivenessChecksInFlight.add(key);
           void chatApi
-            .isAgentRunning("project", parsedKey.contextId)
+            .isAgentRunning(parsedKey.contextType, parsedKey.contextId)
             .then((isRunning) => {
               const latestState = useChatStore.getState();
               if (latestState.agentStatus[key] !== "generating") return;

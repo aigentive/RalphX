@@ -7,7 +7,7 @@ Agent Personas remain behind `RALPHX_UI_AGENT_PERSONAS=1` until the two empirica
 | Gate | Status | Result / evidence |
 |---|---|---|
 | Claude `--resume` + appended-prompt smoke | PENDING | — |
-| Packaged-app TCC/protected-folder ingestion smoke | PENDING | — |
+| Packaged-app TCC/builder-context smoke | PENDING | — |
 | ARG_MAX headroom measurement | PENDING | — |
 
 ## Gate 1: Claude `--resume` + Appended-Prompt Smoke
@@ -27,17 +27,17 @@ If any check fails, enable the A20 fallback (`persona_switch_forces_fresh_provid
 |---|---|---|---|---|
 | — | — | — | PENDING | — |
 
-## Gate 2: Packaged-App TCC / Protected-Folder Ingestion Smoke
+## Gate 2: Packaged-App TCC / Builder-Context Smoke
 
 **Status:** PENDING
 
 1. Run `npm run tauri build`, then launch the packaged app from Finder.
-2. In **Settings → Personas → Build with agent**, pick a folder under `~/Documents` and a folder that contains an unreadable subdirectory.
-3. Confirm macOS asks for permission only at pick time, never from the child agent.
-4. Confirm the manifest reports copied files and any `EPERM` / cap-skipped entries without blocking preview or chat.
-5. Spot-check the extractor debug log: `RALPHX_FILESYSTEM_READ_ROOTS` must contain only ingestion-store copies.
+2. Start a project-scoped **Build with Agent** flow and confirm RalphX opens the standard **Agents** view with **Persona** mode locked.
+3. In the Agents composer, attach a UTF-8 text file under `~/Documents` and add a folder reference that contains an unreadable subdirectory.
+4. Confirm macOS requests protected-folder access from the packaged app, the text attachment is materialized into the private builder workspace, and the folder remains a live reference.
+5. Spot-check the builder debug log: `RALPHX_FILESYSTEM_READ_ROOTS` must contain only the private workspace, the selected project directory, and the attached folder roots. Confirm the agent cannot read outside those roots and access to the unreadable subdirectory fails closed without blocking the conversation.
 
-| Run date | Packaged build | Result | Manifest / debug-log evidence |
+| Run date | Packaged build | Result | Workspace / debug-log evidence |
 |---|---|---|---|
 | — | — | PENDING | — |
 

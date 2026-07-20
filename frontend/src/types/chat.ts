@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 
+import { ContextTypeSchema } from "@/types/chat-conversation";
+
 // ============================================================================
 // View Types
 // ============================================================================
@@ -55,6 +57,9 @@ export const ChatContextSchema = z.object({
   view: ViewTypeSchema,
   /** Current project ID */
   projectId: z.string().min(1),
+  /** Explicit backend conversation context for non-project Agents hosts. */
+  contextTypeOverride: ContextTypeSchema.optional(),
+  contextIdOverride: z.string().min(1).optional(),
   /** Selected task ID (for kanban with selection or task_detail view) */
   selectedTaskId: z.string().optional(),
   /** Current ideation session ID (for ideation view) */

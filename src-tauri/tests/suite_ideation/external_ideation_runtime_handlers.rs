@@ -232,6 +232,9 @@ async fn external_mcp_send_has_no_persona_block() {
 
     let persona = Persona {
         id: PersonaId::from("external-handler-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "external-handler-persona".to_string(),
         name: "External Handler Persona".to_string(),
         description: "must not enter external MCP sends".to_string(),

@@ -804,7 +804,7 @@ interface AgentsActiveConversationPanelProps {
   activeConversation: AgentConversation;
   activeConversationMode: AgentConversationWorkspaceMode | null;
   activeConversationModeLocked: boolean;
-  activeProjectId: string;
+  activeProjectId: string | null;
   activeProjectOptions: AgentComposerOption[];
   activeWorkspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -879,6 +879,7 @@ interface AgentsActiveConversationPanelProps {
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   onToggleArtifacts: (conversationId: string) => void;
   onSelectChatFocus: (type: AgentsChatFocusType) => void;
+  onStartPersonaBuilder: () => void;
   publishShortcutLabel: string;
   promotePublishShortcut?: boolean;
   publishingConversationId: string | null;
@@ -930,6 +931,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onSelectArtifact,
   onToggleArtifacts,
   onSelectChatFocus,
+  onStartPersonaBuilder,
   publishShortcutLabel,
   promotePublishShortcut = false,
   publishingConversationId,
@@ -1217,9 +1219,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return result.data;
       });
       await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: agentConversationKeys.project(activeProjectId),
-        }),
+        activeProjectId
+          ? queryClient.invalidateQueries({
+              queryKey: agentConversationKeys.project(activeProjectId),
+            })
+          : Promise.resolve(),
         invalidateConversationDataQueries(queryClient, selectedConversationId),
         refreshedRoleDefault,
       ]);
@@ -1831,15 +1835,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     const lockReason =
       activeWorkspace?.modeSwitchLockReason ??
       "Active ideation or execution state owns this workspace.";
-    return eligibleOptions.map((option) =>
-      option.id === activeConversationMode
-        ? option
-        : {
-            ...option,
-            disabled: true,
-            disabledReason: lockReason,
-          },
-    );
+    return eligibleOptions.map((option) => ({
+      ...option,
+      disabled: true,
+      disabledReason: lockReason,
+    }));
   }, [
     activeConversationMode,
     resolvedConversationModeLocked,
@@ -2084,7 +2084,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
       await chatApi.sendAgentMessage(
         "project",
-        activeProjectId,
+        activeProjectId!,
         PLAN_IMPLEMENT_DIRECTLY_REQUEST,
         undefined,
         {
@@ -2424,7 +2424,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       try {
         const sendResult = await chatApi.sendAgentMessage(
           "project",
-          activeProjectId,
+          activeProjectId!,
           trimmedMessage,
           undefined,
           {
@@ -2708,6 +2708,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           <IntegratedChatPanel
             key={`${selectedConversationId}:${chatFocus.type}:${focusedPanelKey}`}
             projectId={activeProjectId}
+            {...(activeConversation.contextType === "standalone"
+              ? {
+                  contextTypeOverride: "standalone" as const,
+                  contextIdOverride: activeConversation.contextId,
+                }
+              : {})}
             {...(panelIdeationSessionId
               ? { ideationSessionId: panelIdeationSessionId }
               : {})}
@@ -2739,6 +2745,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             onUserMessageSent={onAgentUserMessageSent}
             onQuestionAnswered={handleQuestionAnswered}
             onChildSessionNavigate={onFocusIdeationSession}
+            onBuildPersona={onStartPersonaBuilder}
             hideHeaderSessionControls
             hideSessionToolbar
             surfaceBackground="transparent"
@@ -2766,8 +2773,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   const trimmedFollowup = followup.trim();
                   if (trimmedFollowup) {
                     const sendResult = await chatApi.sendAgentMessage(
-                      "project",
-                      activeProjectId,
+                      forkResult.conversation.contextType,
+                      forkResult.conversation.contextId,
                       trimmedFollowup,
                       undefined,
                       {
@@ -2993,7 +3000,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onFilesSelected={composerProps.onFilesSelected}
                     onRemoveAttachment={composerProps.onRemoveAttachment}
                     attachmentsUploading={composerProps.attachmentsUploading}
-                    {...(!isFocusedChildChat && capabilityOptions.length > 1
+                    {...(!isFocusedChildChat &&
+                    activeConversation.contextType === "project" &&
+                    capabilityOptions.length > 1
                       ? {
                           capability: {
                             value: activeConversation.coordinationMode,
@@ -3011,7 +3020,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                           },
                         }
                       : {})}
-                    {...(composerProps.personaControl !== undefined
+                    {...(activeConversation.contextType === "project" &&
+                    composerProps.personaControl !== undefined
                       ? {
                           personaControl: (
                             <MemoizedPersonaControl
@@ -3230,6 +3240,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       options={activeProjectOptions}
                       placeholder="Current project"
                       disabled
+                      standaloneCaption="Runs in a private workspace"
                     />
                     <AgentConversationWorkspaceLine
                       workspace={activeWorkspace}

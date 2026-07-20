@@ -20,6 +20,27 @@ describe("agentSessionStore", () => {
       "uncommitted",
       "unpushed",
     ]);
+    expect(useAgentSessionStore.getInitialState().defaultStartMode).toBe("edit");
+  });
+
+  it("migrates invalid new-run mode preferences to Agent", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "persona_builder",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "edit" });
+
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "plan",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "plan" });
   });
 
   it("migrates older persisted sidebar filter state to all projects", () => {
@@ -293,6 +314,15 @@ describe("agentSessionStore", () => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
     });
 
+    it("persists the preferred ordinary new-run mode", () => {
+      useAgentSessionStore.getState().setDefaultStartMode("plan");
+
+      expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"defaultStartMode":"plan"',
+      );
+    });
+
     it("setFocusedProject expands only the focused project without selecting a conversation", () => {
       const { clearSelection, setFocusedProject, selectConversation, setProjectExpanded } =
         useAgentSessionStore.getState();
@@ -387,6 +417,55 @@ describe("agentSessionStore", () => {
       );
       expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
       expect(consumeStartConversationDraft()).toBeNull();
+    });
+
+    it("round-trips a standalone start draft without inventing a project id", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+    });
+
+    it("preserves persona-builder scope lock and refine provenance in the consumed copy", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    });
+
+    it("selects a standalone conversation without project focus bookkeeping", () => {
+      useAgentSessionStore.getState().selectConversation(null, "standalone-1");
+
+      const state = useAgentSessionStore.getState();
+      expect(state.selectedProjectId).toBeNull();
+      expect(state.focusedProjectId).toBeNull();
+      expect(state.selectedConversationId).toBe("standalone-1");
+      expect(state.lastSelectedConversationByProjectId).toEqual({});
     });
 
     it("selectConversation pins focus + remembers per-project last conversation", () => {

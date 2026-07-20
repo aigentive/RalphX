@@ -80,6 +80,10 @@ pub fn routing_role_for_chat_launch(
                 _ => RoutingRole::WorkspaceChat,
             },
         },
+        ChatContextType::Standalone => match workspace_mode {
+            Some(AgentConversationWorkspaceMode::PersonaBuilder) => RoutingRole::UtilityLightweight,
+            _ => RoutingRole::WorkspaceChat,
+        },
         ChatContextType::Ideation => {
             if ideation_verification {
                 RoutingRole::IdeationVerifier
@@ -590,7 +594,8 @@ fn execution_lane_for_context(
         ChatContextType::Ideation
         | ChatContextType::Delegation
         | ChatContextType::Task
-        | ChatContextType::Project => None,
+        | ChatContextType::Project
+        | ChatContextType::Standalone => None,
     }
 }
 

@@ -93,6 +93,23 @@ fn test_validation_error_serialization() {
 }
 
 #[test]
+fn persona_draft_conflict_has_stable_serialized_code_and_hashes() {
+    let err = AppError::PersonaDraftConflict {
+        expected: "hash-v1".to_string(),
+        actual: "hash-v2".to_string(),
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "PERSONA_DRAFT_CONFLICT: expected content hash `hash-v1` but current hash is `hash-v2`"
+    );
+    assert_eq!(
+        serde_json::to_string(&err).unwrap(),
+        "\"PERSONA_DRAFT_CONFLICT: expected content hash `hash-v1` but current hash is `hash-v2`\""
+    );
+}
+
+#[test]
 fn test_app_result_ok() {
     let result: AppResult<i32> = Ok(42);
     assert!(result.is_ok());

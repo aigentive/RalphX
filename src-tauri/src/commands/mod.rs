@@ -30,6 +30,7 @@ pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
 pub mod conversation_stats_commands;
+pub mod conversation_folder_reference_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -62,7 +63,6 @@ pub mod notification_commands;
 #[cfg(test)]
 mod notification_commands_tests;
 pub mod permission_commands;
-pub mod persona_builder_commands;
 pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;

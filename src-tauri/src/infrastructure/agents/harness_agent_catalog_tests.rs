@@ -599,7 +599,6 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         "ask_user_question",
         "save_persona_draft",
         "get_persona_draft",
-        "TaskList",
     ];
     let ungranted_tools = [
         "delegate_start",
@@ -635,7 +634,7 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         for granted in granted_tools {
             assert!(
                 prompt.contains(granted),
-                "persona extractor {harness:?} prompt should name granted/inert tool {granted}"
+                "persona extractor {harness:?} prompt should name granted tool {granted}"
             );
         }
         for ungranted in ungranted_tools {
@@ -645,6 +644,25 @@ fn persona_extractor_prompts_mention_only_live_tools() {
             );
         }
     }
+
+    let claude_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-persona-extractor",
+        AgentPromptHarness::Claude,
+    )
+    .expect("persona extractor Claude prompt should exist");
+    assert!(
+        claude_prompt.contains("TaskList"),
+        "Claude prompt should document its inert CLI filler"
+    );
+
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-persona-extractor", AgentPromptHarness::Codex)
+            .expect("persona extractor Codex prompt should exist");
+    assert!(
+        !codex_prompt.contains("TaskList"),
+        "Codex prompt must not mention a Claude-only tool"
+    );
 }
 
 #[test]
@@ -667,6 +685,30 @@ fn persona_extractor_prompt_requires_distilled_persona_output() {
             assert!(
                 prompt.contains(required_contract_text),
                 "persona extractor {harness:?} prompt should require {required_contract_text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_prompt_requires_in_conversation_persistence() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for required_contract_text in [
+            "one Persona lineage",
+            "separate Persona Builder conversation",
+            "`save_persona_draft` succeeds",
+            "Markdown-only response is not successful completion",
+            "Do not present paste-ready persona content",
+            "Persona tab",
+            "Approve persona",
+        ] {
+            assert!(
+                prompt.contains(required_contract_text),
+                "persona extractor {harness:?} prompt should require `{required_contract_text}`"
             );
         }
     }
@@ -2730,14 +2772,22 @@ fn ticket_attachment_surface_stays_off_unrelated_agent_prompts_and_grants() {
 }
 
 #[test]
-fn task_execution_agent_rule_documents_post_change_validation_policy() {
+fn task_execution_agent_rule_documents_focused_validation_policy() {
     let root = project_root();
     let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))
         .expect("read task execution agent rule");
 
     assert!(
+        rule_doc.contains("Target-project instructions own command selection"),
+        "task execution rule should preserve target-project validation ownership"
+    );
+    assert!(
+        rule_doc.contains("narrowest relevant wave/final/re-execution evidence"),
+        "task execution rule should require focused implementation-agent evidence"
+    );
+    assert!(
         rule_doc.contains("Execution agents do not run baseline validation by default"),
-        "task execution rule should state the default post-change validation policy"
+        "task execution rule should state the default pre-change validation policy"
     );
     assert!(
         rule_doc.contains("explicit diagnostic"),
