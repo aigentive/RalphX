@@ -171,7 +171,7 @@ async fn restart_treats_terminal_remote_pr_as_idempotently_closed() {
 }
 
 #[tokio::test]
-async fn restart_skips_remote_pr_when_all_local_pointers_are_terminal() {
+async fn restart_reconciles_stale_open_remote_pr_when_all_local_pointers_are_terminal() {
     let (_project_dir, mut state, mut workspace, mut plan_branch) = setup_restart_pr_state().await;
     plan_branch.pr_status = Some(PrStatus::Closed);
     workspace.publication_pr_number = Some(41);
@@ -182,10 +182,11 @@ async fn restart_skips_remote_pr_when_all_local_pointers_are_terminal() {
 
     close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
         .await
-        .expect("locally terminal PR pointers should be restart-safe");
+        .expect("remote PR state should be proven before restart");
 
-    assert_eq!(github.state().check_pr_status_calls, 0);
-    assert_eq!(github.state().close_pr_calls, 0);
+    assert_eq!(github.state().check_pr_status_calls, 1);
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert_eq!(github.state().last_close_pr_number, Some(41));
 }
 
 #[tokio::test]

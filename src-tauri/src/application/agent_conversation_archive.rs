@@ -33,7 +33,6 @@ struct EffectivePrTarget {
 #[derive(Debug, Clone)]
 struct RestartPrTarget {
     number: i64,
-    locally_terminal: bool,
 }
 
 /// Archive an agent conversation and clean up linked ideation execution state.
@@ -189,23 +188,13 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
 ) -> crate::error::AppResult<()> {
     let mut pr_targets = Vec::with_capacity(2);
     if let Some(number) = linked_plan_branch.pr_number {
-        add_restart_pr_target(
-            &mut pr_targets,
-            number,
-            is_plan_branch_pr_terminal(linked_plan_branch),
-        );
+        add_restart_pr_target(&mut pr_targets, number);
     }
     if let Some(number) = workspace.publication_pr_number {
-        add_restart_pr_target(
-            &mut pr_targets,
-            number,
-            !is_workspace_pr_open(workspace.publication_pr_status.as_deref()),
-        );
+        add_restart_pr_target(&mut pr_targets, number);
     }
-    let pr_numbers_to_reconcile: Vec<i64> = pr_targets
-        .into_iter()
-        .filter_map(|target| (!target.locally_terminal).then_some(target.number))
-        .collect();
+    let pr_numbers_to_reconcile: Vec<i64> =
+        pr_targets.into_iter().map(|target| target.number).collect();
     if !pr_numbers_to_reconcile.is_empty() {
         let project = state
             .project_repo
@@ -254,20 +243,12 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
     Ok(())
 }
 
-fn add_restart_pr_target(
-    pr_targets: &mut Vec<RestartPrTarget>,
-    number: i64,
-    locally_terminal: bool,
-) {
-    if let Some(existing) = pr_targets.iter_mut().find(|target| target.number == number) {
-        existing.locally_terminal &= locally_terminal;
+fn add_restart_pr_target(pr_targets: &mut Vec<RestartPrTarget>, number: i64) {
+    if pr_targets.iter().any(|target| target.number == number) {
         return;
     }
 
-    pr_targets.push(RestartPrTarget {
-        number,
-        locally_terminal,
-    });
+    pr_targets.push(RestartPrTarget { number });
 }
 
 fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {
