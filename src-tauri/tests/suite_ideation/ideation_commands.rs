@@ -1286,6 +1286,7 @@ async fn test_update_ideation_settings() {
     // Create custom settings
     let custom_settings = IdeationSettings {
         tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
@@ -1320,6 +1321,7 @@ async fn test_ideation_settings_persist_across_reads() {
     // Update settings
     let custom_settings = IdeationSettings {
         tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Parallel,
         require_plan_approval: false,
         suggest_plans_for_complex: true,

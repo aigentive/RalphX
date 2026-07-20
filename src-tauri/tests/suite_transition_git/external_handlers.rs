@@ -31,9 +31,8 @@ use ralphx_lib::domain::entities::{
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority,
     ProposalCategory, TaskProposal, VerificationRunSnapshot,
 };
-use ralphx_lib::domain::repositories::TaskRepository;
+use ralphx_lib::domain::ideation::TasksFeatureState;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
-use ralphx_lib::domain::{ideation::TasksFeatureState, repositories::IdeationSettingsRepository};
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::project_scope::ProjectScope;
@@ -2094,6 +2093,15 @@ async fn test_task_transition_cancel() {
 #[tokio::test]
 async fn test_task_transition_retry_from_terminal() {
     let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
 
     let project_id = "proj-retry";
     let p = make_project(project_id, "Retry Test");
@@ -2112,7 +2120,7 @@ async fn test_task_transition_retry_from_terminal() {
         .unwrap();
 
     let result = external_task_transition_http(
-        State(state),
+        State(state.clone()),
         unrestricted_scope(),
         Json(TaskTransitionRequest {
             task_id: task.id.to_string(),

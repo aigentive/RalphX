@@ -11,6 +11,7 @@ vi.mock("@/api/ideation", () => ({
     settings: {
       get: vi.fn(),
       update: vi.fn(),
+      setTasksEnabled: vi.fn(),
     },
   },
 }));
@@ -38,7 +39,7 @@ describe("useIdeationSettings", () => {
 
   it("keeps Tasks off and refetches after the backend commits OFF with a drain error", async () => {
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-    vi.mocked(ideationApi.settings.update).mockRejectedValue(
+    vi.mocked(ideationApi.settings.setTasksEnabled).mockRejectedValue(
       new Error("ralphx:tasks_drain_incomplete: retry cleanup"),
     );
     const { result } = renderHook(() => useIdeationSettings(), {
@@ -47,7 +48,7 @@ describe("useIdeationSettings", () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     await act(async () => {
-      result.current.updateSettings({ ...settings, tasksEnabled: false });
+      await result.current.setTasksEnabled(false).catch(() => undefined);
     });
 
     await waitFor(() => {
