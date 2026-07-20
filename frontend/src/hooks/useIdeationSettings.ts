@@ -14,12 +14,6 @@ import type { IdeationSettings } from "@/types/ideation-config";
 import { defaultIdeationSettings } from "@/types/ideation-config";
 
 const IDEATION_SETTINGS_KEY = ["ideation", "settings"];
-const TASKS_DRAIN_INCOMPLETE_ERROR_CODE = "ralphx:tasks_drain_incomplete";
-
-function isCommittedTasksOffError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(TASKS_DRAIN_INCOMPLETE_ERROR_CODE);
-}
-
 /**
  * Hook to fetch and update ideation settings
  */
@@ -52,10 +46,6 @@ export function useIdeationSettings(enabled = true) {
       return { previousSettings };
     },
     onError: (_err, _newSettings, context) => {
-      if (isCommittedTasksOffError(_err)) {
-        void queryClient.invalidateQueries({ queryKey: IDEATION_SETTINGS_KEY });
-        return;
-      }
       // Rollback on error
       if (context?.previousSettings) {
         queryClient.setQueryData(IDEATION_SETTINGS_KEY, context.previousSettings);
@@ -67,13 +57,26 @@ export function useIdeationSettings(enabled = true) {
     },
   });
 
+  const tasksFeatureMutation = useMutation({
+    mutationFn: (tasksEnabled: boolean) =>
+      ideationApi.settings.setTasksEnabled(tasksEnabled),
+    onSuccess: (updatedSettings) => {
+      queryClient.setQueryData(IDEATION_SETTINGS_KEY, updatedSettings);
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: IDEATION_SETTINGS_KEY });
+    },
+  });
+
   return {
     settings: query.data ?? defaultIdeationSettings,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,
     updateSettings: mutation.mutate,
-    isUpdating: mutation.isPending,
-    updateError: mutation.error,
+    fetchTasksDisableImpact: ideationApi.settings.getDisableImpact,
+    setTasksEnabled: tasksFeatureMutation.mutateAsync,
+    isUpdating: mutation.isPending || tasksFeatureMutation.isPending,
+    updateError: tasksFeatureMutation.error ?? mutation.error,
   };
 }

@@ -1,11 +1,10 @@
 use crate::application::tasks_feature_policy::{TasksFeaturePolicy, TASKS_DISABLED_ERROR_CODE};
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Project,
-    ProjectId, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Project, ProjectId, Task,
 };
-use crate::domain::ideation::IdeationSettings;
+use crate::domain::ideation::{TasksFeatureAction, TasksFeatureState};
 
 async fn attached_pipeline(state: &AppState) -> IdeationSession {
     let project_id = ProjectId::from_string("project-1".to_string());
@@ -37,11 +36,17 @@ async fn attached_pipeline(state: &AppState) -> IdeationSession {
 }
 
 async fn disable_tasks(state: &AppState) {
-    state
-        .ideation_settings_repo
-        .update_settings(&IdeationSettings::default())
-        .await
-        .unwrap();
+    let current = state.ideation_settings_repo.get_settings().await.unwrap();
+    if current.tasks_feature_state == TasksFeatureState::Enabled {
+        assert!(state
+            .ideation_settings_repo
+            .compare_and_set_tasks_feature_state(
+                TasksFeatureState::Enabled,
+                TasksFeatureState::Disabled,
+            )
+            .await
+            .unwrap());
+    }
 }
 
 #[tokio::test]
@@ -50,7 +55,7 @@ async fn tasks_policy_defaults_to_denied_for_standalone_work() {
     disable_tasks(&state).await;
 
     let error = TasksFeaturePolicy::from_state(&state)
-        .authorize_session(None)
+        .authorize_session(None, TasksFeatureAction::Progress)
         .await
         .expect_err("standalone Tasks must be disabled by default");
 
@@ -60,50 +65,32 @@ async fn tasks_policy_defaults_to_denied_for_standalone_work() {
 #[tokio::test]
 async fn tasks_policy_allows_all_work_when_globally_enabled() {
     let state = AppState::new_test();
-    state
+    assert!(state
         .ideation_settings_repo
-        .update_settings(&IdeationSettings {
-            tasks_enabled: true,
-            ..Default::default()
-        })
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
         .await
-        .unwrap();
+        .unwrap());
 
     TasksFeaturePolicy::from_state(&state)
-        .authorize_session(None)
+        .authorize_session(None, TasksFeatureAction::Progress)
         .await
         .expect("enabled Tasks must allow standalone work");
 }
 
 #[tokio::test]
-async fn tasks_policy_allows_only_active_attached_pipeline_while_off() {
+async fn tasks_policy_rejects_active_attached_pipeline_while_off() {
     let state = AppState::new_test();
     let session = attached_pipeline(&state).await;
     disable_tasks(&state).await;
     let policy = TasksFeaturePolicy::from_state(&state);
 
-    policy
-        .authorize_session(Some(&session.id))
-        .await
-        .expect("active attached pipeline must be grandfathered");
-
-    let mut workspace = state
-        .agent_conversation_workspace_repo
-        .get_by_task_pipeline_session_id(&session.id)
-        .await
-        .unwrap()
-        .unwrap();
-    workspace.status = AgentConversationWorkspaceStatus::Archived;
-    state
-        .agent_conversation_workspace_repo
-        .create_or_update(workspace)
-        .await
-        .unwrap();
-
     let error = policy
-        .authorize_session(Some(&session.id))
+        .authorize_session(Some(&session.id), TasksFeatureAction::Progress)
         .await
-        .expect_err("archived attachment must not remain entitled");
+        .expect_err("active attached pipeline must not be grandfathered");
     assert!(error.to_string().starts_with(TASKS_DISABLED_ERROR_CODE));
 }
 
@@ -119,7 +106,7 @@ async fn tasks_policy_rejects_a_pipeline_session_without_an_active_workspace() {
     disable_tasks(&state).await;
 
     let error = TasksFeaturePolicy::from_state(&state)
-        .authorize_session(Some(&session.id))
+        .authorize_session(Some(&session.id), TasksFeatureAction::Progress)
         .await
         .expect_err("an unattached pipeline session must not be entitled");
 
@@ -145,11 +132,35 @@ async fn tasks_policy_rejects_a_workspace_attached_to_a_different_project() {
     disable_tasks(&state).await;
 
     let error = TasksFeaturePolicy::from_state(&state)
-        .authorize_session(Some(&session.id))
+        .authorize_session(Some(&session.id), TasksFeatureAction::HistoryMutation)
         .await
         .expect_err("a mismatched workspace project must not be entitled");
 
     assert!(error.to_string().starts_with(TASKS_DISABLED_ERROR_CODE));
+}
+
+#[tokio::test]
+async fn tasks_policy_allows_quiesce_in_every_state() {
+    let state = AppState::new_test();
+    let policy = TasksFeaturePolicy::from_state(&state);
+
+    policy
+        .authorize_session(None, TasksFeatureAction::Quiesce)
+        .await
+        .expect("disabled Tasks must still allow explicit quiesce");
+
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+    policy
+        .authorize_session(None, TasksFeatureAction::Quiesce)
+        .await
+        .expect("enabled Tasks must allow explicit quiesce");
 }
 
 #[tokio::test]

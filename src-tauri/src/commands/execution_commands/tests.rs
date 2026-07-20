@@ -19,6 +19,17 @@ use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+async fn enable_tasks_for_progress(state: &AppState) {
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            crate::domain::ideation::TasksFeatureState::Disabled,
+            crate::domain::ideation::TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+}
+
 // ========================================
 // ExecutionState Unit Tests
 // ========================================
@@ -6301,6 +6312,7 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     execution_state.pause();
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let project = Project::new(
         "Restart Command Project".to_string(),
         "/tmp/restart-command-project".to_string(),
@@ -6368,10 +6380,59 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
 }
 
 #[tokio::test]
+async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Disabled Restart Project".to_string(),
+            "/tmp/disabled-restart-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Preserve stopped task".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/preserved-while-off".to_string());
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
+    let task = app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = restart_task(
+        task.id.as_str().to_string(),
+        false,
+        None,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect_err("Tasks-off restart must fail closed");
+
+    assert!(error.starts_with("ralphx:tasks_disabled"));
+    let unchanged = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.internal_status, InternalStatus::Stopped);
+    assert_eq!(unchanged.task_branch, task.task_branch);
+    assert_eq!(unchanged.metadata, task.metadata);
+}
+
+#[tokio::test]
 async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_attempt() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     execution_state.pause();
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let project = Project::new(
         "Failed Restart Project".to_string(),
         "/tmp/failed-restart-project".to_string(),
@@ -6464,6 +6525,7 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
 async fn restart_task_from_failed_with_current_completion_proof_recovers_to_review() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let root = tempfile::tempdir().expect("temp dir");
     let (task_id, promoted_sha) = seed_completed_failed_attempt(&app_state, &root).await;
 
@@ -6523,6 +6585,7 @@ async fn restart_task_from_failed_with_current_completion_proof_recovers_to_revi
 async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let project = Project::new(
         "Blocked Failed Restart Project".to_string(),
         "/tmp/blocked-failed-restart-project".to_string(),
@@ -6583,6 +6646,7 @@ async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
 async fn restart_task_from_stopped_merge_returns_validation_warning_before_transition() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let project = Project::new(
         "Unsupported Restart Project".to_string(),
         "/tmp/unsupported-restart-project".to_string(),

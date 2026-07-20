@@ -33,6 +33,7 @@ use ralphx_lib::domain::entities::{
 };
 use ralphx_lib::domain::repositories::TaskRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
+use ralphx_lib::domain::{ideation::TasksFeatureState, repositories::IdeationSettingsRepository};
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::project_scope::ProjectScope;
@@ -2175,7 +2176,73 @@ async fn test_task_transition_retry_non_terminal_fails() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        result.unwrap_err().status,
+        axum::http::StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn test_task_transition_retry_preserves_tasks_disabled_error() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-retry-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Retry Tasks Disabled"))
+        .await
+        .unwrap();
+    let mut task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Stopped task".to_string(),
+    );
+    task.internal_status = InternalStatus::Stopped;
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = external_task_transition_http(
+        State(state),
+        unrestricted_scope(),
+        Json(TaskTransitionRequest {
+            task_id: task.id.to_string(),
+            action: TransitionAction::Retry,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off retry must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
 }
 
 #[tokio::test]
@@ -2208,7 +2275,10 @@ async fn test_task_transition_scope_violation() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(
+        result.unwrap_err().status,
+        axum::http::StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]

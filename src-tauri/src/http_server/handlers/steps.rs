@@ -13,6 +13,7 @@ use crate::application::validation_service::TaskValidationService;
 use crate::domain::entities::{
     ExecutionFailureSource, StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
 };
+use crate::error::AppError;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -56,7 +57,7 @@ pub async fn get_task_steps_http(
 pub async fn start_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<StartStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -87,10 +88,7 @@ pub async fn start_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
@@ -109,7 +107,7 @@ pub async fn start_step_http(
 pub async fn complete_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<CompleteStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -141,10 +139,7 @@ pub async fn complete_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
@@ -211,7 +206,7 @@ pub async fn complete_step_http(
 pub async fn skip_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<SkipStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -243,10 +238,7 @@ pub async fn skip_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
@@ -313,7 +305,7 @@ pub async fn skip_step_http(
 pub async fn fail_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<FailStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let step_id = TaskStepId::from_string(req.step_id);
 
     // Get existing step
@@ -345,10 +337,7 @@ pub async fn fail_step_http(
         .task_step_repo
         .update(&step)
         .await
-        .map_err(|e| {
-            error!("Failed to update step {}: {}", step.id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "update"))?;
 
     let response = StepResponse::from(step);
 
@@ -367,7 +356,7 @@ pub async fn fail_step_http(
 pub async fn add_step_http(
     State(state): State<HttpServerState>,
     Json(req): Json<AddStepRequest>,
-) -> Result<Json<StepResponse>, StatusCode> {
+) -> Result<Json<StepResponse>, HttpError> {
     let task_id = TaskId::from_string(req.task_id);
 
     // Determine sort_order
@@ -411,10 +400,7 @@ pub async fn add_step_http(
         .task_step_repo
         .create(step)
         .await
-        .map_err(|e| {
-            error!("Failed to create step for task {}: {}", task_id.as_str(), e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|error| step_mutation_http_error(error, "create"))?;
 
     let response = StepResponse::from(step);
 
@@ -428,6 +414,17 @@ pub async fn add_step_http(
     );
 
     Ok(Json(response))
+}
+
+fn step_mutation_http_error(error: AppError, operation: &str) -> HttpError {
+    error!("Failed to {operation} task step: {error}");
+    match error {
+        AppError::FeatureDisabled(message) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(message),
+        },
+        _ => HttpError::from(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 pub async fn get_step_progress_http(

@@ -165,6 +165,13 @@ pub async fn complete_branch_update(
 ) -> Result<Json<BranchUpdateResponse>, HandlerError> {
     let task_id = TaskId::from_string(task_id);
     let (task, operation) = active(&state, &task_id).await?;
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
     authorize_bound_run(&state, &operation, &headers).await?;
     if !is_update_status(task.internal_status) || operation.phase != BranchUpdatePhase::Resolving {
         return Err(error(
@@ -179,15 +186,16 @@ pub async fn complete_branch_update(
         .await
         .map_err(|source_error| error(StatusCode::INTERNAL_SERVER_ERROR, source_error.to_string()))?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "Project not found"))?;
-    let mut next_status = crate::application::branch_update_executor::complete_resolved_branch_update(
-        state.app_state.branch_update_repo.clone(),
-        state.app_state.task_repo.clone(),
-        std::path::Path::new(&project.working_directory),
-        &operation,
-        task.internal_status,
-    )
-    .await
-    .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
+    let mut next_status =
+        crate::application::branch_update_executor::complete_resolved_branch_update(
+            state.app_state.branch_update_repo.clone(),
+            state.app_state.task_repo.clone(),
+            std::path::Path::new(&project.working_directory),
+            &operation,
+            task.internal_status,
+        )
+        .await
+        .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
     if operation.continuation
         == crate::domain::entities::BranchUpdateContinuation::FinalizePostMergePrPublication
     {
@@ -200,15 +208,14 @@ pub async fn complete_branch_update(
                 error(StatusCode::INTERNAL_SERVER_ERROR, source_error.to_string())
             })?
             .ok_or_else(|| error(StatusCode::CONFLICT, "Branch update operation disappeared"))?;
-        next_status =
-            crate::application::branch_update_executor::publish_post_merge_branch_update(
-                state.app_state.branch_update_repo.clone(),
-                std::path::Path::new(&project.working_directory),
-                &pending,
-                task.internal_status,
-            )
-            .await
-            .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
+        next_status = crate::application::branch_update_executor::publish_post_merge_branch_update(
+            state.app_state.branch_update_repo.clone(),
+            std::path::Path::new(&project.working_directory),
+            &pending,
+            task.internal_status,
+        )
+        .await
+        .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
         if let Some(plan_branch) =
             crate::domain::state_machine::transition_handler::resolve_task_plan_branch_record(
                 &task,
@@ -258,6 +265,13 @@ async fn report(
 ) -> Result<Json<BranchUpdateResponse>, HandlerError> {
     let task_id = TaskId::from_string(task_id);
     let (task, operation) = active(&state, &task_id).await?;
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|source_error| error(StatusCode::CONFLICT, source_error.to_string()))?;
     authorize_bound_run(&state, &operation, &headers).await?;
     if !is_update_status(task.internal_status) {
         return Err(error(StatusCode::CONFLICT, "Task is not updating a branch"));

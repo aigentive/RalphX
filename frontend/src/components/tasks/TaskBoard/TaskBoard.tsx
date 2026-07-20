@@ -88,6 +88,8 @@ export interface TaskBoardProps {
    * (full kanban screen), expanded columns keep a fixed width once any column
    * is collapsed. */
   fillWidth?: boolean;
+  /** Keep navigation and inspection available while removing task mutations. */
+  readOnly?: boolean;
 }
 
 export function TaskBoard({
@@ -96,6 +98,7 @@ export function TaskBoard({
   onTaskSelect,
   onOpenPlanQuickSwitcher,
   fillWidth: fillWidthProp,
+  readOnly = false,
 }: TaskBoardProps) {
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
@@ -237,7 +240,7 @@ export function TaskBoard({
       }
 
       // Cmd+N / Ctrl+N: Open task creation modal
-      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+      if (!readOnly && (e.metaKey || e.ctrlKey) && e.key === 'n') {
         e.preventDefault();
         openModal('task-create', { projectId });
       }
@@ -255,7 +258,7 @@ export function TaskBoard({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [boardSearchQuery, setBoardSearchQuery, openModal, projectId]);
+  }, [boardSearchQuery, setBoardSearchQuery, openModal, projectId, readOnly]);
 
   // Listen for archive/restore/delete events for real-time updates
   useEffect(() => {
@@ -366,6 +369,7 @@ export function TaskBoard({
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
+    if (readOnly) return;
     const taskId = String(event.active.id);
 
     // Find the source column for this task
@@ -414,7 +418,7 @@ export function TaskBoard({
 
   return (
     <DndContext
-      sensors={sensors}
+      sensors={readOnly ? [] : sensors}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
@@ -643,12 +647,14 @@ export function TaskBoard({
             <div className="flex-1 flex items-center justify-center">
               <EmptySearchState
                 searchQuery={boardSearchQuery || ''}
-                onCreateTask={() => {
-                  openModal('task-create', {
-                    projectId,
-                    defaultTitle: boardSearchQuery || undefined,
-                  });
-                }}
+                {...(!readOnly && {
+                  onCreateTask: () => {
+                    openModal('task-create', {
+                      projectId,
+                      defaultTitle: boardSearchQuery || undefined,
+                    });
+                  },
+                })}
                 onClearSearch={() => {
                   setBoardSearchQuery(null);
                 }}
@@ -697,6 +703,7 @@ export function TaskBoard({
                     onToggleCollapse={() => toggleCollapse(column.id)}
                     fillWidth={fillWidth}
                     cardDisplayMode={cardDisplayMode}
+                    readOnly={readOnly}
                     {...(onTaskSelect !== undefined && { onTaskSelect })}
                   />
                 );
