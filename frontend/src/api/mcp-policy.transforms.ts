@@ -28,6 +28,8 @@ export function transformMcpCatalog(raw: RawMcpCatalog): McpCatalog {
       locked: server.locked,
       lockedReason: server.locked_reason ?? null,
       diagnostic: server.diagnostic ?? null,
+      conflictKind: server.conflict_kind ?? null,
+      repairStatus: server.repair_status ?? null,
     })),
   };
 }

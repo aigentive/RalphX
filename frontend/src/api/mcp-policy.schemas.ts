@@ -20,6 +20,17 @@ export const NativeMcpStateSchema = z.enum([
   "untrusted",
   "unavailable",
 ]);
+export const McpConflictKindSchema = z.enum([
+  "ambiguous_reserved_id",
+  "legacy_registration",
+  "legacy_repair_failed",
+]);
+export const McpRepairStatusSchema = z.enum([
+  "repairable",
+  "repaired",
+  "failed",
+  "manual_only",
+]);
 
 export const RawMcpToolSchema = z.object({
   tool_name: z.string(),
@@ -42,6 +53,8 @@ export const RawMcpServerSchema = z.object({
   locked: z.boolean(),
   locked_reason: z.string().nullable().optional(),
   diagnostic: z.string().nullable().optional(),
+  conflict_kind: McpConflictKindSchema.nullable().optional(),
+  repair_status: McpRepairStatusSchema.nullable().optional(),
 });
 
 export const RawMcpCatalogSchema = z.object({

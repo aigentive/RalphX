@@ -8,6 +8,101 @@ use serde::{Deserialize, Serialize};
 use super::AgentHarnessKind;
 
 pub const RALPHX_MCP_SERVER_IDS: [&str; 2] = ["ralphx", "ralphx_internal"];
+pub const MCP_SETUP_PREFLIGHT_MARKER: &str = "[ralphx:mcp_setup_preflight]";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSetupConflictKind {
+    AmbiguousReservedId,
+    LegacyRegistration,
+    LegacyRepairFailed,
+}
+
+impl fmt::Display for McpSetupConflictKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AmbiguousReservedId => write!(f, "ambiguous_reserved_id"),
+            Self::LegacyRegistration => write!(f, "legacy_registration"),
+            Self::LegacyRepairFailed => write!(f, "legacy_repair_failed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRepairStatus {
+    Repairable,
+    Repaired,
+    Failed,
+    ManualOnly,
+}
+
+impl fmt::Display for McpRepairStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Repairable => write!(f, "repairable"),
+            Self::Repaired => write!(f, "repaired"),
+            Self::Failed => write!(f, "failed"),
+            Self::ManualOnly => write!(f, "manual_only"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSetupPreflightFailure {
+    pub provider: AgentHarnessKind,
+    pub server_id: String,
+    pub native_scope: Option<String>,
+    pub conflict_kind: McpSetupConflictKind,
+    pub repair_status: McpRepairStatus,
+}
+
+impl McpSetupPreflightFailure {
+    pub fn ambiguous(
+        provider: AgentHarnessKind,
+        server_id: impl Into<String>,
+        native_scope: Option<String>,
+    ) -> Self {
+        Self {
+            provider,
+            server_id: server_id.into(),
+            native_scope,
+            conflict_kind: McpSetupConflictKind::AmbiguousReservedId,
+            repair_status: McpRepairStatus::ManualOnly,
+        }
+    }
+
+    pub fn legacy_repair_failed() -> Self {
+        Self {
+            provider: AgentHarnessKind::Claude,
+            server_id: "ralphx".to_string(),
+            native_scope: Some("user".to_string()),
+            conflict_kind: McpSetupConflictKind::LegacyRepairFailed,
+            repair_status: McpRepairStatus::Failed,
+        }
+    }
+
+    pub fn to_start_error_marker(&self) -> String {
+        let payload = serde_json::json!({
+            "provider": self.provider.to_string(),
+            "server_id": self.server_id,
+            "scope": self.native_scope,
+            "conflict_kind": self.conflict_kind,
+            "repair_status": self.repair_status,
+        });
+        format!("{MCP_SETUP_PREFLIGHT_MARKER}{payload}")
+    }
+}
+
+impl fmt::Display for McpSetupPreflightFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Provider-native MCP server '{}' conflicts with a reserved RalphX server ID ({})",
+            self.server_id, self.repair_status
+        )
+    }
+}
 
 /// Provider-neutral deny-only policy applied at a concrete CLI launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

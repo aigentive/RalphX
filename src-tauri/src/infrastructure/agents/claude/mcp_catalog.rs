@@ -1,7 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -10,9 +9,11 @@ use crate::domain::agents::{
 };
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
-fn legacy_registration_cleanup_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyClaudeRegistration {
+    NotPresent,
+    ExactHistorical,
+    AmbiguousCollision,
 }
 
 pub(crate) fn discover_native_mcp_servers(
@@ -72,10 +73,10 @@ pub(crate) fn discover_native_mcp_servers(
     Ok(servers.into_values().collect())
 }
 
-pub(crate) fn has_app_owned_legacy_user_registration(
+pub(crate) fn classify_legacy_user_registration(
     home_dir: &Path,
     app_data_dir: &Path,
-) -> Result<bool, String> {
+) -> Result<LegacyClaudeRegistration, String> {
     let home_dir = validate_absolute_non_root_path(home_dir, "Claude config root")
         .map_err(|error| error.to_string())?;
     let app_data_dir = validate_absolute_non_root_path(app_data_dir, "RalphX app data root")
@@ -83,69 +84,69 @@ pub(crate) fn has_app_owned_legacy_user_registration(
     let user_state_path = home_dir.join(".claude.json");
     let Some(user_state) = read_fixed_json(&home_dir, &user_state_path, Path::new(".claude.json"))?
     else {
-        return Ok(false);
+        return Ok(LegacyClaudeRegistration::NotPresent);
     };
     let Some(registration) = user_state
         .get("mcpServers")
         .and_then(Value::as_object)
         .and_then(|servers| servers.get("ralphx"))
     else {
-        return Ok(false);
+        return Ok(LegacyClaudeRegistration::NotPresent);
     };
 
-    Ok(["release", "debug"].into_iter().any(|profile| {
-        registration
-            == &serde_json::json!({
-                "type": "stdio",
-                "command": "node",
-                "args": [
-                    app_data_dir
-                        .join("generated")
-                        .join(profile)
-                        .join("claude-plugin/ralphx-mcp-server/build/index.js"),
-                    "--trace-dir",
-                    app_data_dir.join("logs/mcp-proxy"),
-                ]
-            })
-    }))
+    let exact = matches_historical_registration(registration, &app_data_dir);
+    Ok(if exact {
+        LegacyClaudeRegistration::ExactHistorical
+    } else {
+        LegacyClaudeRegistration::AmbiguousCollision
+    })
 }
 
-pub(crate) async fn retire_app_owned_legacy_user_registration(
-    cli_path: &Path,
-    home_dir: &Path,
-    app_data_dir: &Path,
-    provider_env: &HashMap<String, String>,
-) -> Result<bool, String> {
-    let _guard = legacy_registration_cleanup_lock().lock().await;
-    if !has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
-        return Ok(false);
-    }
+fn matches_historical_registration(registration: &Value, app_data_dir: &Path) -> bool {
+    let resolved_node = super::node_utils::find_node_binary();
+    let accepted_node_commands = [Path::new("node"), resolved_node.as_path()];
+    let template_script =
+        app_data_dir.join("generated/claude-plugin/ralphx-mcp-server/build/index.js");
+    let trace_enabled_scripts = ["release", "debug"].map(|profile| {
+        app_data_dir
+            .join("generated")
+            .join(profile)
+            .join("claude-plugin/ralphx-mcp-server/build/index.js")
+    });
 
-    let mut command = tokio::process::Command::new(cli_path);
-    super::apply_common_spawn_env(&mut command);
-    command
-        .envs(provider_env)
-        .args(["mcp", "remove", "ralphx", "-s", "user"]);
-    let output = command
-        .output()
-        .await
-        .map_err(|error| format!("Run Claude legacy MCP cleanup: {error}"))?;
-    if !output.status.success() {
-        if !has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
-            return Ok(true);
-        }
-        return Err(format!(
-            "Claude legacy MCP cleanup exited with status {}",
-            output.status
-        ));
-    }
-    if has_app_owned_legacy_user_registration(home_dir, app_data_dir)? {
-        return Err(
-            "Claude reported successful legacy MCP cleanup but the registration remains"
-                .to_string(),
-        );
-    }
-    Ok(true)
+    accepted_node_commands.iter().any(|node_command| {
+        historical_script_is_contained(app_data_dir, &template_script)
+            && registration
+                == &serde_json::json!({
+                    "type": "stdio",
+                    "command": node_command,
+                    "args": [template_script]
+                })
+    }) || trace_enabled_scripts.into_iter().any(|script_path| {
+        historical_script_is_contained(app_data_dir, &script_path)
+            && accepted_node_commands.iter().any(|node_command| {
+                registration
+                    == &serde_json::json!({
+                        "type": "stdio",
+                        "command": node_command,
+                        "args": [
+                            script_path,
+                            "--trace-dir",
+                            app_data_dir.join("logs/mcp-proxy"),
+                        ]
+                    })
+            })
+    })
+}
+
+fn historical_script_is_contained(app_data_dir: &Path, script_path: &Path) -> bool {
+    let Ok(canonical_root) = app_data_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(canonical_script) = script_path.canonicalize() else {
+        return false;
+    };
+    canonical_script.starts_with(canonical_root) && canonical_script.is_file()
 }
 
 fn read_fixed_json(
