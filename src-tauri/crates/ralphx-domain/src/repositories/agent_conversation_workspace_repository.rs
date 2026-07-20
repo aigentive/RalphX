@@ -522,6 +522,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn get_latest_pending_pr_review_action(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
     async fn list_pr_review_actions(
         &self,
         _conversation_id: &ChatConversationId,
