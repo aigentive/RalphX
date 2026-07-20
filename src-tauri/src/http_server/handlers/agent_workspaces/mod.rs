@@ -63,6 +63,7 @@ use crate::domain::entities::{
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
 };
+use crate::domain::services::append_ralphx_generated_footer;
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };
@@ -2665,12 +2666,13 @@ pub async fn submit_agent_workspace_pr_review_action(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let outbound_review_body = append_ralphx_generated_footer(&action.review_body);
     let submitted = match github
         .submit_pr_review(
             std::path::Path::new(&workspace.worktree_path),
             pr_number,
             event,
-            &action.review_body,
+            &outbound_review_body,
         )
         .await
     {
