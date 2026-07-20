@@ -64,6 +64,7 @@ import {
 import {
   buildAgentStartConversationRetryInput,
   parseLinkedSetupFailure,
+  parseMcpSetupPreflightFailure,
 } from "./agentStartErrors";
 import {
   normalizeRuntimeForPersistence,
@@ -676,6 +677,7 @@ export function useStartAgentConversation({
           }
         }
         const linkedFailure = parseLinkedSetupFailure(err);
+        const mcpFailure = parseMcpSetupPreflightFailure(err);
         if (linkedFailure) {
           useAgentSessionStore.getState().setStartConversationFailure({
             kind: "linked_setup",
@@ -687,6 +689,27 @@ export function useStartAgentConversation({
               runtimeProviderContext,
               useRoleDefault,
               mode: effectiveMode,
+              base,
+              codexFastMode,
+              personaId,
+              capabilityIntent,
+              teamIntent,
+              composerArtifactReferences,
+              composerIntegrationReferences,
+              composerProjectReferences,
+            }),
+          });
+        } else if (mcpFailure) {
+          useAgentSessionStore.getState().setStartConversationFailure({
+            kind: "mcp_setup",
+            ...mcpFailure,
+            retryInput: buildAgentStartConversationRetryInput({
+              projectId: targetProjectId,
+              content,
+              runtime: normalizedRuntime,
+              runtimeProviderContext,
+              useRoleDefault,
+              mode,
               base,
               codexFastMode,
               personaId,
