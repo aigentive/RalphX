@@ -1207,7 +1207,7 @@ test.describe("Agents View", () => {
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
     await page.getByRole("button", { name: "Show more modes" }).click();
     await expect(page.getByTestId("agents-start-mode-automation")).toBeVisible();
-    await expect(page.getByTestId("agents-start-mode-ideation")).toBeVisible();
+    await expect(page.getByTestId("agents-start-mode-ideation")).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
 
