@@ -281,7 +281,7 @@ export function TaskCard({
           tabIndex={0}
         >
       {/* Drag handle - appears on hover over the status badge (hidden if not draggable) */}
-      {isDraggable && !isArchived && (
+      {isDraggable && !isArchived && !readOnly && (
         <div
           data-testid="drag-handle"
           className="absolute right-8 top-2.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"

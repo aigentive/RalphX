@@ -16,7 +16,11 @@ vi.mock("@/api/ideation", () => ({
   },
 }));
 
-const settings = { ...defaultIdeationSettings, tasksEnabled: true };
+const settings = {
+  ...defaultIdeationSettings,
+  tasksEnabled: true,
+  tasksFeatureState: "enabled" as const,
+};
 
 function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -28,6 +32,7 @@ describe("useIdeationSettings", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -70,6 +75,27 @@ describe("useIdeationSettings", () => {
     await waitFor(() => {
       expect(result.current.settings.tasksEnabled).toBe(true);
       expect(result.current.updateError).toBeInstanceOf(Error);
+    });
+  });
+
+  it("does not optimistically change backend-owned Tasks fields during an ordinary update", async () => {
+    vi.mocked(ideationApi.settings.update).mockReturnValue(new Promise(() => undefined));
+    const { result } = renderHook(() => useIdeationSettings(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => {
+      result.current.updateSettings({
+        ...settings,
+        tasksEnabled: false,
+        tasksFeatureState: "disabled",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.settings.tasksEnabled).toBe(true);
+      expect(result.current.settings.tasksFeatureState).toBe("enabled");
     });
   });
 });

@@ -121,9 +121,46 @@ pub async fn recover_task_execution(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
+    let task = match app_state.task_repo.get_by_id(&task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
 
     Ok(reconciler.recover_execution_stop(&task_id).await)
+}
+
+async fn prepare_recovery_prompt_action(
+    task_id: &crate::domain::entities::TaskId,
+    action: &str,
+    app_state: &AppState,
+) -> Result<Option<(crate::domain::entities::Task, UserRecoveryAction)>, String> {
+    let action = match action {
+        "restart" => UserRecoveryAction::Restart,
+        "cancel" => UserRecoveryAction::Cancel,
+        _ => return Err("Invalid recovery action".to_string()),
+    };
+    let task = match app_state.task_repo.get_by_id(task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some((task, action)))
 }
 
 /// Resolve a recovery prompt by applying the selected action.
@@ -136,18 +173,12 @@ pub async fn resolve_recovery_prompt(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
-    let action = match action.as_str() {
-        "restart" => UserRecoveryAction::Restart,
-        "cancel" => UserRecoveryAction::Cancel,
-        _ => return Err("Invalid recovery action".to_string()),
+    let Some((task, action)) =
+        prepare_recovery_prompt_action(&task_id, action.as_str(), &app_state).await?
+    else {
+        return Ok(false);
     };
     let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
-
-    let task = match app_state.task_repo.get_by_id(&task_id).await {
-        Ok(Some(task)) => task,
-        Ok(None) => return Ok(false),
-        Err(e) => return Err(e.to_string()),
-    };
 
     Ok(reconciler.apply_user_recovery_action(&task, action).await)
 }

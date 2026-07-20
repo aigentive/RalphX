@@ -131,6 +131,69 @@ async fn retry_rechecks_tasks_feature_state_inside_the_write_transaction() {
     });
 }
 
+#[tokio::test]
+async fn begin_git_mutation_rechecks_tasks_feature_state_inside_the_write_transaction() {
+    let db = SqliteTestDb::new("branch-update-begin-mutation-tasks-off-race");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+    let repo =
+        SqliteBranchUpdateRepository::from_shared(db.shared_conn()).with_tasks_feature_policy();
+    let operation = operation(task.id.clone(), "history-begin-mutation-tasks-off");
+    let operation_id = operation.id.clone();
+    let identity = operation.target_identity.clone();
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation_id.as_str());
+    let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "begin-mutation".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("activation should apply");
+    };
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 0, tasks_feature_state = 'draining' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+
+    let error = repo
+        .begin_git_mutation(BeginGitMutation {
+            identity: identity.clone(),
+            owner,
+            fencing_epoch,
+            claim_id: "must-not-start".into(),
+            kind: GitMutationKind::Merge,
+        })
+        .await
+        .expect_err("a task-owned Git mutation must not start after draining begins");
+
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert!(
+        repo.get_target_lease(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .active_mutation()
+            .is_none(),
+        "rejected admission must leave the durable mutation claim empty"
+    );
+}
+
 fn operation_with_continuation(
     task_id: crate::domain::entities::TaskId,
     history_id: &str,

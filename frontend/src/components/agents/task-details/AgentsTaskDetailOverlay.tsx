@@ -422,6 +422,7 @@ export function AgentsTaskDetailOverlay({
       ? "Main chat is showing this runtime transcript"
       : "Runtime transcript available"
     : "No runtime transcript recorded for this stage";
+  const isEditMode = isEditing && !readOnly && !isHistoryMode;
 
   // Get mutations
   const {
@@ -440,7 +441,7 @@ export function AgentsTaskDetailOverlay({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (isEditing) {
+        if (isEditMode) {
           // If editing, just exit edit mode (go back to view)
           setIsEditing(false);
         } else {
@@ -452,13 +453,19 @@ export function AgentsTaskDetailOverlay({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeSelectedTask, isEditing]);
+  }, [closeSelectedTask, isEditMode]);
 
   // Reset editing and history state when task changes
   useEffect(() => {
     setIsEditing(false);
     setHistoryState(null);
   }, [selectedTaskId, setHistoryState]);
+
+  useEffect(() => {
+    if (readOnly || isHistoryMode) {
+      setIsEditing(false);
+    }
+  }, [isHistoryMode, readOnly]);
 
   // Handle backdrop click
   const handleBackdropClick = useCallback(
@@ -473,7 +480,7 @@ export function AgentsTaskDetailOverlay({
 
   // Handle edit save
   const handleSave = (updateData: Parameters<typeof updateMutation.mutate>[0]['input']) => {
-    if (!task) return;
+    if (!task || readOnly) return;
     updateMutation.mutate(
       { taskId: task.id, input: updateData },
       {
@@ -746,7 +753,7 @@ export function AgentsTaskDetailOverlay({
           </div>
 
           {/* History selector for viewing historical states (hidden in edit mode) */}
-          {!isEditing && (
+          {!isEditMode && (
             <TaskHistoryDropdown
               taskId={task.id}
               currentStatus={task.internalStatus}
@@ -775,7 +782,7 @@ export function AgentsTaskDetailOverlay({
           )}
 
           {/* Scrollable Content */}
-          {isEditing ? (
+          {isEditMode ? (
             /* Edit Mode - No ScrollArea, form handles its own layout */
             <div className="flex-1 flex flex-col overflow-auto px-6 py-4">
               <div

@@ -232,21 +232,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
-    let tasks_settings = app_state
-        .ideation_settings_repo
-        .get_settings()
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
-        app_state
-            .build_tasks_feature_toggle_service(
-                Arc::clone(&execution_state),
-                Some(app_handle.clone()),
-            )
-            .set_tasks_enabled(false)
-            .await?;
-    }
-
+    // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
+    // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
     match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
         Arc::clone(&app_state.branch_update_repo),
@@ -279,6 +266,21 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
     startup_phase_completed("git_mutation_authority_recovery", phase_started_at);
+
+    let tasks_settings = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
+        app_state
+            .build_tasks_feature_toggle_service(
+                Arc::clone(&execution_state),
+                Some(app_handle.clone()),
+            )
+            .set_tasks_enabled(false)
+            .await?;
+    }
 
     let phase_started_at = startup_phase_started("branch_update_run_binding_recovery");
     match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(

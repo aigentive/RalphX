@@ -16,6 +16,7 @@ use crate::domain::repositories::{
     BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
     ProjectRepository,
 };
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryBranchUpdateRepository;
 
@@ -549,6 +550,56 @@ async fn disabling_tasks_keeps_off_when_drain_cannot_enumerate_projects() {
             .unwrap()
             .tasks_feature_state,
         TasksFeatureState::Draining
+    );
+}
+
+#[tokio::test]
+async fn disabling_tasks_retries_runtime_cleanup_for_a_task_already_paused_by_the_drain() {
+    let mut state = AppState::new_test();
+    let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    state.running_agent_registry = registry.clone();
+    enable_tasks(&state).await;
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Drain retry project".to_string(),
+            "/tmp/drain-retry-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Cleanup pending".to_string());
+    task.internal_status = InternalStatus::Paused;
+    task.metadata = Some(
+        serde_json::json!({
+            "tasks_feature_disabled": {
+                "previous_status": "executing",
+                "paused_at": Utc::now().to_rfc3339(),
+            }
+        })
+        .to_string(),
+    );
+    let task = state.task_repo.create(task).await.unwrap();
+    let registry_key = RunningAgentKey::new("task_execution", task.id.as_str());
+    registry.set_running(registry_key.clone()).await;
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Draining,
+        )
+        .await
+        .unwrap());
+
+    let settings = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect("a retry must finish cleanup before committing Disabled");
+
+    assert_eq!(settings.tasks_feature_state, TasksFeatureState::Disabled);
+    assert!(
+        !registry.is_running(&registry_key).await,
+        "the surviving runtime must be stopped on the drain retry"
     );
 }
 

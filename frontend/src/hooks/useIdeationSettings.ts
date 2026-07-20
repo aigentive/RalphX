@@ -40,8 +40,14 @@ export function useIdeationSettings(enabled = true) {
       // Snapshot previous value
       const previousSettings = queryClient.getQueryData<IdeationSettings>(IDEATION_SETTINGS_KEY);
 
-      // Optimistically update
-      queryClient.setQueryData(IDEATION_SETTINGS_KEY, newSettings);
+      // Tasks state is backend-owned by the dedicated drain-aware mutation.
+      const currentTasksSettings = previousSettings ?? defaultIdeationSettings;
+      const optimisticSettings = {
+        ...newSettings,
+        tasksEnabled: currentTasksSettings.tasksEnabled,
+        tasksFeatureState: currentTasksSettings.tasksFeatureState,
+      };
+      queryClient.setQueryData(IDEATION_SETTINGS_KEY, optimisticSettings);
 
       return { previousSettings };
     },

@@ -52,3 +52,36 @@ fn migration_rejects_unknown_feature_state() {
 
     assert!(error.to_string().contains("CHECK constraint failed"));
 }
+
+#[test]
+fn migration_can_resume_after_the_column_exists_without_overwriting_draining() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO ideation_settings (id, tasks_enabled) VALUES (1, 1)",
+        [],
+    )
+    .unwrap();
+
+    v20260720102513_add_tasks_feature_state::migrate(&conn).unwrap();
+    conn.execute(
+        "UPDATE ideation_settings
+         SET tasks_enabled = 0, tasks_feature_state = 'draining' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    v20260720102513_add_tasks_feature_state::migrate(&conn)
+        .expect("migration rerun must tolerate a previously added column");
+
+    let state: String = conn
+        .query_row(
+            "SELECT tasks_feature_state FROM ideation_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "draining",
+        "rerun backfill must preserve an in-progress shutdown"
+    );
+}

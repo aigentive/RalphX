@@ -57,6 +57,7 @@ impl<'a> TasksFeatureToggleService<'a> {
         let mut paused_or_blocked_tasks = 0;
         let mut affected_task_ids = Vec::new();
         let mut affected_projects = HashSet::new();
+        let mut feature_disabled_paused_task_ids = HashSet::new();
 
         for project in projects {
             let tasks = self
@@ -65,6 +66,9 @@ impl<'a> TasksFeatureToggleService<'a> {
                 .get_by_project_filtered(&project.id, true)
                 .await?;
             for task in tasks {
+                if has_feature_disabled_pause_marker(&task) {
+                    feature_disabled_paused_task_ids.insert(task.id.clone());
+                }
                 if matches!(
                     task.internal_status,
                     InternalStatus::Paused
@@ -100,7 +104,9 @@ impl<'a> TasksFeatureToggleService<'a> {
             .branch_update_repo
             .list_active_operations()
             .await?
-            .len();
+            .into_iter()
+            .filter(|operation| !feature_disabled_paused_task_ids.contains(&operation.task_id))
+            .count();
         let mut affected_conversation_ids = attached_conversations.into_iter().collect::<Vec<_>>();
         affected_conversation_ids.sort();
         let mut affected_project_ids = affected_projects.into_iter().collect::<Vec<_>>();
@@ -292,7 +298,10 @@ impl<'a> TasksFeatureToggleService<'a> {
                         continue;
                     }
                 };
-                if !is_agent_active_status(task.internal_status) && !has_active_branch_update {
+                if !is_agent_active_status(task.internal_status)
+                    && !has_active_branch_update
+                    && !has_feature_disabled_pause_marker(&task)
+                {
                     continue;
                 }
                 if self
@@ -316,6 +325,14 @@ impl<'a> TasksFeatureToggleService<'a> {
         let Some(current) = self.state.task_repo.get_by_id(&candidate.id).await? else {
             return Ok(());
         };
+        if !is_agent_active_status(current.internal_status)
+            && has_feature_disabled_pause_marker(&current)
+        {
+            cleanup
+                .stop_task_runtime_contexts_strict(&current.id)
+                .await?;
+            return Ok(());
+        }
         if !is_agent_active_status(current.internal_status) {
             let has_active_branch_update = self
                 .state
@@ -412,6 +429,16 @@ fn drain_incomplete_error(failures: &[String]) -> AppError {
         "{TASKS_DRAIN_INCOMPLETE_ERROR_CODE}: Tasks shutdown must be retried for: {}",
         failures.join(", ")
     ))
+}
+
+fn has_feature_disabled_pause_marker(task: &Task) -> bool {
+    task.internal_status == InternalStatus::Paused
+        && task
+            .metadata
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+            .and_then(|metadata| metadata.get("tasks_feature_disabled").cloned())
+            .is_some()
 }
 
 fn feature_disabled_pause_metadata(task: &Task) -> AppResult<MetadataUpdate> {

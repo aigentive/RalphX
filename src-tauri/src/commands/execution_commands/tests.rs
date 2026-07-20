@@ -234,6 +234,46 @@ async fn test_set_active_project_persists_when_project_changes() {
     assert_eq!(persisted, Some(project.id));
 }
 
+#[tokio::test]
+async fn resolve_recovery_prompt_rejects_progress_while_tasks_are_disabled() {
+    let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Recovery policy project".into(),
+            "/tmp/recovery-policy-project".into(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "Interrupted execution".into());
+    task.internal_status = InternalStatus::Executing;
+    let task = app_state.task_repo.create(task).await.unwrap();
+    assert!(app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            crate::domain::ideation::TasksFeatureState::Enabled,
+            crate::domain::ideation::TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap());
+    let error = prepare_recovery_prompt_action(&task.id, "restart", &app_state)
+        .await
+        .expect_err("manual recovery progress must be rejected while Tasks are disabled");
+
+    assert!(error.starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Executing
+    );
+}
+
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();

@@ -535,8 +535,17 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: BeginGitMutation,
     ) -> AppResult<GitAuthorityCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    if let Some(task_id) = request.owner.task_id.as_ref() {
+                        authorize_branch_update_progress(
+                            conn,
+                            &TaskId::from_string(task_id.clone()),
+                        )?;
+                    }
+                }
                 let current = load_lease_authority(conn, &request.identity)?;
                 if let Some(outcome) =
                     classify_authority(current.as_ref(), &request.owner, request.fencing_epoch)
