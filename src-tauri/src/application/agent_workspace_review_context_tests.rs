@@ -5,9 +5,73 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewTargetScope, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewTargetScope, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    ProjectId,
 };
 use crate::AppError;
+use std::path::Path;
+use std::process::Command;
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should spawn");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed\\nstdout:\\n{}\\nstderr:\\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn init_repo() -> (tempfile::TempDir, std::path::PathBuf, String) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo directory should be created");
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    std::fs::write(repo.join("README.md"), "base\\n").expect("base file should be written");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "base"]);
+    let base_sha = git(&repo, &["rev-parse", "HEAD"]);
+    (temp, repo, base_sha)
+}
+
+async fn setup_full_context() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    AppState,
+    AgentConversationWorkspace,
+) {
+    let (temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Workspace Review context".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let workspace = AgentConversationWorkspace::new(
+        ChatConversationId::new(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some(base_sha),
+        "ralphx/test/context-full".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    (temp, repo, state, workspace)
+}
 
 fn workspace(
     conversation_id: ChatConversationId,
@@ -99,4 +163,62 @@ async fn incomplete_reviewing_monitor_fails_closed_instead_of_becoming_idle() {
     .expect_err("incomplete reviewing state must fail closed");
 
     assert!(matches!(error, AppError::Conflict(_)));
+}
+
+#[tokio::test]
+async fn full_target_reuses_a_current_calculation_without_reloading_git_context() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+
+    let initial = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("initial full context should load");
+    std::fs::write(repo.join("uncommitted.rs"), "pub fn changed() {}\n")
+        .expect("workspace change should be written");
+    let cached = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("cached full target context should load");
+
+    assert_eq!(
+        initial.monitor.status,
+        AgentWorkspaceReviewMonitorStatus::Idle
+    );
+    assert_eq!(cached.monitor, initial.monitor);
+    assert!(cached.target.is_none());
+}
+
+#[tokio::test]
+async fn full_packet_refreshes_instead_of_reusing_the_presentation_cache() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+
+    let initial = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect("initial full packet context should load");
+    std::fs::write(repo.join("uncommitted.rs"), "pub fn changed() {}\n")
+        .expect("workspace change should be written");
+    let refreshed = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect("refreshed full packet context should load");
+
+    assert_eq!(
+        initial.monitor.status,
+        AgentWorkspaceReviewMonitorStatus::Idle
+    );
+    assert!(initial.target.is_none());
+    assert!(refreshed.target.is_some());
 }
