@@ -590,6 +590,12 @@ function resolveAgentWorkspaceConversationId(toolName, args, runtimeContext) {
     }
     throw new Error(`${toolName} requires conversation_id because RalphX did not provide the current workspace conversation id to the MCP runtime context.`);
 }
+function resolveRuntimeAgentWorkspaceConversationId(toolName, runtimeContext) {
+    const conversationId = runtimeContext?.parentConversationId?.trim() ?? "";
+    if (conversationId.length > 0)
+        return conversationId;
+    throw new Error(`${toolName} requires the current agent workspace conversation from runtime context`);
+}
 function resolveWorkspaceReviewCallerRunId(runtimeContext) {
     const runId = runtimeContext?.agentRunId?.trim() ?? "";
     return runId.length > 0 ? runId : undefined;
@@ -634,7 +640,7 @@ export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runt
     return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 export async function callListWorkspaceReviewFilesTool(callTauriGet, args, runtimeContext) {
-    const conversation_id = resolveAgentWorkspaceConversationId("list_workspace_review_files", args, runtimeContext);
+    const conversation_id = resolveRuntimeAgentWorkspaceConversationId("list_workspace_review_files", runtimeContext);
     const pageArgs = (args && typeof args === "object" ? args : {});
     const query = new URLSearchParams();
     if (typeof pageArgs.cursor === "string")
@@ -650,7 +656,7 @@ export async function callListWorkspaceReviewFilesTool(callTauriGet, args, runti
     return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 export async function callGetWorkspaceReviewDiffPageTool(callTauriGet, args, runtimeContext) {
-    const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_diff_page", args, runtimeContext);
+    const conversation_id = resolveRuntimeAgentWorkspaceConversationId("get_workspace_review_diff_page", runtimeContext);
     const pageArgs = (args && typeof args === "object" ? args : {});
     const hasCursor = typeof pageArgs.cursor === "string" && pageArgs.cursor.length > 0;
     const hasPath = typeof pageArgs.path === "string" && pageArgs.path.length > 0;

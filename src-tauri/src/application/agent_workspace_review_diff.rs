@@ -1,33 +1,30 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::application::agent_workspace_review::{
     resolve_review_target, workspace_review_source_snapshot_fingerprint,
     AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewTarget,
 };
+use crate::application::agent_workspace_review_diff_cursor::{
+    bounded_limit, decode_cursor, encode_cursor, validate_cursor_snapshot, validate_path_bound,
+    ReviewDiffCursor, ReviewDiffCursorKind,
+};
+use crate::application::agent_workspace_review_diff_inventory::full_changed_file_inventory;
 use crate::application::diff_service::{
-    validate_worktree_diff_file_containment, DiffService, FileChange, FileChangeStatus, FileDiff,
-    FileDiffPage, MAX_DIFF_PAGE_LIMIT,
+    validate_worktree_diff_file_containment, DiffService, FileDiff, FileDiffPage,
+    MAX_DIFF_PAGE_LIMIT,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceReviewTargetScope, Project,
 };
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::tool_paths::resolve_git_cli_path;
 
 const REVIEW_FILE_PAGE_DEFAULT_LIMIT: usize = 100;
 const REVIEW_FILE_PAGE_MAX_LIMIT: usize = 200;
 const REVIEW_DIFF_PAGE_DEFAULT_LIMIT: usize = 200;
-const REVIEW_CURSOR_MAX_CHARS: usize = 8_192;
-const REVIEW_CURSOR_MAX_BYTES: usize = 4_096;
-const REVIEW_CURSOR_MAX_OFFSET: usize = 10_000_000;
-const REVIEW_CURSOR_MAX_PATH_CHARS: usize = 512;
-const REVIEW_FINGERPRINT_CHARS: usize = 64;
+const REVIEW_DIFF_PAGE_MAX_SERIALIZED_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,32 +80,10 @@ pub struct AgentWorkspaceReviewDiffPage {
 }
 
 #[derive(Debug, Clone)]
-struct ReviewDiffSnapshot {
-    target: AgentWorkspaceReviewTarget,
-    source_fingerprint: String,
-    files: Vec<AgentWorkspaceReviewChangedFile>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ReviewDiffCursorKind {
-    Files,
-    Diff,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReviewDiffCursor {
-    version: u8,
-    kind: ReviewDiffCursorKind,
-    target_scope: String,
-    target_fingerprint: String,
-    source_fingerprint: String,
-    offset: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source: Option<AgentWorkspaceReviewDiffSource>,
+pub(super) struct ReviewDiffSnapshot {
+    pub(super) target: AgentWorkspaceReviewTarget,
+    pub(super) source_fingerprint: String,
+    pub(super) files: Vec<AgentWorkspaceReviewChangedFile>,
 }
 
 pub async fn list_workspace_review_files(
@@ -265,12 +240,25 @@ pub async fn get_workspace_review_diff_page(
     )
     .await?;
 
-    Ok(AgentWorkspaceReviewDiffPage {
+    let response = AgentWorkspaceReviewDiffPage {
         source,
         page,
         hunk_anchors,
         next_cursor,
-    })
+    };
+    let response_size = serde_json::to_vec(&response)
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Failed to measure workspace Review diff response: {error}"
+            ))
+        })?
+        .len();
+    if response_size > REVIEW_DIFF_PAGE_MAX_SERIALIZED_BYTES {
+        return Err(AppError::Validation(format!(
+            "Workspace Review diff response size exceeds the {REVIEW_DIFF_PAGE_MAX_SERIALIZED_BYTES}-byte limit"
+        )));
+    }
+    Ok(response)
 }
 
 pub fn resolve_workspace_review_file_diff(
@@ -405,178 +393,6 @@ async fn ensure_snapshot_unchanged(
     Ok(())
 }
 
-fn full_changed_file_inventory(
-    target: &AgentWorkspaceReviewTarget,
-) -> AppResult<Vec<AgentWorkspaceReviewChangedFile>> {
-    let service = DiffService::new();
-    let root = target.working_directory.to_str().ok_or_else(|| {
-        AppError::Validation("Workspace Review path is not valid UTF-8".to_string())
-    })?;
-    let sources = match target.scope {
-        AgentWorkspaceReviewTargetScope::SelectedSource => vec![(
-            AgentWorkspaceReviewDiffSource::SelectedSource,
-            service.get_file_changes_between_refs(root, &target.base_ref, &target.head_ref)?,
-        )],
-        AgentWorkspaceReviewTargetScope::WorkspaceDelta => vec![
-            (
-                AgentWorkspaceReviewDiffSource::Committed,
-                service.get_file_changes_between_refs(root, &target.base_ref, "HEAD")?,
-            ),
-            (
-                AgentWorkspaceReviewDiffSource::Staged,
-                service.get_staged_file_changes(root)?,
-            ),
-            (
-                AgentWorkspaceReviewDiffSource::Unstaged,
-                service.get_unstaged_file_changes(root)?,
-            ),
-        ],
-    };
-
-    let mut files = BTreeMap::<String, (String, BTreeSet<String>)>::new();
-    for (source, changes) in sources {
-        let source_statuses = source_file_statuses(target, source)?;
-        for change in changes {
-            let source_status = source_statuses.get(&change.path).map(String::as_str);
-            let is_untracked_addition = source == AgentWorkspaceReviewDiffSource::Unstaged
-                && source_status.is_none()
-                && matches!(change.status, FileChangeStatus::Added);
-            if source_status.is_none() && !is_untracked_addition {
-                continue;
-            }
-            merge_file_change(&mut files, change, source, source_status);
-        }
-    }
-    Ok(files
-        .into_iter()
-        .map(
-            |(path, (status, sources))| AgentWorkspaceReviewChangedFile {
-                path,
-                status,
-                sources: sources.into_iter().collect(),
-            },
-        )
-        .collect())
-}
-
-fn merge_file_change(
-    files: &mut BTreeMap<String, (String, BTreeSet<String>)>,
-    change: FileChange,
-    source: AgentWorkspaceReviewDiffSource,
-    source_status: Option<&str>,
-) {
-    let status = source_status.unwrap_or(match change.status {
-        FileChangeStatus::Added => "added",
-        FileChangeStatus::Modified => "modified",
-        FileChangeStatus::Deleted => "deleted",
-    });
-    let entry = files
-        .entry(change.path)
-        .or_insert_with(|| (status.to_string(), BTreeSet::new()));
-    if status_rank(status) > status_rank(&entry.0) {
-        entry.0 = status.to_string();
-    }
-    entry.1.insert(source.as_str().to_string());
-}
-
-fn status_rank(status: &str) -> u8 {
-    match status {
-        "deleted" => 4,
-        "added" => 3,
-        "renamed" => 2,
-        "modified" => 1,
-        _ => 0,
-    }
-}
-
-fn source_file_statuses(
-    target: &AgentWorkspaceReviewTarget,
-    source: AgentWorkspaceReviewDiffSource,
-) -> AppResult<BTreeMap<String, String>> {
-    let mut command = Command::new(resolve_git_cli_path());
-    command.current_dir(&target.working_directory).arg("diff");
-    match source {
-        AgentWorkspaceReviewDiffSource::SelectedSource => {
-            command.args([
-                "--name-status",
-                "-z",
-                "--find-renames",
-                &target.base_ref,
-                &target.head_ref,
-                "--",
-            ]);
-        }
-        AgentWorkspaceReviewDiffSource::Committed => {
-            command.args([
-                "--name-status",
-                "-z",
-                "--find-renames",
-                &target.base_ref,
-                "HEAD",
-                "--",
-            ]);
-        }
-        AgentWorkspaceReviewDiffSource::Staged => {
-            command.args(["--cached", "--name-status", "-z", "--find-renames", "--"]);
-        }
-        AgentWorkspaceReviewDiffSource::Unstaged => {
-            command.args(["--name-status", "-z", "--find-renames", "--"]);
-        }
-    }
-    let output = command.output().map_err(|error| {
-        AppError::GitOperation(format!(
-            "Failed to read Workspace Review file statuses: {error}"
-        ))
-    })?;
-    if !output.status.success() {
-        return Err(AppError::GitOperation(format!(
-            "Failed to read Workspace Review file statuses: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    parse_name_status_z(&output.stdout)
-}
-
-fn parse_name_status_z(stdout: &[u8]) -> AppResult<BTreeMap<String, String>> {
-    let fields = stdout
-        .split(|byte| *byte == 0)
-        .filter(|field| !field.is_empty())
-        .collect::<Vec<_>>();
-    let mut statuses = BTreeMap::new();
-    let mut index = 0usize;
-    while index < fields.len() {
-        let status_token = std::str::from_utf8(fields[index]).map_err(|_| {
-            AppError::Validation("Workspace Review git status is not valid UTF-8".to_string())
-        })?;
-        index += 1;
-        let status_code = status_token.chars().next().unwrap_or('M');
-        if matches!(status_code, 'R' | 'C') {
-            if index + 1 >= fields.len() {
-                return Err(AppError::GitOperation(
-                    "Workspace Review git rename status was incomplete".to_string(),
-                ));
-            }
-            index += 1;
-        } else if index >= fields.len() {
-            return Err(AppError::GitOperation(
-                "Workspace Review git file status was incomplete".to_string(),
-            ));
-        }
-        let path = std::str::from_utf8(fields[index]).map_err(|_| {
-            AppError::Validation("Workspace Review file path is not valid UTF-8".to_string())
-        })?;
-        index += 1;
-        let status = match status_code {
-            'A' => "added",
-            'D' => "deleted",
-            'R' => "renamed",
-            _ => "modified",
-        };
-        statuses.insert(path.to_string(), status.to_string());
-    }
-    Ok(statuses)
-}
-
 fn hunk_anchors_for_page(
     diff: &FileDiff,
     source: AgentWorkspaceReviewDiffSource,
@@ -622,7 +438,7 @@ fn ensure_file_source_membership(
     )))
 }
 
-fn validate_source_for_target(
+pub(crate) fn validate_source_for_target(
     source: AgentWorkspaceReviewDiffSource,
     scope: AgentWorkspaceReviewTargetScope,
 ) -> AppResult<()> {
@@ -647,116 +463,3 @@ fn validate_source_for_target(
         )))
     }
 }
-
-fn bounded_limit(
-    requested: Option<usize>,
-    default: usize,
-    max: usize,
-    label: &str,
-) -> AppResult<usize> {
-    let limit = requested.unwrap_or(default);
-    if limit == 0 || limit > max {
-        return Err(AppError::Validation(format!(
-            "{label} limit must be between 1 and {max}"
-        )));
-    }
-    Ok(limit)
-}
-
-fn validate_path_bound(path: &str) -> AppResult<()> {
-    if path.chars().count() > REVIEW_CURSOR_MAX_PATH_CHARS {
-        return Err(AppError::Validation(format!(
-            "Workspace Review diff path is limited to {REVIEW_CURSOR_MAX_PATH_CHARS} characters"
-        )));
-    }
-    if path.trim().is_empty() {
-        return Err(AppError::Validation(
-            "Workspace Review diff path must not be empty".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn encode_cursor(cursor: &ReviewDiffCursor) -> AppResult<String> {
-    let bytes = serde_json::to_vec(cursor).map_err(|error| {
-        AppError::Validation(format!("Failed to encode workspace Review cursor: {error}"))
-    })?;
-    if bytes.len() > REVIEW_CURSOR_MAX_BYTES {
-        return Err(AppError::Validation(
-            "Workspace Review cursor payload is too large".to_string(),
-        ));
-    }
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
-}
-
-fn decode_cursor(value: &str, expected_kind: ReviewDiffCursorKind) -> AppResult<ReviewDiffCursor> {
-    if value.is_empty() || value.chars().count() > REVIEW_CURSOR_MAX_CHARS {
-        return Err(AppError::Validation(
-            "Workspace Review cursor is empty or too large".to_string(),
-        ));
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| AppError::Validation("Workspace Review cursor is malformed".to_string()))?;
-    if bytes.len() > REVIEW_CURSOR_MAX_BYTES {
-        return Err(AppError::Validation(
-            "Workspace Review cursor payload is too large".to_string(),
-        ));
-    }
-    let cursor: ReviewDiffCursor = serde_json::from_slice(&bytes).map_err(|_| {
-        AppError::Validation("Workspace Review cursor payload is malformed".to_string())
-    })?;
-    if cursor.version != 1 || cursor.kind != expected_kind {
-        return Err(AppError::Validation(
-            "Workspace Review cursor version or kind is invalid".to_string(),
-        ));
-    }
-    if cursor.offset > REVIEW_CURSOR_MAX_OFFSET
-        || cursor.target_fingerprint.len() != REVIEW_FINGERPRINT_CHARS
-        || cursor.source_fingerprint.len() != REVIEW_FINGERPRINT_CHARS
-    {
-        return Err(AppError::Validation(
-            "Workspace Review cursor fields are out of bounds".to_string(),
-        ));
-    }
-    match cursor.kind {
-        ReviewDiffCursorKind::Files if cursor.path.is_some() || cursor.source.is_some() => {
-            return Err(AppError::Validation(
-                "Workspace Review file cursor contains diff selection fields".to_string(),
-            ));
-        }
-        ReviewDiffCursorKind::Diff => {
-            let path = cursor.path.as_deref().ok_or_else(|| {
-                AppError::Validation("Workspace Review diff cursor is missing path".to_string())
-            })?;
-            validate_path_bound(path)?;
-            if cursor.source.is_none() {
-                return Err(AppError::Validation(
-                    "Workspace Review diff cursor is missing source".to_string(),
-                ));
-            }
-        }
-        ReviewDiffCursorKind::Files => {}
-    }
-    Ok(cursor)
-}
-
-fn validate_cursor_snapshot(
-    cursor: &ReviewDiffCursor,
-    snapshot: &ReviewDiffSnapshot,
-) -> AppResult<()> {
-    if cursor.target_scope != snapshot.target.scope.to_string()
-        || cursor.target_fingerprint != snapshot.target.diff_fingerprint
-        || cursor.source_fingerprint != snapshot.source_fingerprint
-    {
-        return Err(AppError::Conflict(
-            "Workspace Review cursor is stale for the current target or source snapshot"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-#[path = "agent_workspace_review_diff_tests.rs"]
-mod tests;

@@ -674,6 +674,17 @@ function resolveAgentWorkspaceConversationId(
   );
 }
 
+function resolveRuntimeAgentWorkspaceConversationId(
+  toolName: string,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): string {
+  const conversationId = runtimeContext?.parentConversationId?.trim() ?? "";
+  if (conversationId.length > 0) return conversationId;
+  throw new Error(
+    `${toolName} requires the current agent workspace conversation from runtime context`
+  );
+}
+
 function resolveWorkspaceReviewCallerRunId(
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): string | undefined {
@@ -789,9 +800,8 @@ export async function callListWorkspaceReviewFilesTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const conversation_id = resolveAgentWorkspaceConversationId(
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
     "list_workspace_review_files",
-    args,
     runtimeContext
   );
   const pageArgs = (args && typeof args === "object" ? args : {}) as {
@@ -815,9 +825,8 @@ export async function callGetWorkspaceReviewDiffPageTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const conversation_id = resolveAgentWorkspaceConversationId(
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
     "get_workspace_review_diff_page",
-    args,
     runtimeContext
   );
   const pageArgs = (args && typeof args === "object" ? args : {}) as {

@@ -1232,6 +1232,34 @@ fn externally_reachable_file_diff_sources_reject_unsafe_paths_before_git_reads()
 }
 
 #[test]
+fn externally_reachable_file_diffs_ignore_failing_external_diff_driver() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let initial_head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+    let svc = DiffService::new();
+
+    fs::write(repo.join("base.txt"), "base\nstaged\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["config", "diff.external", "false"]);
+    let staged = svc
+        .get_staged_file_diff("base.txt", &repo_str)
+        .expect("staged diff should use the built-in diff engine");
+    assert!(!staged.hunks.is_empty());
+
+    fs::write(repo.join("base.txt"), "base\nstaged\nunstaged\n").unwrap();
+    let unstaged = svc
+        .get_unstaged_file_diff("base.txt", &repo_str)
+        .expect("unstaged diff should use the built-in diff engine");
+    assert!(!unstaged.hunks.is_empty());
+
+    git_cmd(&repo, &["commit", "-m", "staged change"]);
+    let committed = svc
+        .get_file_diff_between_refs("base.txt", &repo_str, &initial_head, "HEAD")
+        .expect("between-ref diff should use the built-in diff engine");
+    assert!(!committed.hunks.is_empty());
+}
+
+#[test]
 fn get_file_content_range_reads_working_tree_lines() {
     let (_tmp, repo) = create_staged_unstaged_repo();
     let repo_str = repo.to_string_lossy().to_string();

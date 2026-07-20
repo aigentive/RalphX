@@ -1,11 +1,15 @@
-use super::*;
+use super::agent_workspace_review::resolve_review_target;
+use super::agent_workspace_review_diff::*;
+use super::agent_workspace_review_diff_cursor::*;
 
 use std::path::Path;
 use std::process::Command;
 
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceReviewTargetScope,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
+use crate::error::AppError;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -106,6 +110,27 @@ async fn file_inventory_preserves_rename_status_and_paths_with_spaces() {
 }
 
 #[tokio::test]
+async fn file_inventory_preserves_paths_with_tabs_and_newlines() {
+    let (repo, workspace, project) = init_workspace();
+    for path in ["tab\tname.txt", "line\nbreak.txt"] {
+        std::fs::write(repo.path().join(path), "special path\n").expect("write special path");
+        git(repo.path(), &["add", path]);
+    }
+
+    let page = list_workspace_review_files(&workspace, &project, None, None)
+        .await
+        .expect("special paths should remain selectable");
+
+    assert_eq!(page.total_count, 2);
+    assert!(page.files.iter().any(|file| file.path == "tab\tname.txt"));
+    assert!(page.files.iter().any(|file| file.path == "line\nbreak.txt"));
+    assert!(page
+        .files
+        .iter()
+        .all(|file| { file.sources == vec![AgentWorkspaceReviewDiffSource::Staged.as_str()] }));
+}
+
+#[tokio::test]
 async fn diff_continuation_repeats_active_hunk_anchor() {
     let (repo, workspace, project) = init_workspace();
     let old = (0..40)
@@ -145,6 +170,27 @@ async fn diff_continuation_repeats_active_hunk_anchor() {
     .expect("second diff page");
     assert_eq!(second.page.offset, 10);
     assert_eq!(second.hunk_anchors, first.hunk_anchors);
+}
+
+#[tokio::test]
+async fn diff_page_rejects_a_single_row_that_exceeds_the_response_budget() {
+    let (repo, workspace, project) = init_workspace();
+    std::fs::write(repo.path().join("huge-line.txt"), "x".repeat(600_000))
+        .expect("write huge one-line file");
+
+    let error = get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        None,
+        Some("huge-line.txt"),
+        Some("unstaged"),
+        Some(2),
+    )
+    .await
+    .expect_err("oversized serialized pages must fail closed");
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert!(error.to_string().contains("response size"));
 }
 
 #[tokio::test]

@@ -313,8 +313,10 @@ impl DiffService {
     /// Old = committed HEAD version; New = staged (index) version.
     pub fn get_staged_file_diff(&self, file_path: &str, project_path: &str) -> AppResult<FileDiff> {
         validate_diff_file_path(file_path)?;
-        let raw_diff = run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
-            .unwrap_or_default();
+        let raw_diff = run_git_text(
+            project_path,
+            &["diff", "--no-ext-diff", "--cached", "HEAD", "--", file_path],
+        )?;
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -342,7 +344,7 @@ impl DiffService {
         project_path: &str,
     ) -> AppResult<FileDiff> {
         validate_diff_file_path(file_path)?;
-        let raw_diff = run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        let raw_diff = run_git_text(project_path, &["diff", "--no-ext-diff", "--", file_path])?;
         if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
             return self.get_untracked_file_diff(file_path, project_path);
         }
@@ -620,8 +622,10 @@ impl DiffService {
         to_ref: &str,
     ) -> AppResult<FileDiff> {
         validate_diff_file_path(file_path)?;
-        let raw_diff = run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
-            .unwrap_or_default();
+        let raw_diff = run_git_text(
+            project_path,
+            &["diff", "--no-ext-diff", from_ref, to_ref, "--", file_path],
+        )?;
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]

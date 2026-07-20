@@ -1691,6 +1691,41 @@ describe('agent workspace publish tool transport', () => {
     );
   });
 
+  it('ignores undeclared caller workspace identity for Review paging tools', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      conversationId: 'review-conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
+
+    await callListWorkspaceReviewFilesTool(
+      callTauriGet,
+      { conversation_id: 'caller-controlled-conversation' },
+      runtimeContext
+    );
+    await callGetWorkspaceReviewDiffPageTool(
+      callTauriGet,
+      {
+        conversation_id: 'caller-controlled-conversation',
+        path: 'src/lib.rs',
+        source: 'unstaged',
+      },
+      runtimeContext
+    );
+
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      1,
+      'agent-workspaces/conversation-from-runtime/workspace-review-files',
+      expect.anything()
+    );
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      2,
+      'agent-workspaces/conversation-from-runtime/workspace-review-diff-page?path=src%2Flib.rs&source=unstaged',
+      expect.anything()
+    );
+  });
+
   it('keeps workspace Review paging identity and target fields off model schemas', () => {
     for (const toolName of [
       'list_workspace_review_files',
