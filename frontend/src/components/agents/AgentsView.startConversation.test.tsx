@@ -189,6 +189,26 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("shows Autopilot only when the capability is enabled and never offers Ideation", async () => {
+    mockAgentViewData();
+    const { queryClient } = renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.queryByTestId("agents-start-mode-autopilot")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentConversationAutopilot: true }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.getByTestId("agents-start-mode-autopilot")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+  });
+
   it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
     const atlas = { ...project, id: "project-atlas", name: "Atlas" };
     mockAgentViewData();
