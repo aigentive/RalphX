@@ -4075,7 +4075,7 @@ impl<R: Runtime> AppChatService<R> {
             message,
             persona,
             spawn_context.folder_refs_block.as_deref(),
-            agent_name_override,
+            Some(effective_agent_name),
             agent_profile,
             context_type,
             context_id,
