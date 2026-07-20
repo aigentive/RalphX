@@ -59,6 +59,15 @@ function rangeContainsInteractiveContent(range: Range): boolean {
   return fragment.querySelector?.(INTERACTIVE_SELECTOR) !== null;
 }
 
+function endpointHasInteractiveAncestor(
+  node: Node | null,
+  region: HTMLElement,
+): boolean {
+  const element = node instanceof Element ? node : node?.parentElement;
+  const interactiveAncestor = element?.closest(INTERACTIVE_SELECTOR);
+  return Boolean(interactiveAncestor && region.contains(interactiveAncestor));
+}
+
 export function ArtifactSelectionProvider({
   enabled,
   onAddExcerpt,
@@ -95,6 +104,13 @@ export function ArtifactSelectionProvider({
     const anchorRegion = nearestRegion(selection.anchorNode, regionsRef.current);
     const focusRegion = nearestRegion(selection.focusNode, regionsRef.current);
     if (!anchorRegion || !focusRegion || anchorRegion[0] !== focusRegion[0]) {
+      dismiss();
+      return;
+    }
+    if (
+      endpointHasInteractiveAncestor(selection.anchorNode, anchorRegion[0]) ||
+      endpointHasInteractiveAncestor(selection.focusNode, focusRegion[0])
+    ) {
       dismiss();
       return;
     }
