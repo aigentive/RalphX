@@ -155,11 +155,24 @@ export interface AgentRuntimeProviderContext {
   supportedModelAliases?: string[] | null;
 }
 
-export interface AgentStartConversationFailure {
-  kind: "linked_setup";
-  message: string;
-  retryInput: AgentStartConversationRetryInput;
-}
+export type AgentStartConversationFailure =
+  | {
+      kind: "linked_setup";
+      message: string;
+      retryInput: AgentStartConversationRetryInput;
+    }
+  | {
+      kind: "mcp_setup";
+      provider: "claude" | "codex";
+      serverId: string;
+      scope: string | null;
+      conflictKind:
+        | "ambiguous_reserved_id"
+        | "legacy_registration"
+        | "legacy_repair_failed";
+      repairStatus: "repairable" | "repaired" | "failed" | "manual_only";
+      retryInput: AgentStartConversationRetryInput;
+    };
 
 interface AgentSessionState {
   focusedProjectId: string | null;

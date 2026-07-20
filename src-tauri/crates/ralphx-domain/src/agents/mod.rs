@@ -41,8 +41,9 @@ pub use model_registry::{
 };
 pub use mcp_policy::{
     validate_mcp_identifier, EffectiveMcpServerPolicy, McpLaunchPolicy, McpOverrideState,
-    McpPolicyOverride, McpPolicySource, McpServerKey, NativeMcpServerSnapshot, NativeMcpState,
-    RALPHX_MCP_SERVER_IDS,
+    McpPolicyOverride, McpPolicySource, McpRepairStatus, McpServerKey, McpSetupConflictKind,
+    McpSetupPreflightFailure, NativeMcpServerSnapshot, NativeMcpState,
+    MCP_SETUP_PREFLIGHT_MARKER, RALPHX_MCP_SERVER_IDS,
 };
 pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
 pub use routing_role::{
