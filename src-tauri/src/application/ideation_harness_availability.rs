@@ -190,6 +190,7 @@ pub(crate) async fn validate_chat_runtime_for_context(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 pub(crate) async fn validate_chat_runtime_for_context_with_override(
@@ -198,7 +199,7 @@ pub(crate) async fn validate_chat_runtime_for_context_with_override(
     context_id: &str,
     surface_name: &str,
     harness_override: Option<AgentHarnessKind>,
-) -> Result<(), String> {
+) -> Result<AgentHarnessKind, String> {
     crate::application::resolve_enabled_default_provider(
         &state.agent_provider_settings_repo,
         surface_name,
@@ -216,7 +217,7 @@ pub(crate) async fn validate_chat_runtime_for_context_with_override(
             surface_name,
         )
         .await?;
-        Ok(())
+        Ok(availability.effective_harness)
     } else {
         let error = availability.error.clone().unwrap_or_else(|| {
             format_harness_runtime_unavailable(surface_name, availability.effective_harness)
@@ -329,7 +330,10 @@ fn runtime_lane_for_context(context_type: ChatContextType) -> Option<AgentLane> 
         ChatContextType::Review => Some(AgentLane::ExecutionReviewer),
         ChatContextType::Merge => Some(AgentLane::ExecutionMerger),
         ChatContextType::BranchUpdate => Some(AgentLane::ExecutionBranchUpdater),
-        ChatContextType::Delegation | ChatContextType::Task | ChatContextType::Project => None,
+        ChatContextType::Delegation
+        | ChatContextType::Task
+        | ChatContextType::Project
+        | ChatContextType::Standalone => None,
     }
 }
 
@@ -365,7 +369,7 @@ async fn project_id_for_context(
             .ok()
             .flatten()
             .map(|task| task.project_id.as_str().to_string()),
-        ChatContextType::Task | ChatContextType::Project => None,
+        ChatContextType::Task | ChatContextType::Project | ChatContextType::Standalone => None,
     }
 }
 

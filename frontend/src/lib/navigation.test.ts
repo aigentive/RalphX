@@ -175,6 +175,19 @@ describe("navigateToAgentConversation", () => {
     expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
     expect(setCurrentViewMock).not.toHaveBeenCalled();
   });
+
+  it("opens a standalone conversation without inventing project ownership", () => {
+    navigateToAgentConversation(null, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(null, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `standalone:${CONVERSATION_A}`,
+      CONVERSATION_A,
+    );
+    expect(selectProjectMock).not.toHaveBeenCalled();
+    expect(mockUiSetState).not.toHaveBeenCalled();
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
 });
 
 describe("navigateToAgentPlan", () => {

@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PersonaChip } from "@/components/Chat/PersonaChip";
 import { IntegratedChatPanel } from "@/components/Chat/IntegratedChatPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { PersonasSection } from "@/components/settings/PersonasSection";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -19,7 +18,10 @@ import { AgentsStartComposer } from "./AgentsStartComposer";
 import { PersonaPickerControl } from "./PersonaPickerControl";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
-const composerProps = vi.hoisted(() => ({ hasPersonaControl: false }));
+const composerProps = vi.hoisted(() => ({
+  hasPersonaControl: false,
+  modeValue: null as string | null,
+}));
 const personaChipRendered = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/useFeatureFlags", () => ({
@@ -62,13 +64,16 @@ vi.mock("./AgentComposerSurface", () => ({
   AgentComposerProjectCreateButton: () => null,
   AgentComposerProjectLine: () => null,
   AgentComposerSurface: ({
+    mode,
     onSend,
     personaControl,
   }: {
+    mode?: { value: string };
     onSend: (message: string) => Promise<void>;
     personaControl?: React.ReactNode;
   }) => {
     composerProps.hasPersonaControl = personaControl !== undefined;
+    composerProps.modeValue = mode?.value ?? null;
     return (
       <div>
         {personaControl}
@@ -245,6 +250,7 @@ const personas = vi.hoisted(() => [
     content: "# Reviewer",
     status: "active" as const,
     version: 1,
+    projectId: null,
     contentHash: "hash-reviewer",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -258,6 +264,7 @@ const personas = vi.hoisted(() => [
     content: "# Draft",
     status: "draft" as const,
     version: 1,
+    projectId: null,
     contentHash: "hash-draft",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -275,8 +282,6 @@ vi.mock("@/hooks/usePersonas", () => ({
   useApprovePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useIngestPersonaContext: () => ({ data: undefined, mutateAsync: vi.fn(), isPending: false }),
-  usePersonaBuilderIngestStatus: () => ({ data: { live: true }, isPending: false }),
   useSwitchConversationPersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
@@ -301,8 +306,6 @@ const PERSONA_COMMANDS = new Set([
   "archive_persona",
   "delete_persona_draft",
   "switch_agent_conversation_persona",
-  "create_persona_builder_conversation",
-  "ingest_persona_context",
 ]);
 
 function createQueryClient() {
@@ -331,6 +334,7 @@ describe("agent personas flag-off sweep", () => {
     vi.clearAllMocks();
     featureFlags.agentPersonas = false;
     composerProps.hasPersonaControl = false;
+    composerProps.modeValue = null;
     localStorage.clear();
     act(() => {
       useUiStore.setState({ activeModal: "settings", modalContext: { section: "personas" } });
@@ -383,6 +387,49 @@ describe("agent personas flag-off sweep", () => {
     expect(personaChipRendered).not.toHaveBeenCalled();
     expectNoPersonaInvokes();
   });
+
+  it("keeps project mode while selecting the first available project", async () => {
+    renderWithProviders(
+      <AgentsStartComposer
+        projects={[
+          {
+            id: "project-1",
+            name: "Project",
+            workingDirectory: "/tmp/project",
+          },
+        ]}
+        defaultProjectId={null}
+        defaultRuntime={{
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        }}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{
+          claude: [],
+          codex: [
+            {
+              id: "gpt-5.5",
+              label: "gpt-5.5",
+              menuLabel: "gpt-5.5",
+              defaultEffort: "xhigh",
+              supportedEfforts: ["xhigh"],
+            },
+          ],
+        }}
+        onCreateProject={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(composerProps.modeValue).toBe("edit"));
+    expect(
+      screen.queryByText(
+        /Project-requiring modes are unavailable without a project/,
+      ),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("agent personas A18 icon-only controls", () => {
@@ -393,7 +440,13 @@ describe("agent personas A18 icon-only controls", () => {
   it("gives every persona icon-only control an aria-label and an app tooltip", async () => {
     const user = userEvent.setup();
     const picker = renderWithProviders(
-      <PersonaPickerControl personaId="reviewer" onValueChange={vi.fn()} onOpenPersonas={vi.fn()} />,
+      <PersonaPickerControl
+        currentProjectId="project-1"
+        currentProjectName="Project One"
+        personaId="reviewer"
+        onValueChange={vi.fn()}
+        onOpenPersonas={vi.fn()}
+      />,
     );
     const pickerTrigger = screen.getByRole("button", { name: "Choose persona" });
     expect(pickerTrigger).toHaveAttribute("aria-label", "Choose persona");
@@ -425,12 +478,6 @@ describe("agent personas A18 icon-only controls", () => {
     expect(await screen.findByRole("tooltip", { name: "Archive Reviewer Voice" })).toBeInTheDocument();
     archiveRows.unmount();
 
-    const builder = renderWithProviders(<PersonaBuilderView projectId="project-1" onBack={vi.fn()} />);
-    const back = screen.getByRole("button", { name: "Back to personas" });
-    expect(back).toHaveAttribute("aria-label", "Back to personas");
-    await user.hover(back);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Back to personas");
-    builder.unmount();
   });
 });
 

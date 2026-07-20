@@ -16,12 +16,12 @@ use crate::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, McpOverrideState, McpServerKey, ProviderSessionRef,
 };
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
-    IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
-    NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
-    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
+    AgentRunStatus, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
+    ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
+    NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, Task, ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
     ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
     ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
 };
@@ -706,6 +706,98 @@ fn recovery_retry_app_repos_read_required_app_state_repos() {
     assert!(repos.ideation_effort_settings_repo.is_some());
     assert!(repos.ideation_model_settings_repo.is_some());
     assert!(repos.delegated_session_repo.is_some());
+}
+
+#[tokio::test]
+async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("temp directory");
+    let app_data = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("app-data"),
+        "recovery retry folder reference app data",
+    )
+    .expect("safe app data");
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("project"),
+        "recovery retry project root",
+    )
+    .expect("safe project root");
+    let folder = crate::utils::path_safety::validate_absolute_non_root_path(
+        &temp.path().join("folder"),
+        "recovery retry folder root",
+    )
+    .expect("safe folder root");
+    std::fs::create_dir(&app_data).expect("create app data");
+    std::fs::create_dir(&project_root).expect("create project root");
+    std::fs::create_dir(&folder).expect("create folder root");
+
+    let mut state = AppState::new_test();
+    state.app_paths = crate::application::AppPaths::new(app_data.clone(), None);
+    let project = Project::new(
+        "Recovery folder refs".to_string(),
+        project_root.to_string_lossy().into_owned(),
+    );
+    let project_id = project.id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let conversation = ChatConversation::new_project(project_id.clone());
+    crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+        Arc::clone(&state.conversation_folder_reference_repo),
+        app_data,
+        5,
+    )
+    .add(conversation.id, &folder, "Recovery Folder".to_string())
+    .await
+    .expect("seed folder reference");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let (block, roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &conversation,
+        Some(project_id.as_str()),
+        &project_root,
+        true,
+    )
+    .await
+    .expect("resolve recovery retry folder refs");
+
+    assert!(block
+        .expect("folder block")
+        .contains(&folder.to_string_lossy().to_string()));
+    assert!(roots.contains(&folder));
+
+    let (disabled_block, disabled_roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &conversation,
+        Some(project_id.as_str()),
+        &project_root,
+        false,
+    )
+    .await
+    .expect("disabled folder refs preserve legacy retry inputs");
+    assert!(disabled_block.is_none());
+    assert!(disabled_roots.is_empty());
+
+    let mut builder = conversation;
+    builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
+        &app_handle,
+        &builder,
+        Some(project_id.as_str()),
+        &project_root,
+        true,
+    )
+    .await
+    .expect("builder folder refs are skipped");
+    assert!(builder_block.is_none());
+    assert!(!builder_roots.contains(&folder));
 }
 
 #[test]
@@ -3367,6 +3459,9 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     let mut conversation = ChatConversation::new_project(project_id.clone());
     let persona = Persona {
         id: PersonaId::from("handler-recovery-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "handler-recovery-persona".to_string(),
         name: "Handler Recovery Persona".to_string(),
         description: "handler recovery attribution fixture".to_string(),
@@ -5786,6 +5881,9 @@ async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from("retry-bound-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "retry-bound-persona".to_string(),
         name: "Retry Bound Persona".to_string(),
         description: "Retry persona fixture".to_string(),

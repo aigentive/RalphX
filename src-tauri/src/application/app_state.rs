@@ -45,6 +45,8 @@ use crate::application::UnavailableClickUpApiClient;
 use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
+
+pub type ApplicationExecutionState = ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
@@ -62,9 +64,9 @@ use crate::domain::repositories::{
     AgentWorkflowRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
     ArtifactFlowRepository, ArtifactRepository, AutomationRepository, AutomationRunRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     ManualRoleDefaultRepository, McpPolicyRepository, MemoryArchiveRepository,
     MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
@@ -93,25 +95,26 @@ use crate::infrastructure::memory::{
     MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
     MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
-    MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
-    MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
-    MemoryExternalEventsRepository, MemoryExternalIssueLinkRepository,
-    MemoryGlobalExecutionSettingsRepository, MemoryGranolaIntegrationSettingsRepository,
-    MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
-    MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
-    MemoryLinearIntegrationSettingsRepository, MemoryManualRoleDefaultRepository,
-    MemoryMcpPolicyRepository, MemoryMethodologyRepository, MemoryNotificationRepository,
-    MemoryNotificationSettingsRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
-    MemoryPermissionRepository, MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository,
-    MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
-    MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
-    MemoryQueuedMessageRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
-    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
-    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
-    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryClickUpIntegrationSettingsRepository, MemoryConversationFolderReferenceRepository,
+    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
+    MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
+    MemoryGranolaIntegrationSettingsRepository, MemoryIdeationEffortSettingsRepository,
+    MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
+    MemoryIdeationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
+    MemoryManualRoleDefaultRepository, MemoryMcpPolicyRepository, MemoryMethodologyRepository,
+    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
+    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
+    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
+    MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
+    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
+    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
+    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -128,26 +131,27 @@ use crate::infrastructure::sqlite::{
     SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
     SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
-    SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
-    SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
-    SqliteExternalEventsRepository, SqliteExternalIssueLinkRepository,
-    SqliteGlobalExecutionSettingsRepository, SqliteGranolaIntegrationSettingsRepository,
-    SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
-    SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
-    SqliteLinearIntegrationSettingsRepository, SqliteManualRoleDefaultRepository,
-    SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
-    SqliteMemoryEventRepository, SqliteMethodologyRepository, SqliteNotificationRepository,
-    SqliteNotificationSettingsRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
-    SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
-    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
-    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
-    SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
-    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteClickUpIntegrationSettingsRepository, SqliteConversationFolderReferenceRepository,
+    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
+    SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
+    SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
+    SqliteGranolaIntegrationSettingsRepository, SqliteIdeationEffortSettingsRepository,
+    SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
+    SqliteIdeationSettingsRepository, SqliteLinearIntegrationSettingsRepository,
+    SqliteManualRoleDefaultRepository, SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository,
+    SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
+    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
+    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
+    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
+    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
+    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
+    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
+    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
+    SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
+    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -353,6 +357,8 @@ pub struct AppState {
     pub execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
     /// Chat attachment repository for file uploads in chat
     pub chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    /// Live external folders referenced by conversations.
+    pub conversation_folder_reference_repo: Arc<dyn ConversationFolderReferenceRepository>,
     /// Storage path for chat attachments
     pub attachment_storage_path: PathBuf,
     /// Streaming state cache for hydrating frontend on navigation to active conversations
@@ -410,7 +416,7 @@ impl AppState {
             Arc::clone(&self.agent_provider_settings_repo),
             Arc::clone(&self.persona_repo),
             Arc::clone(&self.agent_capability_gate),
-            crate::infrastructure::agents::claude::agent_personas_enabled(),
+            crate::infrastructure::agents::agent_personas_enabled(),
             self.app_paths.global_router_path(),
         )
     }
@@ -1464,6 +1470,9 @@ impl AppState {
                 &shared_conn,
             ))),
             chat_attachment_repo,
+            conversation_folder_reference_repo: Arc::new(
+                SqliteConversationFolderReferenceRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             attachment_storage_path,
             permission_state: Arc::new(PermissionState::with_repo(Arc::new(
                 SqlitePermissionRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1698,6 +1707,9 @@ impl AppState {
             team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
+            conversation_folder_reference_repo: Arc::new(
+                MemoryConversationFolderReferenceRepository::new(),
+            ),
             attachment_storage_path,
             permission_state: Arc::new(PermissionState::with_repo(Arc::new(
                 MemoryPermissionRepository::new(),
@@ -1888,6 +1900,9 @@ impl AppState {
             team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
+            conversation_folder_reference_repo: Arc::new(
+                MemoryConversationFolderReferenceRepository::new(),
+            ),
             attachment_storage_path,
             permission_state: Arc::new(PermissionState::with_repo(Arc::new(
                 MemoryPermissionRepository::new(),
@@ -2101,6 +2116,9 @@ impl AppState {
                 &shared_conn,
             ))),
             chat_attachment_repo,
+            conversation_folder_reference_repo: Arc::new(
+                MemoryConversationFolderReferenceRepository::new(),
+            ),
             attachment_storage_path,
             permission_state: Arc::new(PermissionState::with_repo(Arc::new(
                 MemoryPermissionRepository::new(),
@@ -2263,6 +2281,9 @@ impl AppState {
             team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
+            conversation_folder_reference_repo: Arc::new(
+                MemoryConversationFolderReferenceRepository::new(),
+            ),
             attachment_storage_path,
             permission_state: Arc::new(PermissionState::with_repo(Arc::new(
                 MemoryPermissionRepository::new(),

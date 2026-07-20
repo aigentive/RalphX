@@ -54,6 +54,7 @@ pub(super) async fn resolve_teammate_working_dir(
                 Arc::clone(&state.app_state.ideation_session_repo),
                 Arc::clone(&state.app_state.delegated_session_repo),
                 &default_working_dir(),
+                Some(state.app_state.app_paths.app_data_dir()),
             )
             .await;
         }

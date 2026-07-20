@@ -22,6 +22,7 @@ import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
 
 export function MessageReferences({
+  folderReferences = [],
   projectReferences,
   integrationReferences,
   artifactReferences,
@@ -33,6 +34,7 @@ export function MessageReferences({
   const setCurrentView = useUiStore((s) => s.setCurrentView);
 
   if (
+    folderReferences.length === 0 &&
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
     artifactReferences.length === 0 &&
@@ -47,6 +49,16 @@ export function MessageReferences({
       data-testid="message-reference-list"
       className="mb-2 flex max-w-[min(85%,620px)] flex-wrap justify-end gap-2 self-end"
     >
+      {folderReferences.map((reference) => (
+        <ReferenceChip
+          key={`folder:${reference.id ?? reference.folderPath}`}
+          testId={`message-reference-folder:${reference.id ?? reference.folderPath}`}
+          icon={FolderOpen}
+          typeLabel="Folder"
+          label={reference.displayName}
+          description={reference.folderPath}
+        />
+      ))}
       {projectReferences.map((reference) => {
         const isFolder = reference.kind === "directory";
         return (

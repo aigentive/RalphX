@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::entities::{Persona, PersonaId, PersonaStatus};
+use crate::entities::{Persona, PersonaId, PersonaScopeFilter, PersonaStatus};
 use crate::error::AppResult;
 
 #[async_trait]
@@ -11,7 +11,11 @@ pub trait PersonaRepository: Send + Sync {
 
     async fn get_by_slug(&self, slug: &str) -> AppResult<Option<Persona>>;
 
-    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>>;
+    async fn get_active_by_slug(
+        &self,
+        slug: &str,
+        project_id: Option<&crate::entities::ProjectId>,
+    ) -> AppResult<Option<Persona>>;
 
     async fn get_draft_by_source_persona_id(
         &self,
@@ -21,16 +25,9 @@ pub trait PersonaRepository: Send + Sync {
         Ok(None)
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>>;
+    async fn list(&self, scope: PersonaScopeFilter) -> AppResult<Vec<Persona>>;
 
     async fn list_by_status(&self, status: PersonaStatus) -> AppResult<Vec<Persona>>;
-
-    async fn update_content(
-        &self,
-        id: &PersonaId,
-        content: &str,
-        content_hash: &str,
-    ) -> AppResult<()>;
 
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()>;
 

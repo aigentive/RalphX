@@ -967,6 +967,34 @@ fn runtime_config_env_override_agent_personas_true_and_false() {
 }
 
 #[test]
+fn runtime_config_env_override_composer_folder_references_true_and_false() {
+    for (value, expected) in [
+        (Some("true"), true),
+        (Some("1"), true),
+        (Some("false"), false),
+        (None, false),
+    ] {
+        let mut cfg = AllRuntimeConfig {
+            stream: StreamTimeoutsConfig::default(),
+            reconciliation: ReconciliationConfig::default(),
+            git: GitRuntimeConfig::default(),
+            scheduler: SchedulerConfig::default(),
+            supervisor: SupervisorRuntimeConfig::default(),
+            limits: LimitsConfig::default(),
+            verification: VerificationConfig::default(),
+            external_mcp: ExternalMcpConfig::default(),
+            child_session_activity_threshold_secs: None,
+            ui_feature_flags: Default::default(),
+        };
+        apply_env_overrides_with(&mut cfg, &|name| match name {
+            "RALPHX_UI_COMPOSER_FOLDER_REFERENCES" => value.map(str::to_string),
+            _ => None,
+        });
+        assert_eq!(cfg.ui_feature_flags.composer_folder_references, expected);
+    }
+}
+
+#[test]
 fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
     let mut cfg = AllRuntimeConfig {
         stream: StreamTimeoutsConfig::default(),

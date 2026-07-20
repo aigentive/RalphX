@@ -19,11 +19,12 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PersonaRepository, PlanBranchRepository,
-    ProjectRepository, QueuedMessageRepository, ReviewRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
+    ConversationFolderReferenceRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -280,6 +281,8 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub chat_message_repo: Arc<dyn ChatMessageRepository>,
     pub chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     pub chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    pub conversation_folder_reference_repo: Option<Arc<dyn ConversationFolderReferenceRepository>>,
+    pub folder_reference_app_data_dir: Option<std::path::PathBuf>,
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -346,6 +349,8 @@ impl ChatRuntimeFactoryDeps {
             chat_message_repo,
             chat_timeline_repo: None,
             chat_attachment_repo,
+            conversation_folder_reference_repo: None,
+            folder_reference_app_data_dir: None,
             artifact_repo,
             conversation_repo,
             agent_run_repo,
@@ -391,6 +396,16 @@ impl ChatRuntimeFactoryDeps {
 
     pub(crate) fn with_persona_repo(mut self, repo: Arc<dyn PersonaRepository>) -> Self {
         self.persona_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_conversation_folder_reference_context(
+        mut self,
+        repo: Arc<dyn ConversationFolderReferenceRepository>,
+        app_data_dir: std::path::PathBuf,
+    ) -> Self {
+        self.conversation_folder_reference_repo = Some(repo);
+        self.folder_reference_app_data_dir = Some(app_data_dir);
         self
     }
 
@@ -676,6 +691,10 @@ impl ChatRuntimeFactoryDeps {
         .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_conversation_folder_reference_context(
+            Arc::clone(&state.conversation_folder_reference_repo),
+            state.app_paths.app_data_dir().to_path_buf(),
+        )
         .with_manual_role_default_service(Arc::new(state.manual_role_default_service()))
         .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_runtime_support(
@@ -746,6 +765,13 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
 
     if let Some(repo) = deps.persona_repo.as_ref() {
         service = service.with_persona_repo(Arc::clone(repo));
+    }
+    if let (Some(repo), Some(app_data_dir)) = (
+        deps.conversation_folder_reference_repo.as_ref(),
+        deps.folder_reference_app_data_dir.as_ref(),
+    ) {
+        service = service
+            .with_conversation_folder_reference_context(Arc::clone(repo), app_data_dir.clone());
     }
     if let Some(state) = execution_state {
         service = service.with_execution_state(state);

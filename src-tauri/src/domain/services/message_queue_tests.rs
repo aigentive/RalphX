@@ -110,6 +110,24 @@ fn test_queue_and_pop() {
 }
 
 #[test]
+fn standalone_and_branch_update_queue_counts_use_shared_context_parsing() {
+    let queue = MessageQueue::new();
+    queue.queue(
+        ChatContextType::Standalone,
+        "conversation-1",
+        "standalone".to_string(),
+    );
+    queue.queue(
+        ChatContextType::BranchUpdate,
+        "task-1",
+        "branch update".to_string(),
+    );
+
+    assert_eq!(queue.count_for_context("standalone", "conversation-1"), 1);
+    assert_eq!(queue.count_for_context("branch_update", "task-1"), 1);
+}
+
+#[test]
 fn test_get_queued() {
     let queue = MessageQueue::new();
 

@@ -49,7 +49,7 @@ export interface LinkedSetupFailureDetails {
 }
 
 export interface AgentStartConversationRetryInputSource {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext | undefined;

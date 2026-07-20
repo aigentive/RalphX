@@ -6,12 +6,36 @@ use crate::application::personas::{
     draft_applied_payload, draft_updated_payload, PersonaService, SavePersonaDraftInput,
 };
 use crate::application::AppState;
-use crate::domain::entities::{Persona, PersonaId};
-use crate::infrastructure::agents::claude::agent_personas_enabled;
+use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, ProjectId};
+use crate::infrastructure::agents::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListPersonasInput {}
+pub struct ListPersonasInput {
+    #[serde(default)]
+    pub scope: Option<PersonaScopeInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PersonaScopeInput {
+    All,
+    GlobalOnly,
+    GlobalAndProject {
+        #[serde(rename = "projectId")]
+        project_id: String,
+    },
+}
+
+fn scope_filter(scope: Option<PersonaScopeInput>) -> PersonaScopeFilter {
+    match scope {
+        None | Some(PersonaScopeInput::All) => PersonaScopeFilter::All,
+        Some(PersonaScopeInput::GlobalOnly) => PersonaScopeFilter::GlobalOnly,
+        Some(PersonaScopeInput::GlobalAndProject { project_id }) => {
+            PersonaScopeFilter::GlobalAndProject(ProjectId::from_string(project_id))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +54,8 @@ pub struct ApprovePersonaAsNewInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePersonaDraftInput {
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub slug: String,
     pub content: Option<String>,
     #[serde(default)]
@@ -51,6 +77,15 @@ pub struct UpdatePersonaInput {
     pub body: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaDraftInput {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub expected_content_hash: Option<String>,
+}
+
 #[tauri::command]
 pub async fn list_personas(
     input: ListPersonasInput,
@@ -61,12 +96,12 @@ pub async fn list_personas(
 
 #[doc(hidden)]
 pub async fn list_personas_for_state(
-    _input: ListPersonasInput,
+    input: ListPersonasInput,
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Vec<Persona>, String> {
     service(state)
-        .list_personas(feature_enabled)
+        .list_personas(feature_enabled, scope_filter(input.scope))
         .await
         .map_err(to_string)
 }
@@ -111,12 +146,40 @@ pub async fn create_persona_draft_for_state(
         .create_draft(
             feature_enabled,
             SavePersonaDraftInput {
+                project_id: input.project_id.map(ProjectId::from_string),
                 slug: input.slug,
                 content,
                 source_session_id: input.source_session_id,
                 source_persona_id: None,
                 source_content_hash: None,
             },
+        )
+        .await
+        .map_err(to_string)?;
+    emit_draft_updated(state, &persona);
+    Ok(persona)
+}
+
+#[tauri::command]
+pub async fn update_persona_draft(
+    input: UpdatePersonaDraftInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    update_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn update_persona_draft_for_state(
+    input: UpdatePersonaDraftInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    let persona = service(state)
+        .update_draft(
+            feature_enabled,
+            &persona_id(input.id)?,
+            &input.content,
+            input.expected_content_hash.as_deref(),
         )
         .await
         .map_err(to_string)?;

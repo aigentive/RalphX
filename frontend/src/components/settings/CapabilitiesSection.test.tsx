@@ -28,6 +28,7 @@ describe("CapabilitiesSection", () => {
         return {
           activityPage: true,
           extensibilityPage: true,
+          composerFolderReferences: false,
           agentConversationTeam: false,
           agentConversationWorkflows: false,
         };
@@ -37,6 +38,8 @@ describe("CapabilitiesSection", () => {
         return {
           activityPage: true,
           extensibilityPage: true,
+          composerFolderReferences:
+            input.composerFolderReferences ?? false,
           agentConversationTeam: input.agentConversationTeam ?? false,
           agentConversationWorkflows: input.agentConversationWorkflows ?? false,
         };
@@ -45,11 +48,13 @@ describe("CapabilitiesSection", () => {
     });
   });
 
-  it("renders Team and Workflows off by default with experimental guidance", async () => {
+  it("renders Folder context, Team, and Workflows off by default", async () => {
     renderSection();
 
+    expect(await screen.findByText("Folder context")).toBeInTheDocument();
     expect(await screen.findByText("Team")).toBeInTheDocument();
     expect(screen.getByText("Workflows")).toBeInTheDocument();
+    expect(screen.getByTestId("composer-folder-references")).not.toBeChecked();
     expect(screen.getByTestId("agent-conversation-team")).not.toBeChecked();
     expect(
       screen.getByTestId("agent-conversation-workflows"),
@@ -58,6 +63,19 @@ describe("CapabilitiesSection", () => {
     expect(
       screen.getByText(/Codex Ultra is availability-driven/i),
     ).toBeInTheDocument();
+  });
+
+  it("updates Folder context independently", async () => {
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(
+      await screen.findByTestId("composer-folder-references"),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
+      input: { composerFolderReferences: true },
+    });
   });
 
   it("updates Team independently", async () => {

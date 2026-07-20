@@ -65,9 +65,16 @@ export interface ChatComposerAttachment {
   previewUrl?: string;
 }
 
+export interface ChatComposerFolder {
+  id: string;
+  folderPath: string;
+  displayName: string;
+}
+
 export interface ChatComposerDraft {
   content: string;
   attachments: ChatComposerAttachment[];
+  folders: ChatComposerFolder[];
   updatedAt: string;
 }
 
@@ -186,6 +193,8 @@ interface ChatActions {
     draftKey: string,
     attachments: ChatComposerAttachment[],
   ) => void;
+  /** Remember unsent composer folder references for a target. */
+  setComposerDraftFolders: (draftKey: string, folders: ChatComposerFolder[]) => void;
   /** Clear the full unsent composer draft for a target. */
   clearComposerDraft: (draftKey: string) => void;
 }
@@ -217,9 +226,9 @@ function queuedMessageListsEqual(
 function writeComposerDraft(
   state: ChatState,
   draftKey: string,
-  draft: Pick<ChatComposerDraft, "content" | "attachments">,
+  draft: Pick<ChatComposerDraft, "content" | "attachments" | "folders">,
 ) {
-  if (draft.content.length === 0 && draft.attachments.length === 0) {
+  if (draft.content.length === 0 && draft.attachments.length === 0 && draft.folders.length === 0) {
     delete state.composerDraftsByKey[draftKey];
     return;
   }
@@ -227,6 +236,7 @@ function writeComposerDraft(
   state.composerDraftsByKey[draftKey] = {
     content: draft.content,
     attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+    folders: draft.folders.map((folder) => ({ ...folder })),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -581,6 +591,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content,
           attachments: current?.attachments ?? [],
+          folders: current?.folders ?? [],
         });
       }),
 
@@ -590,6 +601,17 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content: current?.content ?? "",
           attachments,
+          folders: current?.folders ?? [],
+        });
+      }),
+
+    setComposerDraftFolders: (draftKey, folders) =>
+      set((state) => {
+        const current = state.composerDraftsByKey[draftKey];
+        writeComposerDraft(state, draftKey, {
+          content: current?.content ?? "",
+          attachments: current?.attachments ?? [],
+          folders,
         });
       }),
 
@@ -629,6 +651,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
  * Delegates to the chat-context-registry's buildStoreKey for consistent key formatting.
  */
 export function getContextKey(context: ChatContext): string {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return buildStoreKey(context.contextTypeOverride, context.contextIdOverride);
+  }
   if (context.view === "ideation" && context.ideationSessionId) {
     return buildStoreKey("ideation", context.ideationSessionId);
   }

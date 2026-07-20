@@ -902,7 +902,13 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
 ) -> Result<StartAgentConversationResponse, String> {
     let provider = input.ticket_ref.provider.clone();
     validate_provider(&provider)?;
-    let project_id = ProjectId::from_string(input.start.project_id.clone());
+    let project_id = ProjectId::from_string(
+        input
+            .start
+            .project_id
+            .clone()
+            .ok_or_else(|| "Starting work from a ticket requires a project".to_string())?,
+    );
     let ticket_reference = ticket_ref_to_composer_reference(&provider, &input.ticket_ref);
     let issue_reference = ensure_ticket_composer_reference(
         &mut input.start.composer_integration_references,

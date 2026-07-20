@@ -8,7 +8,9 @@ use crate::application::agent_conversation_archive::{
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_terminal_cleanup::TerminalLocalCleanupResult;
+use crate::application::agent_workspace_terminal_cleanup::{
+    TerminalCleanupClaimState, TerminalLocalCleanupResult,
+};
 use crate::application::git_service::GitService;
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus;
@@ -347,31 +349,66 @@ async fn archive_requested_remote_close_failure_preserves_active_state() {
 }
 
 #[tokio::test]
-async fn archive_without_workspace_archives_conversation_and_returns_cleaned_outcome() {
+async fn archive_without_workspace_stops_stored_context_and_returns_cleaned_outcome() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("archive-no-workspace".to_string()));
     conversation.id = conversation_id.clone();
+    conversation.context_type = ChatContextType::Standalone;
+    conversation.context_id = conversation_id.as_str();
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("conversation should persist");
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Standalone.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str(),
+            "run-standalone-archive".to_string(),
+            None,
+            None,
+        )
+        .await;
 
     let outcome = archive_agent_conversation_for_state(&conversation_id, &state, false)
         .await
         .expect("archive without workspace should succeed");
 
+    assert!(!state.running_agent_registry.is_running(&running_key).await);
+    assert!(outcome.runtime_shutdown_succeeded);
+    assert_eq!(outcome.cleanup_claim, TerminalCleanupClaimState::NotClaimed);
     assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
-    assert!(state
+    assert_eq!(outcome.message, None);
+    let archived = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .expect("conversation lookup")
-        .expect("conversation retained")
-        .archived_at
-        .is_some());
+        .expect("conversation retained");
+    assert!(archived.archived_at.is_some());
+    assert_eq!(archived.context_type, ChatContextType::Standalone);
+
+    state
+        .chat_conversation_repo
+        .restore(&conversation_id)
+        .await
+        .expect("standalone conversation should restore");
+    let restored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("restored conversation lookup")
+        .expect("restored conversation retained");
+    assert!(restored.archived_at.is_none());
+    assert_eq!(restored.context_type, ChatContextType::Standalone);
 }
 
 #[tokio::test]

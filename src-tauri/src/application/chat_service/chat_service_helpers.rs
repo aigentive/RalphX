@@ -88,6 +88,10 @@ pub fn resolve_agent_with_team_mode(
         ChatContextType::Review => AGENT_REVIEWER,
         ChatContextType::Merge => AGENT_MERGER,
         ChatContextType::BranchUpdate => AGENT_BRANCH_UPDATER,
+        // Standalone conversations normally resolve their agent identity via
+        // `conversation.agent_mode` (see `agent_name_for_conversation_mode`); this
+        // context-only fallback only applies when no mode/override is present.
+        ChatContextType::Standalone => AGENT_CHAT_PROJECT,
     }
 }
 
@@ -230,6 +234,7 @@ pub fn context_type_to_process(context_type: &ChatContextType) -> &'static str {
         ChatContextType::Review => "review",
         ChatContextType::Merge => "merge",
         ChatContextType::BranchUpdate => "branch_update",
+        ChatContextType::Standalone => "standalone",
     }
 }
 

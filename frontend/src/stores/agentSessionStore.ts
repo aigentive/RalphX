@@ -29,6 +29,7 @@ export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/ag
 export type AgentArtifactTab =
   | "review"
   | "automation"
+  | "persona"
   | "issues"
   | "plan"
   | "verification"
@@ -45,6 +46,7 @@ export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
   "verification",
   "tasks",
   "automation",
+  "persona",
   "pr",
   "jira",
   "linear",
@@ -109,9 +111,12 @@ export interface AgentBranchBaseCacheEntry {
 }
 
 export interface AgentStartConversationDraft {
-  projectId: string;
-  content: string;
+  projectId: string | null;
+  content?: string;
   mode: AgentConversationWorkspaceMode;
+  projectLocked?: boolean;
+  sourcePersonaId?: string;
+  sourcePersonaName?: string;
   automationAuthoringMode?: AutomationAuthoringMode;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
@@ -119,7 +124,7 @@ export interface AgentStartConversationDraft {
 }
 
 export interface AgentStartConversationRetryInput {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
@@ -194,7 +199,7 @@ interface AgentSessionState {
 
 interface AgentSessionActions {
   setFocusedProject: (projectId: string | null) => void;
-  selectConversation: (projectId: string, conversationId: string) => void;
+  selectConversation: (projectId: string | null, conversationId: string) => void;
   clearSelection: () => void;
   setVisibleAgentScope: (scope: VisibleAgentScope | null) => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
@@ -236,12 +241,12 @@ interface AgentSessionActions {
   ) => void;
   setRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
   setRoleDefaultRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
@@ -447,8 +452,13 @@ function cloneStartConversationDraft(
 ): AgentStartConversationDraft {
   return {
     projectId: draft.projectId,
-    content: draft.content,
+    content: draft.content ?? "",
     mode: draft.mode,
+    ...(draft.projectLocked !== undefined
+      ? { projectLocked: draft.projectLocked }
+      : {}),
+    ...(draft.sourcePersonaId ? { sourcePersonaId: draft.sourcePersonaId } : {}),
+    ...(draft.sourcePersonaName ? { sourcePersonaName: draft.sourcePersonaName } : {}),
     ...(draft.automationAuthoringMode
       ? { automationAuthoringMode: draft.automationAuthoringMode }
       : {}),
@@ -515,9 +525,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.focusedProjectId = projectId;
           state.selectedProjectId = projectId;
           state.selectedConversationId = conversationId;
-          state.lastSelectedConversationByProjectId ??= {};
-          state.lastSelectedConversationByProjectId[projectId] = conversationId;
-          expandOnlyProject(state, projectId);
+          if (projectId) {
+            state.lastSelectedConversationByProjectId ??= {};
+            state.lastSelectedConversationByProjectId[projectId] = conversationId;
+            expandOnlyProject(state, projectId);
+          }
         }),
 
       clearSelection: () =>
@@ -735,7 +747,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
-          state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          if (projectId) {
+            state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          }
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,
@@ -746,7 +760,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
-          delete state.lastRuntimeByProjectId[projectId];
+          if (projectId) {
+            delete state.lastRuntimeByProjectId[projectId];
+          }
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,

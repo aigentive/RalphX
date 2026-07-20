@@ -90,6 +90,21 @@ describe("PersonaChip", () => {
     });
   });
 
+  it("offers a direct project Persona Builder action when no persona is bound", async () => {
+    const onBuildPersona = vi.fn();
+    renderChip({ personaId: null, onBuildPersona });
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Create persona for this project" }),
+    );
+
+    expect(onBuildPersona).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("menu", { name: "Conversation persona" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("confirms the exact warning before switching a running conversation", async () => {
     renderChip({ isAgentRunning: true });
     fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));

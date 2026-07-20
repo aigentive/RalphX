@@ -22,7 +22,9 @@ import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 
 interface UseChatPanelContextProps {
-  projectId: string;
+  projectId: string | null;
+  contextTypeOverride?: ContextType | undefined;
+  contextIdOverride?: string | undefined;
   ideationSessionId: string | undefined;
   selectedTaskId: string | undefined;
   isExecutionMode: boolean;
@@ -52,6 +54,8 @@ interface ConversationsQueryResult {
 
 export function useChatPanelContext({
   projectId,
+  contextTypeOverride,
+  contextIdOverride,
   ideationSessionId,
   selectedTaskId,
   isExecutionMode,
@@ -82,25 +86,33 @@ export function useChatPanelContext({
 
   // Build chat context based on selected task or ideation session
   const chatContext: ChatContext = useMemo(() => {
+    if (contextTypeOverride && contextIdOverride) {
+      return {
+        view: "agents",
+        projectId: projectId ?? contextIdOverride,
+        contextTypeOverride,
+        contextIdOverride,
+      };
+    }
     if (ideationSessionId) {
       return {
         view: "ideation",
-        projectId,
+        projectId: projectId!,
         ideationSessionId,
       };
     }
     if (selectedTaskId) {
       return {
         view: "task_detail",
-        projectId,
+        projectId: projectId!,
         selectedTaskId,
       };
     }
     return {
       view: "kanban",
-      projectId,
+      projectId: projectId!,
     };
-  }, [selectedTaskId, projectId, ideationSessionId]);
+  }, [contextIdOverride, contextTypeOverride, selectedTaskId, projectId, ideationSessionId]);
 
   // Compute store context key for queue/agent state operations
   // Uses context-aware keys via registry: "task_execution:id", "review:id", "merge:id", or standard keys
@@ -141,7 +153,7 @@ export function useChatPanelContext({
     ? `ideation:${ideationSessionId}`
     : selectedTaskId
       ? `${isMergeMode ? "merge" : isExecutionMode ? "execution" : isReviewMode ? "review" : "task"}:${selectedTaskId}`
-      : (storeContextKeyOverride ?? `project:${projectId}`);
+      : (storeContextKeyOverride ?? `${contextTypeOverride ?? "project"}:${contextIdOverride ?? projectId}`);
 
   // Initialize with empty string to ensure cleanup runs on first mount
   const prevContextKeyRef = useRef("");
@@ -173,12 +185,13 @@ export function useChatPanelContext({
 
   // Determine current context type and ID for validation
   // Declared here (before visibility effect) to avoid temporal dead zone when used in deps array
-  const currentContextType: ContextType = ideationSessionId
+  const currentContextType: ContextType = contextTypeOverride ?? (ideationSessionId
     ? "ideation"
     : selectedTaskId
       ? (isMergeMode ? "merge" : isExecutionMode ? "task_execution" : isReviewMode ? "review" : "task")
-      : "project";
-  const currentContextId = ideationSessionId || selectedTaskId || projectId;
+      : "project");
+  const currentContextId =
+    contextIdOverride ?? ideationSessionId ?? selectedTaskId ?? projectId ?? "";
 
   // Re-trigger autoSelectConversation when panel becomes visible again, and invalidate
   // the conversation list so new conversations created while hidden are discovered.
@@ -278,15 +291,16 @@ export function useChatPanelContext({
       // Update refs with NEW context AFTER cleanup
       prevContextKeyRef.current = contextKey;
       prevStoreContextKeyRef.current = storeContextKey;
-      const newContextType = ideationSessionId
+      const newContextType = contextTypeOverride ?? (ideationSessionId
         ? "ideation"
         : selectedTaskId
           ? (isMergeMode ? "merge" : isExecutionMode ? "task_execution" : isReviewMode ? "review" : "task")
-          : "project";
-      const newContextId = ideationSessionId || selectedTaskId || projectId;
+          : "project");
+      const newContextId =
+        contextIdOverride ?? ideationSessionId ?? selectedTaskId ?? projectId ?? "";
       prevContextTypeRef.current = { type: newContextType, id: newContextId };
     }
-  }, [contextKey, storeContextKey, setActiveConversation, queryClient, clearMessages, setSending, ideationSessionId, selectedTaskId, projectId, isMergeMode, isExecutionMode, isReviewMode]);
+  }, [contextIdOverride, contextKey, contextTypeOverride, storeContextKey, setActiveConversation, queryClient, clearMessages, setSending, ideationSessionId, selectedTaskId, projectId, isMergeMode, isExecutionMode, isReviewMode]);
 
   // Track previous override conversation ID to detect changes
   const prevOverrideConversationIdRef = useRef<string | null | undefined>(undefined);

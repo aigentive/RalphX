@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
@@ -22,6 +24,13 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   stat: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+const featureFlags = vi.hoisted(() => ({ composerFolderReferences: true }));
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  useFeatureFlags: () => ({ data: featureFlags }),
+}));
+
 type ComposerProps = Parameters<typeof AgentComposerSurface>[0];
 
 function renderComposer(overrides: Partial<ComposerProps> = {}) {
@@ -30,7 +39,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
+      <TooltipProvider delayDuration={0}>
         <AgentComposerSurface
           project={{
             value: "project-1",
@@ -102,11 +111,49 @@ function makeTerminalDragEvent() {
   };
 }
 
+/** Intercepts `requestAnimationFrame` so paint-boundary-deferred work (like the
+ * folder-reference hydration query) can be held and flushed explicitly, proving
+ * it does not run in the same synchronous render as the composer shell. */
+function holdDeferredFrames() {
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+
+  window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    const id = nextId;
+    nextId += 1;
+    callbacks.set(id, callback);
+    return id;
+  }) as typeof window.requestAnimationFrame;
+  window.cancelAnimationFrame = ((id: number) => {
+    callbacks.delete(id);
+  }) as typeof window.cancelAnimationFrame;
+
+  return {
+    flush() {
+      const queuedCallbacks = [...callbacks.values()];
+      callbacks.clear();
+      for (const callback of queuedCallbacks) {
+        callback(performance.now());
+      }
+    },
+    restore() {
+      callbacks.clear();
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+    },
+  };
+}
+
 describe("AgentComposerSurface", () => {
   beforeEach(() => {
     vi.useRealTimers();
     setRalphxTerminalDockDragActive(false);
     vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") {
+        return Promise.resolve([]);
+      }
       if (cmd === "list_agent_composer_skills") {
         return Promise.resolve({ skills: [] });
       }
@@ -124,6 +171,277 @@ describe("AgentComposerSurface", () => {
       }
       return Promise.resolve(undefined);
     });
+  });
+
+  it("shows Add folder directly after Add files for a Project conversation", async () => {
+    const normal = renderComposer({
+      conversationId: "conversation-1",
+      enableAttachments: true,
+      project: {
+        value: "project-1",
+        onValueChange: vi.fn(),
+        options: [{ id: "project-1", label: "RalphX" }],
+        placeholder: "Project",
+        endAction: <button type="button">New project</button>,
+      },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    const addFiles = screen.getByRole("button", { name: "Add files" });
+    const addFolder = screen.getByRole("button", { name: "Add folder" });
+    const newProject = screen.getByRole("button", { name: "New project" });
+    expect(
+      addFiles.compareDocumentPosition(addFolder) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      addFolder.compareDocumentPosition(newProject) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    normal.unmount();
+
+    // Persona mode needs the Personas flag in addition to folder references.
+    renderComposer({
+      conversationId: "conversation-2",
+      enableAttachments: true,
+      mode: { value: "persona_builder", onValueChange: vi.fn(), options: [] },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+  });
+
+  it("adds a picked folder and renders the hydrated chip after invalidation", async () => {
+    const references = [] as Array<Record<string, string>>;
+    vi.mocked(invoke).mockImplementation((cmd, args) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      if (cmd === "add_conversation_folder_reference") {
+        const input = (args as { input: Record<string, string> }).input;
+        references.push({ id: "folder-1", ...input, createdAt: "2026-01-01T00:00:00Z" });
+        return Promise.resolve(references[0]);
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.mocked(openDialog).mockResolvedValue("/work/design-notes");
+    renderComposer({ conversationId: "conversation-1", enableAttachments: true });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", { input: { conversationId: "conversation-1", folderPath: "/work/design-notes", displayName: "design-notes" } }));
+    await waitFor(() => expect(screen.getByText("design-notes")).toBeInTheDocument());
+  });
+
+  it("hydrates folder chips and removes one with an accessible, tooltip-backed control", async () => {
+    const references = [
+      {
+        id: "folder-1",
+        conversationId: "conversation-1",
+        folderPath: "/work/brand-kit",
+        displayName: "brand-kit",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      if (cmd === "remove_conversation_folder_reference") {
+        references.splice(0, 1);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1" });
+    const folderChip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    expect(folderChip).toHaveTextContent("Folder");
+    expect(folderChip).toHaveTextContent("brand-kit");
+    const remove = await screen.findByRole("button", { name: "Remove folder brand-kit" });
+    expect(remove).toBeInTheDocument();
+    fireEvent.click(remove);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("remove_conversation_folder_reference", { input: { conversationId: "conversation-1", folderReferenceId: "folder-1" } }));
+    await waitFor(() => expect(screen.queryByText("brand-kit")).not.toBeInTheDocument());
+  });
+
+  it("snapshots hydrated folder references when sending", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") {
+        return Promise.resolve([
+          {
+            id: "folder-1",
+            conversationId: "conversation-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    await waitFor(() => expect(screen.getByText("brand-kit")).toBeInTheDocument());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith("Review this folder", {
+        folderReferences: [
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("shows a retryable folder-reference warning instead of treating a failed list as empty", async () => {
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(new Error("folder list unavailable"))
+      .mockResolvedValueOnce([]);
+    renderComposer({ conversationId: "conversation-folder-error" });
+
+    expect(
+      await screen.findByText(
+        "Couldn't load folder references — previously attached folders may still be visible to the agent",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("folder-reference-chips")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry folder references" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Couldn't load folder references — previously attached folders may still be visible to the agent",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shows the full folder path from the keyboard-focusable persisted chip", async () => {
+    const references = [
+      {
+        id: "folder-1",
+        conversationId: "conversation-1",
+        folderPath: "/work/very/long/path/design-notes",
+        displayName: "design-notes",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve(references);
+      return Promise.resolve(undefined);
+    });
+    renderComposer({ conversationId: "conversation-1" });
+    const chip = await screen.findByTestId(
+      "agent-composer-reference-pill-folder:folder-1",
+    );
+    const pathTrigger = chip.querySelector<HTMLElement>('[tabindex="0"]');
+    expect(pathTrigger).not.toBeNull();
+    fireEvent.focus(pathTrigger!);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("/work/very/long/path/design-notes");
+  });
+
+  it("defers folder-reference hydration behind the first paint boundary", async () => {
+    const deferredFrames = holdDeferredFrames();
+    try {
+      renderComposer({ conversationId: "conversation-1" });
+
+      // Composer shell paints synchronously; the hydration query must not
+      // have fired inside the same render/effect pass.
+      expect(screen.getByLabelText("Message input")).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith("list_conversation_folder_references", {
+        conversationId: "conversation-1",
+      });
+
+      deferredFrames.flush();
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("list_conversation_folder_references", {
+          conversationId: "conversation-1",
+        }),
+      );
+    } finally {
+      deferredFrames.restore();
+    }
+  });
+
+  it("surfaces the folder cap rejection inline near the composer instead of a modal", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_conversation_folder_references") return Promise.resolve([]);
+      if (cmd === "add_conversation_folder_reference") {
+        return Promise.reject(new Error("Maximum of 6 live folder references reached"));
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.mocked(openDialog).mockResolvedValue("/work/one-too-many");
+    renderComposer({ conversationId: "conversation-1", enableAttachments: true });
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Maximum of 6 live folder references reached");
+  });
+
+  it("renders pre-send draft folder chips with an accessible, tooltip-backed remove control", async () => {
+    const onRemoveFolder = vi.fn();
+    const user = userEvent.setup();
+    renderComposer({
+      conversationId: null,
+      folders: [
+        { id: "draft-1", folderPath: "/work/draft-notes", displayName: "draft-notes" },
+      ],
+      onRemoveFolder,
+    });
+
+    expect(screen.getByText("draft-notes")).toBeInTheDocument();
+    const remove = screen.getByRole("button", { name: "Remove folder draft-notes" });
+    await user.hover(remove);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Remove folder");
+
+    await user.click(remove);
+    expect(onRemoveFolder).toHaveBeenCalledWith("draft-1");
+  });
+
+  it("does not render draft folder chips once removed (absence assertion)", () => {
+    const { rerender } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider delayDuration={0}>
+          <AgentComposerSurface
+            project={{ value: "project-1", onValueChange: vi.fn(), options: [], placeholder: "Project" }}
+            provider={{ value: "codex", onValueChange: vi.fn(), options: [] }}
+            model={{ value: "gpt-5.5", onValueChange: vi.fn(), options: [] }}
+            effort={{ value: "xhigh", onValueChange: vi.fn(), options: [] }}
+            onSend={vi.fn()}
+            folders={[{ id: "draft-1", folderPath: "/work/draft-notes", displayName: "draft-notes" }]}
+            onRemoveFolder={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("draft-notes")).toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider delayDuration={0}>
+          <AgentComposerSurface
+            project={{ value: "project-1", onValueChange: vi.fn(), options: [], placeholder: "Project" }}
+            provider={{ value: "codex", onValueChange: vi.fn(), options: [] }}
+            model={{ value: "gpt-5.5", onValueChange: vi.fn(), options: [] }}
+            effort={{ value: "xhigh", onValueChange: vi.fn(), options: [] }}
+            onSend={vi.fn()}
+            folders={[]}
+            onRemoveFolder={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByText("draft-notes")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("draft-folder-reference-chips")).not.toBeInTheDocument();
   });
 
   afterEach(() => {
