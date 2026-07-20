@@ -55,7 +55,6 @@ function mainRegionProps(
     onActiveProviderChange: vi.fn(),
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
-    onCreateProject: vi.fn(),
     onFocusIdeationSession: vi.fn(),
     onFocusIdeationSessionForConversation: vi.fn(),
     onFocusWorkspaceReview: vi.fn(),
@@ -73,6 +72,7 @@ function mainRegionProps(
     onRuntimePreferenceChange: vi.fn(),
     onSelectArtifact: vi.fn(),
     onStartAgentConversation: vi.fn(),
+    onStartPersonaBuilder: vi.fn(),
     onToggleArtifacts: vi.fn(),
     onSelectChatFocus: vi.fn(),
     projects: [agentProjectFixture],
@@ -103,5 +103,26 @@ describe("AgentsConversationMainRegion", () => {
         selectedConversationId: "conversation-1",
       }),
     );
+  });
+
+  it("renders a selected standalone conversation without an active project", () => {
+    render(
+      <AgentsConversationMainRegion
+        {...mainRegionProps({
+          activeConversation: conversationFixture({
+            id: "standalone-1",
+            contextType: "standalone",
+            contextId: "standalone-1",
+            projectId: null,
+          }),
+          activeProjectId: null,
+          activeWorkspace: null,
+          selectedConversationId: "standalone-1",
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("active-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("start-panel")).not.toBeInTheDocument();
   });
 });

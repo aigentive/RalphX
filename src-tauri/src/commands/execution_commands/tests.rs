@@ -1641,6 +1641,152 @@ async fn test_resume_relaunches_queued_task_chat_message() {
 }
 
 #[tokio::test]
+async fn test_resume_relaunches_queued_standalone_chat_message() {
+    // Pause-drain parity (Phase 4a.3, blocking carry-forward from the 4a.1
+    // review): Standalone is pause-managed at the admission layers
+    // (claude_launches_paused / should_requeue_after_provider_pause /
+    // is_pause_managed_chat_context) but, before this fix,
+    // resume_paused_non_slot_chat_queues_with_chat_service only matched
+    // ChatContextType::Task, so a paused standalone send would durably queue
+    // but NEVER be drained/delivered on resume. This asserts delivery
+    // (send_message actually invoked with the queued content), not merely
+    // that resume ran without error.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+
+    // Simulates a paused send: the message lands in the live in-memory queue
+    // under the standalone conversation's self-key exactly as
+    // should_requeue_after_provider_pause / claude_launches_paused would have
+    // routed it.
+    app_state.message_queue.queue_with_overrides(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+        "resume standalone chat".to_string(),
+        None,
+        None,
+        None,
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    // MockChatService keeps its own isolated conversation store (independent
+    // of app_state.chat_conversation_repo); standalone conversations are
+    // never lazily auto-vivified from a bare context_id (by design, matching
+    // production get_or_create_conversation), so the mock's send_message
+    // would otherwise fail to resolve a conversation for this context_id.
+    mock.add_conversation(conversation.clone()).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume paused standalone chat queue");
+
+    assert_eq!(
+        resumed, 1,
+        "the standalone queued message must be resumed, not silently skipped"
+    );
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["resume standalone chat".to_string()],
+        "resume must actually deliver the queued content, not just drain the queue"
+    );
+    assert!(app_state
+        .message_queue
+        .get_queued(ChatContextType::Standalone, conversation.id.as_str().as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_queued_standalone_chat_message() {
+    // Durable-queue counterpart of the in-memory test above: a paused
+    // standalone send that persisted to the durable queued_message_repo
+    // (surviving a restart) must also be drained and delivered on resume.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Standalone, conversation.id.as_str().as_str());
+    let queued = QueuedMessage::with_id(
+        "durable-standalone-chat".to_string(),
+        "durable standalone chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.add_conversation(conversation.clone()).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable standalone chat queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable standalone chat".to_string()],
+        "resume must actually deliver the durably queued content"
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_standalone_chat_queue_is_project_filter_scoped_out() {
+    // Regression guard for the OTHER direction: when a resume is
+    // project-scoped (project_filter: Some(...)), a Standalone queue key must
+    // NOT match — queue_key_matches_project already returns Ok(false) for
+    // Standalone whenever a project filter is supplied (Standalone has no
+    // project to match). This is the resume-time reflection of D3's "never
+    // matches a project filter" rule; a Project-scoped resume must not
+    // accidentally drain a projectless conversation's queue.
+    let app_state = AppState::new_test();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_standalone())
+        .await
+        .unwrap();
+    app_state.message_queue.queue_with_overrides(
+        ChatContextType::Standalone,
+        conversation.id.as_str().as_str(),
+        "should not resume under a project filter".to_string(),
+        None,
+        None,
+        None,
+    );
+
+    let project_id = ProjectId::from_string("resume-standalone-project-filter".to_string());
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(
+        Some(&project_id),
+        &app_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume should not error even when nothing matches the project filter");
+
+    assert_eq!(resumed, 0, "a project-scoped resume must not drain a standalone queue");
+    assert_eq!(mock.call_count(), 0);
+    assert!(!app_state
+        .message_queue
+        .get_queued(ChatContextType::Standalone, conversation.id.as_str().as_str())
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_resume_relaunches_durable_queued_task_chat_message() {
     let app_state = AppState::new_test();
     let project = Project::new(

@@ -327,6 +327,14 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
                             m.project_id.as_ref().map(|s| s.as_str()) == Some(context_id)
                                 && m.session_id.is_none()
                         }
+                        "standalone" => {
+                            // Standalone conversations are self-keyed
+                            // (context_id == conversation_id); they never set
+                            // session_id, so the generic fallback arm below would
+                            // silently return None forever.
+                            m.conversation_id.as_ref().map(|c| c.as_str())
+                                == Some(context_id.to_string())
+                        }
                         _ => m.session_id.as_ref().map(|s| s.as_str()) == Some(context_id),
                     }
             })

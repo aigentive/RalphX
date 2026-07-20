@@ -5,6 +5,28 @@ import type {
 
 export const agentSidebarConversationKeys = {
   all: ["agents", "sidebar-conversations"] as const,
+  noProjectGroup: (
+    archivedOnly: boolean,
+    search = "",
+    publicationStates: AgentSidebarPublicationState[] = [],
+    pinnedConversationIds: string[] = [],
+    priorityConversationIds: string[] = [],
+  ) =>
+    [
+      ...agentSidebarConversationKeys.all,
+      "project",
+      "__no_project__",
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "states",
+      publicationStates,
+      "pinned",
+      pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
+    ] as const,
   automationScope: () => [...agentSidebarConversationKeys.all, "automation"] as const,
   publicationGroup: (
     projectIds: string[],

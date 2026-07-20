@@ -43,6 +43,9 @@ use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: id.to_string(),
         description: "Gate-1 test persona".to_string(),
@@ -347,7 +350,16 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         .await;
     state
         .persona_repo
-        .update_content(&persona.id, "new persona body", "new-hash")
+        .set_status(&persona.id, PersonaStatus::Archived)
+        .await
+        .expect("release the active slug for fixture replacement");
+    let mut updated_persona = persona.clone();
+    updated_persona.content = "new persona body".to_string();
+    updated_persona.content_hash = "new-hash".to_string();
+    updated_persona.version += 1;
+    state
+        .persona_repo
+        .create(updated_persona)
         .await
         .expect("simulate update_persona content hash bump");
 

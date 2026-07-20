@@ -16,6 +16,8 @@ pub struct McpPolicyService {
     repo: Arc<dyn McpPolicyRepository>,
     global_policy_path: PathBuf,
     provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    legacy_claude_mcp_app_data_dir: Option<PathBuf>,
+    legacy_claude_mcp_cleanup_cli_override: Option<PathBuf>,
 }
 
 impl McpPolicyService {
@@ -24,6 +26,8 @@ impl McpPolicyService {
             repo,
             global_policy_path,
             provider_settings_repo: None,
+            legacy_claude_mcp_app_data_dir: None,
+            legacy_claude_mcp_cleanup_cli_override: None,
         }
     }
 
@@ -32,6 +36,17 @@ impl McpPolicyService {
         provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     ) -> Self {
         self.provider_settings_repo = Some(provider_settings_repo);
+        self
+    }
+
+    pub fn with_legacy_claude_mcp_cleanup(mut self, app_data_dir: PathBuf) -> Self {
+        self.legacy_claude_mcp_app_data_dir = Some(app_data_dir);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_legacy_claude_mcp_cleanup_cli_for_test(mut self, cli_path: PathBuf) -> Self {
+        self.legacy_claude_mcp_cleanup_cli_override = Some(cli_path);
         self
     }
 
@@ -49,15 +64,6 @@ impl McpPolicyService {
         } else {
             Ok(policy_root)
         }
-    }
-
-    pub(crate) async fn provider_native_config_root(
-        &self,
-        provider: AgentHarnessKind,
-    ) -> AppResult<PathBuf> {
-        self.provider_native_context(provider)
-            .await
-            .map(|(root, _)| root)
     }
 
     pub(crate) async fn provider_native_context(
@@ -159,7 +165,36 @@ impl McpPolicyService {
         project_id: Option<&str>,
         project_root: Option<&Path>,
     ) -> AppResult<McpLaunchPolicy> {
-        let provider_config_root = self.provider_native_config_root(provider).await?;
+        let (provider_config_root, provider_env) = self.provider_native_context(provider).await?;
+        if provider == AgentHarnessKind::Claude {
+            if let Some(app_data_dir) = self.legacy_claude_mcp_app_data_dir.as_deref() {
+                if crate::infrastructure::agents::claude::mcp_catalog::has_app_owned_legacy_user_registration(
+                    &provider_config_root,
+                    app_data_dir,
+                )
+                .map_err(AppError::Infrastructure)?
+                {
+                    let cli_path = self
+                        .legacy_claude_mcp_cleanup_cli_override
+                        .clone()
+                        .or_else(crate::infrastructure::agents::claude::find_claude_cli)
+                        .ok_or_else(|| {
+                            AppError::Infrastructure(
+                                "Claude legacy MCP cleanup requires an available Claude CLI"
+                                    .to_string(),
+                            )
+                        })?;
+                    crate::infrastructure::agents::claude::mcp_catalog::retire_app_owned_legacy_user_registration(
+                        &cli_path,
+                        &provider_config_root,
+                        app_data_dir,
+                        &provider_env,
+                    )
+                    .await
+                    .map_err(AppError::Infrastructure)?;
+                }
+            }
+        }
         crate::infrastructure::agents::ensure_no_reserved_native_mcp_collision_at(
             provider,
             &provider_config_root,

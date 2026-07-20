@@ -42,6 +42,9 @@ pub mod sqlite_chat_attachment_repo;
 #[cfg(test)]
 mod sqlite_chat_attachment_repo_tests;
 pub mod sqlite_chat_conversation_repo;
+pub mod sqlite_conversation_folder_reference_repo;
+#[cfg(test)]
+mod sqlite_conversation_folder_reference_repo_tests;
 #[cfg(test)]
 mod sqlite_chat_conversation_repo_tests;
 pub mod sqlite_persona_repo;
@@ -166,6 +169,7 @@ pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSe
 pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
 pub use sqlite_branch_update_repo::SqliteBranchUpdateRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
+pub use sqlite_conversation_folder_reference_repo::SqliteConversationFolderReferenceRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
 pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;

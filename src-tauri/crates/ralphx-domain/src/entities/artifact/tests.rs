@@ -72,9 +72,10 @@ fn process_id_from_string_preserves_value() {
 // ===== ArtifactType Tests =====
 
 #[test]
-fn artifact_type_all_returns_23_types() {
+fn artifact_type_all_includes_persona() {
     let all = ArtifactType::all();
-    assert_eq!(all.len(), 23);
+    assert_eq!(all.len(), 24);
+    assert!(all.contains(&ArtifactType::Persona));
 }
 
 #[test]
@@ -99,6 +100,10 @@ fn artifact_type_serializes_snake_case() {
         serde_json::to_string(&ArtifactType::PrReview).unwrap(),
         "\"pr_review\""
     );
+    assert_eq!(
+        serde_json::to_string(&ArtifactType::Persona).unwrap(),
+        "\"persona\""
+    );
 }
 
 #[test]
@@ -111,6 +116,8 @@ fn artifact_type_deserializes() {
     assert_eq!(t, ArtifactType::VerificationFinding);
     let t: ArtifactType = serde_json::from_str("\"pr_review\"").unwrap();
     assert_eq!(t, ArtifactType::PrReview);
+    let t: ArtifactType = serde_json::from_str("\"persona\"").unwrap();
+    assert_eq!(t, ArtifactType::Persona);
 }
 
 #[test]

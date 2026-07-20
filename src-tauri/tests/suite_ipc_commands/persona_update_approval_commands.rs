@@ -42,6 +42,7 @@ async fn seeded_draft(state: &AppState, slug: &str) -> (Persona, Persona) {
         .create_draft(
             true,
             SavePersonaDraftInput {
+                project_id: None,
                 slug: slug.to_string(),
                 content: persona_content(slug, "Source"),
                 source_session_id: None,
@@ -67,6 +68,7 @@ async fn seeded_draft(state: &AppState, slug: &str) -> (Persona, Persona) {
             true,
             &conversation.id,
             SavePersonaDraftInput {
+                project_id: source.project_id.clone(),
                 slug: slug.to_string(),
                 content: persona_content(slug, "Revision without event body"),
                 source_session_id: Some(conversation.id.as_str().to_string()),

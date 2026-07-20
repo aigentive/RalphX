@@ -663,6 +663,7 @@ const ChatConversationResponseSchema = z.object({
   bound_agent_name: z.string().nullable().optional(),
   persona_id: z.string().nullable().optional(),
   builder_draft_id: z.string().nullable().optional(),
+  builder_result_persona_id: z.string().nullable().optional(),
   last_run_persona_run_id: z.string().nullable().optional(),
   last_run_persona_id: z.string().nullable().optional(),
   last_run_persona_slug: z.string().nullable().optional(),
@@ -750,6 +751,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     boundAgentName: raw.bound_agent_name ?? null,
     personaId: raw.persona_id ?? null,
     builderDraftId: raw.builder_draft_id ?? null,
+    builderResultPersonaId: raw.builder_result_persona_id ?? null,
     lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
     lastRunPersonaId: raw.last_run_persona_id ?? null,
     lastRunPersonaSlug: raw.last_run_persona_slug ?? null,
@@ -1535,17 +1537,19 @@ export async function getConversationStats(
  */
 export async function createConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string,
+  mode?: AgentConversationMode,
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "create_agent_conversation",
     {
       input: {
         contextType,
-        contextId,
+        ...(contextId ? { contextId } : {}),
         ...(title !== undefined &&
           title.trim().length > 0 && { title: title.trim() }),
+        ...(mode !== undefined && { mode }),
       },
     },
     ChatConversationResponseSchema,
@@ -1993,7 +1997,7 @@ export interface WorkspaceOpenTarget {
 }
 
 export interface StartAgentConversationInput {
-  projectId: string;
+  projectId?: string | null;
   content: string;
   conversationId?: string | null;
   parentConversationId?: string | null;
@@ -2002,6 +2006,7 @@ export interface StartAgentConversationInput {
   modelId?: string | null;
   logicalEffort?: string | null;
   personaId?: string | null;
+  sourcePersonaId?: string | null;
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
@@ -3054,7 +3059,7 @@ export function startAgentConversationInvokeInput(
   input: StartAgentConversationInput,
 ) {
   return {
-    projectId: input.projectId,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     content: input.content,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
     ...(input.providerHarness
@@ -3063,6 +3068,7 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
+    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),

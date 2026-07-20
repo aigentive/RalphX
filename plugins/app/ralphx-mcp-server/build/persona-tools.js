@@ -2,7 +2,8 @@ export const PERSONA_BUILDER_TOOLS = [
     {
         name: "save_persona_draft",
         description: "Create or update a persona draft owned by the current PersonaBuilder conversation. " +
-            "Use the exact persona content to save; RalphX resolves ownership from the caller conversation.",
+            "Use the exact persona content to save; RalphX resolves ownership from the caller conversation. " +
+            "A prose or Markdown-only response does not create a Persona; this tool must succeed before reporting a draft as ready.",
         inputSchema: {
             type: "object",
             properties: {

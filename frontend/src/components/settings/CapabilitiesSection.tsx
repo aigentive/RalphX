@@ -14,6 +14,7 @@ export function CapabilitiesSection() {
 
   const update = (
     input:
+      | { composerFolderReferences: boolean }
       | { agentConversationTeam: boolean }
       | { agentConversationWorkflows: boolean }
       | { agentConversationAutopilot: boolean },
@@ -34,11 +35,23 @@ export function CapabilitiesSection() {
           Agent conversation capabilities
         </h2>
         <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
-          These experimental orchestration modes are opt-in and apply across the
-          app.
+          These optional Agent capabilities are opt-in and apply across the app.
         </p>
       </div>
 
+      <ToggleSettingRow
+        id="composer-folder-references"
+        label="Folder context"
+        description="Allow Project conversations and Persona builds to attach local folders as persistent, read-only context."
+        checked={
+          !isPlaceholderData &&
+          (featureFlags.composerFolderReferences ?? false)
+        }
+        disabled={disabled}
+        onChange={(composerFolderReferences) =>
+          update({ composerFolderReferences })
+        }
+      />
       <ToggleSettingRow
         id="agent-conversation-autopilot"
         label="Autopilot"

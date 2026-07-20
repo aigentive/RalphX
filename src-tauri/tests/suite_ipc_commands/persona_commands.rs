@@ -2,20 +2,74 @@ use std::sync::Arc;
 
 use ralphx_domain::personas::validation::validate_persona_content;
 use ralphx_events::RecordingEventSink;
+use ralphx_lib::application::personas::PERSONA_DRAFT_CONFLICT_CODE;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::persona_commands::{
     approve_persona, approve_persona_for_state, archive_persona, archive_persona_for_state,
     create_persona_draft, create_persona_draft_for_state, delete_persona_draft,
     delete_persona_draft_for_state, get_persona, get_persona_for_state, list_personas,
-    list_personas_for_state, update_persona, update_persona_for_state, CreatePersonaDraftInput,
-    ListPersonasInput, PersonaIdInput, UpdatePersonaInput,
+    list_personas_for_state, update_persona, update_persona_draft, update_persona_draft_for_state,
+    update_persona_for_state, CreatePersonaDraftInput, ListPersonasInput, PersonaIdInput,
+    UpdatePersonaDraftInput, UpdatePersonaInput,
 };
-use ralphx_lib::domain::entities::PersonaStatus;
+use ralphx_lib::domain::entities::{ArtifactContent, Persona, PersonaStatus};
 use ralphx_lib::infrastructure::sqlite::SqlitePersonaRepository;
 use tauri::Manager;
 
 fn persona_content(slug: &str, body: &str) -> String {
     format!("---\nname: {slug}\nkind: persona\ndescription: Test persona\n---\n{body}")
+}
+
+fn persona_content_with_description(slug: &str, description: &str, body: &str) -> String {
+    format!("---\nname: {slug}\nkind: persona\ndescription: {description}\n---\n{body}")
+}
+
+async fn replace_structured_fields_with_stale_values(state: &AppState, persona: &Persona) {
+    let id = persona.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE personas SET name = 'Stale name', description = 'Stale description'
+                 WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("stale structured persona fixture should persist");
+}
+
+async fn assert_persona_artifact_matches_structured_update(state: &AppState, persona: &Persona) {
+    let parsed = validate_persona_content(&persona.slug, &persona.content)
+        .expect("updated persona should retain canonical markdown");
+    assert_eq!(persona.name, parsed.frontmatter.name);
+    assert_eq!(persona.description, parsed.frontmatter.description);
+
+    let artifact = state
+        .artifact_repo
+        .get_by_id(
+            persona
+                .artifact_id
+                .as_ref()
+                .expect("updated persona should have an artifact tip"),
+        )
+        .await
+        .expect("artifact lookup should succeed")
+        .expect("updated persona artifact should exist");
+    assert_eq!(artifact.name, persona.name);
+    assert_eq!(artifact.metadata.created_by, "user");
+    assert_eq!(i64::from(artifact.metadata.version), persona.version);
+    let metadata = artifact
+        .metadata
+        .custom_metadata
+        .expect("persona artifact should carry custom metadata");
+    assert_eq!(metadata["persona_version"], persona.version);
+    assert_eq!(metadata["created_by"], "user");
+    assert_eq!(
+        artifact.content,
+        ArtifactContent::inline(persona.content.clone())
+    );
 }
 
 fn command_app() -> (tauri::App<tauri::test::MockRuntime>, RecordingEventSink) {
@@ -55,6 +109,15 @@ fn persona_commands_use_struct_param_wrapping() {
     assert_eq!(update.id, "persona-1");
     assert_eq!(update.content.as_deref(), Some("updated"));
 
+    let draft_update: UpdatePersonaDraftInput = serde_json::from_str(
+        r#"{"id":"draft-1","content":"updated","expectedContentHash":"hash-v1"}"#,
+    )
+    .expect("camelCase draft CAS input should deserialize inside the input wrapper");
+    assert_eq!(
+        draft_update.expected_content_hash.as_deref(),
+        Some("hash-v1")
+    );
+
     let id: PersonaIdInput = serde_json::from_str(r#"{"id":"persona-1"}"#)
         .expect("id input should deserialize inside the input wrapper");
     assert_eq!(id.id, "persona-1");
@@ -70,16 +133,146 @@ fn persona_commands_use_struct_param_wrapping() {
 }
 
 #[tokio::test]
+async fn update_persona_draft_command_enforces_cas_and_emits_only_after_success() {
+    let (app, events) = command_app();
+    let state = app.state::<AppState>();
+    let draft = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: None,
+            slug: "manual-draft".to_string(),
+            content: Some(persona_content("manual-draft", "Initial body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("fixture draft should create");
+    replace_structured_fields_with_stale_values(state.inner(), &draft).await;
+    let events_after_create = events.events().len();
+
+    let updated_content = persona_content_with_description(
+        "manual-draft",
+        "Updated draft description",
+        "Manual edit",
+    );
+
+    let updated = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: updated_content.clone(),
+            expected_content_hash: Some(draft.content_hash.clone()),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("matching draft hash should update through the command path");
+    assert_eq!(updated.version, draft.version + 1);
+    assert_eq!(updated.name, "manual-draft");
+    assert_eq!(updated.description, "Updated draft description");
+    assert_eq!(updated.content, updated_content);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect("updated draft should reload"),
+        updated
+    );
+    assert_persona_artifact_matches_structured_update(state.inner(), &updated).await;
+    let emitted = events.events();
+    assert_eq!(emitted.len(), events_after_create + 1);
+    assert_eq!(emitted.last().unwrap().event, "persona:draft_updated");
+    assert_eq!(emitted.last().unwrap().payload["version"], updated.version);
+    assert!(emitted.last().unwrap().payload.get("content").is_none());
+
+    let stale_error = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: persona_content("manual-draft", "Stale overwrite"),
+            expected_content_hash: Some(draft.content_hash.clone()),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect_err("stale hash must surface a stable typed conflict string");
+    assert!(stale_error.starts_with(PERSONA_DRAFT_CONFLICT_CODE));
+    assert_eq!(events.events().len(), events_after_create + 1);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .unwrap(),
+        updated,
+        "conflict must not mutate the draft"
+    );
+
+    approve_persona_for_state(
+        PersonaIdInput {
+            id: draft.id.as_str().to_string(),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("fixture draft should activate");
+    let events_before_active_rejection = events.events().len();
+    let active_error = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: persona_content("manual-draft", "Invalid active edit"),
+            expected_content_hash: Some(updated.content_hash),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect_err("manual draft command must reject active personas");
+    assert!(active_error.contains("must be draft"));
+    assert_eq!(events.events().len(), events_before_active_rejection);
+
+    assert_disabled(
+        update_persona_draft(
+            UpdatePersonaDraftInput {
+                id: draft.id.as_str().to_string(),
+                content: persona_content("manual-draft", "Disabled"),
+                expected_content_hash: None,
+            },
+            state,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
 async fn list_personas_command_lists_enabled_personas_and_rejects_the_disabled_wrapper() {
     let (app, _) = command_app();
 
-    let personas =
-        list_personas_for_state(ListPersonasInput {}, app.state::<AppState>().inner(), true)
-            .await
-            .expect("enabled list command should return the current empty collection");
+    let personas = list_personas_for_state(
+        ListPersonasInput { scope: None },
+        app.state::<AppState>().inner(),
+        true,
+    )
+    .await
+    .expect("enabled list command should return the current empty collection");
     assert!(personas.is_empty());
 
-    assert_disabled(list_personas(ListPersonasInput {}, app.state::<AppState>()).await);
+    assert_disabled(
+        list_personas(ListPersonasInput { scope: None }, app.state::<AppState>()).await,
+    );
 }
 
 #[tokio::test]
@@ -88,6 +281,7 @@ async fn get_persona_command_returns_created_draft_and_maps_invalid_or_missing_i
     let state = app.state::<AppState>();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "get-persona".to_string(),
             content: Some(persona_content("get-persona", "Draft body")),
             description: None,
@@ -151,6 +345,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
     let state = app.state::<AppState>();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "create-persona".to_string(),
             content: Some(persona_content("create-persona", "secret draft body")),
             description: None,
@@ -176,6 +371,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
 
     let invalid = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "invalid-persona".to_string(),
             content: Some("not persona markdown".to_string()),
             description: None,
@@ -192,6 +388,7 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
     assert_disabled(
         create_persona_draft(
             CreatePersonaDraftInput {
+                project_id: None,
                 slug: "disabled-create".to_string(),
                 content: Some(persona_content("disabled-create", "Never persisted")),
                 description: None,
@@ -205,10 +402,73 @@ async fn create_persona_draft_command_emits_a_redacted_event_and_maps_validation
 }
 
 #[tokio::test]
+async fn create_persona_draft_rejects_blank_project_ids_and_accepts_valid_or_absent_scope() {
+    let (app, _) = command_app();
+    let state = app.state::<AppState>();
+
+    for project_id in ["", "  "] {
+        let error = create_persona_draft_for_state(
+            CreatePersonaDraftInput {
+                project_id: Some(project_id.to_string()),
+                slug: "blank-project-id".to_string(),
+                content: Some(persona_content("blank-project-id", "Draft body")),
+                description: None,
+                body: None,
+                source_session_id: None,
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect_err("blank persona project ids must be rejected");
+        assert_eq!(
+            error,
+            "Validation error: persona project id cannot be empty"
+        );
+    }
+
+    let scoped = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: Some(" project-a ".to_string()),
+            slug: "scoped-project-id".to_string(),
+            content: Some(persona_content("scoped-project-id", "Draft body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("a valid project id should create a scoped draft");
+    assert_eq!(
+        scoped.project_id.as_ref().map(|id| id.as_str()),
+        Some("project-a")
+    );
+
+    let global = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: None,
+            slug: "absent-project-id".to_string(),
+            content: Some(persona_content("absent-project-id", "Draft body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("an absent project id should create a global draft");
+    assert!(global.project_id.is_none());
+}
+
+#[tokio::test]
 async fn persona_create_command_composes_structured_fields_before_validation() {
     let (app, _) = command_app();
     let created = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "design-voice".to_string(),
             content: None,
             description: Some("Opinionated: product design".to_string()),
@@ -241,6 +501,7 @@ async fn persona_create_command_requires_content_or_complete_structured_fields()
     ] {
         let error = create_persona_draft_for_state(
             CreatePersonaDraftInput {
+                project_id: None,
                 slug: "incomplete-persona".to_string(),
                 content: None,
                 description,
@@ -266,6 +527,7 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "update-persona".to_string(),
             content: Some(persona_content("update-persona", "Draft body")),
             description: None,
@@ -287,10 +549,26 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     .await
     .expect("fixture draft should approve");
 
+    let active_before_update = get_persona_for_state(
+        PersonaIdInput {
+            id: draft.id.as_str().to_string(),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("active fixture should reload");
+    replace_structured_fields_with_stale_values(state.inner(), &active_before_update).await;
+    let updated_content = persona_content_with_description(
+        "update-persona",
+        "Updated active description",
+        "Updated active body",
+    );
+
     let updated = update_persona_for_state(
         UpdatePersonaInput {
             id: draft.id.as_str().to_string(),
-            content: Some(persona_content("update-persona", "Updated active body")),
+            content: Some(updated_content.clone()),
             description: None,
             body: None,
         },
@@ -299,11 +577,23 @@ async fn update_persona_command_updates_active_content_and_rejects_invalid_ids_o
     )
     .await
     .expect("enabled update command should update the active persona");
-    assert_eq!(
-        updated.content,
-        persona_content("update-persona", "Updated active body")
-    );
+    assert_eq!(updated.name, "update-persona");
+    assert_eq!(updated.description, "Updated active description");
+    assert_eq!(updated.content, updated_content);
     assert_eq!(updated.version, 3);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .expect("updated active persona should reload"),
+        updated
+    );
+    assert_persona_artifact_matches_structured_update(state.inner(), &updated).await;
 
     assert_eq!(
         update_persona_for_state(
@@ -340,6 +630,7 @@ async fn persona_update_command_recomposes_structured_fields_with_the_existing_s
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "immutable-slug".to_string(),
             content: Some(persona_content("immutable-slug", "Draft body")),
             description: None,
@@ -410,6 +701,7 @@ async fn approve_persona_command_promotes_a_draft_and_rejects_invalid_ids_or_fla
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "approve-persona".to_string(),
             content: Some(persona_content("approve-persona", "Draft body")),
             description: None,
@@ -456,6 +748,7 @@ async fn archive_persona_command_archives_active_personas_and_rejects_invalid_id
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "archive-persona".to_string(),
             content: Some(persona_content("archive-persona", "Draft body")),
             description: None,
@@ -511,6 +804,7 @@ async fn delete_persona_draft_command_removes_drafts_and_rejects_invalid_ids_or_
     let state = app.state::<AppState>();
     let draft = create_persona_draft_for_state(
         CreatePersonaDraftInput {
+            project_id: None,
             slug: "delete-persona".to_string(),
             content: Some(persona_content("delete-persona", "Draft body")),
             description: None,

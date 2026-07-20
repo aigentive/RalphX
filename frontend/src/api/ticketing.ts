@@ -406,7 +406,9 @@ export interface GetTicketAssociationsInput extends TicketRefInput {
   projectId: string;
 }
 
-export interface StartWorkFromTicketInput extends StartAgentConversationInput {
+export interface StartWorkFromTicketInput
+  extends Omit<StartAgentConversationInput, "projectId"> {
+  projectId: string;
   ticketRef: TicketRef;
 }
 
