@@ -57,8 +57,6 @@ impl<'a> TasksFeatureToggleService<'a> {
         let mut paused_or_blocked_tasks = 0;
         let mut affected_task_ids = Vec::new();
         let mut affected_projects = HashSet::new();
-        let mut known_task_ids = HashSet::new();
-        let mut branch_updates_requiring_quiesce = HashSet::new();
 
         for project in projects {
             let tasks = self
@@ -67,7 +65,6 @@ impl<'a> TasksFeatureToggleService<'a> {
                 .get_by_project_filtered(&project.id, true)
                 .await?;
             for task in tasks {
-                known_task_ids.insert(task.id.as_str().to_string());
                 if matches!(
                     task.internal_status,
                     InternalStatus::Paused
@@ -75,14 +72,6 @@ impl<'a> TasksFeatureToggleService<'a> {
                         | InternalStatus::BranchUpdateBlocked
                 ) {
                     paused_or_blocked_tasks += 1;
-                }
-                if matches!(
-                    task.internal_status,
-                    InternalStatus::UpdatingPlanBranch
-                        | InternalStatus::UpdatingTaskBranch
-                        | InternalStatus::BranchUpdateBlocked
-                ) {
-                    branch_updates_requiring_quiesce.insert(task.id.as_str().to_string());
                 }
                 if !is_agent_active_status(task.internal_status) {
                     continue;
@@ -111,12 +100,6 @@ impl<'a> TasksFeatureToggleService<'a> {
             .branch_update_repo
             .list_active_operations()
             .await?
-            .into_iter()
-            .filter(|operation| {
-                let task_id = operation.task_id.as_str();
-                branch_updates_requiring_quiesce.contains(task_id)
-                    || !known_task_ids.contains(task_id)
-            })
             .count();
         let mut affected_conversation_ids = attached_conversations.into_iter().collect::<Vec<_>>();
         affected_conversation_ids.sort();

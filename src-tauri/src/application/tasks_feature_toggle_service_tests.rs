@@ -489,6 +489,13 @@ async fn disabling_tasks_fences_an_active_branch_update_for_an_already_paused_ta
         BranchUpdateActivationOutcome::Applied { .. }
     ));
 
+    let impact = state
+        .build_tasks_feature_toggle_service_for_test()
+        .get_disable_impact()
+        .await
+        .expect("disable impact must include operations that need the branch-update pause fence");
+    assert_eq!(impact.active_branch_update_operations, 1);
+
     let settings = state
         .build_tasks_feature_toggle_service_for_test()
         .set_tasks_enabled(false)
