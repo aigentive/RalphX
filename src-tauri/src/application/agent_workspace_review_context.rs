@@ -65,13 +65,13 @@ impl From<&AgentConversationWorkspace> for WorkspaceReviewContextKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MonitorGeneration {
     Missing,
-    Present(AgentWorkspaceReviewMonitor),
+    Present(Box<AgentWorkspaceReviewMonitor>),
 }
 
 impl From<Option<AgentWorkspaceReviewMonitor>> for MonitorGeneration {
     fn from(monitor: Option<AgentWorkspaceReviewMonitor>) -> Self {
         match monitor {
-            Some(monitor) => Self::Present(monitor),
+            Some(monitor) => Self::Present(Box::new(monitor)),
             None => Self::Missing,
         }
     }
@@ -287,7 +287,7 @@ fn status_snapshot(
     if let Some(target) = target_from_monitor_snapshot(workspace, monitor) {
         return Ok(Some(build_context(
             workspace,
-            monitor.clone(),
+            monitor.as_ref().clone(),
             Some(target),
             AgentWorkspaceReviewGoalContext::default(),
         )));
@@ -333,7 +333,7 @@ async fn coordinated_full_context(
 ) -> AppResult<AgentWorkspaceReviewContext> {
     enum CoordinatorDecision {
         Cached {
-            context: AgentWorkspaceReviewContext,
+            context: Box<AgentWorkspaceReviewContext>,
             waiters: usize,
         },
         Join {
@@ -361,7 +361,7 @@ async fn coordinated_full_context(
             });
             if let Some(Some(completed)) = cached {
                 CoordinatorDecision::Cached {
-                    context: completed.context.clone(),
+                    context: Box::new(completed.context.clone()),
                     waiters: entry_state.waiters,
                 }
             } else if entry_state.in_flight {
@@ -389,7 +389,7 @@ async fn coordinated_full_context(
                     waiters,
                     "Reused workspace Review presentation context"
                 );
-                return Ok(context);
+                return Ok(*context);
             }
             CoordinatorDecision::Join {
                 observed_sequence,
