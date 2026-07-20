@@ -33,6 +33,9 @@ fn persona_id_and_status_text_contracts_round_trip_and_reject_unknown_status() {
 fn persona_bindability_tracks_only_active_status() {
     let persona = |status| Persona {
         id: PersonaId::from("bindability"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "bindability".to_string(),
         name: "Bindability".to_string(),
         description: String::new(),

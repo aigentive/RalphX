@@ -52,7 +52,7 @@ export function AgentsSettingsSection() {
   const { data: featureFlags } = useFeatureFlags();
   const personasQuery = useQuery({
     queryKey: personaKeys.list(),
-    queryFn: fetchPersonas,
+    queryFn: () => fetchPersonas(),
     enabled: featureFlags.agentPersonas ?? false,
   });
 

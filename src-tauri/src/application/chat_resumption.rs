@@ -245,7 +245,7 @@ impl ChatResumptionRunner {
     }
 
     async fn recover_durable_silent_completions(&self) -> u32 {
-        let conversations = match self
+        let mut conversations = match self
             .chat_runtime_deps
             .conversation_repo
             .list_recent_resumable_by_context_type(
@@ -263,6 +263,20 @@ impl ChatResumptionRunner {
                 return 0;
             }
         };
+        match self
+            .chat_runtime_deps
+            .conversation_repo
+            .list_recent_resumable_by_context_type(
+                ChatContextType::Standalone,
+                DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+            )
+            .await
+        {
+            Ok(standalone) => conversations.extend(standalone),
+            Err(error) => {
+                warn!(error = %error, "[CHAT_RESUMPTION] Failed to list standalone durable silent-completion recovery candidates");
+            }
+        }
 
         let mut recovered = 0u32;
         for conversation in conversations {
@@ -271,7 +285,7 @@ impl ChatResumptionRunner {
             }
             let runtime_context_id = conversation.id.as_str();
             if self
-                .has_active_runtime_for_context(ChatContextType::Project, &runtime_context_id)
+                .has_active_runtime_for_context(conversation.context_type, &runtime_context_id)
                 .await
             {
                 info!(
@@ -333,7 +347,7 @@ impl ChatResumptionRunner {
             let queued_recovery_exists = self
                 .chat_runtime_deps
                 .message_queue
-                .get_queued(ChatContextType::Project, &runtime_context_id)
+                .get_queued(conversation.context_type, &runtime_context_id)
                 .iter()
                 .any(|queued| {
                     silent_completion_recovery_attempt(queued.metadata_override.as_deref()) > 0
@@ -370,7 +384,7 @@ impl ChatResumptionRunner {
             let chat_service = self.create_chat_service();
             match chat_service
                 .send_message(
-                    ChatContextType::Project,
+                    conversation.context_type,
                     &conversation.context_id,
                     &prompt,
                     durable_silent_completion_recovery_send_options(&conversation, metadata),
@@ -588,7 +602,10 @@ impl ChatResumptionRunner {
             // ChatResumptionRunner must unconditionally skip ideation to prevent double-spawn.
             ChatContextType::Ideation => true,
             // Other context types are not handled by StartupJobRunner
-            ChatContextType::Delegation | ChatContextType::Task | ChatContextType::Project => false,
+            ChatContextType::Delegation
+            | ChatContextType::Task
+            | ChatContextType::Project
+            | ChatContextType::Standalone => false,
         }
     }
 
@@ -713,6 +730,7 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
         ChatContextType::Ideation => 4,
         ChatContextType::Delegation => 5,
         ChatContextType::Project => 6, // Lowest priority
+        ChatContextType::Standalone => 6,
     }
 }
 

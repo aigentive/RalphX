@@ -480,6 +480,7 @@ async fn resolve_task_like_delegate_parent(
         Arc::clone(&state.app_state.ideation_session_repo),
         Arc::clone(&state.app_state.delegated_session_repo),
         &default_working_directory,
+        Some(state.app_state.app_paths.app_data_dir()),
     )
     .await
     .map_err(|error| json_error(StatusCode::CONFLICT, error))?;
@@ -585,6 +586,7 @@ async fn resolve_nested_delegation_parent(
             Arc::clone(&state.app_state.ideation_session_repo),
             Arc::clone(&state.app_state.delegated_session_repo),
             &default_working_directory,
+            Some(state.app_state.app_paths.app_data_dir()),
         )
         .await
         .map_err(|error| json_error(StatusCode::CONFLICT, error))?
@@ -665,6 +667,10 @@ async fn resolve_delegate_parent(
         ChatContextType::Project => {
             resolve_project_delegate_parent(state, req, caller_context_id).await
         }
+        ChatContextType::Standalone => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start is not supported for standalone conversations",
+        )),
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review

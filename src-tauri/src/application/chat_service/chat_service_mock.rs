@@ -377,6 +377,18 @@ impl ChatService for MockChatService {
             ChatContextType::BranchUpdate => {
                 ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
             }
+            ChatContextType::Standalone => {
+                // Mirrors chat_service_repository.rs::get_or_create_conversation:
+                // standalone conversations are always explicitly created, never
+                // lazily auto-vivified from a bare context_id. Tests that need a
+                // standalone conversation row insert it directly into the fixture
+                // repository instead of going through this mock's
+                // get_or_create_conversation.
+                return Err(ChatServiceError::ContextNotFound(format!(
+                    "Standalone conversation {context_id} is not active; standalone conversations \
+                     cannot be lazily created from a bare context_id"
+                )));
+            }
         };
 
         self.conversations.lock().await.push(conv.clone());

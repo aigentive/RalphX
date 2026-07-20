@@ -140,12 +140,85 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(runtimeContext.filesystemReadRoots).toBe(expectedReadRoots);
     expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(expectedReadRoots);
   });
+
+  it("hydrates filesystem enforcement from argv without reading or writing env", () => {
+    const enforcedEnv: NodeJS.ProcessEnv = {};
+    const enforced = hydrateRalphxRuntimeEnvFromCli(
+      ["node", "index.js", "--filesystem-enforced", "1"],
+      enforcedEnv
+    );
+
+    expect(enforced.filesystemEnforced).toBe(true);
+    expect(enforcedEnv.RALPHX_FILESYSTEM_ENFORCED).toBeUndefined();
+
+    const misleadingEnv: NodeJS.ProcessEnv = {
+      RALPHX_FILESYSTEM_ENFORCED: "1",
+    };
+    const unenforced = hydrateRalphxRuntimeEnvFromCli(
+      ["node", "index.js"],
+      misleadingEnv
+    );
+
+    expect(unenforced.filesystemEnforced).toBe(false);
+    expect(misleadingEnv.RALPHX_FILESYSTEM_ENFORCED).toBe("1");
+  });
+
+  it("denies ambient filesystem roots when enforcement has no CLI roots", () => {
+    const env: NodeJS.ProcessEnv = {
+      RALPHX_FILESYSTEM_READ_ROOTS: JSON.stringify(["/ambient/root"]),
+    };
+
+    const runtimeContext = hydrateRalphxRuntimeEnvFromCli(
+      ["node", "index.js", "--filesystem-enforced", "1"],
+      env
+    );
+
+    expect(runtimeContext.filesystemReadRoots).toBe("[]");
+    expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe("[]");
+  });
+
+  it("uses exactly the CLI filesystem roots while enforcement is enabled", () => {
+    const env: NodeJS.ProcessEnv = {
+      RALPHX_FILESYSTEM_READ_ROOTS: JSON.stringify(["/ambient/root"]),
+    };
+
+    const runtimeContext = hydrateRalphxRuntimeEnvFromCli(
+      [
+        "node",
+        "index.js",
+        "--filesystem-enforced",
+        "1",
+        "--filesystem-read-root",
+        "/cli/one",
+        "--filesystem-read-root=/cli/two",
+      ],
+      env
+    );
+
+    const expected = JSON.stringify(["/cli/one", "/cli/two"]);
+    expect(runtimeContext.filesystemReadRoots).toBe(expected);
+    expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(expected);
+  });
+
+  it("preserves legacy ambient filesystem roots when enforcement is disabled", () => {
+    const ambient = JSON.stringify(["/ambient/root"]);
+    const env: NodeJS.ProcessEnv = { RALPHX_FILESYSTEM_READ_ROOTS: ambient };
+
+    const runtimeContext = hydrateRalphxRuntimeEnvFromCli(
+      ["node", "index.js"],
+      env
+    );
+
+    expect(runtimeContext.filesystemReadRoots).toBe(ambient);
+    expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(ambient);
+  });
 });
 
 describe("buildArtifactMutationTransportHeaders", () => {
   it("carries caller scope and live action authority for Plan mutations", () => {
     expect(
       buildArtifactMutationTransportHeaders({
+        filesystemEnforced: false,
         contextType: "ideation",
         contextId: "session-123",
         conversationId: "conversation-current",
@@ -161,6 +234,7 @@ describe("buildArtifactMutationTransportHeaders", () => {
   it("keeps conversation identity even without action authority", () => {
     expect(
       buildArtifactMutationTransportHeaders({
+        filesystemEnforced: false,
         contextType: "project",
         conversationId: "conversation-current",
       })

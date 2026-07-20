@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { PauseCircle, Sparkles } from "lucide-react";
+import { Lock, PauseCircle, Sparkles } from "lucide-react";
 
 import type {
   AgentConversationBranchMode,
@@ -41,6 +41,7 @@ import {
   selectComposerDraft,
   useChatStore,
   type ChatComposerAttachment,
+  type ChatComposerFolder,
 } from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -90,6 +91,8 @@ import { buildAgentStartModeOptions } from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
+import { PersonaBuildBanner } from "./PersonaBuildBanner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface PendingAttachment {
   id: string;
@@ -100,7 +103,7 @@ interface PendingAttachment {
 }
 
 interface AgentsStartComposerSubmitInput {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
@@ -109,10 +112,12 @@ interface AgentsStartComposerSubmitInput {
   automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   files: File[];
+  folders?: ChatComposerFolder[];
   codexFastMode?: boolean | null;
   personaId?: string | null;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
+  sourcePersonaId?: string;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -231,7 +236,10 @@ export function AgentsStartComposer({
     defaultRuntime,
     modelRegistry,
   );
-  const [projectId, setProjectId] = useState(defaultProjectId ?? "");
+  const [projectId, setProjectId] = useState<string | null>(defaultProjectId);
+  const [projectLocked, setProjectLocked] = useState(false);
+  const [sourcePersonaId, setSourcePersonaId] = useState<string | null>(null);
+  const [sourcePersonaName, setSourcePersonaName] = useState<string | null>(null);
   const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
@@ -335,11 +343,16 @@ export function AgentsStartComposer({
   const setComposerDraftAttachments = useChatStore(
     (s) => s.setComposerDraftAttachments
   );
+  const setComposerDraftFolders = useChatStore((s) => s.setComposerDraftFolders);
   const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
   const content = startComposerDraft?.content ?? "";
   const attachments = useMemo(
     () => (startComposerDraft?.attachments ?? []).filter(isPendingAttachment),
     [startComposerDraft?.attachments]
+  );
+  const folders = useMemo(
+    () => startComposerDraft?.folders ?? [],
+    [startComposerDraft?.folders]
   );
 
   const providerSettingsReady =
@@ -583,8 +596,42 @@ export function AgentsStartComposer({
   }, [openModal]);
 
   useEffect(() => {
-    setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
-  }, [defaultProjectId, projects]);
+    if (projectLocked) {
+      return;
+    }
+    setProjectId((currentProjectId) => {
+      if (currentProjectId === null && featureFlags.standaloneConversations) {
+        return null;
+      }
+      if (currentProjectId && projects.some((project) => project.id === currentProjectId)) {
+        return currentProjectId;
+      }
+      return defaultProjectId ?? projects[0]?.id ?? null;
+    });
+  }, [defaultProjectId, featureFlags.standaloneConversations, projectLocked, projects]);
+
+  useEffect(() => {
+    if (!featureFlags.standaloneConversations || projectId !== null) {
+      return;
+    }
+    setCapabilityMode("solo");
+    setPersonaId(null);
+    if (mode !== "chat" && mode !== "persona_builder") {
+      setMode("chat");
+      setAutomationAuthoringMode(null);
+      setError(
+        plainStartComposerError(
+          "Project-requiring modes are unavailable without a project. Switched to Chat.",
+        ),
+      );
+    }
+  }, [featureFlags.standaloneConversations, mode, projectId]);
+
+  useEffect(() => {
+    if (mode !== "persona_builder") return;
+    setCapabilityMode("solo");
+    setPersonaId(null);
+  }, [mode]);
 
   useEffect(() => {
     if (!startConversationDraft) {
@@ -595,7 +642,10 @@ export function AgentsStartComposer({
       return;
     }
     setProjectId(draft.projectId);
-    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
+    setProjectLocked(draft.projectLocked ?? false);
+    setSourcePersonaId(draft.sourcePersonaId ?? null);
+    setSourcePersonaName(draft.sourcePersonaName ?? null);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content ?? "");
     setMode(draft.mode);
     setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
@@ -743,13 +793,24 @@ export function AgentsStartComposer({
   ]);
 
   const handleProjectChange = useCallback(
-    (nextProjectId: string) => {
+    (nextProjectId: string | null) => {
+      if (projectLocked) return;
       clearStartError();
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
+      if (nextProjectId) {
+        persistRuntimePreference(nextProjectId, { provider, modelId, effort });
+      }
     },
-    [clearStartError]
+    [
+      clearStartError,
+      effort,
+      modelId,
+      persistRuntimePreference,
+      projectLocked,
+      provider,
+    ]
   );
 
   const handleProviderChange = useCallback(
@@ -784,7 +845,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -814,7 +875,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -845,7 +906,7 @@ export function AgentsStartComposer({
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
-      persistRuntimePreference(projectId, nextRuntime);
+      if (projectId) persistRuntimePreference(projectId, nextRuntime);
     },
     [
       clearStartError,
@@ -911,7 +972,9 @@ export function AgentsStartComposer({
         setError(plainStartComposerError(message));
         return;
       }
-      clearLastRuntimeForProject(projectId);
+      if (projectId) {
+        clearLastRuntimeForProject(projectId);
+      }
       setRoleOverrideKey(null);
       applyRoleDefault(result.data);
     } catch (error) {
@@ -1155,6 +1218,21 @@ export function AgentsStartComposer({
     );
   };
 
+  const handleFoldersSelected = useCallback(
+    (nextFolders: ChatComposerFolder[]) => {
+      clearStartError();
+      setComposerDraftFolders(AGENTS_START_COMPOSER_DRAFT_KEY, nextFolders);
+    },
+    [clearStartError, setComposerDraftFolders],
+  );
+
+  const handleRemoveFolder = useCallback(
+    (folderId: string) => {
+      handleFoldersSelected(folders.filter((folder) => folder.id !== folderId));
+    },
+    [folders, handleFoldersSelected],
+  );
+
   const submitStartInput = useCallback(
     async (input: AgentsStartComposerSubmitInput) => {
       const launchRuntime = normalizeRuntimeForSelectableProvider({
@@ -1224,6 +1302,7 @@ export function AgentsStartComposer({
         ? {
             ...startConversationFailure.retryInput,
             files: attachments.map((attachment) => attachment.file),
+            folders,
           }
         : null);
     if (!lastAttempt) {
@@ -1240,7 +1319,7 @@ export function AgentsStartComposer({
     };
     setIsStartFromIsolatedBranch(true);
     await submitStartInput(isolatedAttempt);
-  }, [attachments, startConversationFailure, submitStartInput]);
+  }, [attachments, folders, startConversationFailure, submitStartInput]);
 
   const handleRemovePersonaAndRetry = useCallback(async () => {
     const lastAttempt = lastStartAttemptRef.current;
@@ -1259,7 +1338,7 @@ export function AgentsStartComposer({
     message,
     options,
   ) => {
-    if (!projectId) {
+    if (projectId === null && !featureFlags.standaloneConversations) {
       setError(plainStartComposerError("Project is required"));
       return;
     }
@@ -1335,9 +1414,15 @@ export function AgentsStartComposer({
         : {}),
       base,
       files: attachments.map((attachment) => attachment.file),
+      folders,
       codexFastMode: launchCodexFastMode,
-      ...(launchPersonaId ? { personaId: launchPersonaId } : {}),
-      capabilityIntent,
+      ...(mode !== "persona_builder" && launchPersonaId
+        ? { personaId: launchPersonaId }
+        : {}),
+      ...(mode === "persona_builder" && sourcePersonaId
+        ? { sourcePersonaId }
+        : {}),
+      ...(mode !== "persona_builder" && projectId ? { capabilityIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1451,6 +1536,17 @@ export function AgentsStartComposer({
             </div>
           )}
 
+          {mode === "persona_builder" && (
+            <PersonaBuildBanner
+              projectName={
+                projectId
+                  ? projects.find((project) => project.id === projectId)?.name ?? projectId
+                  : null
+              }
+              sourcePersonaName={sourcePersonaName}
+            />
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -1471,6 +1567,9 @@ export function AgentsStartComposer({
             isSubmitting={isSubmitting}
             autoFocus
             attachments={attachments}
+            folders={folders}
+            onFoldersSelected={handleFoldersSelected}
+            onRemoveFolder={handleRemoveFolder}
             initialProjectReferences={draftProjectReferences}
             initialIntegrationReferences={draftIntegrationReferences}
             initialArtifactReferences={draftArtifactReferences}
@@ -1502,7 +1601,9 @@ export function AgentsStartComposer({
                 clearStartError();
                 const nextMode = value as AgentConversationWorkspaceMode;
                 if (nextMode !== mode) {
-                  clearLastRuntimeForProject(projectId);
+                  if (projectId) {
+                    clearLastRuntimeForProject(projectId);
+                  }
                   setRoleOverrideKey(null);
                 }
                 setMode(nextMode);
@@ -1510,10 +1611,20 @@ export function AgentsStartComposer({
                   setAutomationAuthoringMode(null);
                 }
               },
-              options: startModeOptions,
+              options: startModeOptions.filter(
+                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
+              ).map((option) => ({
+                ...option,
+                ...(projectId === null && option.requiresProject
+                  ? {
+                      disabled: true,
+                      disabledReason: "Requires a project",
+                    }
+                  : {}),
+              })),
               testId: "agents-start-mode",
             }}
-            {...(capabilityOptions.length > 1
+            {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
               ? {
                   capability: {
                     value: capabilityMode,
@@ -1523,10 +1634,14 @@ export function AgentsStartComposer({
                   },
                 }
               : {})}
-            {...(featureFlags.agentPersonas
+            {...(mode !== "persona_builder" && featureFlags.agentPersonas && projectId
               ? {
                   personaControl: (
                     <PersonaPickerControl
+                      currentProjectId={projectId}
+                      currentProjectName={
+                        projects.find((project) => project.id === projectId)?.name ?? projectId
+                      }
                       personaId={personaId}
                       onValueChange={(nextPersonaId) => {
                         clearStartError();
@@ -1547,7 +1662,10 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               })),
               placeholder: projects.length === 0 ? "No projects yet" : "Select project",
-              disabled: isLoadingProjects || projects.length === 0,
+              disabled:
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations),
               testId: "agents-start-project",
               className: "max-w-[300px] flex-none",
               endAction: (
@@ -1658,36 +1776,59 @@ export function AgentsStartComposer({
                 description: project.workingDirectory,
               }))}
               placeholder={projects.length === 0 ? "No projects yet" : "Select project"}
-              disabled={isLoadingProjects || projects.length === 0}
+              disabled={
+                projectLocked ||
+                isLoadingProjects ||
+                (projects.length === 0 && !featureFlags.standaloneConversations)
+              }
               testId="agents-start-project"
+              allowNoProject={featureFlags.standaloneConversations === true}
+              standaloneCaption="Runs in a private workspace"
             />
-            <BranchBasePicker
-              value={selectedStartFromKey}
-              onValueChange={handleStartFromChange}
-              options={startFromOptions}
-              enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestStartFromOptions}
-              isLoadingPullRequests={isLoadingPullRequestStartFrom}
-              pullRequestMessage={pullRequestStartFromMessage}
-              onPullRequestSearch={searchPullRequestStartFromOptions}
-              placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
-              disabled={!activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)}
-              testId="agents-start-base"
-              isLoading={isLoadingStartFrom}
-              onIntent={ensureStartFromOptionsLoaded}
-              onOpenChange={(open) => {
-                if (open) {
-                  ensureStartFromOptionsLoaded();
+            {projectLocked && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    aria-label="Persona build project is locked"
+                    className="inline-flex h-7 w-7 items-center justify-center text-[var(--text-muted)]"
+                  >
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Persona scope is locked for this build</TooltipContent>
+              </Tooltip>
+            )}
+            {projectId && (
+              <BranchBasePicker
+                value={selectedStartFromKey}
+                onValueChange={handleStartFromChange}
+                options={startFromOptions}
+                enablePullRequests={Boolean(activeProjectId)}
+                pullRequestOptions={pullRequestStartFromOptions}
+                isLoadingPullRequests={isLoadingPullRequestStartFrom}
+                pullRequestMessage={pullRequestStartFromMessage}
+                onPullRequestSearch={searchPullRequestStartFromOptions}
+                placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
+                disabled={
+                  !activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)
                 }
-              }}
-              closeOnSelect={false}
-              isolatedBranch={effectiveStartFromIsolatedBranch}
-              isolatedBranchDisabled={startFromForcesIsolatedBranch}
-              onIsolatedBranchChange={(value) => {
-                clearStartError();
-                setIsStartFromIsolatedBranch(value);
-              }}
-            />
+                testId="agents-start-base"
+                isLoading={isLoadingStartFrom}
+                onIntent={ensureStartFromOptionsLoaded}
+                onOpenChange={(open) => {
+                  if (open) {
+                    ensureStartFromOptionsLoaded();
+                  }
+                }}
+                closeOnSelect={false}
+                isolatedBranch={effectiveStartFromIsolatedBranch}
+                isolatedBranchDisabled={startFromForcesIsolatedBranch}
+                onIsolatedBranchChange={(value) => {
+                  clearStartError();
+                  setIsStartFromIsolatedBranch(value);
+                }}
+              />
+            )}
           </div>
 
           {error?.kind === "linked_setup" ? (

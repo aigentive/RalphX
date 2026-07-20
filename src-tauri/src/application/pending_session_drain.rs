@@ -333,7 +333,11 @@ impl PendingSessionDrainService {
                         return true;
                     }
                 }
-                _ => {}
+                ChatContextType::Standalone
+                | ChatContextType::Ideation
+                | ChatContextType::Delegation
+                | ChatContextType::Task
+                | ChatContextType::BranchUpdate => {}
             }
         }
 

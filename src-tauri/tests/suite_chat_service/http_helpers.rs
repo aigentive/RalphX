@@ -200,8 +200,8 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
 // Verification Gate Integration Tests — Scenarios 10-25
 // ============================================================================
 
-/// Shared setup: create artifact + session with plan, optionally set verification_status
-/// and enable the proposal gate in the DB.
+/// Shared setup: create artifact + session with a plan and optionally seed the legacy
+/// verification-status/proposal-gate fields retained for database compatibility.
 async fn setup_session_with_gate(
     state: &AppState,
     verification_status: &str,

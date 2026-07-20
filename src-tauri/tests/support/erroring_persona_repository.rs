@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 
-use ralphx_lib::domain::entities::{Persona, PersonaId, PersonaStatus};
+use ralphx_lib::domain::entities::{
+    Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+};
 use ralphx_lib::domain::repositories::PersonaRepository;
 use ralphx_lib::error::{AppError, AppResult};
 
@@ -26,24 +28,19 @@ impl PersonaRepository for ErroringPersonaRepository {
         repository_error()
     }
 
-    async fn get_active_by_slug(&self, _slug: &str) -> AppResult<Option<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        _slug: &str,
+        _project_id: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
         repository_error()
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn list(&self, _scope: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
         repository_error()
     }
 
     async fn list_by_status(&self, _status: PersonaStatus) -> AppResult<Vec<Persona>> {
-        repository_error()
-    }
-
-    async fn update_content(
-        &self,
-        _id: &PersonaId,
-        _content: &str,
-        _content_hash: &str,
-    ) -> AppResult<()> {
         repository_error()
     }
 

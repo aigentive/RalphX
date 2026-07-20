@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PlanDisplay } from "./PlanDisplay";
+import { PlanDisplay, VersionedArtifactDisplay } from "./PlanDisplay";
 import type { TeamMetadata } from "./PlanDisplay";
 import type { Artifact } from "@/types/artifact";
 
@@ -768,6 +768,24 @@ describe("PlanDisplay", () => {
         <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} isApproved={true} />,
       );
       expect(screen.getByText("Plan Approved")).toBeInTheDocument();
+    });
+
+    it("supports the same document surface for a non-plan artifact without false Plan selection", () => {
+      render(
+        <VersionedArtifactDisplay
+          artifact={{ ...mockPlan, type: "persona", name: "Support Voice" }}
+          artifactLabel="Persona"
+          chromeless={true}
+          excerptSelectionEnabled={false}
+          artifactActions={<button type="button">Refine Persona</button>}
+        />,
+      );
+
+      expect(screen.getByTestId("plan-display-chromeless")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Refine Persona" }),
+      ).toBeInTheDocument();
+      expect(document.querySelector("[data-artifact-selectable-region]")).toBeNull();
     });
 
     it("renders explicit Overview and Proposals controls after the approved badge", () => {

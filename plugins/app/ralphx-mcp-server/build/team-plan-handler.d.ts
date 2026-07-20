@@ -25,7 +25,7 @@ export interface RequestTeamPlanArgs {
  * 4. GET /api/team/plan/await/:plan_id — blocks until user approves/rejects (15 min timeout)
  * 5. Return approval result to agent
  */
-export declare function handleRequestTeamPlan(args: RequestTeamPlanArgs, contextType: string, contextId: string, leadSessionId: string | undefined, runtimeContext?: RuntimeContext): Promise<{
+export declare function handleRequestTeamPlan(args: RequestTeamPlanArgs, contextType: string, contextId: string, leadSessionId: string | undefined, runtimeContext?: Pick<RuntimeContext, "conversationId">): Promise<{
     content: Array<{
         type: "text";
         text: string;

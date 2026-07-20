@@ -1,5 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown, CircleDot, TriangleAlert, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  CircleDot,
+  Sparkles,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 
 import {
   Popover,
@@ -32,6 +39,7 @@ export interface PersonaChipProps {
   lastRunPersonaSlug?: string | null;
   lastRunPersonaInjected?: boolean | null;
   lastRunPersonaSkippedReason?: string | null;
+  onBuildPersona?: () => void;
 }
 
 export function PersonaChip({
@@ -42,6 +50,7 @@ export function PersonaChip({
   lastRunPersonaSlug,
   lastRunPersonaInjected,
   lastRunPersonaSkippedReason,
+  onBuildPersona,
 }: PersonaChipProps) {
   const { data: personas = [], isLoading } = usePersonas();
   const switchPersona = useSwitchConversationPersona();
@@ -185,6 +194,20 @@ export function PersonaChip({
             )}
           </div>
           <div className="mt-1 border-t border-[var(--border-subtle)] pt-1">
+            {onBuildPersona && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsOpen(false);
+                  onBuildPersona();
+                }}
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)]"
+              >
+                <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                Create persona for this project
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"

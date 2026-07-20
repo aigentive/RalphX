@@ -11,7 +11,8 @@ use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatConversationId, ExecutionPlan, ExecutionPlanStatus, PlanBranch, PlanBranchStatus,
+    ChatContextType, ChatConversationId, ExecutionPlan, ExecutionPlanStatus, PlanBranch,
+    PlanBranchStatus,
 };
 use crate::domain::services::github_service::PrStatus as RemotePrStatus;
 
@@ -41,7 +42,7 @@ pub async fn archive_agent_conversation_for_state(
     state: &AppState,
     close_pull_request: bool,
 ) -> Result<TerminalAgentWorkspaceOutcome, String> {
-    let _conversation = state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(conversation_id)
         .await
@@ -53,6 +54,9 @@ pub async fn archive_agent_conversation_for_state(
         .get_by_conversation_id(conversation_id)
         .await
         .map_err(|e| e.to_string())?;
+    if workspace.is_none() {
+        stop_conversation_agent(conversation.context_type, conversation_id, state).await?;
+    }
     let project = match workspace.as_ref() {
         Some(workspace) => Some(
             state
@@ -268,6 +272,20 @@ fn add_restart_pr_target(
 
 fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {
     workspace.mode != AgentConversationWorkspaceMode::ReviewPr
+}
+
+async fn stop_conversation_agent(
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    state: &AppState,
+) -> Result<(), String> {
+    let conversation_id = conversation_id.as_str();
+    state
+        .build_chat_service()
+        .stop_agent(context_type, &conversation_id)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 async fn cleanup_ideation_execution_workspace(

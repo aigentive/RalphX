@@ -37,6 +37,9 @@ async fn bound_persona_conversation(
     let body = runtime_persona_body();
     let persona = Persona {
         id: PersonaId::from_string(format!("persona-{}", uuid::Uuid::new_v4())),
+        artifact_id: None,
+
+        project_id: None,
         slug: PERSONA_SLUG.to_string(),
         name: PERSONA_NAME.to_string(),
         description: "in-memory prompt composition fixture".to_string(),

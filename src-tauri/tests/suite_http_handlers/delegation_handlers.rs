@@ -210,6 +210,9 @@ async fn seed_bound_active_project_persona(
     let now = chrono::Utc::now();
     let persona = Persona {
         id: PersonaId::from(persona_id),
+        artifact_id: None,
+
+        project_id: None,
         slug: persona_id.to_string(),
         name: "Delegation isolation persona".to_string(),
         description: "Must not reach delegated children".to_string(),
@@ -1075,6 +1078,51 @@ async fn test_delegate_start_rejects_unknown_agent_name() {
         .as_str()
         .unwrap_or_default()
         .contains("Unknown canonical agent"));
+}
+
+#[tokio::test]
+async fn test_delegate_start_rejects_standalone_caller_context() {
+    // D3.8 / Phase 4a.3: standalone (projectless) conversations are not a
+    // delegation-capable caller context — the non-ideation caller branch in
+    // resolve_delegate_parent must reject `caller_context_type: "standalone"`
+    // before ever resolving a parent, agent identity, or harness. This is the
+    // structural escape-hatch closure D9 relies on: standalone Chat mode has
+    // no delegation rights.
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-explorer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("standalone".to_string()),
+            caller_context_id: Some("standalone-conversation-id".to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "noop".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("standalone"));
 }
 
 #[tokio::test]

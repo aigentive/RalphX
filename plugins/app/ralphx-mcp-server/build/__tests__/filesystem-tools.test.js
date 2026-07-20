@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { formatFilesystemToolError, handleFilesystemToolCall, } from "../filesystem-tools.js";
+import { formatFilesystemToolError, handleFilesystemToolCall as handleFilesystemToolCallWithContext, } from "../filesystem-tools.js";
+const handleFilesystemToolCall = (name, rawArgs, runtimeContext) => handleFilesystemToolCallWithContext(name, rawArgs, runtimeContext);
+const filesystemNotEnforced = { filesystemEnforced: false };
 describe("filesystem tools", () => {
     const tempDirs = [];
     const originalCwd = process.cwd();
@@ -35,7 +37,7 @@ describe("filesystem tools", () => {
             path: "src/sample.ts",
             start_line: 2,
             end_line: 3,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${target}`);
         expect(text).toContain("LINES: 2-3/4");
@@ -50,16 +52,14 @@ describe("filesystem tools", () => {
         const target = path.join(projectRoot, ".artifacts", "specs", "ralphx-cli", "tracker.md");
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, "# CLI tracker\n\nreadable from project checkout\n");
-        const readResult = await handleFilesystemToolCall("fs_read_file", {
-            path: target,
-        });
+        const readResult = await handleFilesystemToolCall("fs_read_file", { path: target }, filesystemNotEnforced);
         const readText = readResult.content[0]?.text ?? "";
         expect(readText).toContain(`FILE: ${target}`);
         expect(readText).toContain("readable from project checkout");
         const listResult = await handleFilesystemToolCall("fs_list_dir", {
             path: path.dirname(target),
             include_hidden: true,
-        });
+        }, filesystemNotEnforced);
         const listText = listResult.content[0]?.text ?? "";
         expect(listText).toContain("FILE tracker.md");
     });
@@ -71,9 +71,7 @@ describe("filesystem tools", () => {
         fs.writeFileSync(path.join(root, "visible.ts"), "export const ok = true;\n");
         fs.writeFileSync(path.join(root, "secret.log"), "hidden by ignore\n");
         fs.writeFileSync(path.join(root, ".env"), "TOKEN=1\n");
-        const result = await handleFilesystemToolCall("fs_list_dir", {
-            path: ".",
-        });
+        const result = await handleFilesystemToolCall("fs_list_dir", { path: "." }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("DIR  src/");
         expect(text).toContain("FILE visible.ts");
@@ -87,9 +85,7 @@ describe("filesystem tools", () => {
         tempDirs.push(outsideDir);
         const outsideFile = path.join(outsideDir, "secret.txt");
         fs.writeFileSync(outsideFile, "external context\n");
-        const result = await handleFilesystemToolCall("fs_read_file", {
-            path: path.relative(root, outsideFile),
-        });
+        const result = await handleFilesystemToolCall("fs_read_file", { path: path.relative(root, outsideFile) }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${outsideFile}`);
         expect(text).toContain("external context");
@@ -103,9 +99,7 @@ describe("filesystem tools", () => {
         const symlinkPath = path.join(root, "src", "escape.txt");
         fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
         fs.symlinkSync(outsideFile, symlinkPath);
-        const result = await handleFilesystemToolCall("fs_read_file", {
-            path: "src/escape.txt",
-        });
+        const result = await handleFilesystemToolCall("fs_read_file", { path: "src/escape.txt" }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`FILE: ${symlinkPath}`);
         expect(text).toContain("symlinked context");
@@ -120,7 +114,7 @@ describe("filesystem tools", () => {
         const result = await handleFilesystemToolCall("fs_glob", {
             base_path: "linked",
             pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain(`ROOT: ${path.join(root, "linked")}`);
         expect(text).toContain("secret.ts");
@@ -136,14 +130,14 @@ describe("filesystem tools", () => {
             pattern: "externalNeedle",
             base_path: projectRoot,
             file_pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const grepText = grepResult.content[0]?.text ?? "";
         expect(grepText).toContain(`ROOT: ${projectRoot}`);
         expect(grepText).toContain("service/index.ts:1: export const externalNeedle = true;");
         const globResult = await handleFilesystemToolCall("fs_glob", {
             base_path: projectRoot,
             pattern: "**/*.ts",
-        });
+        }, filesystemNotEnforced);
         const globText = globResult.content[0]?.text ?? "";
         expect(globText).toContain(`ROOT: ${projectRoot}`);
         expect(globText).toContain("service/index.ts");
@@ -160,7 +154,7 @@ describe("filesystem tools", () => {
             pattern: "delegate_start",
             base_path: ".",
             file_pattern: "**/*.rs",
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("FILE_PATTERN: **/*.rs");
         expect(text).toContain("src-tauri/src/main.rs:2:     println!(\"delegate_start\");");
@@ -176,9 +170,7 @@ describe("filesystem tools", () => {
         fs.writeFileSync(first, "# one\n");
         fs.writeFileSync(second, "# two\n");
         fs.writeFileSync(path.join(root, ".gitignore"), "agents/two/\n");
-        const result = await handleFilesystemToolCall("fs_glob", {
-            pattern: "agents/**/codex/*.md",
-        });
+        const result = await handleFilesystemToolCall("fs_glob", { pattern: "agents/**/codex/*.md" }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("agents/one/codex/prompt.md");
         expect(text).not.toContain("agents/two/codex/prompt.md");
@@ -194,7 +186,7 @@ describe("filesystem tools", () => {
             base_path: "src",
             pattern: "**/*.ts",
             max_depth: 0,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("one.ts");
         expect(text).not.toContain("nested/two.ts");
@@ -207,7 +199,7 @@ describe("filesystem tools", () => {
         const result = await handleFilesystemToolCall("fs_read_file", {
             path: "src/large.ts",
             max_bytes: 128,
-        });
+        }, filesystemNotEnforced);
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("TRUNCATED: true");
     });
@@ -219,6 +211,57 @@ describe("filesystem tools", () => {
         expect(text).toContain("Path resolution:");
         expect(text).toContain(`- ${root}`);
         expect(result.isError).toBe(true);
+    });
+    it("enforces configured roots without implicitly allowing cwd", async () => {
+        const cwd = makeWorkspace();
+        const allowedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-")));
+        tempDirs.push(allowedRoot);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+        const insideFile = path.join(allowedRoot, "inside.txt");
+        const cwdFile = path.join(cwd, "cwd.txt");
+        fs.writeFileSync(insideFile, "allowed context\n");
+        fs.writeFileSync(cwdFile, "implicit cwd must be denied\n");
+        const inside = await handleFilesystemToolCall("fs_read_file", { path: insideFile }, { filesystemEnforced: true });
+        expect(inside.content[0]?.text).toContain("allowed context");
+        await expect(handleFilesystemToolCall("fs_list_dir", { path: allowedRoot }, { filesystemEnforced: true })).resolves.toHaveProperty("content");
+        await expect(handleFilesystemToolCall("fs_read_file", { path: cwdFile }, { filesystemEnforced: true })).rejects.toThrow("outside the allowed filesystem roots");
+        await expect(handleFilesystemToolCall("fs_read_file", { path: path.join(allowedRoot, "..", path.basename(cwd), "cwd.txt") }, { filesystemEnforced: true })).rejects.toThrow("outside the allowed filesystem roots");
+    });
+    it("rejects absolute and symlink escapes in enforced mode", async () => {
+        makeWorkspace();
+        const allowedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-")));
+        const outsideRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-outside-")));
+        tempDirs.push(allowedRoot, outsideRoot);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+        const outsideFile = path.join(outsideRoot, "secret.txt");
+        fs.writeFileSync(outsideFile, "secret\n");
+        const symlinkPath = path.join(allowedRoot, "escape.txt");
+        fs.symlinkSync(outsideFile, symlinkPath);
+        for (const target of [outsideFile, symlinkPath]) {
+            await expect(handleFilesystemToolCall("fs_read_file", { path: target }, { filesystemEnforced: true })).rejects.toThrow("outside the allowed filesystem roots");
+        }
+    });
+    it("denies every filesystem tool when enforced roots are empty", async () => {
+        makeWorkspace();
+        delete process.env.RALPHX_FILESYSTEM_READ_ROOTS;
+        const calls = [
+            ["fs_read_file", { path: "README.md" }],
+            ["fs_list_dir", { path: "." }],
+            ["fs_grep", { pattern: "needle", base_path: "." }],
+            ["fs_glob", { pattern: "**/*", base_path: "." }],
+        ];
+        for (const [name, args] of calls) {
+            await expect(handleFilesystemToolCall(name, args, { filesystemEnforced: true })).rejects.toThrow("outside the allowed filesystem roots");
+        }
+    });
+    it("preserves normal not-found errors only for missing paths inside an enforced root", async () => {
+        makeWorkspace();
+        const allowedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-allowed-")));
+        const outsideRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-outside-")));
+        tempDirs.push(allowedRoot, outsideRoot);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([allowedRoot]);
+        await expect(handleFilesystemToolCall("fs_read_file", { path: path.join(allowedRoot, "missing", "file.txt") }, { filesystemEnforced: true })).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(handleFilesystemToolCall("fs_read_file", { path: path.join(outsideRoot, "missing.txt") }, { filesystemEnforced: true })).rejects.toThrow("outside the allowed filesystem roots");
     });
 });
 //# sourceMappingURL=filesystem-tools.test.js.map

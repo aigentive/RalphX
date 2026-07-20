@@ -20,6 +20,7 @@ pub mod automation;
 mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
+pub mod conversation_folder_reference;
 pub mod chat_timeline;
 pub mod branch_update;
 #[cfg(test)]
@@ -131,6 +132,9 @@ pub use automation::{
     AutomationRunStatus, AutomationStatus,
 };
 pub use chat_attachment::{ChatAttachment, ChatAttachmentId};
+pub use conversation_folder_reference::{
+    ConversationFolderReference, ConversationFolderReferenceId,
+};
 pub use chat_conversation::{
     legacy_claude_session_alias, normalize_provider_session_compatibility,
     AttributionBackfillStatus, ChatContextType, ChatConversation, ChatConversationId,
@@ -186,7 +190,7 @@ pub use notification::{
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
-pub use persona::{Persona, PersonaDirective, PersonaId, PersonaStatus};
+pub use persona::{Persona, PersonaDirective, PersonaId, PersonaScopeFilter, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

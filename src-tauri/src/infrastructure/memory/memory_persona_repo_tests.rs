@@ -1,4 +1,4 @@
-use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, PersonaStatus};
 use crate::domain::repositories::PersonaRepository;
 use crate::infrastructure::memory::MemoryPersonaRepository;
 use chrono::{Duration, Utc};
@@ -7,6 +7,9 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
     let now = Utc::now();
     Persona {
         id: PersonaId::new(),
+        artifact_id: None,
+
+        project_id: None,
         slug: slug.to_string(),
         name: slug.to_string(),
         description: String::new(),
@@ -55,14 +58,18 @@ async fn memory_persona_repo_finds_active_slug_only_and_newest_seeded_draft() {
     repo.create(newer_seeded.clone()).await.unwrap();
 
     assert_eq!(
-        repo.get_active_by_slug("reviewer")
+        repo.get_active_by_slug("reviewer", None)
             .await
             .unwrap()
             .unwrap()
             .id,
         active.id
     );
-    assert!(repo.get_active_by_slug("seeded").await.unwrap().is_none());
+    assert!(repo
+        .get_active_by_slug("seeded", None)
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
         repo.get_draft_by_source_persona_id(&active.id)
             .await
@@ -128,7 +135,7 @@ async fn memory_persona_repo_trait_parity_list() {
     repo.create(older.clone()).await.unwrap();
     repo.create(newer.clone()).await.unwrap();
 
-    let listed = repo.list().await.unwrap();
+    let listed = repo.list(PersonaScopeFilter::All).await.unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].id, newer.id, "newest persona is listed first");
     assert_eq!(listed[1].id, older.id);
@@ -145,25 +152,6 @@ async fn memory_persona_repo_trait_parity_list_by_status() {
     assert_eq!(
         repo.list_by_status(PersonaStatus::Active).await.unwrap()[0].id,
         active.id
-    );
-}
-
-#[tokio::test]
-async fn memory_persona_repo_trait_parity_update_content() {
-    let repo = MemoryPersonaRepository::new();
-    let original = persona("reviewer", PersonaStatus::Draft);
-    repo.create(original.clone()).await.unwrap();
-    repo.update_content(&original.id, "new content", "new hash")
-        .await
-        .unwrap();
-    let updated = repo.get_by_id(&original.id).await.unwrap().unwrap();
-    assert_eq!(
-        (
-            updated.content.as_str(),
-            updated.content_hash.as_str(),
-            updated.version
-        ),
-        ("new content", "new hash", 2)
     );
 }
 
