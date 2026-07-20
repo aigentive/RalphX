@@ -31,6 +31,7 @@ use ralphx_lib::domain::entities::{
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority,
     ProposalCategory, TaskProposal, VerificationRunSnapshot,
 };
+use ralphx_lib::domain::repositories::TaskRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
@@ -2122,6 +2123,25 @@ async fn test_task_transition_retry_from_terminal() {
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert!(response.success);
+    assert_eq!(response.new_status, InternalStatus::Ready.as_str());
+
+    let persisted = state
+        .app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("retried task should remain persisted");
+    assert_eq!(persisted.internal_status, InternalStatus::Ready);
+    let history = state
+        .app_state
+        .task_repo
+        .get_status_history(&task.id)
+        .await
+        .unwrap();
+    assert!(history.iter().any(|entry| {
+        entry.from == InternalStatus::Stopped && entry.to == InternalStatus::Ready
+    }));
 }
 
 #[tokio::test]
