@@ -9,6 +9,7 @@ pub mod artifact_service;
 pub mod bucket_classifier;
 pub mod composer_selection_snapshot;
 pub mod gap_fingerprint;
+pub mod github_generated_markdown;
 pub mod github_service;
 pub mod index_rewriter;
 pub mod key_crypto;
@@ -35,6 +36,7 @@ pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;
 pub use composer_selection_snapshot::ComposerSelectionSnapshot;
 pub use gap_fingerprint::{gap_fingerprint, gap_score, jaccard_similarity};
+pub(crate) use github_generated_markdown::append_ralphx_generated_footer;
 pub use github_service::{
     GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrSearchResult,
     PrStatus, PrSyncState,
