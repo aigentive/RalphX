@@ -140,6 +140,51 @@ describe("automationsApi", () => {
     });
   });
 
+  it("passes a linked selected base when creating an automation draft", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      automation: automationResponse(),
+      setup_conversation_id: "conversation-setup-1",
+    });
+
+    await automationsApi.createDraft({
+      projectId: "project-1",
+      name: "Branch-aware automation",
+      base: {
+        kind: "local_branch",
+        branchMode: "linked",
+        ref: "feature/linked-automation",
+        displayName: "feature/linked-automation",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
+      },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("create_automation_draft", {
+      input: {
+        projectId: "project-1",
+        name: "Branch-aware automation",
+        baseRefKind: "local_branch",
+        baseBranchMode: "linked",
+        baseRef: "feature/linked-automation",
+        baseDisplayName: "feature/linked-automation",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
+      },
+    });
+  });
+
   it("sends camelCase Tauri command inputs for updates and pause reasons", async () => {
     vi.mocked(invoke).mockResolvedValue(automationResponse({ status: "paused" }));
 
