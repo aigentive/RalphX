@@ -261,4 +261,50 @@ describe("workspace Review refresh ownership", () => {
     await Promise.all([first, racedStatus, racedTarget]);
     expect(fetchContext).toHaveBeenCalledTimes(2);
   });
+
+  it("does not replace an active interval fetch when a Review signal refresh arrives", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspaceReview("conversation-1"),
+      {} as AgentWorkspaceReviewContext,
+    );
+    const refetchQueries = vi.spyOn(queryClient, "refetchQueries");
+    let resolveIntervalFetch: (value: AgentWorkspaceReviewContext) => void;
+    let intervalSignal: AbortSignal | undefined;
+    const intervalFetch = queryClient.fetchQuery({
+      queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+      queryFn: ({ signal }) => {
+        intervalSignal = signal;
+        return new Promise<AgentWorkspaceReviewContext>((resolve) => {
+          resolveIntervalFetch = resolve;
+        });
+      },
+      staleTime: 0,
+    });
+    const signalRefreshFetch = vi.fn();
+
+    await vi.waitFor(() => expect(intervalSignal).toBeDefined());
+    const signalRefresh = refreshWorkspaceReviewContext(
+      queryClient,
+      "conversation-1",
+      "status",
+      signalRefreshFetch,
+    );
+
+    await Promise.resolve();
+    expect(intervalSignal?.aborted).toBe(false);
+    expect(signalRefreshFetch).not.toHaveBeenCalled();
+    expect(refetchQueries).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        exact: true,
+        queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+      }),
+      { cancelRefetch: false },
+    );
+
+    resolveIntervalFetch!({} as AgentWorkspaceReviewContext);
+    await Promise.all([intervalFetch, signalRefresh]);
+  });
 });

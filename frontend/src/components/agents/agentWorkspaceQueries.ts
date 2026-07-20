@@ -77,8 +77,22 @@ export function refreshWorkspaceReviewContext(
       while (refreshState.requestedMode) {
         const requestedMode = refreshState.requestedMode;
         refreshState.requestedMode = null;
+        const queryKey = agentWorkspaceKeys.workspaceReview(conversationId);
+        const activeQuery = queryClient.getQueryCache().find({
+          queryKey,
+          exact: true,
+        });
+        if (activeQuery?.state.fetchStatus === "fetching") {
+          await queryClient.refetchQueries(
+            { queryKey, exact: true },
+            { cancelRefetch: false },
+          );
+          if (requestedMode === "status") {
+            continue;
+          }
+        }
         await queryClient.fetchQuery({
-          queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
+          queryKey,
           queryFn: ({ signal }) =>
             fetchContext(conversationId, {
               signal,
