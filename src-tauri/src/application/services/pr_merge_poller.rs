@@ -2075,6 +2075,20 @@ async fn route_agent_workspace_pr_autofix_for_target(
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
+    let target_matches_workspace_mode = matches!(
+        (workspace.mode, &target.kind),
+        (
+            AgentConversationWorkspaceMode::Edit,
+            AgentWorkspacePrAutofixTargetKind::DirectWorkspace
+        ) | (
+            AgentConversationWorkspaceMode::Ideation,
+            AgentWorkspacePrAutofixTargetKind::IdeationPlan { .. }
+        )
+    );
+    if !workspace.allows_owned_pr_mutation() || !target_matches_workspace_mode {
+        return Ok(false);
+    }
+
     if !workspace.auto_publish_enabled {
         return Ok(false);
     }
@@ -2642,6 +2656,14 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
     workspace: &AgentConversationWorkspace,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
 ) -> crate::AppResult<bool> {
+    if !workspace.allows_owned_pr_mutation() {
+        let message = if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "GitHub auto-merge synchronization is unavailable in Review PR mode"
+        } else {
+            "GitHub auto-merge synchronization is unavailable for this workspace"
+        };
+        return Err(AppError::Validation(message.to_string()));
+    }
     let health = github.fetch_pr_health(working_dir, pr_number).await?;
     sync_agent_workspace_auto_merge_preference(
         github,

@@ -1,4 +1,5 @@
 use super::agent_conversation_start_support::*;
+use ralphx_lib::domain::execution::ExecutionSettings;
 
 #[tokio::test]
 async fn ipc_contract_start_service_pr_backed_local_branch_prepares_isolated_workspace() {
@@ -96,6 +97,18 @@ async fn ipc_contract_start_service_review_pr_creates_enabled_monitor() {
         &worktree_parent,
     )
     .await;
+    state
+        .execution_settings_repo
+        .update_settings(
+            Some(&project.id),
+            &ExecutionSettings {
+                agent_workspace_pr_autofix_default: true,
+                agent_workspace_pr_auto_merge_default: true,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .expect("project automation defaults should persist");
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.pause();
     let app = build_app(state, execution_state);
@@ -125,6 +138,8 @@ async fn ipc_contract_start_service_review_pr_creates_enabled_monitor() {
     assert!(result.send_result.was_queued);
     let workspace = result.workspace.expect("Review PR mode creates workspace");
     assert_eq!(workspace.mode, AgentConversationWorkspaceMode::ReviewPr);
+    assert!(!workspace.pr_autofix_enabled);
+    assert!(!workspace.pr_auto_merge_desired);
     let monitor = app
         .state::<AppState>()
         .agent_conversation_workspace_repo

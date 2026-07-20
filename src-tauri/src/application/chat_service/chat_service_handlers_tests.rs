@@ -501,7 +501,8 @@ async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
         std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(
         spawnable.is_none(),
@@ -520,7 +521,8 @@ async fn recovery_retry_spawnable_gate_blocks_non_execution_without_app_state() 
         std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(
         spawnable.is_none(),
@@ -553,6 +555,7 @@ async fn recovery_retry_spawnable_gate_applies_policy_without_provider_repo() {
         recovery_retry_test_provider_spawnable(),
     )
     .await
+    .unwrap()
     .expect("app state can resolve policy without provider settings");
 
     assert!(spawnable
@@ -582,7 +585,8 @@ async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
         std::path::Path::new("/tmp"),
         recovery_retry_test_provider_spawnable(),
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(
         spawnable.is_none(),
@@ -623,6 +627,7 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
         recovery_retry_test_provider_spawnable(),
     )
     .await
+    .unwrap()
     .expect("enabled provider should allow recovery retry");
 
     assert_eq!(
@@ -651,7 +656,8 @@ async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
         Ok(recovery_retry_test_provider_spawnable()),
         provider_gate,
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(
         spawnable.is_some(),
@@ -674,7 +680,8 @@ async fn resolve_recovery_retry_spawnable_drops_build_errors() {
         Err("build failed".to_string()),
         provider_gate,
     )
-    .await;
+    .await
+    .unwrap();
 
     assert!(
         spawnable.is_none(),

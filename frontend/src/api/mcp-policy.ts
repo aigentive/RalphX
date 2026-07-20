@@ -8,6 +8,7 @@ import type {
   McpScopeInput,
   McpServerOverrideInput,
   McpToolOverrideInput,
+  RetryLegacyMcpRepairInput,
 } from "./mcp-policy.types";
 
 async function catalog(command: string, input: object): Promise<McpCatalog> {
@@ -46,6 +47,13 @@ export const mcpPolicyApi = {
   clearTool(input: Omit<McpToolOverrideInput, "state">) {
     return typedInvoke(
       "clear_mcp_tool_override",
+      { input },
+      McpMutationResponseSchema,
+    );
+  },
+  retryLegacyRepair(input: RetryLegacyMcpRepairInput) {
+    return typedInvoke(
+      "retry_legacy_mcp_registration_repair",
       { input },
       McpMutationResponseSchema,
     );

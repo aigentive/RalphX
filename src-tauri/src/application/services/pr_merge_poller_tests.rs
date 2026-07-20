@@ -283,6 +283,117 @@ fn review_pr_workspace(
     workspace
 }
 
+#[tokio::test]
+async fn review_pr_autofix_route_rejects_stale_automation_before_github_or_side_effects() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = review_pr_workspace(
+        "review-pr-stale-autofix",
+        "project-review-pr-stale-autofix",
+        worktree.path(),
+    );
+    workspace.publication_pr_number = Some(101);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/101".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let original = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+
+    let github = Arc::new(MockGithubService::new());
+    let mut health = open_pr_health("review-head");
+    health.review_decision = Some("CHANGES_REQUESTED".to_string());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("Review PR guard should no-op");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(chat.get_sent_options().await.is_empty());
+    let github_calls = {
+        let github_state = github.state();
+        (
+            github_state.fetch_pr_health_calls,
+            github_state.mark_pr_ready_calls,
+            github_state.enable_pr_auto_merge_calls,
+            github_state.disable_pr_auto_merge_calls,
+        )
+    };
+    assert_eq!(github_calls, (0, 0, 0, 0));
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        Some(original)
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn review_pr_public_auto_merge_sync_rejects_before_health_fetch() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = review_pr_workspace(
+        "review-pr-public-auto-merge",
+        "project-review-pr-public-auto-merge",
+        worktree.path(),
+    );
+    workspace.publication_pr_number = Some(101);
+    workspace.pr_auto_merge_desired = true;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let github = Arc::new(MockGithubService::new());
+
+    let error = super::sync_agent_workspace_auto_merge_preference_for_workspace(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &workspace,
+        Arc::clone(&workspace_repo),
+    )
+    .await
+    .expect_err("Review PR auto-merge synchronization should fail closed");
+
+    assert!(error.to_string().contains("Review PR"));
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+}
+
 fn watching_review_monitor(
     workspace: &AgentConversationWorkspace,
     head_sha: &str,

@@ -4826,6 +4826,13 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     else {
         return Err("Agent conversation workspace not found".to_string());
     };
+    if !workspace.allows_owned_pr_mutation() {
+        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "PR supervision is unavailable in Review PR mode".to_string()
+        } else {
+            "PR supervision is unavailable for this workspace".to_string()
+        });
+    }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
     let terminal_publication_status = workspace.has_terminal_publication_pr_status()
@@ -4969,6 +4976,13 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
     else {
         return Err("Agent conversation workspace not found".to_string());
     };
+    if !workspace.allows_owned_pr_mutation() {
+        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "Auto Publish cannot be changed in Review PR mode".to_string()
+        } else {
+            "Auto Publish cannot be changed for this workspace".to_string()
+        });
+    }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
     let terminal_publication_status = workspace.has_terminal_publication_pr_status()

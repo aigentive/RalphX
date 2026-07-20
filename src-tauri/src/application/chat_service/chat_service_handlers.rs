@@ -381,7 +381,7 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     project_id: Option<&str>,
     working_directory: &Path,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
-) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
     let provider_env = match recovery_retry_provider_decision(
         app_handle,
         agent_provider_settings_repo,
@@ -392,20 +392,35 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     {
         Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => Some(provider_env),
         Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
-        Err(_) => return None,
+        Err(_) => return Ok(None),
     };
-    let handle = app_handle.as_ref()?;
+    let Some(handle) = app_handle.as_ref() else {
+        return Ok(None);
+    };
     let app_state = handle.state::<AppState>();
-    let policy = app_state
+    let policy = match app_state
         .mcp_policy_service()
         .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
         .await
-        .ok()?;
+    {
+        Ok(policy) => policy,
+        Err(error) => {
+            let error = error.to_string();
+            if error.contains(crate::domain::agents::MCP_SETUP_PREFLIGHT_MARKER) {
+                return Err(error);
+            }
+            tracing::error!(
+                harness = %recovery_harness,
+                "Failed to resolve MCP policy for recovery retry"
+            );
+            return Ok(None);
+        }
+    };
     provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
     if let Some(provider_env) = provider_env.as_ref() {
         provider_spawnable.apply_provider_env(provider_env);
     }
-    Some(provider_spawnable.spawnable)
+    Ok(Some(provider_spawnable.spawnable))
 }
 
 #[derive(Clone, Copy)]
@@ -441,7 +456,7 @@ impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
 async fn resolve_recovery_retry_spawnable<R: Runtime>(
     retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
     provider_gate: RecoveryRetryProviderGate<'_, R>,
-) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
     match retry_provider_spawnable {
         Ok(provider_spawnable) => {
             recovery_retry_spawnable_with_provider_gate(
@@ -461,7 +476,7 @@ async fn resolve_recovery_retry_spawnable<R: Runtime>(
                 harness = %provider_gate.recovery_harness,
                 "Failed to build recovery retry spawnable"
             );
-            None
+            Ok(None)
         }
     }
 }
@@ -2751,6 +2766,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         return false;
     }
 
+    let mut terminal_error_override = None;
+
     // Classify error to detect stale session
     let classified_error = classify_agent_error(error, &conversation_id, stored_session_id);
 
@@ -2948,11 +2965,18 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             resolved_project_id.as_deref(),
                             working_directory,
                         );
-                        let retry_spawnable = resolve_recovery_retry_spawnable(
+                        let retry_spawnable = match resolve_recovery_retry_spawnable(
                             retry_provider_spawnable,
                             retry_provider_gate,
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(spawnable) => spawnable,
+                            Err(error) => {
+                                terminal_error_override = Some(error);
+                                None
+                            }
+                        };
 
                         if let Some(spawnable) = retry_spawnable {
                             let persona_injected = spawnable.persona_injected();
@@ -3030,7 +3054,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             }
                         }
 
-                        tracing::error!("Failed to spawn retry after recovery");
+                        if terminal_error_override.is_none() {
+                            tracing::error!("Failed to spawn retry after recovery");
+                        }
                         // Fall through to error handling
                     }
                     Err(recovery_err) => {
@@ -3067,7 +3093,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
     // Standard error handling (reached if recovery not attempted or failed)
     // Redact secrets from error string before propagating to non-tracing sinks
-    let redacted_error = redact(error);
+    let redacted_error = redact(terminal_error_override.as_deref().unwrap_or(error));
 
     // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
     // execution_complete successfully, green validation was cached for the
