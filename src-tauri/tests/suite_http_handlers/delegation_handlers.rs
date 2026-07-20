@@ -1776,6 +1776,15 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
         delegated_agent_run_id: Some("run-1".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
         harness: "codex".to_string(),
+        provider_session_id: Some("provider-thread-start".to_string()),
+        upstream_provider: Some("openai".to_string()),
+        provider_profile: Some("openai".to_string()),
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: Some("gpt-5.4-2026-07-01".to_string()),
+        logical_effort: Some("high".to_string()),
+        effective_effort: Some("high".to_string()),
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
         status: "running".to_string(),
         content: None,
         error: None,
@@ -1817,7 +1826,15 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
     );
     assert_eq!(payload.delegated_agent_run_id.as_deref(), Some("run-1"));
     assert_eq!(payload.provider_harness.as_deref(), Some("codex"));
+    assert_eq!(
+        payload.provider_session_id.as_deref(),
+        Some("provider-thread-start")
+    );
     assert_eq!(payload.logical_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        payload.effective_model_id.as_deref(),
+        Some("gpt-5.4-2026-07-01")
+    );
     assert_eq!(payload.logical_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
@@ -1842,6 +1859,15 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         delegated_agent_run_id: Some("run-2".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
         harness: "codex".to_string(),
+        provider_session_id: None,
+        upstream_provider: None,
+        provider_profile: None,
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: None,
+        logical_effort: Some("high".to_string()),
+        effective_effort: None,
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
         status: "running".to_string(),
         content: None,
         error: None,
@@ -1932,4 +1958,48 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.context_type, "ideation");
     assert_eq!(payload.context_id, "parent-session-2");
     assert_eq!(payload.seq, 99);
+}
+
+#[test]
+fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
+    let snapshot = DelegationJobSnapshot {
+        job_id: "job-without-placement".to_string(),
+        parent_context_type: "project".to_string(),
+        parent_context_id: "project-1".to_string(),
+        parent_turn_id: None,
+        parent_message_id: None,
+        parent_conversation_id: Some("parent-conversation".to_string()),
+        parent_tool_use_id: None,
+        delegated_session_id: "delegated-session".to_string(),
+        delegated_conversation_id: Some("delegated-conversation".to_string()),
+        delegated_agent_run_id: Some("delegated-run".to_string()),
+        agent_name: "ralphx-general-explorer".to_string(),
+        harness: "codex".to_string(),
+        provider_session_id: None,
+        upstream_provider: Some("openai".to_string()),
+        provider_profile: None,
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: None,
+        logical_effort: Some("medium".to_string()),
+        effective_effort: None,
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
+        status: "running".to_string(),
+        content: None,
+        error: None,
+        started_at: "2026-04-12T10:00:00Z".to_string(),
+        completed_at: None,
+        history: vec![],
+        delegated_status: None,
+    };
+
+    let started = build_delegated_task_started_payload(&snapshot, None, None, None, None, 7)
+        .expect("parent conversation and job should be sufficient for lifecycle correlation");
+
+    assert_eq!(started.tool_use_id, "delegate-job:job-without-placement");
+    assert_eq!(
+        started.delegated_job_id.as_deref(),
+        Some("job-without-placement")
+    );
+    assert_eq!(started.conversation_id, "parent-conversation");
 }

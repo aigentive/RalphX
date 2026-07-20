@@ -404,4 +404,111 @@ describe("TaskToolCallDelegatedTranscript", () => {
 
     expect(await screen.findByText("Waiting for delegated output...")).toBeInTheDocument();
   });
+
+  it("recovers nested child tasks from active state", async () => {
+    vi.spyOn(chatApi, "getConversationActiveState").mockResolvedValue({
+      is_active: true,
+      runId: "run-child-tasks",
+      tool_calls: [],
+      streaming_tasks: [{
+        tool_use_id: "task-nested-1",
+        description: "Nested audit",
+        subagent_type: "Explore",
+        model: "sonnet",
+        status: "running",
+      }],
+      partial_text: "",
+    });
+    vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
+      conversation: {
+        id: "child-conv-tasks",
+        contextType: "project",
+        contextId: "project-1",
+        claudeSessionId: null,
+        providerSessionId: "thread-tasks",
+        providerHarness: "claude",
+        upstreamProvider: "anthropic",
+        providerProfile: null,
+        title: "Nested task delegate",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-04-12T10:00:00Z",
+        updatedAt: "2026-04-12T10:00:00Z",
+      },
+      messages: [],
+      limit: 40,
+      offset: 0,
+      totalMessageCount: 0,
+      hasOlder: false,
+    });
+
+    renderWithQueryClient(
+      <TaskToolCallDelegatedTranscript
+        conversationId="child-conv-tasks"
+        delegatedAgentRunId="run-child-tasks"
+        fallbackText={undefined}
+      />,
+    );
+
+    expect(await screen.findByText("Nested audit")).toBeInTheDocument();
+  });
+
+  it("rejects recovered state and live events from a different child run", async () => {
+    vi.spyOn(chatApi, "getConversationActiveState").mockResolvedValue({
+      is_active: true,
+      runId: "stale-run",
+      tool_calls: [],
+      streaming_tasks: [],
+      partial_text: "stale recovered text",
+    });
+    vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
+      conversation: {
+        id: "child-conv-run-scope",
+        contextType: "project",
+        contextId: "project-1",
+        claudeSessionId: null,
+        providerSessionId: "thread-run-scope",
+        providerHarness: "codex",
+        upstreamProvider: "openai",
+        providerProfile: "openai",
+        title: "Run-scoped delegate",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-04-12T10:00:00Z",
+        updatedAt: "2026-04-12T10:00:00Z",
+      },
+      messages: [],
+      limit: 40,
+      offset: 0,
+      totalMessageCount: 0,
+      hasOlder: false,
+    });
+
+    renderWithQueryClient(
+      <TaskToolCallDelegatedTranscript
+        conversationId="child-conv-run-scope"
+        delegatedAgentRunId="current-run"
+        fallbackText={undefined}
+      />,
+    );
+
+    expect(await screen.findByText("No delegated output available.")).toBeInTheDocument();
+    expect(screen.queryByText("stale recovered text")).not.toBeInTheDocument();
+
+    act(() => {
+      emitEvent("agent:chunk", {
+        conversation_id: "child-conv-run-scope",
+        run_id: "stale-run",
+        text: "wrong run event",
+      });
+      emitEvent("agent:chunk", {
+        conversation_id: "child-conv-run-scope",
+        run_id: "current-run",
+        text: "current run event",
+      });
+    });
+
+    expect(screen.queryByText("wrong run event")).not.toBeInTheDocument();
+    expect(screen.getByText("current run event")).toBeInTheDocument();
+  });
 });

@@ -2251,9 +2251,20 @@ describe("useChatEvents", () => {
       });
     });
 
-    it("should ignore delegate_wait tool calls for delegated task state", () => {
+    it("should settle the original delegated task from delegate_wait by job id", () => {
       const props = makeProps();
       renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "call_delegate_start_001",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect" },
+          result: [{ type: "text", text: JSON.stringify({ job_id: "job-123", status: "running" }) }],
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
 
       act(() => {
         fireEvent("agent:tool_call", {
@@ -2289,8 +2300,71 @@ describe("useChatEvents", () => {
       });
 
       expect(props.setStreamingToolCalls).not.toHaveBeenCalled();
-      expect(props.setStreamingTasks).not.toHaveBeenCalled();
-      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+      let tasks = new Map<string, StreamingTask>();
+      for (const call of props.setStreamingTasks.mock.calls) {
+        const updater = call[0];
+        tasks = typeof updater === "function" ? updater(tasks) : updater;
+      }
+      expect(tasks).toHaveLength(1);
+      expect(tasks.get("call_delegate_start_001")).toMatchObject({
+        delegatedJobId: "job-123",
+        status: "completed",
+        providerHarness: "codex",
+        upstreamProvider: "openai",
+        logicalModel: "gpt-5.4",
+        logicalEffort: "high",
+        totalTokens: 140,
+        textOutput: "Delegated review finished",
+      });
+    });
+
+    it("should enrich a Codex-shaped delegate start from result:call_*", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "call_delegate_002",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "result:call_delegate_002",
+          arguments: {},
+          result: [{
+            type: "text",
+            text: JSON.stringify({
+              job_id: "job-call-shape",
+              status: "running",
+              delegated_conversation_id: "delegated-conversation",
+              delegated_agent_run_id: "delegated-run",
+              harness: "codex",
+              logical_model: "gpt-5.4",
+              logical_effort: "medium",
+            }),
+          }],
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      let tasks = new Map<string, StreamingTask>();
+      for (const call of props.setStreamingTasks.mock.calls) {
+        const updater = call[0];
+        tasks = typeof updater === "function" ? updater(tasks) : updater;
+      }
+      expect(tasks.get("call_delegate_002")).toMatchObject({
+        delegatedJobId: "job-call-shape",
+        delegatedConversationId: "delegated-conversation",
+        delegatedAgentRunId: "delegated-run",
+        providerHarness: "codex",
+        logicalModel: "gpt-5.4",
+        logicalEffort: "medium",
+      });
     });
   });
 

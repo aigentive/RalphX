@@ -75,34 +75,46 @@ fn delegated_duration_ms(
 async fn load_delegated_task_snapshot(
     state: &HttpServerState,
     task: &ActiveStreamingTask,
-) -> Option<DelegatedTaskSnapshot> {
-    let delegated_session_id = task.delegated_session_id.as_deref()?;
+) -> Result<Option<DelegatedTaskSnapshot>, StatusCode> {
+    let Some(delegated_session_id) = task.delegated_session_id.as_deref() else {
+        return Ok(None);
+    };
     let session = state
         .app_state
         .delegated_session_repo
         .get_by_id(&DelegatedSessionId::from_string(delegated_session_id))
         .await
-        .ok()
-        .flatten()?;
+        .map_err(|error| {
+            tracing::error!(delegated_session_id, %error, "Failed to enrich delegated session state");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let Some(session) = session else {
+        return Ok(None);
+    };
 
-    let delegated_conversation =
-        if let Some(conversation_id) = task.delegated_conversation_id.as_deref() {
-            state
+    let delegated_conversation = if let Some(conversation_id) =
+        task.delegated_conversation_id.as_deref()
+    {
+        state
                 .app_state
                 .chat_conversation_repo
                 .get_by_id(&ChatConversationId::from_string(conversation_id))
                 .await
-                .ok()
-                .flatten()
-        } else {
-            state
+                .map_err(|error| {
+                    tracing::error!(delegated_session_id, conversation_id, %error, "Failed to enrich delegated conversation state");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+    } else {
+        state
                 .app_state
                 .chat_conversation_repo
                 .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
                 .await
-                .ok()
-                .flatten()
-        };
+                .map_err(|error| {
+                    tracing::error!(delegated_session_id, %error, "Failed to resolve delegated conversation state");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+    };
 
     let latest_run = if let Some(agent_run_id) = task.delegated_agent_run_id.as_deref() {
         state
@@ -110,16 +122,20 @@ async fn load_delegated_task_snapshot(
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(agent_run_id))
             .await
-            .ok()
-            .flatten()
+            .map_err(|error| {
+                tracing::error!(delegated_session_id, agent_run_id, %error, "Failed to enrich delegated run state");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     } else if let Some(conversation) = delegated_conversation.as_ref() {
         state
             .app_state
             .agent_run_repo
             .get_latest_for_conversation(&conversation.id)
             .await
-            .ok()
-            .flatten()
+            .map_err(|error| {
+                tracing::error!(delegated_session_id, conversation_id = %conversation.id, %error, "Failed to resolve latest delegated run state");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     } else {
         None
     };
@@ -129,7 +145,7 @@ async fn load_delegated_task_snapshot(
         .map(|run| run.status.to_string())
         .unwrap_or_else(|| session.status.clone());
 
-    Some(DelegatedTaskSnapshot {
+    Ok(Some(DelegatedTaskSnapshot {
         status,
         delegated_conversation_id: delegated_conversation
             .as_ref()
@@ -183,7 +199,7 @@ async fn load_delegated_task_snapshot(
             .and_then(|run| run.cache_creation_tokens),
         cache_read_tokens: latest_run.as_ref().and_then(|run| run.cache_read_tokens),
         estimated_usd: latest_run.as_ref().and_then(|run| run.estimated_usd),
-    })
+    }))
 }
 
 fn apply_delegated_task_snapshot(task: &mut ActiveStreamingTask, snapshot: &DelegatedTaskSnapshot) {
@@ -261,7 +277,8 @@ pub async fn get_conversation_active_state(
 
     // Build response
     let response = if let Some(cached_state) = cached_state {
-        let mut delegated_snapshot_cache = HashMap::<String, Option<DelegatedTaskSnapshot>>::new();
+        let mut delegated_snapshot_cache =
+            HashMap::<(String, Option<String>), Option<DelegatedTaskSnapshot>>::new();
         let mut streaming_tasks = Vec::with_capacity(cached_state.streaming_tasks.len());
         for task in cached_state
             .streaming_tasks
@@ -270,13 +287,15 @@ pub async fn get_conversation_active_state(
         {
             let mut active_task = task;
             if let Some(delegated_session_id) = active_task.delegated_session_id.clone() {
-                let snapshot = if let Some(snapshot) =
-                    delegated_snapshot_cache.get(&delegated_session_id)
-                {
+                let cache_key = (
+                    delegated_session_id.clone(),
+                    active_task.delegated_agent_run_id.clone(),
+                );
+                let snapshot = if let Some(snapshot) = delegated_snapshot_cache.get(&cache_key) {
                     snapshot.clone()
                 } else {
-                    let snapshot = load_delegated_task_snapshot(&state, &active_task).await;
-                    delegated_snapshot_cache.insert(delegated_session_id.clone(), snapshot.clone());
+                    let snapshot = load_delegated_task_snapshot(&state, &active_task).await?;
+                    delegated_snapshot_cache.insert(cache_key, snapshot.clone());
                     snapshot
                 };
                 if let Some(snapshot) = snapshot.as_ref() {
@@ -288,6 +307,7 @@ pub async fn get_conversation_active_state(
 
         ActiveStateResponse {
             is_active,
+            run_id: cached_state.run_id,
             tool_calls: cached_state
                 .tool_calls
                 .into_iter()
@@ -299,6 +319,7 @@ pub async fn get_conversation_active_state(
     } else {
         ActiveStateResponse {
             is_active,
+            run_id: None,
             tool_calls: Vec::new(),
             streaming_tasks: Vec::new(),
             partial_text: String::new(),

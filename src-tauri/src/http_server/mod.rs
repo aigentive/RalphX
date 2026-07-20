@@ -24,6 +24,8 @@ use delegation::DelegationService;
 // ============================================================================
 
 pub mod delegation;
+#[cfg(test)]
+mod delegation_tests;
 pub mod handlers;
 pub mod helpers;
 pub mod project_scope;

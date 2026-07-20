@@ -130,6 +130,9 @@ pub struct CachedStreamingTask {
 /// Complete streaming state for a single conversation.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ConversationStreamingState {
+    /// Owning run for this transient projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool calls currently in progress or recently completed
     pub tool_calls: Vec<CachedToolCall>,
     /// Streaming tasks (subagents) currently running or completed
@@ -144,6 +147,7 @@ impl ConversationStreamingState {
     /// Create a new empty state
     pub fn new() -> Self {
         Self {
+            run_id: None,
             tool_calls: Vec::new(),
             streaming_tasks: Vec::new(),
             partial_text: String::new(),
@@ -170,6 +174,21 @@ impl StreamingStateCache {
         Self {
             states: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Bind subsequent cached state to the current run for stale-attempt rejection.
+    pub async fn set_run_id(&self, conversation_id: &str, run_id: Option<String>) {
+        let mut states = self.states.lock().await;
+        let state = states
+            .entry(conversation_id.to_string())
+            .or_insert_with(ConversationStreamingState::new);
+        if state.run_id != run_id {
+            state.tool_calls.clear();
+            state.streaming_tasks.clear();
+            state.partial_text.clear();
+        }
+        state.run_id = run_id;
+        state.updated_at = Utc::now();
     }
 
     /// Upsert a tool call into the cache.
