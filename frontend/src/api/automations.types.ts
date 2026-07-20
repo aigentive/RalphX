@@ -1,3 +1,5 @@
+import type { AgentConversationBaseSelection } from "./chat";
+
 export type AutomationStatus =
   | "draft"
   | "active"
@@ -191,6 +193,7 @@ export interface CreateAutomationDraftInput {
   projectId: string;
   name?: string | undefined;
   authoringMode?: AutomationAuthoringMode | undefined;
+  base?: AgentConversationBaseSelection | undefined;
 }
 
 export interface UpdateAutomationSettingsInput {
