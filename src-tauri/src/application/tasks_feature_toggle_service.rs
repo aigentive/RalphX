@@ -100,7 +100,7 @@ impl<'a> TasksFeatureToggleService<'a> {
             .branch_update_repo
             .list_active_operations()
             .await?
-            .count();
+            .len();
         let mut affected_conversation_ids = attached_conversations.into_iter().collect::<Vec<_>>();
         affected_conversation_ids.sort();
         let mut affected_project_ids = affected_projects.into_iter().collect::<Vec<_>>();
