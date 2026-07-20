@@ -1457,6 +1457,7 @@ export function resetAgentSessionState(
     selectedProjectId: null,
     selectedConversationId: null,
     startConversationFailure: null,
+    defaultStartMode: "edit",
     lastSelectedConversationByProjectId: {},
     expandedProjectIds: { "project-1": true },
     showAllProjects: true,
