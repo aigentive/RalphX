@@ -212,6 +212,7 @@ interface ModeFieldConfig {
   onValueChange: (value: string) => void;
   onOpen?: () => void | Promise<unknown>;
   options: ComposerOption[];
+  secondaryOptionIds?: string[];
   disabled?: boolean;
   testId?: string;
 }
@@ -2842,13 +2843,28 @@ function ComposerModeMenuSection({
   mode: ModeFieldConfig;
   onDone: () => void;
 }) {
+  const secondaryOptionIds = useMemo(
+    () => new Set(mode.secondaryOptionIds ?? []),
+    [mode.secondaryOptionIds],
+  );
+  const [showSecondaryModes, setShowSecondaryModes] = useState(false);
+  const hasSecondaryModes = mode.options.some((option) =>
+    secondaryOptionIds.has(option.id),
+  );
+  const visibleOptions = mode.options.filter(
+    (option) =>
+      !secondaryOptionIds.has(option.id) ||
+      showSecondaryModes ||
+      option.id === mode.value,
+  );
+
   return (
     <div className="py-1">
       <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
         Mode
       </div>
       <div className="space-y-1">
-        {mode.options.map((option) => {
+        {visibleOptions.map((option) => {
           const isSelected = option.id === mode.value;
           const optionDisabled = mode.disabled || option.disabled;
           return (
@@ -2897,6 +2913,26 @@ function ComposerModeMenuSection({
           );
         })}
       </div>
+      {hasSecondaryModes && (
+        <button
+          type="button"
+          aria-expanded={showSecondaryModes}
+          aria-label={
+            showSecondaryModes ? "Show fewer modes" : "Show more modes"
+          }
+          className="mt-1 flex w-full items-center justify-center gap-1.5 border-t border-[var(--border-subtle)] px-2 pt-2 text-[0.6875rem] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+          onClick={() => setShowSecondaryModes((visible) => !visible)}
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "h-3.5 w-3.5 transition-transform",
+              showSecondaryModes && "rotate-180",
+            )}
+          />
+          {showSecondaryModes ? "Show less" : "Show more"}
+        </button>
+      )}
     </div>
   );
 }

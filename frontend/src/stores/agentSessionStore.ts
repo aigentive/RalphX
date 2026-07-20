@@ -58,6 +58,15 @@ export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
 export type AgentSidebarGroupBy = "project" | "publication" | "automation";
+export const AGENT_DEFAULT_START_MODES = [
+  "plan",
+  "edit",
+  "review_pr",
+  "chat",
+  "automation",
+] as const satisfies readonly AgentConversationWorkspaceMode[];
+export type AgentDefaultStartMode = (typeof AGENT_DEFAULT_START_MODES)[number];
+export const DEFAULT_AGENT_START_MODE: AgentDefaultStartMode = "edit";
 export type AgentSidebarPublicationState =
   | "active"
   | "draft"
@@ -160,6 +169,7 @@ interface AgentSessionState {
   visibleAgentScope: VisibleAgentScope | null;
   startConversationDraft: AgentStartConversationDraft | null;
   startConversationFailure: AgentStartConversationFailure | null;
+  defaultStartMode: AgentDefaultStartMode;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -192,6 +202,7 @@ interface AgentSessionActions {
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
   setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
+  setDefaultStartMode: (mode: AgentDefaultStartMode) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -261,7 +272,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 8;
+const AGENT_SESSION_STORE_VERSION = 9;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -342,6 +353,12 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
   );
 }
 
+export function isAgentDefaultStartMode(
+  value: unknown,
+): value is AgentDefaultStartMode {
+  return AGENT_DEFAULT_START_MODES.includes(value as AgentDefaultStartMode);
+}
+
 function migrateArtifactStateRecord(value: unknown): unknown {
   if (!value || typeof value !== "object") {
     return value;
@@ -416,6 +433,14 @@ export function migrateAgentSessionStore(
     );
   }
 
+  if (version < 9) {
+    nextState.defaultStartMode = isAgentDefaultStartMode(
+      nextState.defaultStartMode,
+    )
+      ? nextState.defaultStartMode
+      : DEFAULT_AGENT_START_MODE;
+  }
+
   return nextState;
 }
 
@@ -482,6 +507,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       visibleAgentScope: null,
       startConversationDraft: null,
       startConversationFailure: null,
+      defaultStartMode: DEFAULT_AGENT_START_MODE,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -549,6 +575,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setStartConversationFailure: (failure) =>
         set((state) => {
           state.startConversationFailure = failure;
+        }),
+
+      setDefaultStartMode: (mode) =>
+        set((state) => {
+          state.defaultStartMode = mode;
         }),
 
       setProjectExpanded: (projectId, expanded) =>
@@ -797,6 +828,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         focusedProjectId: state.focusedProjectId,
         selectedProjectId: state.selectedProjectId,
         selectedConversationId: state.selectedConversationId,
+        defaultStartMode: state.defaultStartMode,
         lastSelectedConversationByProjectId: state.lastSelectedConversationByProjectId,
         expandedProjectIds: state.expandedProjectIds,
         showAllProjects: state.showAllProjects,
