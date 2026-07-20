@@ -2996,7 +2996,7 @@ function transformAgentConversationWorkspace(
   };
 }
 
-function sourcePullRequestInvokeInput(
+export function sourcePullRequestInvokeInput(
   sourcePullRequest: AgentConversationSourcePullRequest,
 ) {
   return {

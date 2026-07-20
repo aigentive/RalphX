@@ -8,6 +8,7 @@ use super::automation_commands::{
     parse_automation_run_id, parse_project_id, trigger_automation_run_now_for_state, trim_optional,
     AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
+use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
 use crate::application::automation::api::{
     automation_detail_response_for_state, automation_run_response_for_state, AutomationResponse,
     AutomationRunResponse, AutomationScheduleResponse,
@@ -268,7 +269,15 @@ fn command_inputs_accept_camel_case_wrapped_payloads() {
         "baseRefKind": "local_branch",
         "baseBranchMode": "linked",
         "baseRef": "feature/automation-base",
-        "baseDisplayName": "feature/automation-base"
+        "baseDisplayName": "feature/automation-base",
+        "baseSourcePullRequest": {
+            "number": 42,
+            "url": "https://github.com/example/repo/pull/42",
+            "title": "Automation base",
+            "headRefName": "feature/automation-base",
+            "baseRefName": "release",
+            "headRefOid": "abc123"
+        }
     }))
     .unwrap();
     assert_eq!(draft_input.base_ref_kind.as_deref(), Some("local_branch"));
@@ -276,6 +285,13 @@ fn command_inputs_accept_camel_case_wrapped_payloads() {
     assert_eq!(
         draft_input.base_ref.as_deref(),
         Some("feature/automation-base")
+    );
+    assert_eq!(
+        draft_input
+            .base_source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number),
+        Some(42)
     );
 
     let run_input: AutomationRunScopedInput = serde_json::from_value(json!({
@@ -713,6 +729,7 @@ async fn create_draft_creates_bound_setup_conversation_from_selected_branch() {
             base_branch_mode: Some("isolated".to_string()),
             base_ref: Some("feature/automation-base".to_string()),
             base_display_name: Some("Current branch (feature/automation-base)".to_string()),
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -805,6 +822,7 @@ async fn create_draft_preserves_linked_branch_selection() {
             base_branch_mode: Some("linked".to_string()),
             base_ref: Some("feature/linked-automation".to_string()),
             base_display_name: Some("feature/linked-automation".to_string()),
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -832,6 +850,69 @@ async fn create_draft_preserves_linked_branch_selection() {
 }
 
 #[tokio::test]
+async fn create_draft_preserves_linked_pull_request_selection() {
+    let state = AppState::new_test();
+    let (_temp, project) = setup_git_project();
+    let repo_path = std::path::Path::new(&project.working_directory);
+    git(repo_path, &["checkout", "-b", "release"]);
+    std::fs::write(repo_path.join("RELEASE.md"), "release base\n").unwrap();
+    git(repo_path, &["add", "RELEASE.md"]);
+    git(repo_path, &["commit", "-m", "release base"]);
+    let release_sha = GitService::get_branch_sha(repo_path, "release")
+        .await
+        .unwrap();
+    git(repo_path, &["checkout", "-b", "feature/pr-automation"]);
+    git(repo_path, &["checkout", "main"]);
+    state.project_repo.create(project).await.unwrap();
+
+    let response = create_automation_draft_for_state(
+        CreateAutomationDraftInput {
+            project_id: "project-1".to_string(),
+            name: Some("PR automation".to_string()),
+            authoring_mode: None,
+            base_ref_kind: Some("local_branch".to_string()),
+            base_branch_mode: Some("linked".to_string()),
+            base_ref: Some("feature/pr-automation".to_string()),
+            base_display_name: Some("PR #42: Automation base".to_string()),
+            base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
+                number: 42,
+                url: Some("https://github.com/example/repo/pull/42".to_string()),
+                title: Some("Automation base".to_string()),
+                head_ref_name: "feature/pr-automation".to_string(),
+                base_ref_name: Some("release".to_string()),
+                head_ref_oid: Some(release_sha.clone()),
+            }),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let setup_conversation_id = ChatConversationId::from_string(
+        response
+            .setup_conversation_id
+            .expect("draft should expose setup conversation id"),
+    );
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&setup_conversation_id)
+        .await
+        .unwrap()
+        .expect("linked PR setup workspace should be persisted");
+
+    assert_eq!(workspace.base_ref, "release");
+    assert_eq!(workspace.base_commit.as_deref(), Some(release_sha.as_str()));
+    assert_eq!(workspace.publication_pr_number, Some(42));
+    assert_eq!(
+        workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.head_ref_name.as_str()),
+        Some("feature/pr-automation")
+    );
+}
+
+#[tokio::test]
 async fn create_draft_defaults_to_project_base_when_selection_is_omitted() {
     let state = AppState::new_test();
     let (_temp, project) = setup_git_project();
@@ -846,6 +927,7 @@ async fn create_draft_defaults_to_project_base_when_selection_is_omitted() {
             base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -884,6 +966,7 @@ async fn create_draft_cleans_setup_conversation_when_draft_validation_fails() {
             base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )

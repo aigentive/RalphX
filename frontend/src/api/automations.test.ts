@@ -154,6 +154,14 @@ describe("automationsApi", () => {
         branchMode: "linked",
         ref: "feature/linked-automation",
         displayName: "feature/linked-automation",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
       },
     });
 
@@ -165,6 +173,14 @@ describe("automationsApi", () => {
         baseBranchMode: "linked",
         baseRef: "feature/linked-automation",
         baseDisplayName: "feature/linked-automation",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
       },
     });
   });

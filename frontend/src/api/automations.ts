@@ -4,6 +4,7 @@ import {
   typedInvokeWithTransform,
 } from "@/lib/tauri";
 import { backendApiUrl } from "@/api/backend";
+import { sourcePullRequestInvokeInput } from "./chat";
 
 import {
   AutomationDetailSchema,
@@ -111,6 +112,7 @@ function createDraftArgs(input: CreateAutomationDraftInput): {
   baseBranchMode?: string;
   baseRef?: string;
   baseDisplayName?: string;
+  baseSourcePullRequest?: ReturnType<typeof sourcePullRequestInvokeInput>;
 } {
   return {
     projectId: input.projectId,
@@ -126,6 +128,13 @@ function createDraftArgs(input: CreateAutomationDraftInput): {
             : {}),
           baseRef: input.base.ref,
           baseDisplayName: input.base.displayName,
+          ...(input.base.sourcePullRequest
+            ? {
+                baseSourcePullRequest: sourcePullRequestInvokeInput(
+                  input.base.sourcePullRequest,
+                ),
+              }
+            : {}),
         }
       : {}),
   };
