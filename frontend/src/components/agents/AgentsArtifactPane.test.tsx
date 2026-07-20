@@ -1284,6 +1284,7 @@ function prReviewContext(
     prNumber: 78,
     prUrl: "https://github.com/mock/project/pull/78",
     currentHeadSha: "head-sha",
+    pendingActionHeadStatus: "current",
     health: null,
     reviewFeedback: null,
     monitor: {
@@ -1595,6 +1596,7 @@ describe("AgentsArtifactPane", () => {
       prNumber: 78,
       prUrl: "https://github.com/mock/project/pull/78",
       currentHeadSha: "head-sha",
+      pendingActionHeadStatus: "current",
       health: null,
       reviewFeedback: null,
       monitor: null,
@@ -4176,6 +4178,7 @@ describe("AgentsArtifactPane", () => {
       prNumber: 78,
       prUrl: "https://github.com/mock/project/pull/78",
       currentHeadSha: "head-sha",
+      pendingActionHeadStatus: "current",
       health: null,
       reviewFeedback: null,
       monitor: {
