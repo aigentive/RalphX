@@ -127,7 +127,7 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     let review_conversation_id = ChatConversationId::new();
     let run = AgentRun::new(review_conversation_id);
     let run_id = run.id;
-    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id.clone());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project.id.clone());
     let target_scope: AgentWorkspaceReviewTargetScope =
         target.scope.parse().expect("valid target scope");
     monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
@@ -213,7 +213,7 @@ async fn presentation_context_get_does_not_create_a_review_monitor() {
         .await
         .expect("seed project");
     let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.id = conversation_id.clone();
+    conversation.id = conversation_id;
     state
         .app_state
         .chat_conversation_repo
@@ -221,7 +221,7 @@ async fn presentation_context_get_does_not_create_a_review_monitor() {
         .await
         .expect("seed conversation");
     let workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id,
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
