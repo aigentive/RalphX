@@ -150,9 +150,7 @@ impl DelegationService {
         content: String,
     ) -> Option<DelegationJobSnapshot> {
         let mut jobs = self.jobs.write().await;
-        let Some(record) = jobs.get_mut(job_id) else {
-            return None;
-        };
+        let record = jobs.get_mut(job_id)?;
         if record.snapshot.status != "running" {
             return Some(record.snapshot.clone());
         }
@@ -171,9 +169,7 @@ impl DelegationService {
 
     pub async fn mark_failed(&self, job_id: &str, error: String) -> Option<DelegationJobSnapshot> {
         let mut jobs = self.jobs.write().await;
-        let Some(record) = jobs.get_mut(job_id) else {
-            return None;
-        };
+        let record = jobs.get_mut(job_id)?;
         if record.snapshot.status != "running" {
             return Some(record.snapshot.clone());
         }
