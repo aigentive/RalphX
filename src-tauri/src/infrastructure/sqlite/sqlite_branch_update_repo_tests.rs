@@ -280,6 +280,7 @@ async fn branch_update_controls_are_fenced_and_preserve_pause_authority() {
         owner: owner.clone(),
         fencing_epoch,
         history_id: uuid::Uuid::new_v4().to_string(),
+        task_metadata: None,
     };
 
     repo.begin_git_mutation(BeginGitMutation {
