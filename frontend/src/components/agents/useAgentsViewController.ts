@@ -203,6 +203,9 @@ export function useAgentsViewController({
   const setVisibleAgentScope = useAgentSessionStore(
     (state) => state.setVisibleAgentScope,
   );
+  const setStartConversationDraft = useAgentSessionStore(
+    (state) => state.setStartConversationDraft,
+  );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
@@ -257,7 +260,7 @@ export function useAgentsViewController({
   });
   const selectedConversationIdRef = useRef<string | null>(null);
   const selectConversation = useCallback(
-    (projectId: string, conversationId: string) => {
+    (projectId: string | null, conversationId: string) => {
       selectedConversationIdRef.current = conversationId;
       selectStoredConversation(projectId, conversationId);
     },
@@ -716,9 +719,12 @@ export function useAgentsViewController({
   const hasAutomationArtifact =
     activeConversation?.agentMode === "automation" &&
     Boolean(activeConversation.automationId);
+  const hasPersonaArtifact =
+    activeConversation?.agentMode === "persona_builder";
   const hasAutoOpenArtifactsWithReview =
     hasAutoOpenArtifacts ||
     hasAutomationArtifact ||
+    hasPersonaArtifact ||
     Boolean(reviewArtifactId) ||
     shouldShowWorkspaceReviewTab;
   const knownFocusIdeationSessionId =
@@ -908,6 +914,7 @@ export function useAgentsViewController({
     if (
       !activeConversation?.automationId ||
       !activeConversation.automationRunId ||
+      !activeConversation.projectId ||
       chatFocus.type === "automation_run"
     ) {
       return;
@@ -1012,6 +1019,15 @@ export function useAgentsViewController({
     seedArtifactTab,
     selectedConversationId,
   ]);
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      activeConversation?.agentMode !== "persona_builder"
+    ) {
+      return;
+    }
+    seedArtifactTab(selectedConversationId, "persona");
+  }, [activeConversation?.agentMode, seedArtifactTab, selectedConversationId]);
   useEffect(() => {
     if (!externalTaskArtifactFocusRequest || !selectedConversationId) {
       return;
@@ -1256,6 +1272,7 @@ export function useAgentsViewController({
     handleSidebarCreateAgent,
     handleSidebarFocusProject,
     handleSidebarSelectConversation,
+    handleStartPersonaBuilder,
   } = useAgentConversationActions({
     activeProjectId,
     clearAgentConversationSelection,
@@ -1273,11 +1290,17 @@ export function useAgentsViewController({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
+    setStartConversationDraft,
     setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
   });
+  const handleStartActivePersonaBuilder = useCallback(() => {
+    if (activeConversation) {
+      handleStartPersonaBuilder(activeConversation);
+    }
+  }, [activeConversation, handleStartPersonaBuilder]);
   const handleSidebarForkConversation = useCallback(
     async (conversation: AgentConversation) => {
       await handleForkConversation(conversation.id);
@@ -1333,12 +1356,12 @@ export function useAgentsViewController({
               forkRuntime,
             );
           }
-          selectConversation(agentConversation.projectId, agentConversation.id);
+          selectConversation(agentConversation.projectId!, agentConversation.id);
           setActiveConversation(
             getAgentConversationStoreKey(agentConversation),
             agentConversation.id,
           );
-          void invalidateProjectConversations(agentConversation.projectId);
+          void invalidateProjectConversations(agentConversation.projectId!);
         })
         .catch(() => {
           // Manual /fork already handles errors. This listener only keeps
@@ -1531,7 +1554,6 @@ export function useAgentsViewController({
       onActiveProviderChange: handleActiveProviderChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onConversationModeSwitched: handleConversationModeSwitched,
-      onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
       onFocusIdeationSessionForConversation:
         handleFocusIdeationSessionForConversation,
@@ -1551,6 +1573,7 @@ export function useAgentsViewController({
       onRuntimePreferenceChange: handleStartRuntimePreferenceChange,
       onSelectArtifact: handleSelectArtifactWithChatFocus,
       onStartAgentConversation: handleStartAgentConversation,
+      onStartPersonaBuilder: handleStartActivePersonaBuilder,
       onToggleArtifacts: toggleArtifactPaneVisibility,
       onSelectChatFocus: handleSelectChatFocus,
       projects,

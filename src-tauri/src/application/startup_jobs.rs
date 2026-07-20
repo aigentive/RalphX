@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::{debug, info};
 
 use crate::application::chat_service::uses_execution_slot;
@@ -741,6 +741,33 @@ impl StartupJobRunner {
             }
         }
         startup_job_step_completed("orphan_agent_run_cleanup", step_started_at);
+
+        // Phase 4a.2: Sweep crash-orphaned Standalone workspace directories — the only
+        // reclamation path for `standalone_workspaces/*` (archive never deletes them).
+        // Fail-safe by construction: requires an app-owned data dir, and any entry the
+        // sweep cannot positively prove is orphaned is left untouched.
+        if let Some(app_data_dir) = self.app_handle.as_ref().and_then(|handle| {
+            handle
+                .try_state::<crate::application::AppState>()
+                .map(|state| state.app_paths.app_data_dir().to_path_buf())
+        }) {
+            let step_started_at = startup_job_step_started("standalone_workspace_orphan_sweep");
+            let sweep_summary =
+                crate::application::standalone_workspace::sweep_orphaned_standalone_workspaces(
+                    &app_data_dir,
+                    Arc::clone(&self.chat_conversation_repo),
+                )
+                .await;
+            if sweep_summary.removed > 0 || sweep_summary.skipped > 0 {
+                info!(
+                    removed = sweep_summary.removed,
+                    retained = sweep_summary.retained,
+                    skipped = sweep_summary.skipped,
+                    "Standalone workspace crash-orphan sweep completed"
+                );
+            }
+            startup_job_step_completed("standalone_workspace_orphan_sweep", step_started_at);
+        }
 
         // Phase 90+: Read persisted app state (active project + halt mode) from DB.
         // No waiting needed — DB has the value from the previous session.

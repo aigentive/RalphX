@@ -13,14 +13,14 @@ use crate::error::{AppError, AppResult};
 use super::chat_attachment_storage::build_chat_attachment_file_path;
 
 /// Service for managing chat file attachments
-pub struct ChatAttachmentService<R: ChatAttachmentRepository> {
+pub struct ChatAttachmentService<R: ChatAttachmentRepository + ?Sized> {
     /// Repository for ChatAttachment records
     repository: Arc<R>,
     /// Base directory for attachment storage
     storage_base_path: PathBuf,
 }
 
-impl<R: ChatAttachmentRepository> ChatAttachmentService<R> {
+impl<R: ChatAttachmentRepository + ?Sized> ChatAttachmentService<R> {
     /// Create a new chat attachment service
     pub fn new(repository: Arc<R>, storage_base_path: impl Into<PathBuf>) -> Self {
         Self {

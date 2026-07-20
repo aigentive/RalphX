@@ -14,11 +14,17 @@ export const manualRoleDefaultKeys = {
     [...manualRoleDefaultKeys.all, "conversation", conversationId] as const,
 };
 
-export function useStartComposerRoleDefault(projectId: string, mode: string) {
+export function useStartComposerRoleDefault(
+  projectId: string | null,
+  mode: string,
+) {
   return useQuery({
-    queryKey: manualRoleDefaultKeys.startComposer(projectId, mode),
+    queryKey: manualRoleDefaultKeys.startComposer(projectId ?? "", mode),
     queryFn: () =>
-      manualRoleDefaultsApi.getStartComposerDefault({ projectId, mode }),
+      manualRoleDefaultsApi.getStartComposerDefault({
+        projectId: projectId ?? "",
+        mode,
+      }),
     enabled: Boolean(projectId && mode),
     staleTime: 30_000,
   });

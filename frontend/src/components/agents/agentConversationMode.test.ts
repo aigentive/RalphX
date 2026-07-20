@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
+  buildConversationModeOptions,
   buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
@@ -124,31 +125,68 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     );
   });
 
-  it("excludes persona builder from selectable mode options", () => {
-    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
-    );
-    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  it("includes Persona as a label-only conversation mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona", disabled: true }),
     );
   });
 
-  it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
+  it.each(["automation", "persona_builder"] as const)(
+    "disables every conversation-mode option while %s is locked",
+    (mode) => {
+      const options = buildConversationModeOptions(
+        conversation({ agentMode: mode }),
+        null,
+      );
+      expect(options).not.toHaveLength(0);
+      expect(options.every((option) => option.disabled)).toBe(true);
+    },
+  );
+
+  it("keeps Persona in the starter registry for feature-gated rendering", () => {
+    expect(AGENT_START_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona" }),
+    );
+  });
+
+  it("orders ordinary new-run modes by planning, execution, review, and inquiry", () => {
+    expect(
+      AGENT_START_MODE_OPTIONS.slice(0, 5).map(({ id, label }) => ({ id, label })),
+    ).toEqual([
+      { id: "plan", label: "Plan" },
+      { id: "edit", label: "Agent" },
+      { id: "review_pr", label: "Review PR" },
+      { id: "chat", label: "Ask" },
+      { id: "automation", label: "Automation" },
+    ]);
+  });
+
+  it("keeps legacy-only modes out of fresh conversations and gates Autopilot", () => {
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: false }).map(
         (option) => option.id,
       ),
-    ).not.toContain("tasks");
-    expect(
-      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
-        (option) => option.id,
-      ),
-    ).not.toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: true }).map(
         (option) => option.id,
       ),
-    ).toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "autopilot",
+      "persona_builder",
+    ]);
   });
 
   it("offers Tasks only for the current or durably attached pipeline", () => {

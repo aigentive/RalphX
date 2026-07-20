@@ -423,6 +423,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         project_id: Some("project-123".to_string()),
         working_directory: Some(workspace_dir.clone()),
         filesystem_read_roots: vec![project_root.clone()],
+        enforce_filesystem_roots: false,
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
         agent_run_id: Some("run-123".to_string()),
@@ -495,6 +496,63 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         "args: {args:?}"
     );
     assert!(args.contains(&"run-123".to_string()), "args: {args:?}");
+}
+
+#[test]
+fn test_create_mcp_config_emits_filesystem_enforcement_only_when_enabled() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let enforced = McpRuntimeContext {
+        enforce_filesystem_roots: true,
+        ..Default::default()
+    };
+
+    let enforced_config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-general-worker",
+        false,
+        Some(&enforced),
+    )
+    .expect("should create enforced config");
+    let enforced_args = get_json_args(&enforced_config);
+    assert!(
+        enforced_args
+            .windows(2)
+            .any(|pair| pair == ["--filesystem-enforced", "1"]),
+        "enforced config must carry the CLI-only flag: {enforced_args:?}"
+    );
+
+    let unenforced = McpRuntimeContext::default();
+    assert!(
+        !unenforced.enforce_filesystem_roots,
+        "default runtime contexts must remain unenforced"
+    );
+    let unenforced_config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-general-worker",
+        false,
+        Some(&unenforced),
+    )
+    .expect("should create unenforced config");
+    let unenforced_args = get_json_args(&unenforced_config);
+    assert!(
+        !unenforced_args
+            .iter()
+            .any(|arg| arg == "--filesystem-enforced"),
+        "unenforced config must preserve the prior argument shape: {unenforced_args:?}"
+    );
+
+    for config in [&enforced_config, &unenforced_config] {
+        let server_env = config
+            .get("mcpServers")
+            .and_then(|servers| servers.as_object())
+            .and_then(|servers| servers.values().next())
+            .and_then(|server| server.get("env"))
+            .and_then(|env| env.as_object());
+        assert!(
+            server_env.is_none_or(|env| !env.contains_key("RALPHX_FILESYSTEM_ENFORCED")),
+            "filesystem enforcement must never be delivered through process env"
+        );
+    }
 }
 
 #[test]
@@ -974,6 +1032,7 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
         None,
         None,
         false,
+        ClaudePermissionPolicy::InheritConfigured,
     );
     assert!(outcome.persona_injected);
     assert_eq!(outcome.persona_injection_skipped_reason, None);
@@ -1011,6 +1070,7 @@ fn fallback_prompt_without_persona_pins_none_metadata() {
         None,
         None,
         false,
+        ClaudePermissionPolicy::InheritConfigured,
     );
 
     assert!(

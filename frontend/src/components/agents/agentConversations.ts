@@ -14,7 +14,7 @@ export type AgentIdeationSession = Pick<
 >;
 
 export type AgentConversation = ChatConversation & {
-  projectId: string;
+  projectId: string | null;
   ideationSessionId: string | null;
 };
 
@@ -27,7 +27,8 @@ export function toProjectAgentConversation(
 ): AgentConversation {
   return {
     ...conversation,
-    projectId: conversation.contextId,
+    projectId:
+      conversation.contextType === "standalone" ? null : conversation.contextId,
     ideationSessionId: null,
   };
 }

@@ -130,6 +130,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     headerContent,
     planApprovalAction,
     onQuestionAnswered,
+    onBuildPersona,
     renderComposer,
     sendOptions,
     storeContextKeyOverride,
@@ -149,6 +150,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       response: Record<string, unknown>,
       result: Record<string, unknown>,
     ) => void | Promise<void>;
+    onBuildPersona?: () => void;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
     sendOptions?: {
       conversationId?: string;
@@ -307,6 +309,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         </>
       )}
       {headerContent}
+      {onBuildPersona && (
+        <button type="button" onClick={onBuildPersona}>
+          Create persona for this project
+        </button>
+      )}
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
@@ -1027,6 +1034,7 @@ function renderPanel(
     onSelectArtifact: vi.fn(),
     onToggleArtifacts: vi.fn(),
     onSelectChatFocus: vi.fn(),
+    onStartPersonaBuilder: vi.fn(),
     publishShortcutLabel: "P",
     publishingConversationId: null,
     selectedConversationId: "conversation-1",
@@ -1171,6 +1179,17 @@ describe("AgentsActiveConversationPanel", () => {
         name: "Switch conversation persona",
       }),
     ).toHaveTextContent("design-voice");
+  });
+
+  it("routes the active project Persona Builder action through the Chat surface", () => {
+    const onStartPersonaBuilder = vi.fn();
+    renderPanel({ onStartPersonaBuilder });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create persona for this project" }),
+    );
+
+    expect(onStartPersonaBuilder).toHaveBeenCalledOnce();
   });
 
   it("renders the mapped not-applied persona affordance in the Agents composer", async () => {
@@ -2542,6 +2561,62 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-model-id", "gpt-5.5");
     expect(panel).toHaveAttribute("data-send-logical-effort", "xhigh");
   });
+
+  it.each([
+    {
+      mode: "chat",
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    },
+    {
+      mode: "chat",
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    },
+    {
+      mode: "persona_builder",
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    },
+    {
+      mode: "persona_builder",
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    },
+  ] as const)(
+    "keeps $provider runtime on standalone $mode continuation sends",
+    ({ mode, provider, modelId, effort }) => {
+      renderPanel({
+        activeConversation: {
+          ...projectConversation(),
+          id: "standalone-1",
+          contextType: "standalone",
+          contextId: "standalone-1",
+          projectId: null,
+          agentMode: mode,
+          providerHarness: provider,
+          logicalModel: modelId,
+          logicalEffort: effort,
+        },
+        activeConversationMode: mode,
+        activeProjectId: null,
+        activeProjectOptions: [],
+        activeWorkspace: null,
+        normalizedActiveRuntime: { provider, modelId, effort },
+        selectedConversationId: "standalone-1",
+      });
+
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute("data-send-conversation-id", "standalone-1");
+      expect(panel).toHaveAttribute("data-send-provider-harness", provider);
+      expect(panel).toHaveAttribute("data-send-model-id", modelId);
+      expect(panel).toHaveAttribute("data-send-logical-effort", effort);
+    },
+  );
 
   it("returns from child chat focus to the workspace chat from the header", async () => {
     const onSelectChatFocus = vi.fn();

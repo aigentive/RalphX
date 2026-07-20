@@ -9,11 +9,14 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
   label: string;
   description: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }> = [
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
+  { id: "chat", label: "Ask", description: "Ask read-only questions about the project." },
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
+  { id: "persona_builder", label: "Persona", description: "Build or refine a reusable agent persona.", disabled: true, disabledReason: "Persona mode is fixed when the conversation starts." },
   { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
 ];
 
@@ -61,6 +64,23 @@ export function resolveConversationAgentMode(
   workspace: AgentConversationWorkspace | null
 ): AgentConversationWorkspaceMode {
   return conversation.agentMode ?? workspace?.mode ?? "chat";
+}
+
+export function buildConversationModeOptions(
+  conversation: AgentConversation,
+  workspace: AgentConversationWorkspace | null,
+) {
+  if (!isConversationModeLocked(conversation, workspace)) {
+    return AGENT_CONVERSATION_MODE_OPTIONS;
+  }
+  const lockReason =
+    workspace?.modeSwitchLockReason ??
+    "This conversation's mode is locked.";
+  return AGENT_CONVERSATION_MODE_OPTIONS.map((option) => ({
+    ...option,
+    disabled: true,
+    disabledReason: lockReason,
+  }));
 }
 
 export function isConversationModeLocked(

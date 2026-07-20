@@ -68,6 +68,10 @@ mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
+pub mod builder_attachment_materializer;
+pub mod conversation_folder_reference_service;
+#[cfg(test)]
+mod conversation_folder_reference_service_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -124,12 +128,9 @@ pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod personas;
 pub mod persona_ingest;
-mod persona_ingest_batch;
 pub mod persona_prompt;
 pub mod persona_resolver;
 pub mod permission_state;
-#[cfg(test)]
-mod persona_ingest_tests;
 #[cfg(test)]
 mod persona_prompt_tests;
 #[cfg(test)]
@@ -178,6 +179,12 @@ mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
+pub mod seeded_agent_conversation_abort;
+pub mod standalone_workspace;
+#[cfg(test)]
+mod standalone_workspace_path_safety_tests;
+#[cfg(test)]
+mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;

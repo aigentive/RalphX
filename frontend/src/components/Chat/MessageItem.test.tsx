@@ -61,6 +61,13 @@ describe("MessageItem - Attachment Integration", () => {
         {...baseProps}
         role="user"
         composerReferences={{
+          folderReferences: [
+            {
+              id: "folder-1",
+              folderPath: "/work/brand-kit",
+              displayName: "brand-kit",
+            },
+          ],
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           artifactReferences: [],
           integrationReferences: [
@@ -85,6 +92,9 @@ describe("MessageItem - Attachment Integration", () => {
 
     expect(screen.getByTestId("message-reference-project:src/main.ts")).toHaveTextContent(
       "File",
+    );
+    expect(screen.getByTestId("message-reference-folder:folder-1")).toHaveTextContent(
+      "brand-kit",
     );
     expect(screen.getByTestId("message-reference-integration:jira:RX-42")).toHaveTextContent(
       "Jira",

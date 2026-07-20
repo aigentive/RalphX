@@ -14,6 +14,7 @@ import {
   Sparkles,
   Square,
   Ticket,
+  UserRound,
   Workflow,
   X,
 } from "lucide-react";
@@ -128,6 +129,7 @@ import {
   type AgentArtifactTabCustomizerItem,
 } from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
+import { isPersonaArtifactConversation } from "./personaArtifactTab";
 import {
   PlanLifecycleBanner,
   type PlanLifecycleAction,
@@ -346,6 +348,15 @@ const LazyAgentsAutomationPanel = lazy(() =>
     default: module.AgentsAutomationPanel,
   })),
 );
+const LazyPersonaArtifactPanel = lazy(() =>
+  import("@/components/agents/PersonaArtifactPanel").then((module) => ({
+    default: module.PersonaArtifactPanel,
+  })),
+);
+
+function PersonaArtifactSkeletonFallback() {
+  return <ArtifactLoadingState title="Loading persona..." />;
+}
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -367,6 +378,12 @@ const AUTOMATION_TAB = {
   id: "automation" as const,
   label: "Automation",
   icon: Workflow,
+};
+
+const PERSONA_TAB = {
+  id: "persona" as const,
+  label: "Persona",
+  icon: UserRound,
 };
 
 const PUBLISH_TAB = {
@@ -408,6 +425,7 @@ const PR_TAB = {
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
+  PERSONA_TAB,
   PR_TAB,
   JIRA_TAB,
   LINEAR_TAB,
@@ -423,6 +441,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
+  persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
   jira: "Appears when Jira is connected and a ticket is attached.",
   linear: "Appears when Linear is connected and a ticket is attached.",
@@ -454,6 +473,7 @@ function baseTabDefinition(id: AgentArtifactTab): Omit<
     ...ARTIFACT_TABS,
     REVIEW_TAB,
     AUTOMATION_TAB,
+    PERSONA_TAB,
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
@@ -1226,30 +1246,34 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
+  const personaArtifactOnly = isPersonaArtifactConversation(conversation);
   const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
-      isAutomationRunConversation
-        ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
-        : [
-            ...ARTIFACT_TABS.filter((tab) =>
-              availableArtifactTabIds.includes(tab.id),
-            ).map(visibleTab),
-            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
-            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
-            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
-            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
-            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
-            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-            ...(availableArtifactTabIds.includes("review")
-              ? [visibleTab(REVIEW_TAB)]
-              : []),
-            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
-          ],
+      personaArtifactOnly
+        ? [visibleTab(PERSONA_TAB)]
+        : isAutomationRunConversation
+          ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
+          : [
+              ...ARTIFACT_TABS.filter((tab) =>
+                availableArtifactTabIds.includes(tab.id),
+              ).map(visibleTab),
+              ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+              ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+              ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+              ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+              ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
+              ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+              ...(availableArtifactTabIds.includes("review")
+                ? [visibleTab(REVIEW_TAB)]
+                : []),
+              ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+            ],
     [
       availableArtifactTabIds,
       automationId,
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
+      personaArtifactOnly,
       showClickUpTab,
       showGranolaTab,
       showJiraTab,
@@ -1259,8 +1283,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const shownTabs = useMemo(
-    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
-    [availableTabs, hiddenTabs],
+    () =>
+      personaArtifactOnly
+        ? availableTabs
+        : availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs, personaArtifactOnly],
   );
   const shownEnabledTabs = useMemo(
     () => shownTabs.filter((tab) => tab.enabled),
@@ -1288,30 +1315,29 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
-  const requestedFallbackActiveTab =
-    isAutomationRunConversation
-      ? automationRunTabPolicy.defaultTab
-      : automationId && conversation?.agentMode === "automation"
-      ? "automation"
-      : isReviewPrWorkspace || workspaceReviewContext?.shouldShowTab || reviewArtifactId
-        ? "review"
-        : showPullRequestTab
-          ? "pr"
-          : showJiraTab
-            ? "jira"
-            : showLinearTab
-              ? "linear"
-              : showClickUpTab
-                ? "clickup"
-              : showGranolaTab
-                ? "granola"
-                : shownTabs.some((tab) => tab.id === "plan")
-                  ? "plan"
-                  : shownTabs.some((tab) => tab.id === "issues")
-                    ? "issues"
-                    : shownTabs.some((tab) => tab.id === "review")
-                      ? "review"
-                      : "plan";
+  const requestedFallbackActiveTab = ((): AgentArtifactTab => {
+    if (personaArtifactOnly) return "persona";
+    if (isAutomationRunConversation) return automationRunTabPolicy.defaultTab;
+    if (automationId && conversation?.agentMode === "automation") {
+      return "automation";
+    }
+    if (
+      isReviewPrWorkspace ||
+      workspaceReviewContext?.shouldShowTab ||
+      reviewArtifactId
+    ) {
+      return "review";
+    }
+    if (showPullRequestTab) return "pr";
+    if (showJiraTab) return "jira";
+    if (showLinearTab) return "linear";
+    if (showClickUpTab) return "clickup";
+    if (showGranolaTab) return "granola";
+    if (shownTabs.some((tab) => tab.id === "plan")) return "plan";
+    if (shownTabs.some((tab) => tab.id === "issues")) return "issues";
+    if (shownTabs.some((tab) => tab.id === "review")) return "review";
+    return "plan";
+  })();
   const fallbackActiveTab =
     shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
@@ -1627,6 +1653,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const artifactSelectionEnabled = Boolean(
     conversationId &&
+      effectiveActiveTab !== "persona" &&
       (!isAutomationRunConversation ||
         (focusedAutomationRun &&
           !isAutomationRunComposerReadOnly(focusedAutomationRun))),
@@ -1750,6 +1777,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 </Tooltip>
               );
             }
+            if (personaArtifactOnly) {
+              return tabButton;
+            }
             return (
               <ContextMenu key={id}>
                 <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
@@ -1773,7 +1803,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         </div>
 
         <div className="ml-auto flex items-center gap-1">
-          {availableTabs.length > 0 ? (
+          {availableTabs.length > 0 && !personaArtifactOnly ? (
             <AgentsArtifactTabCustomizer
               tabs={customizerTabs}
               hiddenTabs={hiddenTabs}
@@ -1869,6 +1899,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       </div>
 
       <div
+        key={
+          personaArtifactOnly
+            ? (conversationId ?? "no-conversation")
+            : "artifact-content"
+        }
         className="flex-1 min-h-0 overflow-y-auto"
         data-testid={
           allAvailableTabsHidden
@@ -1900,111 +1935,123 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             onAddExcerpt={handleAddArtifactExcerpt}
           >
             <ArtifactContent
-          activeTab={effectiveActiveTab}
-          tasksEnabled={tasksEnabled}
-          workspace={scopedWorkspace}
-          conversationId={conversationId}
-          activeWorkspaceFreshness={activeWorkspaceFreshness}
-          conversationTitle={conversation?.title ?? null}
-          automationId={automationId}
-          isAutomationRunConversation={isAutomationRunConversation}
-          {...(onOpenAutomation ? { onOpenAutomation } : {})}
-          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
-          projectBaseBranch={projectBaseBranch}
-          isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
-          attachedSessionId={attachedSessionId}
-          projectId={conversationProjectId}
-          canStartPlan={canStartPlan}
-          session={session}
-          sessionTitle={sessionData?.session.title ?? null}
-          taskMode={taskMode}
-          reviewArtifact={reviewArtifact}
-          reviewContext={isReviewPrWorkspace ? null : workspaceReviewContext}
-          isReviewPrWorkspace={isReviewPrWorkspace}
-          autoApproveEnabled={autoApproveEnabled}
-          isAutoApproveSaving={autoApproveMutation.isPending}
-          onAutoApproveChange={(enabled) => {
-            if (!prReviewConversationId) return;
-            setAutoApprovePreference({
-              conversationId: prReviewConversationId,
-              enabled,
-            });
-            autoApproveMutation.mutate({
-              conversationId: prReviewConversationId,
-              enabled,
-            });
-          }}
-          prReviewMonitor={prReviewContext?.monitor ?? null}
-          isPrReviewMonitorSaving={prReviewMonitoringMutation.isPending}
-          onPrReviewMonitorChange={async (enabled, activeReviewPolicy) => {
-            if (!prReviewConversationId) {
-              throw new Error("PR review monitoring is unavailable");
-            }
-            await prReviewMonitoringMutation.mutateAsync({
-              conversationId: prReviewConversationId,
-              enabled,
-              ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
-            });
-          }}
-          reviewStartResult={
-            isReviewPrWorkspace ? null : workspaceReviewStartResult
-          }
-          reviewStartError={
-            isReviewPrWorkspace
-              ? null
-              : (workspaceReviewStartError ?? workspaceReviewFixIssuesError)
-          }
-          isReviewLoading={
-            Boolean(reviewArtifactId) &&
-            !reviewArtifact &&
-            reviewArtifactQuery.isFetching
-          }
-          isReviewActionPending={
-            isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
-          }
-          isFixIssuesActionPending={
-            isReviewPrWorkspace ? false : isWorkspaceReviewFixIssuesPending
-          }
-          isApproveAnywayActionPending={
-            isReviewPrWorkspace
-              ? false
-              : isWorkspaceReviewApproveAnywayPending
-          }
-          isWorkspaceRuntimeGenerating={
-            isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
-          }
-          onStartReview={isReviewPrWorkspace ? () => {} : handleStartReview}
-          onFixIssues={isReviewPrWorkspace ? () => {} : handleFixReviewIssues}
-          onApproveAnyway={
-            isReviewPrWorkspace ? async () => {} : handleApproveReviewAnyway
-          }
-          planArtifact={planArtifact}
-          isPlanLoading={isPlanHydrating}
-          onPlanUpdated={handlePlanUpdated}
-          onPlanSeeded={handlePlanSeeded}
-          dependencyGraph={dependencyGraph}
-          proposals={proposals}
-          visibleImplementationTasks={visibleImplementationTasks}
-          activeExecutionPlanId={activeExecutionPlanId}
-          implementationTaskCounts={implementationTaskCounts}
-          hasImplementationAttempt={hasImplementationAttempt}
-          onPublishWorkspace={onPublishWorkspace}
-          isPublishingWorkspace={isPublishingWorkspace}
-          publishFocusRequest={publishFocusRequest}
-          onConversationModeSwitched={onConversationModeSwitched}
-          onFocusIdeationSessionForConversation={
-            onFocusIdeationSessionForConversation
-          }
-          onFocusVerificationSession={onFocusVerificationSession}
-          {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
-          verificationState={verificationState}
-          verificationInProgress={verificationInProgress}
-          onOpenReview={handleOpenReview}
-          onOpenPublish={handleOpenPublish}
-          onOpenTasks={() => onTabChange("tasks")}
-          taskArtifactSelectedId={taskArtifactSelectedId}
-                onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
-              />
+              activeTab={effectiveActiveTab}
+              tasksEnabled={tasksEnabled}
+              conversation={conversation}
+              workspace={scopedWorkspace}
+              conversationId={conversationId}
+              activeWorkspaceFreshness={activeWorkspaceFreshness}
+              conversationTitle={conversation?.title ?? null}
+              automationId={automationId}
+              isAutomationRunConversation={isAutomationRunConversation}
+              {...(onOpenAutomation ? { onOpenAutomation } : {})}
+              {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
+              projectBaseBranch={projectBaseBranch}
+              isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
+              attachedSessionId={attachedSessionId}
+              projectId={conversationProjectId}
+              canStartPlan={canStartPlan}
+              session={session}
+              sessionTitle={sessionData?.session.title ?? null}
+              taskMode={taskMode}
+              reviewArtifact={reviewArtifact}
+              reviewContext={
+                isReviewPrWorkspace ? null : workspaceReviewContext
+              }
+              isReviewPrWorkspace={isReviewPrWorkspace}
+              autoApproveEnabled={autoApproveEnabled}
+              isAutoApproveSaving={autoApproveMutation.isPending}
+              onAutoApproveChange={(enabled) => {
+                if (!prReviewConversationId) return;
+                setAutoApprovePreference({
+                  conversationId: prReviewConversationId,
+                  enabled,
+                });
+                autoApproveMutation.mutate({
+                  conversationId: prReviewConversationId,
+                  enabled,
+                });
+              }}
+              prReviewMonitor={prReviewContext?.monitor ?? null}
+              isPrReviewMonitorSaving={prReviewMonitoringMutation.isPending}
+              onPrReviewMonitorChange={async (
+                enabled,
+                activeReviewPolicy,
+              ) => {
+                if (!prReviewConversationId) {
+                  throw new Error("PR review monitoring is unavailable");
+                }
+                await prReviewMonitoringMutation.mutateAsync({
+                  conversationId: prReviewConversationId,
+                  enabled,
+                  ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
+                });
+              }}
+              reviewStartResult={
+                isReviewPrWorkspace ? null : workspaceReviewStartResult
+              }
+              reviewStartError={
+                isReviewPrWorkspace
+                  ? null
+                  : (workspaceReviewStartError ?? workspaceReviewFixIssuesError)
+              }
+              isReviewLoading={
+                Boolean(reviewArtifactId) &&
+                !reviewArtifact &&
+                reviewArtifactQuery.isFetching
+              }
+              isReviewActionPending={
+                isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
+              }
+              isFixIssuesActionPending={
+                isReviewPrWorkspace ? false : isWorkspaceReviewFixIssuesPending
+              }
+              isApproveAnywayActionPending={
+                isReviewPrWorkspace
+                  ? false
+                  : isWorkspaceReviewApproveAnywayPending
+              }
+              isWorkspaceRuntimeGenerating={
+                isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
+              }
+              onStartReview={
+                isReviewPrWorkspace ? () => {} : handleStartReview
+              }
+              onFixIssues={
+                isReviewPrWorkspace ? () => {} : handleFixReviewIssues
+              }
+              onApproveAnyway={
+                isReviewPrWorkspace
+                  ? async () => {}
+                  : handleApproveReviewAnyway
+              }
+              planArtifact={planArtifact}
+              isPlanLoading={isPlanHydrating}
+              onPlanUpdated={handlePlanUpdated}
+              onPlanSeeded={handlePlanSeeded}
+              dependencyGraph={dependencyGraph}
+              proposals={proposals}
+              visibleImplementationTasks={visibleImplementationTasks}
+              activeExecutionPlanId={activeExecutionPlanId}
+              implementationTaskCounts={implementationTaskCounts}
+              hasImplementationAttempt={hasImplementationAttempt}
+              onPublishWorkspace={onPublishWorkspace}
+              isPublishingWorkspace={isPublishingWorkspace}
+              publishFocusRequest={publishFocusRequest}
+              onConversationModeSwitched={onConversationModeSwitched}
+              onFocusIdeationSessionForConversation={
+                onFocusIdeationSessionForConversation
+              }
+              onFocusVerificationSession={onFocusVerificationSession}
+              {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
+              verificationState={verificationState}
+              verificationInProgress={verificationInProgress}
+              onOpenReview={handleOpenReview}
+              onOpenPublish={handleOpenPublish}
+              onOpenTasks={() => onTabChange("tasks")}
+              taskArtifactSelectedId={taskArtifactSelectedId}
+              onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+            />
           </ArtifactSelectionProvider>
         )}
       </div>
@@ -2019,6 +2066,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   tasksEnabled: boolean;
+  conversation: AgentConversation | null;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -2103,6 +2151,7 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   tasksEnabled,
+  conversation,
   workspace,
   conversationId,
   activeWorkspaceFreshness,
@@ -2163,6 +2212,21 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
+  if (
+    activeTab === "persona" &&
+    conversation &&
+    isPersonaArtifactConversation(conversation)
+  ) {
+    return (
+      <Suspense fallback={<PersonaArtifactSkeletonFallback />}>
+        <LazyPersonaArtifactPanel
+          key={conversation.id}
+          conversation={conversation}
+        />
+      </Suspense>
+    );
+  }
+
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense

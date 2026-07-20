@@ -9,6 +9,8 @@ pub trait UiFeatureFlagOverridesRepository: Send + Sync {
 
     async fn set_agent_personas(&self, value: Option<bool>) -> AppResult<()>;
 
+    async fn set_composer_folder_references(&self, value: Option<bool>) -> AppResult<()>;
+
     async fn update_agent_capabilities(
         &self,
         team: Option<bool>,

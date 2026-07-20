@@ -142,7 +142,12 @@ export function useAgentsAttachedIdeation({
     }
     childArchiveSyncRef.current.add(activeConversation.id);
     void chatApi.archiveConversation(activeConversation.id, { closePullRequest: false })
-      .then(() => invalidateProjectConversations(activeConversation.projectId))
+      .then(() => {
+        if (activeConversation.projectId) {
+          return invalidateProjectConversations(activeConversation.projectId);
+        }
+        return undefined;
+      })
       .catch(() => {
         childArchiveSyncRef.current.delete(activeConversation.id);
         // Status sync is best-effort; manual archive remains available.

@@ -598,6 +598,9 @@ export const MessageItem = React.memo(function MessageItem({
             projectReferences={composerReferences.projectReferences}
             integrationReferences={composerReferences.integrationReferences}
             artifactReferences={composerReferences.artifactReferences}
+            {...(composerReferences.folderReferences
+              ? { folderReferences: composerReferences.folderReferences }
+              : {})}
             {...(composerReferences.selectionSnapshot
               ? { selectionSnapshot: composerReferences.selectionSnapshot }
               : {})}

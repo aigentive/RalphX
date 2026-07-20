@@ -528,12 +528,14 @@ describe("chat api", () => {
     });
   });
 
-  it("accepts persona_builder mode and threads nullable persona_id to personaId", async () => {
+  it("accepts persona_builder mode and transforms its persona bindings", async () => {
     mockInvoke.mockResolvedValue([
       {
         ...planSeedConversationResponse(),
         agent_mode: "persona_builder",
         persona_id: null,
+        builder_draft_id: "draft-1",
+        builder_result_persona_id: "persona-1",
       },
     ]);
 
@@ -542,6 +544,8 @@ describe("chat api", () => {
     expect(result[0]).toMatchObject({
       agentMode: "persona_builder",
       personaId: null,
+      builderDraftId: "draft-1",
+      builderResultPersonaId: "persona-1",
     });
   });
 
@@ -1373,6 +1377,51 @@ describe("chat api", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
       input: { contextType: "project", contextId: "p1", title: "Build agent" },
+    });
+  });
+
+  it("creates a self-keyed standalone conversation without sending contextId", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-1",
+      context_type: "standalone",
+      context_id: "standalone-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone" },
+    });
+  });
+
+  it("creates a persona builder with its mode persisted before setup", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-builder-1",
+      context_type: "standalone",
+      context_id: "standalone-builder-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      agent_mode: "persona_builder",
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone", null, undefined, "persona_builder");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone", mode: "persona_builder" },
     });
   });
 
@@ -4018,6 +4067,32 @@ describe("getConversationActiveState", () => {
 });
 
 describe("startAgentConversationInvokeInput", () => {
+  it("omits projectId for standalone chat starts", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "hello",
+        conversationId: "standalone-1",
+        mode: "chat",
+      }),
+    ).toEqual({
+      content: "hello",
+      conversationId: "standalone-1",
+      mode: "chat",
+    });
+  });
+  it("maps persona-builder refine provenance without inventing a standalone project", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "Refine this voice",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+      }),
+    ).toEqual({
+      content: "Refine this voice",
+      mode: "persona_builder",
+      sourcePersonaId: "persona-reviewer",
+    });
+  });
   it("includes only projectId and content when all optional fields are absent", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",

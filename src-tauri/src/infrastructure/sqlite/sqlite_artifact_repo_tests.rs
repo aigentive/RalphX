@@ -794,6 +794,10 @@ async fn test_two_updates_with_original_id_both_succeed() {
         "orchestrator",
     );
     v3.metadata.version = old2.metadata.version + 1;
+    v3.metadata.custom_metadata = Some(serde_json::json!({
+        "persona_version": 9,
+        "created_by": "orchestrator"
+    }));
     let v3_id = v3.id.clone();
     repo.create_with_previous_version(v3, resolved2)
         .await
@@ -815,6 +819,8 @@ async fn test_two_updates_with_original_id_both_succeed() {
     assert_eq!(history[0].version, 3);
     assert_eq!(history[1].version, 2);
     assert_eq!(history[2].version, 1);
+    assert_eq!(history[0].created_by, "orchestrator");
+    assert_eq!(history[0].metadata.as_ref().unwrap()["persona_version"], 9);
 }
 
 // ==================== TEAM METADATA PERSISTENCE TESTS ====================

@@ -21,7 +21,7 @@ Invalid YAML is diagnostic and blocks launch rather than being treated as an emp
 
 - Claude receives the generated required RalphX `--mcp-config` without `--strict-mcp-config`; server/tool denies become `--disallowedTools` MCP patterns.
 - Codex keeps native config layers; denies quote arbitrary server-ID key segments such as `mcp_servers."<id>"`. RalphX servers are `enabled=true`, `required=true`, and use `external_mcp.startup_timeout_secs` for startup/readiness.
-- A provider-native server using reserved ID `ralphx` or `ralphx_internal` fails launch preflight instead of being overwritten.
+- A provider-native server using reserved ID `ralphx` or `ralphx_internal` fails launch preflight instead of being overwritten. On upgrade, RalphX first retires only the exact user-scoped Claude `ralphx` registration signature written by legacy RalphX releases, then reruns the same fail-closed check.
 - Every standard, interactive, queued-resume, recovery, utility, and teammate spawn resolves policy immediately before launch.
 - Agents using the external RalphX transport wait for supervisor `Ready`; Disabled, Degraded, Failed, and timeout states fail closed.
 

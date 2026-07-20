@@ -13,10 +13,11 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
-import { chatKeys } from "@/hooks/useChat";
+import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { personaKeys } from "@/hooks/usePersonas";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -31,6 +32,26 @@ import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { LINKED_SETUP_FAILURE_MARKER } from "./agentStartErrors";
 import { useStartAgentConversation } from "./useStartAgentConversation";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
+  return {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    automationsPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+    agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
+    composerFolderReferences: false,
+    ...overrides,
+  };
+}
 
 const {
   archiveConversationMock,
@@ -149,7 +170,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     // Workflow modes live on the Mode chip popover, not the "+" action menu.
@@ -157,8 +178,143 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
-  it("prefills and consumes a pending start conversation draft", async () => {
+  it("initializes an ordinary new run from the persisted mode preference", async () => {
     mockAgentViewData();
+    resetAgentSessionState({ defaultStartMode: "plan" });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Plan"),
+    );
+  });
+
+  it("shows Autopilot only when the capability is enabled and never offers Ideation", async () => {
+    mockAgentViewData();
+    const { queryClient } = renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.queryByTestId("agents-start-mode-autopilot")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentConversationAutopilot: true }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.getByTestId("agents-start-mode-autopilot")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+  });
+
+  it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
+    const atlas = { ...project, id: "project-atlas", name: "Atlas" };
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [project, atlas], isLoading: false });
+    resetAgentSessionState({
+      startConversationDraft: {
+        projectId: "project-atlas",
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+      },
+    });
+    const view = renderAgentsView();
+
+    await screen.findByTestId("persona-build-banner");
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.getByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.getByLabelText("Persona build project is locked")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.queryByTestId("agents-start-mode-persona_builder")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
+    view.queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: false }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    view.queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: true }),
+    );
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
+  });
+
+  it("keeps standalone reachable with zero projects and prevents project-only controls", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({
+        standaloneConversations: true,
+        agentPersonas: true,
+        agentConversationTeam: true,
+        composerFolderReferences: true,
+      }),
+    );
+
+    await screen.findByTestId("agents-start-project");
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-project")).not.toBeDisabled(),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    expect(screen.getByTestId("agents-start-project-standalone")).toHaveTextContent(
+      "No project (standalone)",
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+
+    expect(screen.getByText("Runs in a private workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Ask");
+    expect(
+      screen.getByText(/Project-requiring modes are unavailable without a project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-base")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeDisabled();
+    expect(screen.getAllByText("Requires a project").length).toBeGreaterThan(0);
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "/" },
+    });
+    expect(screen.queryByTestId("agent-composer-command-menu")).not.toBeInTheDocument();
+  });
+
+  it("keeps the zero-project picker disabled when standalone is flag-off", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    renderAgentsView();
+
+    expect(await screen.findByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.queryByTestId("agents-start-project-standalone")).not.toBeInTheDocument();
+  });
+
+  it("prefills and consumes an explicit start draft ahead of the saved default", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setDefaultStartMode("plan");
     loadBranchBaseOptionsMock.mockResolvedValueOnce({
       options: [
         {
@@ -556,21 +712,25 @@ describe("AgentsView start conversation", () => {
       ticketingDashboard: false,
       agentPersonas: true,
     });
-    queryClient.setQueryData(personaKeys.list(), [
-      {
-        id: "persona-reviewer",
-        slug: "reviewer-voice",
-        name: "Reviewer Voice",
-        description: "Careful reviews",
-        content: "# Reviewer",
-        status: "active",
-        version: 1,
-        contentHash: "persona-hash",
-        sourceSessionId: null,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-    ]);
+    queryClient.setQueryData(
+      personaKeys.list({ type: "globalAndProject", projectId: "project-1" }),
+      [
+        {
+          id: "persona-reviewer",
+          slug: "reviewer-voice",
+          name: "Reviewer Voice",
+          description: "Careful reviews",
+          content: "# Reviewer",
+          status: "active",
+          version: 1,
+          contentHash: "persona-hash",
+          sourceSessionId: null,
+          projectId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    );
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
@@ -1711,6 +1871,282 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "seeds and starts a standalone chat with $provider runtime and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, gcTime: 0 },
+          mutations: { retry: false },
+        },
+      });
+      const standaloneConversation = conversation({
+        id: "standalone-1",
+        contextType: "standalone",
+        contextId: "standalone-1",
+        projectId: null,
+        agentMode: "chat",
+      });
+      createConversationMock.mockResolvedValue(standaloneConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: standaloneConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "standalone-1",
+          agentRunId: "run-standalone-1",
+          isNewConversation: false,
+          wasQueued: true,
+          queuedAsPending: false,
+          queuedMessageId: "queued-standalone-1",
+        },
+      });
+      const selectConversation = vi.fn();
+      const handleAutoManagedTitle = vi.fn();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle,
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation,
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: null,
+        content: "Explore privately",
+        runtime: { provider, modelId, effort },
+        mode: "edit",
+        base: null,
+        files: [],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+        composerProjectReferences: [
+          {
+            projectId: "stale-project",
+            projectName: "Stale project",
+          },
+        ],
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "Explore privately",
+          conversationId: "standalone-1",
+          mode: "chat",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+      expect(startInput).not.toHaveProperty("composerProjectReferences");
+      expect(selectConversation).toHaveBeenCalledWith(null, "standalone-1");
+      expect(
+        useChatStore.getState().queuedMessages["standalone:standalone-1"],
+      ).toEqual([
+        expect.objectContaining({
+          id: "queued-standalone-1",
+          content: "Explore privately",
+        }),
+      ]);
+      expect(handleAutoManagedTitle).toHaveBeenCalledWith(
+        expect.objectContaining({ targetProjectId: null }),
+      );
+    },
+  );
+
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a Global persona builder with $provider, locked provenance, folders, and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-global-1",
+        contextType: "standalone",
+        contextId: "builder-global-1",
+        projectId: null,
+        agentMode: "persona_builder",
+      });
+      createConversationMock.mockResolvedValue(builderConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "builder-global-1",
+          agentRunId: "run-builder-1",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      vi.mocked(invoke).mockImplementation(async (command) => {
+        if (command === "add_conversation_folder_reference") {
+          return {
+            id: "folder-ref-1",
+            conversationId: "builder-global-1",
+            folderPath: "/context/docs",
+            displayName: "docs",
+            createdAt: "2026-07-17T00:00:00Z",
+          };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: null,
+        content: "Refine the review voice",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+        base: null,
+        files: [],
+        folders: [{ folderPath: "/context/docs", displayName: "docs" }],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith(
+        "standalone",
+        null,
+        undefined,
+        "persona_builder",
+      );
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "builder-global-1",
+          folderPath: "/context/docs",
+          displayName: "docs",
+        },
+      });
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "builder-global-1",
+          mode: "persona_builder",
+          providerHarness: provider,
+          sourcePersonaId: "persona-reviewer",
+        }),
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+    },
+  );
+
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a project persona builder with $provider runtime",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-project-1",
+        contextType: "project",
+        contextId: "project-1",
+        projectId: "project-1",
+        agentMode: "persona_builder",
+      });
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: conversationWorkspace({
+          conversationId: "builder-project-1",
+          mode: "persona_builder",
+        }),
+        sendResult: {
+          conversationId: "builder-project-1",
+          agentRunId: "run-builder-project-1",
+          isNewConversation: true,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: "project-1",
+        content: "Build a project reviewer",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        base: null,
+        files: [],
+      });
+
+      expect(createConversationMock).not.toHaveBeenCalled();
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "Build a project reviewer",
+          mode: "persona_builder",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
+    },
+  );
+
   it("falls back to the default runtime when the remembered provider is no longer valid", async () => {
     mockAgentViewData();
     resetAgentSessionState({
@@ -2067,7 +2503,24 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("stores selected references on the first optimistic message before a conversation exists", async () => {
+  it("stores selected references on the seeded optimistic folder message", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "add_conversation_folder_reference") {
+        const input = (args as {
+          input: {
+            conversationId: string;
+            folderPath: string;
+            displayName: string;
+          };
+        }).input;
+        return Promise.resolve({
+          id: "folder-1",
+          ...input,
+          createdAt: "2026-07-20T07:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: Infinity },
@@ -2079,6 +2532,7 @@ describe("AgentsView start conversation", () => {
       contextId: "project-1",
       title: null,
     });
+    createConversationMock.mockResolvedValue(seededConversation);
     let resolveStart:
       | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
       | null = null;
@@ -2119,6 +2573,7 @@ describe("AgentsView start conversation", () => {
       mode: "edit",
       base: null,
       files: [],
+      folders: [{ folderPath: "/work/brand-kit", displayName: "brand-kit" }],
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
         {
@@ -2141,12 +2596,25 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
     );
-    const optimisticConversationId =
-      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-seeded-references",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      }),
+    );
     const optimisticMessage = queryClient.getQueryData<{
       messages: Array<{ metadata: string | null }>;
-    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+    }>(["chat", "conversations", "conversation-seeded-references"])?.messages[0];
     expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+      composer_folder_references: [
+        {
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       composer_project_references: [{ path: "src/main.ts", kind: "file" }],
       composer_integration_references: [
         {
@@ -2166,7 +2634,7 @@ describe("AgentsView start conversation", () => {
       ],
     });
 
-    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(createConversationMock).toHaveBeenCalledWith("project", "project-1");
     resolveStart?.({
       conversation: seededConversation,
       workspace: conversationWorkspace({
@@ -2419,6 +2887,9 @@ describe("AgentsView start conversation", () => {
         fileName: "draft.txt",
       }),
     });
+    expect(invoke).toHaveBeenCalledWith("abort_seeded_agent_conversation", {
+      conversationId: "conversation-failed-start",
+    });
     expect(
       queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
     ).toBeUndefined();
@@ -2431,6 +2902,90 @@ describe("AgentsView start conversation", () => {
     expect(
       useChatStore.getState().agentActivityLabels["project:conversation-failed-start"]
     ).toBeUndefined();
+  });
+
+  it("reveals and invalidates a seeded conversation when abort reports it already started", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const selectConversation = vi.fn();
+    const seededConversation = conversation({
+      id: "conversation-survived-abort",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockRejectedValue(new Error("start response was lost"));
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "upload_chat_attachment") {
+        return Promise.resolve({ id: "attachment-survived-start" });
+      }
+      if (command === "abort_seeded_agent_conversation") {
+        return Promise.reject(
+          new Error(
+            "SEEDED_AGENT_CONVERSATION_ALREADY_STARTED: conversation `conversation-survived-abort` has already started",
+          ),
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation,
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    await expect(
+      result.current({
+        projectId: "project-1",
+        content: "recover the surviving start",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        mode: "edit",
+        base: null,
+        files: [new File(["draft"], "draft.txt", { type: "text/plain" })],
+      }),
+    ).rejects.toThrow("start response was lost");
+
+    expect(selectConversation).toHaveBeenCalledWith(
+      "project-1",
+      "conversation-survived-abort",
+    );
+    expect(
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-survived-abort",
+      ]),
+    ).toBeDefined();
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["agents", "sidebar-conversations"],
+    });
+    expect(invalidateConversationDataQueries).toHaveBeenCalledWith(
+      queryClient,
+      "conversation-survived-abort",
+    );
   });
 
   it("moves running state when the backend resolves a different conversation id", async () => {
@@ -2787,6 +3342,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
     await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "set up a weekly dependency cleanup automation" },
@@ -3102,6 +3658,103 @@ describe("AgentsView start conversation", () => {
         configurable: true,
       });
     }
+  });
+
+  it("restores unsent starter composer folders from the draft store", async () => {
+    mockAgentViewData();
+    useChatStore.getState().setComposerDraftFolders("agents:start", [
+      { id: "draft-folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+    ]);
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({
+        composerFolderReferences: true,
+        standaloneConversations: true,
+      }),
+    );
+
+    expect(
+      await screen.findByTestId("draft-folder-reference-chips"),
+    ).toHaveTextContent("design-notes");
+
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+    expect(screen.getByTestId("draft-folder-reference-chips")).toHaveTextContent(
+      "design-notes",
+    );
+  });
+
+  it("registers a pre-send picked folder against the seeded conversation before sending the first message", async () => {
+    mockAgentViewData();
+    createConversationMock.mockResolvedValue(
+      conversation({ id: "conversation-folder-seeded", contextId: "project-1" })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({ id: "conversation-folder-seeded", contextId: "project-1" }),
+      workspace: conversationWorkspace({ conversationId: "conversation-folder-seeded" }),
+      sendResult: {
+        conversationId: "conversation-folder-seeded",
+        agentRunId: "run-folder-1",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    vi.mocked(openDialog).mockResolvedValue("/Users/test/projects/test-project");
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "add_conversation_folder_reference") {
+        return Promise.resolve({
+          id: "folder-ref-1",
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+          createdAt: "2026-01-01T00:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ composerFolderReferences: true }),
+    );
+
+    fireEvent.click(
+      await screen.findByTestId("agent-composer-actions-menu"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+
+    expect(await screen.findByText("test-project")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+        },
+      })
+    );
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-folder-seeded",
+          content: "review this folder",
+        })
+      )
+    );
   });
 
 });

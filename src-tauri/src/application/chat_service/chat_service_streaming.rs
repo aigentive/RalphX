@@ -81,7 +81,10 @@ pub(crate) fn is_user_attended_turn_completion(
         && !ideation_session_has_parent
         && matches!(
             context_type,
-            ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+            ChatContextType::Ideation
+                | ChatContextType::Project
+                | ChatContextType::Standalone
+                | ChatContextType::Task
         )
 }
 
@@ -125,6 +128,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
             }
         }
         ChatContextType::Project => (Some(context_id.to_string()), false, None),
+        ChatContextType::Standalone => (None, false, None),
         ChatContextType::Task => {
             let task_id = TaskId::from_string(context_id.to_string());
             match state.task_repo.get_by_id(&task_id).await {
