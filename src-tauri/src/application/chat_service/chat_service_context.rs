@@ -13,10 +13,10 @@ use tauri::{Manager, Runtime};
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentConversationWorkspace, Artifact, ArtifactContent, ArtifactId, ArtifactType,
-    ChatAttachment, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode, IdeationSessionId, MessageRole,
-    ProjectId, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactContent,
+    ArtifactId, ArtifactType, ChatAttachment, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode,
+    IdeationSessionId, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -2320,6 +2320,7 @@ pub(super) fn build_mcp_runtime_context(
     filesystem_read_roots: &[PathBuf],
     lead_session_id: Option<&str>,
     parent_conversation_id: Option<String>,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
 ) -> McpRuntimeContext {
     let task_id = match context_type {
         ChatContextType::Task
@@ -2339,6 +2340,8 @@ pub(super) fn build_mcp_runtime_context(
         project_id: project_id.map(str::to_string),
         working_directory: Some(working_directory.to_path_buf()),
         filesystem_read_roots: filesystem_read_roots.to_vec(),
+        enforce_filesystem_roots: context_type == ChatContextType::Standalone
+            || ChatConversation::is_persona_builder_identity(context_type, effective_mode),
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
@@ -2634,6 +2637,7 @@ async fn build_command_from_resolved_settings(
         filesystem_read_roots,
         None,
         project_mcp_parent_conversation_id(conversation),
+        None,
     );
     let mut spawnable = build_claude_spawnable_command(
         cli_path,
@@ -2731,6 +2735,7 @@ async fn build_recovery_command_from_resolved_settings(
         filesystem_read_roots,
         None,
         parent_conversation_id.clone(),
+        None,
     );
     let mut spawnable = build_claude_spawnable_command(
         cli_path,
@@ -2910,6 +2915,7 @@ pub async fn build_codex_command(
         filesystem_read_roots,
         None,
         project_mcp_parent_conversation_id(conversation),
+        None,
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
@@ -3490,6 +3496,7 @@ pub async fn build_interactive_command(
         filesystem_read_roots,
         None,
         project_mcp_parent_conversation_id(conversation),
+        None,
     );
     log_claude_launch_plan_phase(
         conversation,
@@ -3738,6 +3745,7 @@ async fn build_resume_command_from_resolved_settings(
                 filesystem_read_roots,
                 None,
                 parent_conversation_id.clone(),
+                None,
             );
             let mut spawnable = build_claude_spawnable_command(
                 cli_path,
@@ -3849,6 +3857,7 @@ pub async fn build_codex_resume_command(
         filesystem_read_roots,
         None,
         parent_conversation_id,
+        None,
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
