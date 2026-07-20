@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ManualRoleCatalogEntry } from "@/api/manual-role-defaults.types";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 
 import { AgentsSettingsSection } from "./AgentsSettingsSection";
 
@@ -151,6 +152,7 @@ describe("AgentsSettingsSection", () => {
     vi.clearAllMocks();
     afterPaintCallbacks.length = 0;
     localStorage.clear();
+    useAgentSessionStore.setState({ defaultStartMode: "edit" });
     testState.activeProject = null;
     testState.requestedScopes.length = 0;
     testState.isLoading = false;
@@ -168,8 +170,25 @@ describe("AgentsSettingsSection", () => {
         .toHaveAttribute("aria-expanded", "false");
     }
     expect(screen.queryByTestId("manual-role-row")).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Workspace role provider" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-default-start-mode")).toBeInTheDocument();
     expect(screen.getByText("1 configured")).toBeInTheDocument();
+  });
+
+  it("uses the existing settings select to change the default new-run mode", async () => {
+    renderSection();
+
+    fireEvent.keyDown(screen.getByTestId("agent-default-start-mode"), {
+      key: "ArrowDown",
+      code: "ArrowDown",
+    });
+    fireEvent.click(screen.getByRole("option", { name: /Plan/ }));
+
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
+    });
   });
 
   it("opens a family into compact role summaries and mounts controls only after role disclosure", async () => {

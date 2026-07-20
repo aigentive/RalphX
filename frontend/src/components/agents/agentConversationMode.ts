@@ -12,7 +12,7 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   disabled?: boolean;
   disabledReason?: string;
 }> = [
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
+  { id: "chat", label: "Ask", description: "Ask read-only questions about the project." },
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },

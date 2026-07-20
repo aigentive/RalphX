@@ -149,6 +149,18 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     );
   });
 
+  it("orders ordinary new-run modes by planning, execution, review, and inquiry", () => {
+    expect(
+      AGENT_START_MODE_OPTIONS.slice(0, 5).map(({ id, label }) => ({ id, label })),
+    ).toEqual([
+      { id: "plan", label: "Plan" },
+      { id: "edit", label: "Agent" },
+      { id: "review_pr", label: "Review PR" },
+      { id: "chat", label: "Ask" },
+      { id: "automation", label: "Automation" },
+    ]);
+  });
+
   it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: false }).map(

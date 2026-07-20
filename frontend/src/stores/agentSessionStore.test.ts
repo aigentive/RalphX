@@ -20,6 +20,27 @@ describe("agentSessionStore", () => {
       "uncommitted",
       "unpushed",
     ]);
+    expect(useAgentSessionStore.getInitialState().defaultStartMode).toBe("edit");
+  });
+
+  it("migrates invalid new-run mode preferences to Agent", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "persona_builder",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "edit" });
+
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "plan",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "plan" });
   });
 
   it("migrates older persisted sidebar filter state to all projects", () => {
@@ -291,6 +312,15 @@ describe("agentSessionStore", () => {
   describe("actions", () => {
     beforeEach(() => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+    });
+
+    it("persists the preferred ordinary new-run mode", () => {
+      useAgentSessionStore.getState().setDefaultStartMode("plan");
+
+      expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"defaultStartMode":"plan"',
+      );
     });
 
     it("setFocusedProject expands only the focused project without selecting a conversation", () => {
