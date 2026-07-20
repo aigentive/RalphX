@@ -9,8 +9,10 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::AppError;
+use futures::future::join_all;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -166,6 +168,58 @@ async fn incomplete_reviewing_monitor_fails_closed_instead_of_becoming_idle() {
 }
 
 #[tokio::test]
+async fn selected_source_reviewing_monitor_uses_status_snapshot_without_project_reads() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::new();
+    let workspace = workspace(conversation_id.clone(), project_id.clone());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some("selected-fingerprint".to_string());
+    monitor.selected_source_base_ref = Some("main".to_string());
+    monitor.selected_source_head_ref = Some("feature/selected".to_string());
+    monitor.selected_source_pull_request_number = Some(42);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("seed monitor");
+
+    let context = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::StatusSnapshot,
+    )
+    .await
+    .expect("selected source snapshot should load");
+
+    let target = context.target.expect("snapshot target");
+    assert_eq!(
+        target.scope,
+        AgentWorkspaceReviewTargetScope::SelectedSource
+    );
+    assert_eq!(target.source_pull_request_number, Some(42));
+}
+
+#[tokio::test]
+async fn full_context_propagates_missing_project_instead_of_treating_it_as_no_review() {
+    let state = AppState::new_test();
+    let workspace = workspace(ChatConversationId::new(), ProjectId::new());
+
+    let error = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullPacket,
+    )
+    .await
+    .expect_err("missing project must fail closed");
+
+    assert!(matches!(error, AppError::NotFound(_)));
+}
+
+#[tokio::test]
 async fn full_target_reuses_a_current_calculation_without_reloading_git_context() {
     let (_temp, repo, state, workspace) = setup_full_context().await;
 
@@ -221,4 +275,37 @@ async fn full_packet_refreshes_instead_of_reusing_the_presentation_cache() {
     );
     assert!(initial.target.is_none());
     assert!(refreshed.target.is_some());
+}
+
+#[tokio::test]
+async fn simultaneous_full_packet_requests_join_one_calculation() {
+    let (_temp, repo, state, workspace) = setup_full_context().await;
+    std::fs::write(repo.join("uncommitted.rs"), "pub fn changed() {}\n")
+        .expect("workspace change should be written");
+    let state = Arc::new(state);
+
+    let requests = (0..8).map(|_| {
+        let state = state.clone();
+        let workspace = workspace.clone();
+        tokio::spawn(async move {
+            load_agent_workspace_review_presentation_context(
+                state.as_ref(),
+                &workspace,
+                AgentWorkspaceReviewContextReadMode::FullPacket,
+            )
+            .await
+        })
+    });
+    let results = join_all(requests).await;
+
+    for result in results {
+        let context = result
+            .expect("request task should complete")
+            .expect("full packet context should load");
+        assert_eq!(
+            context.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Idle
+        );
+        assert!(context.target.is_some());
+    }
 }
