@@ -6584,6 +6584,7 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
 async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
     let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
     let app_state = AppState::new_test();
+    enable_tasks_for_progress(&app_state).await;
     let project = app_state
         .project_repo
         .create(Project::new(
@@ -6597,6 +6598,14 @@ async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
     task.task_branch = Some("task/preserved-while-off".to_string());
     task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
     let task = app_state.task_repo.create(task).await.unwrap();
+    assert!(app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            crate::domain::ideation::TasksFeatureState::Enabled,
+            crate::domain::ideation::TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap());
 
     let app = mock_builder()
         .manage(Arc::clone(&execution_state))

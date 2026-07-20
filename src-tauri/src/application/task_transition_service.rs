@@ -1821,6 +1821,31 @@ impl TaskTransitionService {
         }
     }
 
+    /// Quiesce an archived task that still carries a legacy active status.
+    ///
+    /// Normal workflow transitions reject archived tasks. Tasks OFF recovery must still
+    /// be able to pause this inconsistent state through the canonical transition path so
+    /// status history, metadata, exit effects, and events remain aligned.
+    #[track_caller]
+    pub(crate) fn transition_archived_task_to_paused_with_metadata<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        metadata_update: MetadataUpdate,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
+        let caller = Location::caller();
+        async move {
+            self.transition_task_with_metadata_from_caller_allow_archived(
+                task_id,
+                InternalStatus::Paused,
+                Some(metadata_update),
+                caller,
+                true,
+            )
+            .await
+            .map(|(task, _changed)| task)
+        }
+    }
+
     /// Finalize one accepted execution attempt and emit completion side effects only for
     /// the caller that wins the optimistic status transition.
     pub async fn transition_execution_completed_to_review(
@@ -2026,6 +2051,24 @@ impl TaskTransitionService {
         metadata_update: Option<MetadataUpdate>,
         caller: &'static Location<'static>,
     ) -> AppResult<(Task, bool)> {
+        self.transition_task_with_metadata_from_caller_allow_archived(
+            task_id,
+            new_status,
+            metadata_update,
+            caller,
+            false,
+        )
+        .await
+    }
+
+    async fn transition_task_with_metadata_from_caller_allow_archived(
+        &self,
+        task_id: &TaskId,
+        new_status: InternalStatus,
+        metadata_update: Option<MetadataUpdate>,
+        caller: &'static Location<'static>,
+        allow_archived_pause: bool,
+    ) -> AppResult<(Task, bool)> {
         tracing::debug!(
             task_id = task_id.as_str(),
             new_status = new_status.as_str(),
@@ -2041,7 +2084,9 @@ impl TaskTransitionService {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
 
-        if task.archived_at.is_some() {
+        if task.archived_at.is_some()
+            && !(allow_archived_pause && new_status == InternalStatus::Paused)
+        {
             return Err(AppError::Validation(format!(
                 "Cannot transition archived task: {}",
                 task_id.as_str()

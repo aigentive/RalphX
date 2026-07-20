@@ -400,13 +400,20 @@ impl<'a> TasksFeatureToggleService<'a> {
             return Ok(());
         }
 
-        let paused = transition_service
-            .transition_task_with_metadata(
-                &current.id,
-                InternalStatus::Paused,
-                Some(feature_disabled_pause_metadata(&current)?),
-            )
-            .await?;
+        let pause_metadata = feature_disabled_pause_metadata(&current)?;
+        let paused = if current.archived_at.is_some() {
+            transition_service
+                .transition_archived_task_to_paused_with_metadata(&current.id, pause_metadata)
+                .await?
+        } else {
+            transition_service
+                .transition_task_with_metadata(
+                    &current.id,
+                    InternalStatus::Paused,
+                    Some(pause_metadata),
+                )
+                .await?
+        };
         if paused.internal_status != InternalStatus::Paused {
             if is_agent_active_status(paused.internal_status) {
                 return Err(AppError::Conflict(format!(
