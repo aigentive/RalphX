@@ -457,6 +457,7 @@ function PlanComposerCtaRow({
   testIdPrefix = "agents-plan-composer-cta",
   actionGroupLabel = "Plan actions",
   compactHintOverride,
+  suppressDetails = false,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
@@ -464,6 +465,7 @@ function PlanComposerCtaRow({
   testIdPrefix?: string;
   actionGroupLabel?: string;
   compactHintOverride?: string | undefined;
+  suppressDetails?: boolean;
 }) {
   const { artifactState } = useResolvedAgentArtifactState(
     viewPlanAction?.conversationId ?? null,
@@ -495,7 +497,9 @@ function PlanComposerCtaRow({
   }
   const compactHint =
     compactHintOverride ?? getPlanComposerCompactHint(hint, resolvedActions);
-  const hintDetails = getPlanComposerHintDetails(hint, compactHint);
+  const hintDetails = suppressDetails
+    ? null
+    : getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
   const isRecommendationCheckPending = compactHint.startsWith(
     "Checking recommended next action",
@@ -1825,10 +1829,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     const eligibleOptions = buildAgentConversationModeOptions({
       currentMode: activeConversationMode ?? "chat",
       taskPipelineAvailable:
-        activeWorkspace?.taskPipelineAvailable ??
-        Boolean(activeWorkspace?.taskPipelineSessionId),
+        tasksEnabled &&
+        (activeWorkspace?.taskPipelineAvailable ??
+          Boolean(activeWorkspace?.taskPipelineSessionId)),
       autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
-    });
+    }).filter((option) => tasksEnabled || option.id !== "tasks");
     if (!resolvedConversationModeLocked) {
       return eligibleOptions;
     }
@@ -1847,6 +1852,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace?.taskPipelineAvailable,
     activeWorkspace?.taskPipelineSessionId,
     featureFlags.agentConversationAutopilot,
+    tasksEnabled,
   ]);
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
@@ -1931,7 +1937,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !!planApprovalSessionId &&
     isPlanApproved &&
     !activeAutomationRunId &&
-    (tasksEnabled || activeWorkspace?.taskPipelineSessionId === planApprovalSessionId);
+    tasksEnabled;
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
@@ -2157,7 +2163,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
     if (!tasksEnabled && isPlanApproved) {
-      return "Tasks is off. Implement this approved plan directly.";
+      return "Recommended: Implement Directly.";
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
@@ -2899,11 +2905,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
                       viewPlanAction={planComposerViewPlanAction}
-                      compactHintOverride={
-                        !tasksEnabled && isPlanApproved
-                          ? "Tasks is off"
-                          : undefined
-                      }
+                      suppressDetails={!tasksEnabled && isPlanApproved}
                     />
                   )}
                   {shouldShowAutomationComposerCta && (

@@ -126,6 +126,35 @@ fn default_ralphx_workflow_column_mappings() {
 }
 
 #[test]
+fn default_ralphx_workflow_maps_every_internal_status_exactly_once() {
+    let workflow = WorkflowSchema::default_ralphx();
+    let mapped = workflow
+        .columns
+        .iter()
+        .flat_map(|column| {
+            column.groups.as_ref().map_or_else(
+                || vec![column.maps_to],
+                |groups| {
+                    groups
+                        .iter()
+                        .flat_map(|group| group.statuses.iter().copied())
+                        .collect()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(mapped.len(), InternalStatus::all_variants().len());
+    for status in InternalStatus::all_variants() {
+        assert_eq!(
+            mapped.iter().filter(|mapped| **mapped == *status).count(),
+            1,
+            "{status} must map exactly once",
+        );
+    }
+}
+
+#[test]
 fn jira_compatible_workflow_has_5_columns() {
     let workflow = WorkflowSchema::jira_compatible();
     assert_eq!(workflow.id.as_str(), "jira-compat");

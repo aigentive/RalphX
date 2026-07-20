@@ -1265,9 +1265,10 @@ impl AppState {
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            task_step_repo: Arc::new(
+                SqliteTaskStepRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
             project_repo: Arc::clone(&project_repo),
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1978,9 +1979,10 @@ impl AppState {
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            task_step_repo: Arc::new(
+                SqliteTaskStepRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
             project_repo: Arc::new(SqliteProjectRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),

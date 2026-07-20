@@ -1,10 +1,16 @@
 use crate::domain::entities::{
     BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
     BranchUpdateOperation, BranchUpdateWorkspaceOwnership, ExecutionPlanId, GitTargetIdentity,
-    IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId, TaskStep,
+    TaskStepStatus,
 };
-use crate::domain::repositories::{BranchUpdateActivation, BranchUpdateRepository, TaskRepository};
-use crate::infrastructure::sqlite::{SqliteBranchUpdateRepository, SqliteTaskRepository};
+use crate::domain::ideation::TasksFeatureAction;
+use crate::domain::repositories::{
+    BranchUpdateActivation, BranchUpdateRepository, TaskRepository, TaskStepRepository,
+};
+use crate::infrastructure::sqlite::{
+    SqliteBranchUpdateRepository, SqliteTaskRepository, SqliteTaskStepRepository,
+};
 use crate::testing::SqliteTestDb;
 use chrono::Utc;
 use std::path::PathBuf;
@@ -68,7 +74,9 @@ async fn test_create_with_tasks_policy_rejects_disabled_without_inserting() {
 
     db.with_connection(|conn| {
         conn.execute(
-            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            "UPDATE ideation_settings
+             SET tasks_enabled = 1, tasks_feature_state = 'enabled'
+             WHERE id = 1",
             [],
         )
         .unwrap();
@@ -115,11 +123,12 @@ async fn test_status_change_with_tasks_policy_rejects_progress_but_allows_pause(
     );
 
     guarded_repo
-        .persist_status_change(
+        .persist_status_change_for_action(
             &task.id,
             InternalStatus::Backlog,
             InternalStatus::Paused,
             "tasks-feature-disabled",
+            TasksFeatureAction::Quiesce,
         )
         .await
         .expect("safe pause must remain available while Tasks are off");
@@ -132,6 +141,29 @@ async fn test_status_change_with_tasks_policy_rejects_progress_but_allows_pause(
             .internal_status,
         InternalStatus::Paused
     );
+}
+
+#[tokio::test]
+async fn paused_destination_does_not_bypass_history_mutation_policy() {
+    let db = setup_test_db();
+    let seed_repo = SqliteTaskRepository::new(db.new_connection());
+    let mut task = seed_repo
+        .create(create_test_task("Paused metadata guard"))
+        .await
+        .unwrap();
+    task.internal_status = InternalStatus::Paused;
+    task.metadata = Some(r#"{"unexpected":true}"#.to_string());
+    let guarded_repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+
+    let error = guarded_repo
+        .update(&task)
+        .await
+        .expect_err("a paused destination must not authorize arbitrary task mutation");
+
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    let unchanged = guarded_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.internal_status, InternalStatus::Backlog);
+    assert!(unchanged.metadata.is_none());
 }
 
 #[tokio::test]
@@ -571,6 +603,69 @@ async fn test_status_change_and_history_are_atomic() {
     assert_eq!(history.len(), 2);
     assert_eq!(history[1].from, InternalStatus::Ready);
     assert_eq!(history[1].to, InternalStatus::Executing);
+}
+
+#[tokio::test]
+async fn terminal_restart_commits_cleanup_steps_status_and_history_atomically() {
+    let db = setup_test_db();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 1, tasks_feature_state = 'enabled'
+             WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+    let repo = SqliteTaskRepository::new(db.new_connection()).with_tasks_feature_policy();
+    let step_repo = SqliteTaskStepRepository::new(db.new_connection());
+    let mut task = create_test_task("Atomic terminal restart");
+    task.internal_status = InternalStatus::Failed;
+    task.task_branch = Some("ralphx/stale".to_string());
+    let task = repo.create(task).await.unwrap();
+    let mut failed_step = TaskStep::new(
+        task.id.clone(),
+        "Retry failed step".to_string(),
+        0,
+        "test".to_string(),
+    );
+    failed_step.status = TaskStepStatus::Failed;
+    let failed_step = step_repo.create(failed_step).await.unwrap();
+
+    let mut restarted = task.clone();
+    restarted.internal_status = InternalStatus::Ready;
+    restarted.task_branch = None;
+    restarted.metadata = Some(r#"{"trigger_origin":"retry"}"#.to_string());
+    restarted.touch();
+    let result = repo
+        .restart_terminal_task_to_ready_with_history_for_action(
+            &restarted,
+            InternalStatus::Failed,
+            std::slice::from_ref(&failed_step.id),
+            "user_restart",
+            TasksFeatureAction::Progress,
+        )
+        .await
+        .unwrap()
+        .expect("restart authority should apply");
+
+    assert_eq!(result.1, 1);
+    let persisted = repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(persisted.internal_status, InternalStatus::Ready);
+    assert!(persisted.task_branch.is_none());
+    assert_eq!(
+        step_repo
+            .get_by_id(&failed_step.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStepStatus::Pending
+    );
+    let history = repo.get_status_history(&task.id).await.unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].from, InternalStatus::Failed);
+    assert_eq!(history[0].to, InternalStatus::Ready);
 }
 
 #[tokio::test]

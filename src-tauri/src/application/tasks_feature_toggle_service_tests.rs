@@ -1,17 +1,36 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, BranchUpdateCapacityOwnership,
+    BranchUpdateContinuation, BranchUpdateDirection, BranchUpdateOperation,
+    BranchUpdateWorkspaceOwnership, ChatConversationId, GitTargetIdentity,
     IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Project, Task,
 };
-use crate::domain::ideation::IdeationSettings;
-use crate::domain::repositories::ProjectRepository;
+use crate::domain::ideation::TasksFeatureState;
+use crate::domain::repositories::{
+    BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
+    ProjectRepository,
+};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::memory::MemoryBranchUpdateRepository;
 
 struct FailingProjectRepository;
+
+async fn enable_tasks(state: &AppState) {
+    assert!(state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+}
 
 #[async_trait]
 impl ProjectRepository for FailingProjectRepository {
@@ -62,8 +81,9 @@ impl ProjectRepository for FailingProjectRepository {
 }
 
 #[tokio::test]
-async fn disabling_tasks_pauses_only_active_unentitled_tasks_and_keeps_off() {
+async fn disabling_tasks_pauses_all_active_tasks_including_attached_workspaces() {
     let state = AppState::new_test();
+    enable_tasks(&state).await;
     let project = state
         .project_repo
         .create(Project::new(
@@ -117,7 +137,7 @@ async fn disabling_tasks_pauses_only_active_unentitled_tasks_and_keeps_off() {
 
     state
         .build_tasks_feature_toggle_service_for_test()
-        .update_settings(IdeationSettings::default())
+        .set_tasks_enabled(false)
         .await
         .expect("OFF drain should succeed");
 
@@ -150,7 +170,7 @@ async fn disabling_tasks_pauses_only_active_unentitled_tasks_and_keeps_off() {
             .unwrap()
             .unwrap()
             .internal_status,
-        InternalStatus::Reviewing
+        InternalStatus::Paused
     );
     assert!(
         !state
@@ -160,16 +180,168 @@ async fn disabling_tasks_pauses_only_active_unentitled_tasks_and_keeps_off() {
             .unwrap()
             .tasks_enabled
     );
+    assert_eq!(
+        state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .unwrap()
+            .tasks_feature_state,
+        TasksFeatureState::Disabled
+    );
+}
+
+#[tokio::test]
+async fn disable_impact_counts_standalone_attached_and_paused_work() {
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Impact project".to_string(),
+            "/tmp/impact-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let session = IdeationSession::new(project.id.clone());
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::new();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Tasks,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/impact".to_string(),
+        "/tmp/impact-worktree".to_string(),
+    );
+    workspace.task_pipeline_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let mut standalone = Task::new(project.id.clone(), "Standalone".to_string());
+    standalone.internal_status = InternalStatus::Executing;
+    state.task_repo.create(standalone).await.unwrap();
+    let mut attached = Task::new(project.id.clone(), "Attached".to_string());
+    attached.internal_status = InternalStatus::Reviewing;
+    attached.ideation_session_id = Some(session.id);
+    state.task_repo.create(attached).await.unwrap();
+    let mut paused = Task::new(project.id.clone(), "Paused".to_string());
+    paused.internal_status = InternalStatus::Paused;
+    state.task_repo.create(paused).await.unwrap();
+
+    let impact = state
+        .build_tasks_feature_toggle_service_for_test()
+        .get_disable_impact()
+        .await
+        .unwrap();
+
+    assert_eq!(impact.active_standalone_tasks, 1);
+    assert_eq!(impact.active_attached_agent_workspaces, 1);
+    assert_eq!(impact.paused_or_blocked_tasks, 1);
+    assert_eq!(impact.affected_task_ids.len(), 2);
+    assert_eq!(
+        impact.affected_conversation_ids,
+        vec![conversation_id.as_str().to_string()]
+    );
+}
+
+#[tokio::test]
+async fn disabling_tasks_pauses_branch_updates_through_their_authority_repository() {
+    let mut state = AppState::new_test();
+    let branch_repo = Arc::new(
+        MemoryBranchUpdateRepository::new().with_task_repository(Arc::clone(&state.task_repo)),
+    );
+    state.branch_update_repo = branch_repo.clone();
+    enable_tasks(&state).await;
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Branch drain project".to_string(),
+            "/tmp/branch-drain-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let task = state
+        .task_repo
+        .create(Task::new(project.id, "Branch update".to_string()))
+        .await
+        .unwrap();
+    let operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::PlanBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "branch-drain-history",
+        "main",
+        "ralphx/branch-drain",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        GitTargetIdentity::new(
+            PathBuf::from("/tmp/branch-drain-project/.git"),
+            "refs/heads/ralphx/branch-drain",
+        )
+        .unwrap(),
+        Utc::now(),
+    );
+    assert!(matches!(
+        branch_repo
+            .activate(BranchUpdateActivation {
+                operation,
+                expected_status: InternalStatus::Backlog,
+                update_status: InternalStatus::UpdatingPlanBranch,
+                trigger: "tasks-off-test".to_string(),
+            })
+            .await
+            .unwrap(),
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+
+    let settings = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect("branch update should quiesce through its authority repository");
+
+    assert_eq!(settings.tasks_feature_state, TasksFeatureState::Disabled);
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .internal_status,
+        InternalStatus::Paused
+    );
+    assert_eq!(
+        state
+            .build_tasks_feature_toggle_service_for_test()
+            .get_disable_impact()
+            .await
+            .unwrap()
+            .active_branch_update_operations,
+        0,
+        "an already-paused operation is not active impact"
+    );
 }
 
 #[tokio::test]
 async fn disabling_tasks_keeps_off_when_drain_cannot_enumerate_projects() {
     let mut state = AppState::new_test();
+    enable_tasks(&state).await;
     state.project_repo = Arc::new(FailingProjectRepository);
 
     let error = state
         .build_tasks_feature_toggle_service_for_test()
-        .update_settings(IdeationSettings::default())
+        .set_tasks_enabled(false)
         .await
         .expect_err("drain failure must be reported after committing OFF");
 
@@ -184,6 +356,15 @@ async fn disabling_tasks_keeps_off_when_drain_cannot_enumerate_projects() {
             .unwrap()
             .tasks_enabled
     );
+    assert_eq!(
+        state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .unwrap()
+            .tasks_feature_state,
+        TasksFeatureState::Draining
+    );
 }
 
 #[tokio::test]
@@ -192,14 +373,12 @@ async fn enabling_tasks_persists_the_setting_without_an_app_handle() {
 
     let updated = state
         .build_tasks_feature_toggle_service_for_test()
-        .update_settings(IdeationSettings {
-            tasks_enabled: true,
-            ..Default::default()
-        })
+        .set_tasks_enabled(true)
         .await
         .expect("re-enabling Tasks without the desktop app handle must persist the setting");
 
     assert!(updated.tasks_enabled);
+    assert_eq!(updated.tasks_feature_state, TasksFeatureState::Enabled);
     assert!(
         state
             .ideation_settings_repo
@@ -213,19 +392,11 @@ async fn enabling_tasks_persists_the_setting_without_an_app_handle() {
 #[tokio::test]
 async fn enabling_tasks_when_already_enabled_keeps_the_setting_enabled() {
     let state = AppState::new_test();
-    let enabled = IdeationSettings {
-        tasks_enabled: true,
-        ..Default::default()
-    };
-    state
-        .ideation_settings_repo
-        .update_settings(&enabled)
-        .await
-        .unwrap();
+    enable_tasks(&state).await;
 
     let updated = state
         .build_tasks_feature_toggle_service_for_test()
-        .update_settings(enabled)
+        .set_tasks_enabled(true)
         .await
         .expect("an already enabled Tasks setting must stay enabled");
 

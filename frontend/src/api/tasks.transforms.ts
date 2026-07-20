@@ -10,10 +10,22 @@ import {
   ExecutionPlanControlResponseSchemaRaw,
   InjectTaskResponseSchemaRaw,
   StateTransitionResponseSchemaRaw,
+  TaskHistoryAvailabilityResponseSchemaRaw,
   UnblockTaskResponseSchemaRaw,
 } from "./tasks.schemas";
 import { transformTask, type Task, type InternalStatus } from "@/types/task";
 import type { TaskRuntimeHistoryContextType } from "@/types/task-history";
+
+export interface TaskHistoryAvailability {
+  hasHistory: boolean;
+  taskCount: number;
+}
+
+export function transformTaskHistoryAvailability(
+  raw: z.infer<typeof TaskHistoryAvailabilityResponseSchemaRaw>
+): TaskHistoryAvailability {
+  return { hasHistory: raw.has_history, taskCount: raw.task_count };
+}
 
 /**
  * Frontend BulkCancelResponse type (camelCase)

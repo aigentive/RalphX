@@ -320,6 +320,7 @@ export interface AgentsTaskDetailOverlayProps {
     taskId: string,
     contextType: TaskRuntimeHistoryContextType
   ) => void;
+  readOnly?: boolean;
 }
 
 export function AgentsTaskDetailOverlay({
@@ -331,6 +332,7 @@ export function AgentsTaskDetailOverlay({
   backLabel,
   onBack,
   onFocusTaskRuntime,
+  readOnly = false,
 }: AgentsTaskDetailOverlayProps) {
   const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
   const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
@@ -567,7 +569,7 @@ export function AgentsTaskDetailOverlay({
   const isArchived = !!task.archivedAt;
   const isManagedPlanMerge = task.category === "plan_merge";
   const isSystemControlled = isManagedPlanMerge || systemControlledStatuses.includes(task.internalStatus);
-  const canEdit = !isHistoryMode && !isArchived && !isSystemControlled;
+  const canEdit = !readOnly && !isHistoryMode && !isArchived && !isSystemControlled;
   const categoryLabel = getTaskCategoryLabel(task.category);
   // "Backlog" is the equivalent of "draft" - tasks that haven't started execution yet
   const isBacklog = task.internalStatus === "backlog";
@@ -661,7 +663,7 @@ export function AgentsTaskDetailOverlay({
                   />
                 )}
                 {/* Start Ideation button - only for backlog (draft) tasks */}
-                {!isHistoryMode && isBacklog && (
+                {!readOnly && !isHistoryMode && isBacklog && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -692,7 +694,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Archive button */}
-                {!isHistoryMode && !isArchived && (
+                {!readOnly && !isHistoryMode && !isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -710,7 +712,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Restore button */}
-                {!isHistoryMode && isArchived && (
+                {!readOnly && !isHistoryMode && isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -802,6 +804,7 @@ export function AgentsTaskDetailOverlay({
                     showContext={true}
                     showHistory={true}
                     useViewRegistry={true}
+                    readOnly={readOnly}
                     {...(isHistoryMode && viewStatus ? { viewAsStatus: viewStatus } : {})}
                     {...(isHistoryMode && historyState?.timestamp
                       ? { viewTimestamp: historyState.timestamp }
@@ -819,7 +822,7 @@ export function AgentsTaskDetailOverlay({
           )}
 
           {/* Execution Control Bar - current mode only */}
-          {footer && !isHistoryMode && (
+          {footer && !readOnly && !isHistoryMode && (
             <div className="flex-shrink-0">
               {footer}
             </div>
