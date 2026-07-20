@@ -339,6 +339,26 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             validate_runtime_started,
         );
 
+        let mcp_preflight_started = Instant::now();
+        self.deps
+            .state
+            .mcp_policy_service()
+            .resolve_launch_policy(
+                requested_harness,
+                input.project_id.as_deref(),
+                project
+                    .as_ref()
+                    .map(|project| std::path::Path::new(&project.working_directory)),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        log_start_agent_conversation_phase(
+            &context_log_id,
+            None,
+            "mcp_setup_preflight",
+            mcp_preflight_started,
+        );
+
         let ProjectSetupOutput {
             project,
             validated_clickup_task,

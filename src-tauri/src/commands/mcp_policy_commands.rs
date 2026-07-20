@@ -10,7 +10,8 @@ use crate::application::provider_management_eligibility::{
 use crate::application::AppState;
 use crate::domain::agents::{
     AgentHarnessKind, EffectiveMcpServerPolicy, McpOverrideState, McpPolicyOverride,
-    McpPolicySource, McpServerKey, NativeMcpServerSnapshot, NativeMcpState, RALPHX_MCP_SERVER_IDS,
+    McpPolicySource, McpRepairStatus, McpServerKey, McpSetupConflictKind, NativeMcpServerSnapshot,
+    NativeMcpState, RALPHX_MCP_SERVER_IDS,
 };
 use crate::domain::entities::ProjectId;
 
@@ -45,6 +46,8 @@ pub struct McpServerResponse {
     pub locked: bool,
     pub locked_reason: Option<String>,
     pub diagnostic: Option<String>,
+    pub conflict_kind: Option<McpSetupConflictKind>,
+    pub repair_status: Option<McpRepairStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +111,14 @@ pub struct ClearMcpToolOverrideInput {
 #[derive(Debug, Clone, Serialize)]
 pub struct McpMutationResponse {
     pub changed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryLegacyMcpRepairInput {
+    pub provider: String,
+    pub server_id: String,
+    pub scope: String,
 }
 
 fn parse_provider(provider: &str) -> Result<AgentHarnessKind, String> {
@@ -199,9 +210,20 @@ pub(crate) fn to_server_response_with_scope_for_test(
     to_server_response_with_scope(effective, scoped)
 }
 
+#[cfg(test)]
 fn to_server_response_with_scope(
     effective: EffectiveMcpServerPolicy,
     scoped: Option<&McpPolicyOverride>,
+) -> McpServerResponse {
+    to_server_response_with_repair(effective, scoped, None)
+}
+
+fn to_server_response_with_repair(
+    effective: EffectiveMcpServerPolicy,
+    scoped: Option<&McpPolicyOverride>,
+    legacy_registration: Option<
+        crate::infrastructure::agents::claude::mcp_catalog::LegacyClaudeRegistration,
+    >,
 ) -> McpServerResponse {
     let known_tools = effective
         .tool_states
@@ -220,6 +242,28 @@ fn to_server_response_with_scope(
                 .unwrap_or(McpPolicySource::ProviderNative),
         })
         .collect();
+    let is_reserved_collision = effective.native.key.is_ralphx_owned()
+        && effective.native.native_scope.as_deref() != Some("ralphx");
+    let (conflict_kind, repair_status) = if is_reserved_collision {
+        if legacy_registration
+            == Some(crate::infrastructure::agents::claude::mcp_catalog::LegacyClaudeRegistration::ExactHistorical)
+            && effective.native.key.provider == AgentHarnessKind::Claude
+            && effective.native.key.server_id == "ralphx"
+            && effective.native.native_scope.as_deref() == Some("user")
+        {
+            (
+                Some(McpSetupConflictKind::LegacyRegistration),
+                Some(McpRepairStatus::Repairable),
+            )
+        } else {
+            (
+                Some(McpSetupConflictKind::AmbiguousReservedId),
+                Some(McpRepairStatus::ManualOnly),
+            )
+        }
+    } else {
+        (None, None)
+    };
     McpServerResponse {
         provider: effective.native.key.provider.to_string(),
         server_id: effective.native.key.server_id.clone(),
@@ -236,6 +280,8 @@ fn to_server_response_with_scope(
         locked: effective.locked,
         locked_reason: effective.locked_reason,
         diagnostic: effective.native.diagnostic,
+        conflict_kind,
+        repair_status,
     }
 }
 
@@ -288,6 +334,20 @@ async fn build_catalog(
     let mut servers = Vec::new();
     let mut provider_diagnostics = BTreeMap::new();
     for provider in providers {
+        let legacy_registration = if provider == AgentHarnessKind::Claude {
+            let provider_root = service
+                .provider_native_config_root(provider)
+                .await
+                .map_err(|error| error.to_string())?;
+            Some(
+                crate::infrastructure::agents::claude::mcp_catalog::classify_legacy_user_registration(
+                    &provider_root,
+                    state.app_paths.app_data_dir(),
+                )?,
+            )
+        } else {
+            None
+        };
         let discovered =
             discover_provider_catalog(state, &service, provider, project_root.as_deref()).await;
         let mut native_by_id = match discovered {
@@ -362,7 +422,11 @@ async fn build_catalog(
             } else {
                 global.iter().find(|row| row.key == effective.native.key)
             };
-            servers.push(to_server_response_with_scope(effective, scoped));
+            servers.push(to_server_response_with_repair(
+                effective,
+                scoped,
+                legacy_registration,
+            ));
         }
     }
     Ok(McpCatalogResponse {
@@ -515,6 +579,33 @@ pub async fn refresh_mcp_catalog(
         .await
         .map_err(|error| error.to_string())?;
     build_catalog(&state, project_id, eligibility, Some(provider)).await
+}
+
+#[tauri::command]
+pub async fn retry_legacy_mcp_registration_repair(
+    input: RetryLegacyMcpRepairInput,
+    state: State<'_, AppState>,
+) -> Result<McpMutationResponse, String> {
+    let provider = parse_provider(&input.provider)?;
+    validate_legacy_repair_request(provider, &input.server_id, &input.scope)?;
+    ensure_mutation_ready(&state, provider).await?;
+    let changed = state
+        .mcp_policy_service()
+        .retry_legacy_claude_registration_repair()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(McpMutationResponse { changed })
+}
+
+pub(crate) fn validate_legacy_repair_request(
+    provider: AgentHarnessKind,
+    server_id: &str,
+    scope: &str,
+) -> Result<(), String> {
+    if provider == AgentHarnessKind::Claude && server_id == "ralphx" && scope == "user" {
+        return Ok(());
+    }
+    Err("legacy_repair_not_allowed: only Claude user-scoped ralphx is eligible".to_string())
 }
 
 async fn ensure_mutation_ready(state: &AppState, provider: AgentHarnessKind) -> Result<(), String> {

@@ -6,7 +6,7 @@ use crate::domain::agents::{
 use super::mcp_policy_commands::{
     ensure_project_scope_exists, known_policy_tools, mutable_key, policy_server_ids,
     response_contains_sensitive_definition_fields, select_codex_catalog, to_server_response,
-    to_server_response_with_scope_for_test,
+    to_server_response_with_scope_for_test, validate_legacy_repair_request,
 };
 use crate::application::AppState;
 
@@ -137,6 +137,19 @@ fn locked_internal_servers_are_rejected_before_repository_mutation() {
 
     let valid = mutable_key(AgentHarnessKind::Codex, "github".to_string()).unwrap();
     assert_eq!(valid.server_id, "github");
+}
+
+#[test]
+fn legacy_repair_command_accepts_only_claude_user_scoped_ralphx() {
+    assert!(validate_legacy_repair_request(AgentHarnessKind::Claude, "ralphx", "user").is_ok());
+    for (provider, server_id, scope) in [
+        (AgentHarnessKind::Codex, "ralphx", "user"),
+        (AgentHarnessKind::Claude, "ralphx_internal", "user"),
+        (AgentHarnessKind::Claude, "ralphx", "project"),
+        (AgentHarnessKind::Claude, "github", "user"),
+    ] {
+        assert!(validate_legacy_repair_request(provider, server_id, scope).is_err());
+    }
 }
 
 #[tokio::test]

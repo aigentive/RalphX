@@ -2,7 +2,9 @@ use std::fs;
 
 use crate::domain::agents::NativeMcpState;
 
-use super::mcp_catalog::discover_native_mcp_servers;
+use super::mcp_catalog::{
+    classify_legacy_user_registration, discover_native_mcp_servers, LegacyClaudeRegistration,
+};
 
 #[test]
 fn discovers_redacted_user_local_and_project_metadata_with_approval_state() {
@@ -57,5 +59,173 @@ fn rejects_project_config_symlink_escape() {
         let outside = tempfile::NamedTempFile::new().unwrap();
         symlink(outside.path(), project.path().join(".mcp.json")).unwrap();
         assert!(discover_native_mcp_servers(home.path(), Some(project.path())).is_err());
+    }
+}
+
+#[test]
+fn classifies_v081_trace_enabled_user_registration() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let script = app_data
+        .path()
+        .join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(&script, "fixture").unwrap();
+    let trace_dir = app_data.path().join("logs/mcp-proxy");
+    fs::write(
+        home.path().join(".claude.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [script, "--trace-dir", trace_dir]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::ExactHistorical
+    );
+}
+
+#[test]
+fn classifies_plugin_template_user_registration() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let script = app_data
+        .path()
+        .join("generated/claude-plugin/ralphx-mcp-server/build/index.js");
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(&script, "fixture").unwrap();
+    fs::write(
+        home.path().join(".claude.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [script]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::ExactHistorical
+    );
+}
+
+#[test]
+fn classifies_missing_and_unregistered_user_config_as_not_present() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::NotPresent
+    );
+
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"github":{"command":"provider-owned"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+        LegacyClaudeRegistration::NotPresent
+    );
+}
+
+#[test]
+fn rejects_plugin_template_one_field_deviations_and_internal_reserved_registration() {
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let script = app_data
+        .path()
+        .join("generated/claude-plugin/ralphx-mcp-server/build/index.js");
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(&script, "fixture").unwrap();
+    for registration in [
+        serde_json::json!({
+            "type": "stdio",
+            "command": "node",
+            "args": [script],
+            "env": {"TOKEN": "must-not-be-accepted"}
+        }),
+        serde_json::json!({
+            "type": "stdio",
+            "command": "node",
+            "args": [script, "--unexpected"]
+        }),
+        serde_json::json!({
+            "type": "stdio",
+            "command": "other-node",
+            "args": [script]
+        }),
+        serde_json::json!({
+            "command": "node",
+            "args": [script]
+        }),
+    ] {
+        fs::write(
+            home.path().join(".claude.json"),
+            serde_json::json!({
+                "mcpServers": {
+                    "ralphx": registration,
+                    "ralphx_internal": {"command": "node", "args": []}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+            LegacyClaudeRegistration::AmbiguousCollision
+        );
+    }
+}
+
+#[test]
+fn rejects_historical_shape_when_the_script_symlink_escapes_app_data() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_script = outside.path().join("index.js");
+        fs::write(&outside_script, "outside").unwrap();
+        let script = app_data
+            .path()
+            .join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        symlink(&outside_script, &script).unwrap();
+        fs::write(
+            home.path().join(".claude.json"),
+            serde_json::json!({
+                "mcpServers": {"ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [script, "--trace-dir", app_data.path().join("logs/mcp-proxy")]
+                }}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
+            LegacyClaudeRegistration::AmbiguousCollision
+        );
     }
 }

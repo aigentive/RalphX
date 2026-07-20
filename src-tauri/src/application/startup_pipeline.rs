@@ -148,6 +148,21 @@ where
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
     let previous_session_cutoff = startup_previous_session_cutoff();
 
+    let phase_started_at = startup_phase_started("legacy_claude_mcp_reconciliation");
+    if deps
+        .app_state
+        .mcp_policy_service()
+        .reconcile_legacy_claude_registration_best_effort()
+        .await
+        .is_err()
+    {
+        warn!(
+            failure_code = "legacy_mcp_reconciliation_failed",
+            "Legacy Claude MCP reconciliation did not complete; launch preflight remains authoritative"
+        );
+    }
+    startup_phase_completed("legacy_claude_mcp_reconciliation", phase_started_at);
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,
