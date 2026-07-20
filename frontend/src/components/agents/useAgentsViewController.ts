@@ -63,6 +63,7 @@ import {
   invalidateWorkspaceQueries,
   preflightAgentWorkspaceFreshness,
   prReviewContextForConversation,
+  refreshWorkspaceReviewContext,
   refreshWorkspaceReviewAfterSignal,
   resolveWorkspaceReviewOwnerConversationId,
   workspaceReviewContextForConversation,
@@ -683,6 +684,31 @@ export function useAgentsViewController({
     workspaceReviewContextQuery.data,
     workspaceReviewConversationId,
   );
+  const hydratedTerminalWorkspaceReviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceReviewConversationId || !workspaceReviewContext) {
+      hydratedTerminalWorkspaceReviewRef.current = null;
+      return;
+    }
+    const { monitor } = workspaceReviewContext;
+    if (monitor.status === "reviewing") {
+      return;
+    }
+    const hydrationKey = `${workspaceReviewConversationId}:${monitor.updatedAt}:${monitor.status}`;
+    if (hydratedTerminalWorkspaceReviewRef.current === hydrationKey) {
+      return;
+    }
+    hydratedTerminalWorkspaceReviewRef.current = hydrationKey;
+    void refreshWorkspaceReviewContext(
+      queryClient,
+      workspaceReviewConversationId,
+      "full_target",
+    ).catch(() => undefined);
+  }, [
+    queryClient,
+    workspaceReviewContext,
+    workspaceReviewConversationId,
+  ]);
   const isWorkspaceReviewRunning =
     workspaceReviewContext?.monitor.status === "reviewing" ||
     workspaceReviewContext?.monitor.reviewGateStatus === "reviewing";
