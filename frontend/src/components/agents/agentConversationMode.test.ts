@@ -161,22 +161,32 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     ]);
   });
 
-  it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
+  it("keeps legacy-only modes out of fresh conversations and gates Autopilot", () => {
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: false }).map(
         (option) => option.id,
       ),
-    ).not.toContain("tasks");
-    expect(
-      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
-        (option) => option.id,
-      ),
-    ).not.toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: true }).map(
         (option) => option.id,
       ),
-    ).toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "autopilot",
+      "persona_builder",
+    ]);
   });
 
   it("offers Tasks only for the current or durably attached pipeline", () => {
