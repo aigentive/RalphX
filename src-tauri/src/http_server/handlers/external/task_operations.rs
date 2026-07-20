@@ -531,7 +531,7 @@ pub async fn review_action_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<ReviewActionRequest>,
-) -> Result<Json<ReviewActionResponse>, StatusCode> {
+) -> Result<Json<ReviewActionResponse>, HttpError> {
     let task_id = crate::domain::entities::TaskId::from_string(req.task_id.clone());
 
     let task = state
@@ -596,13 +596,13 @@ pub async fn review_action_http(
     let updated_task = transition_service
         .transition_task(&task_id, target_status)
         .await
-        .map_err(|e| {
+        .map_err(|error| {
             error!(
                 "Failed to transition task {} for review action: {}",
                 task_id.as_str(),
-                e
+                error
             );
-            StatusCode::UNPROCESSABLE_ENTITY
+            tasks_feature_http_error(error)
         })?;
 
     Ok(Json(ReviewActionResponse {
@@ -629,7 +629,7 @@ pub async fn create_task_note_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<CreateTaskNoteRequest>,
-) -> Result<Json<TaskNoteResponse>, StatusCode> {
+) -> Result<Json<TaskNoteResponse>, HttpError> {
     let task_id = crate::domain::entities::TaskId::from_string(req.task_id);
 
     let mut task = state
@@ -653,7 +653,7 @@ pub async fn create_task_note_http(
 
     state.app_state.task_repo.update(&task).await.map_err(|e| {
         error!("Failed to update task {}: {}", task_id.as_str(), e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        tasks_feature_http_error(e)
     })?;
 
     Ok(Json(TaskNoteResponse {
