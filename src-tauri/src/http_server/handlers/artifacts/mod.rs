@@ -28,6 +28,9 @@ mod events;
 mod linking;
 mod query;
 mod shared;
+mod team_artifacts;
+#[cfg(test)]
+mod team_artifacts_tests;
 mod update;
 
 pub use approval::approve_plan_artifact;
@@ -36,6 +39,7 @@ pub use edit::edit_plan_artifact;
 pub use linking::link_proposals_to_plan;
 pub use query::{get_artifact_history, get_session_plan};
 pub use shared::{apply_edits, check_verification_freeze, EditError};
+pub use team_artifacts::{create_team_artifact, get_team_artifacts};
 pub use update::update_plan_artifact;
 
 use events::emit_plan_update_events;

@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
+use ralphx_lib::application::{AppState, InteractiveProcessKey};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{InternalStatus, Project, ProjectId, Task, TaskId};
 use ralphx_lib::http_server::handlers::*;
@@ -126,13 +126,9 @@ mod task_commits {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -293,13 +289,9 @@ mod ipr_removal {
     async fn setup_git_test_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -960,13 +952,9 @@ mod source_update_conflict {
     async fn setup_git_test_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -1256,13 +1244,9 @@ mod freshness_routing_integration {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -1688,13 +1672,9 @@ mod webhook_emission {
     async fn setup_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }

@@ -122,13 +122,10 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub turn_metadata: Option<String>,
     pub conversation: Option<ChatConversation>,
     pub agent_name: Option<String>,
-    pub team_mode: bool,
     pub assistant_message_attribution: ChatMessageAttribution,
     pub persist_conversation_provider_session_ref: bool,
     // Cancellation
     pub cancellation_token: CancellationToken,
-    // Team state
-    pub team_service: Option<std::sync::Arc<crate::application::TeamService>>,
     // Streaming state cache for frontend hydration
     pub streaming_state_cache: StreamingStateCache,
     // Interactive process registry for stdin cleanup on process exit
@@ -924,11 +921,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             turn_metadata,
             conversation,
             agent_name,
-            team_mode,
             assistant_message_attribution,
             persist_conversation_provider_session_ref,
             cancellation_token,
-            team_service,
             streaming_state_cache,
             interactive_process_registry,
             interactive_process_token,
@@ -997,12 +992,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 None
             };
 
-        // Pre-spawn cleanup: disband any stale teams for this context before the new run.
-        // Handles mode-switch (team → solo) and crash-recovery re-execution scenarios.
-        if let Some(ref service) = team_service {
-            service.cleanup_stale_teams_for_context(&context_id).await;
-        }
-
         // Resolve project ID for RALPHX_PROJECT_ID env var (used in queue processing)
         let resolved_project_id = chat_service_context::resolve_project_id(
             context_type,
@@ -1043,8 +1032,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             Some(pre_assistant_msg_id.clone()),
             question_state.clone(),
             cancellation_token.clone(),
-            team_service.clone(),
-            team_mode,
             streaming_state_cache.clone(),
             Some(Arc::clone(&running_agent_registry)),
             Some(Arc::clone(&agent_run_repo)),
@@ -1056,39 +1043,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         )
         .await;
 
-        // Clean up team state when lead stream ends (success, error, or timeout)
-        let mut team_still_active = false;
-        if team_mode {
-            if let Some(ref service) = team_service {
-                let teams = service.list_teams().await;
-                for tn in &teams {
-                    if let Ok(status) = service.get_team_status(tn).await {
-                        if status.context_id == context_id {
-                            // Disband the team via TeamService (stops teammates + persists + emits events)
-                            if let Err(e) = service.disband_team(tn).await {
-                                tracing::error!(
-                                    team_name = %tn,
-                                    error = %e,
-                                    "[TEAM_DISBAND_FAIL] Failed to disband team — IPR will still be removed (dead stdin is useless)"
-                                );
-                                // Disband failed: team is still registered, but we must still
-                                // remove the IPR — a dead process's stdin is useless.
-                                // Teammates will trigger re-spawn via the IPR-miss path.
-                                team_still_active = true;
-                            }
-                            // If disband succeeded, team_still_active stays false
-                        }
-                    }
-                }
-            }
-        }
-
         // Unregister the process when done (ownership check: only removes our own slot)
         running_agent_registry.unregister(&registry_key, &agent_run_id).await;
 
         // Always remove the IPR entry on stream exit — a dead process's stdin is useless.
-        // Even if teammates are still registered, they will trigger re-spawn via the
-        // standard IPR-miss path when they try to nudge the lead.
         if let Some(ref ipr) = interactive_process_registry {
             let ipr_key = InteractiveProcessKey::new(
                 context_type.to_string(),
@@ -1107,22 +1065,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     "[IPR_REMOVE] Stream exit preserved newer interactive process"
                 );
             }
-            if team_still_active {
-                tracing::info!(
-                    %context_type,
-                    context_id = %context_id,
-                    runtime_context_id = %runtime_context_id,
-                    "[IPR_REMOVE_TEAM] Removed IPR — team active but lead exited. \
-                     Teammate nudges trigger re-spawn via standard IPR-miss path."
-                );
-            } else {
-                tracing::info!(
-                    %context_type,
-                    context_id = %context_id,
-                    runtime_context_id = %runtime_context_id,
-                    "[IPR_REMOVE] Removed interactive process stdin on stream exit"
-                );
-            }
+            tracing::info!(
+                %context_type,
+                context_id = %context_id,
+                runtime_context_id = %runtime_context_id,
+                "[IPR_REMOVE] Removed interactive process stdin on stream exit"
+            );
         }
 
         // Clean up interactive idle slot tracking
@@ -1855,7 +1803,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
                         conversation_coordination_mode,
-                        team_mode,
                         cancellation_token.clone(),
                         run_chain_id.as_deref(),
                         Some(&agent_run_id),
@@ -2004,7 +1951,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &agent_provider_settings_repo,
                     &app_handle,
                     agent_name.as_deref(),
-                    team_mode,
                     run_chain_id.clone(),
                     &interactive_process_registry,
                     &review_repo,
@@ -2075,7 +2021,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 app_handle.clone(),
                                 resolved_project_id.as_deref(),
                                 conversation_coordination_mode,
-                                team_mode,
                                 cancellation_token.clone(),
                                 run_chain_id.as_deref(),
                                 Some(&agent_run_id),

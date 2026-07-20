@@ -54,11 +54,6 @@ fn build_child_session_response(
     generation: Option<i32>,
     pending_initial_prompt: Option<String>,
 ) -> CreateChildSessionResponse {
-    let team_config = session
-        .team_config_json
-        .as_ref()
-        .and_then(|json_str| serde_json::from_str(json_str).ok());
-
     CreateChildSessionResponse {
         session_id: session.id.as_str().to_string(),
         parent_session_id: parent_id.as_str().to_string(),
@@ -75,8 +70,6 @@ fn build_child_session_response(
         initial_prompt: req.initial_prompt.clone(),
         parent_context,
         orchestration_triggered,
-        team_mode: session.team_mode.clone(),
-        team_config,
         generation,
         pending_initial_prompt,
     }
@@ -298,46 +291,6 @@ pub(crate) async fn create_child_session_impl(
         ));
     }
 
-    let (resolved_team_mode, resolved_team_config_json) = if let Some(mode) = &req.team_mode {
-        let config_json = req
-            .team_config
-            .as_ref()
-            .and_then(|config| serde_json::to_value(config).ok());
-        (
-            Some(mode.clone()),
-            config_json.map(|value| value.to_string()),
-        )
-    } else if req.inherit_context {
-        (parent.team_mode.clone(), parent.team_config_json.clone())
-    } else {
-        (None, None)
-    };
-    let team_mode_requested = resolved_team_mode
-        .as_deref()
-        .is_some_and(|mode| mode != "solo");
-    let team_mode_supported =
-        crate::application::ideation_harness_availability::ideation_team_mode_supported_for_project(
-            &state.app_state.agent_lane_settings_repo,
-            Some(parent.project_id.as_str()),
-        )
-        .await;
-    let (resolved_team_mode, resolved_team_config_json) = if team_mode_requested
-        && !team_mode_supported
-    {
-        tracing::info!(
-            parent_session_id = %parent_id.as_str(),
-            project_id = %parent.project_id,
-            "Downgrading child ideation session team mode to solo because the primary harness does not support team mode"
-        );
-        (Some("solo".to_string()), None)
-    } else {
-        (resolved_team_mode, resolved_team_config_json)
-    };
-
-    let (team_mode, team_config_json) = validate_resolved_team_config(
-        resolved_team_mode.as_ref(),
-        resolved_team_config_json.as_ref(),
-    );
     let purpose = req
         .purpose
         .as_deref()
@@ -349,8 +302,6 @@ pub(crate) async fn create_child_session_impl(
         ChildSessionDraftInput {
             title: req.title.clone(),
             inherit_context: req.inherit_context,
-            team_mode,
-            team_config_json,
             source_task_id: req.source_task_id.clone(),
             source_context_type: req.source_context_type.clone(),
             source_context_id: req.source_context_id.clone(),

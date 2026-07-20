@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use ralphx_lib::application::chat_service::{CachedStreamingTask, CachedToolCall};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
@@ -22,7 +22,6 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         model: None,
         status: "running".to_string(),
         agent_id: None,
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
@@ -52,14 +51,10 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -422,8 +417,14 @@ async fn test_get_active_state_returns_delegated_metadata() {
 
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.delegated_job_id.as_deref(), Some("job-123"));
-    assert_eq!(task.delegated_session_id.as_deref(), Some("delegated-session-123"));
-    assert_eq!(task.delegated_conversation_id.as_deref(), Some("conv-child-123"));
+    assert_eq!(
+        task.delegated_session_id.as_deref(),
+        Some("delegated-session-123")
+    );
+    assert_eq!(
+        task.delegated_conversation_id.as_deref(),
+        Some("conv-child-123")
+    );
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));
@@ -520,7 +521,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.status, "completed");
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
-    assert_eq!(task.provider_session_id.as_deref(), Some("run-provider-session"));
+    assert_eq!(
+        task.provider_session_id.as_deref(),
+        Some("run-provider-session")
+    );
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.provider_profile.as_deref(), Some("prod"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));

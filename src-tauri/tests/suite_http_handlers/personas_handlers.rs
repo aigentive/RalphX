@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 use ralphx_events::RecordingEventSink;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceMode, ChatConversation, PersonaStatus, ProjectId,
@@ -61,13 +61,9 @@ fn setup_state(event_sink: Option<RecordingEventSink>) -> HttpServerState {
     if let Some(event_sink) = event_sink {
         app_state.events = Arc::new(event_sink);
     }
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state: Arc::new(app_state),
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
         delegation_service: Arc::new(DelegationService::new()),
     }
 }

@@ -139,10 +139,6 @@ async fn restore_queued_front(
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn session_is_team_mode(team_mode: Option<&str>) -> bool {
-    team_mode.is_some_and(|mode| mode != "solo")
-}
-
 pub(super) fn is_pause_managed_chat_context(context_type: ChatContextType) -> bool {
     matches!(
         context_type,
@@ -546,7 +542,7 @@ pub(super) async fn resume_paused_ideation_queues_with_chat_service<F>(
     build_chat_service: F,
 ) -> Result<u32, String>
 where
-    F: Fn(bool) -> Arc<dyn ChatService>,
+    F: Fn() -> Arc<dyn ChatService>,
 {
     let mut resumed = 0u32;
     let mut ideation_keys = Vec::new();
@@ -636,7 +632,7 @@ where
             continue;
         };
 
-        let send_result = build_chat_service(session_is_team_mode(session.team_mode.as_deref()))
+        let send_result = build_chat_service()
             .send_message(
                 ChatContextType::Ideation,
                 session.id.as_str(),

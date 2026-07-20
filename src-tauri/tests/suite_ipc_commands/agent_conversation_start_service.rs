@@ -14,7 +14,7 @@ use ralphx_lib::application::agent_conversation_workspace::{
 use ralphx_lib::application::automation::provisioning::AutomationRunProvisioner;
 use ralphx_lib::application::automation::transition::NoopAutomationEventEmitter;
 use ralphx_lib::application::startup_background::AgentConversationAutomationRunStarter;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
@@ -79,9 +79,6 @@ fn build_app(
     mock_builder()
         .manage(state)
         .manage(execution_state)
-        .manage(Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        ))))
         .build(mock_context(noop_assets()))
         .expect("mock app should build")
 }
@@ -230,11 +227,9 @@ async fn start_with_app(
 ) -> Result<AgentConversationStartResult, String> {
     let state = app.state::<AppState>();
     let execution_state = app.state::<Arc<ExecutionState>>();
-    let team_service = app.state::<Arc<TeamService>>();
     AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(input)
@@ -834,11 +829,9 @@ async fn ipc_contract_start_service_plan_mode_links_planning_session_for_automat
     execution_state.pause();
     let app_state = state.clone();
     let app = build_app(state, Arc::clone(&execution_state));
-    let team_service = app.state::<Arc<TeamService>>().inner().clone();
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         app_state.clone(),
         Arc::clone(&execution_state),
-        Some(team_service),
         app.handle().clone(),
     ));
     let provisioner = AutomationRunProvisioner::new(

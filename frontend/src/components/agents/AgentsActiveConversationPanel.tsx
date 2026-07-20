@@ -2087,7 +2087,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         activeProjectId,
         PLAN_IMPLEMENT_DIRECTLY_REQUEST,
         undefined,
-        undefined,
         {
           conversationId: activeWorkspace.conversationId,
           providerHarness: workspaceSendRuntime.provider,
@@ -2428,7 +2427,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           activeProjectId,
           trimmedMessage,
           undefined,
-          undefined,
           {
             conversationId,
             providerHarness: workspaceSendRuntime.provider,
@@ -2564,10 +2562,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     let eventRetryTimer: number | undefined;
     let fallbackRetryTimer: number | undefined;
     const retryAfterCompletedRun = (payload: AgentRunCompletedPayload) => {
-      if (
-        payload.conversation_id !== conversationId ||
-        payload.teammate_name
-      ) {
+      if (payload.conversation_id !== conversationId) {
         return;
       }
       if (eventRetryTimer !== undefined) {
@@ -2774,7 +2769,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       "project",
                       activeProjectId,
                       trimmedFollowup,
-                      undefined,
                       undefined,
                       {
                         conversationId: forkResult.conversation.id,

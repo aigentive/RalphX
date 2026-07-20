@@ -94,8 +94,6 @@ interface ChatState {
   agentActivityLabels: Record<string, string>;
   /** Whether a message is currently being sent, keyed by context key */
   isSending: Record<string, boolean>;
-  /** Whether a team is active for a context key (enables team UI) */
-  isTeamActive: Record<string, boolean>;
   /** Last agent event timestamp per context key — used by watchdog for stuck-generating recovery */
   lastAgentEventTimestamp: Record<string, number>;
   /** Tool call start timestamps: storeKey → { toolCallId → epoch ms } — for elapsed timer display */
@@ -161,8 +159,6 @@ interface ChatActions {
   startEditingQueuedMessage: (contextKey: string, id: string) => void;
   /** Stop editing a queued message */
   stopEditingQueuedMessage: (contextKey: string, id: string) => void;
-  /** Set team active state for a context */
-  setTeamActive: (contextKey: string, isActive: boolean) => void;
   /** Update last agent event timestamp for watchdog tracking */
   updateLastAgentEvent: (key: string) => void;
   /** Record start timestamp for a tool call (for elapsed timer display) */
@@ -247,7 +243,6 @@ export const useChatStore = create<ChatState & ChatActions>()(
     agentStatus: {},
     agentActivityLabels: {},
     isSending: {},
-    isTeamActive: {},
     lastAgentEventTimestamp: {},
     toolCallStartTimes: {},
     lastToolCallCompletionTimestamp: {},
@@ -513,17 +508,6 @@ export const useChatStore = create<ChatState & ChatActions>()(
         }
       }),
 
-    setTeamActive: (contextKey, isActive) =>
-      set((state) => {
-        if (isActive) {
-          if (state.isTeamActive[contextKey]) return; // already true — no-op
-          state.isTeamActive[contextKey] = true;
-        } else {
-          if (!(contextKey in state.isTeamActive)) return; // already absent — no-op
-          delete state.isTeamActive[contextKey];
-        }
-      }),
-
     updateLastAgentEvent: (key) =>
       set((state) => {
         state.lastAgentEventTimestamp[key] = Date.now();
@@ -739,16 +723,6 @@ export const selectComposerDraft =
   (draftKey: string | null) =>
   (state: ChatState): ChatComposerDraft | null =>
     draftKey ? state.composerDraftsByKey[draftKey] ?? null : null;
-
-/**
- * Select whether a team is active for a context
- * @param contextKey - The context key to check
- * @returns Selector function returning team active state
- */
-export const selectIsTeamActive =
-  (contextKey: string) =>
-  (state: ChatState): boolean =>
-    state.isTeamActive[contextKey] ?? false;
 
 /**
  * Select last agent event timestamp for a context (for watchdog use)

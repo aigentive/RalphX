@@ -874,10 +874,9 @@ async fn failed_ready_restart_clears_stale_refs_and_preserves_completed_steps() 
     failed_step.completion_note = Some("failed".to_string());
     task_step_repo.create(failed_step).await.unwrap();
 
-    let preparation =
-        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
-            .await
-            .unwrap();
+    let preparation = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task)
+        .await
+        .unwrap();
     assert_eq!(preparation.cleared_failed_steps, 1);
 
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
@@ -908,7 +907,7 @@ async fn failed_ready_restart_clears_stale_refs_and_preserves_completed_steps() 
 }
 
 #[tokio::test]
-async fn cancelled_ready_restart_sets_variant_without_preserving_steps() {
+async fn cancelled_ready_restart_does_not_preserve_steps() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
     let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
     let project_id = ProjectId::from_string("project-cancelled-restart".to_string());
@@ -922,10 +921,9 @@ async fn cancelled_ready_restart_sets_variant_without_preserving_steps() {
     let task_id = task.id.clone();
     task_repo.create(task.clone()).await.unwrap();
 
-    let preparation =
-        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, Some("solo"))
-            .await
-            .unwrap();
+    let preparation = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task)
+        .await
+        .unwrap();
 
     assert_eq!(preparation.cleared_failed_steps, 0);
 
@@ -937,7 +935,7 @@ async fn cancelled_ready_restart_sets_variant_without_preserving_steps() {
     let metadata: serde_json::Value =
         serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
     assert_eq!(metadata["trigger_origin"], "retry");
-    assert_eq!(metadata["agent_variant"], "solo");
+    assert!(metadata.get("agent_variant").is_none());
     assert!(metadata.get("preserve_steps").is_none());
     assert_eq!(
         metadata["execution_recovery"]["last_state"],
@@ -977,10 +975,9 @@ async fn stopped_ready_restart_clears_stale_refs_without_preserving_steps() {
     let task_id = task.id.clone();
     task_repo.create(task.clone()).await.unwrap();
 
-    let preparation =
-        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
-            .await
-            .unwrap();
+    let preparation = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task)
+        .await
+        .unwrap();
 
     assert_eq!(preparation.cleared_failed_steps, 0);
 
@@ -1023,14 +1020,9 @@ async fn terminal_ready_restart_rejects_stale_status_without_clearing_refs() {
     concurrent_task.internal_status = InternalStatus::PendingReview;
     task_repo.create(concurrent_task.clone()).await.unwrap();
 
-    let error = prepare_terminal_task_for_ready_restart(
-        &task_repo,
-        &task_step_repo,
-        &stale_task,
-        Some("team"),
-    )
-    .await
-    .expect_err("stale terminal preparation must lose optimistic authority");
+    let error = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &stale_task)
+        .await
+        .expect_err("stale terminal preparation must lose optimistic authority");
     assert!(error.to_string().contains("changed concurrently"));
 
     let stored = task_repo.get_by_id(&stale_task.id).await.unwrap().unwrap();
@@ -1065,7 +1057,7 @@ async fn terminal_ready_restart_blocks_when_existing_worktree_is_dirty() {
     let task_id = task.id.clone();
     task_repo.create(task.clone()).await.unwrap();
 
-    let err = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+    let err = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task)
         .await
         .expect_err("dirty restart should be blocked");
 
@@ -1098,10 +1090,9 @@ async fn non_terminal_ready_restart_preparation_is_noop() {
     task.worktree_path = Some("/tmp/keep-worktree".to_string());
     task.merge_commit_sha = Some("feedface".to_string());
 
-    let preparation =
-        prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, Some("solo"))
-            .await
-            .unwrap();
+    let preparation = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task)
+        .await
+        .unwrap();
 
     assert_eq!(preparation, ReadyRestartPreparation::default());
     assert!(

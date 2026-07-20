@@ -21,5 +21,4 @@ mod pending_session_drain;
 mod persona_feature_flag;
 mod persona_prompt_composition;
 mod persona_run_attribution;
-mod session_fixes_integration;
 mod session_linking_integration;

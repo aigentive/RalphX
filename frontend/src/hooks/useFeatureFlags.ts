@@ -23,7 +23,6 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   ideationPage: false,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: false,

@@ -48,25 +48,12 @@ pub const SHORT_BRANCH_UPDATER: &str = "ralphx-execution-branch-updater";
 pub const SHORT_MEMORY_MAINTAINER: &str = "ralphx-memory-maintainer";
 pub const SHORT_MEMORY_CAPTURE: &str = "ralphx-memory-capture";
 
-// ── Team lead variants (extends base agents) ────────────────────────────
-pub const SHORT_IDEATION_TEAM_LEAD: &str = "ralphx-ideation-team-lead";
-pub const SHORT_WORKER_TEAM: &str = "ralphx-execution-team-lead";
-pub const SHORT_IDEATION_TEAM_MEMBER: &str = "ideation-team-member";
-
-// ── Ideation specialist agents (spawned by ralphx-ideation-team-lead) ───────────
+// ── RX-native ideation specialist agents ───────────────────────────────
 pub const SHORT_IDEATION_SPECIALIST_BACKEND: &str = "ralphx-ideation-specialist-backend";
 pub const SHORT_IDEATION_SPECIALIST_FRONTEND: &str = "ralphx-ideation-specialist-frontend";
 pub const SHORT_IDEATION_SPECIALIST_INFRA: &str = "ralphx-ideation-specialist-infra";
 pub const SHORT_IDEATION_ADVOCATE: &str = "ralphx-ideation-advocate";
 pub const SHORT_IDEATION_CRITIC: &str = "ralphx-ideation-critic";
-
-// ── ChatService team agents (team_mode=true → resolve_agent_with_team_mode) ──
-
-/// Ideation team lead (ChatContextType::Ideation + team_mode)
-pub const AGENT_IDEATION_TEAM_LEAD: &str = "ralphx:ralphx-ideation-team-lead";
-
-/// Worker team lead (ChatContextType::TaskExecution + team_mode)
-pub const AGENT_WORKER_TEAM: &str = "ralphx:ralphx-execution-team-lead";
 
 // ── ChatService agents (resolve_agent → build_command → --agent flag) ─────
 

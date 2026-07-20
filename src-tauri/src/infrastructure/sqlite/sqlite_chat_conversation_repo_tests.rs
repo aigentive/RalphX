@@ -377,23 +377,6 @@ async fn test_update_coordination_mode_persists_value() {
     assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
-#[tokio::test]
-async fn test_update_coordination_mode_preserves_legacy_compatibility_value() {
-    let db = setup_test_db();
-    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
-
-    let conv = make_conversation(ChatContextType::Project, "project-legacy");
-    let conversation_id = conv.id;
-    repo.create(conv).await.unwrap();
-
-    repo.update_coordination_mode(&conversation_id, CoordinationMode::LegacyClaudeTeam)
-        .await
-        .unwrap();
-
-    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
-    assert_eq!(loaded.coordination_mode, CoordinationMode::LegacyClaudeTeam);
-}
-
 // --- get_by_id ---
 
 #[tokio::test]

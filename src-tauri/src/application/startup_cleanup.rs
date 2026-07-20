@@ -30,19 +30,6 @@ pub(crate) fn run_startup_cleanup(app_state: &AppState) {
         });
     }
 
-    // Cleanup stale process state from previous session.
-    // All spawned agent team processes are children of the Tauri app, so any
-    // restart (including crash) leaves their DB rows in an active state.
-    {
-        let team_repo = Arc::clone(&app_state.team_session_repo);
-        tauri::async_runtime::block_on(async move {
-            match team_repo.disband_all_active("app_restart").await {
-                Ok(n) => info!(count = n, "Disbanded stale team sessions on startup"),
-                Err(e) => warn!(error = %e, "Failed to disband stale team sessions"),
-            }
-        });
-    }
-
     // Validation commands are also spawned under the app process. On restart,
     // any durable running validation row from a previous process is orphaned.
     {

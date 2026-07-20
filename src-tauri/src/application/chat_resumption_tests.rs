@@ -96,7 +96,7 @@ fn durable_silent_completion_recovery_send_options_carries_persisted_team_intent
     let mut conversation = ChatConversation::new_project(ProjectId::from_string(
         "project-team-durable-recovery".to_string(),
     ));
-    conversation.set_coordination_mode(CoordinationMode::LegacyClaudeTeam);
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
     let options = durable_silent_completion_recovery_send_options(
         &conversation,
         "{\"source\":\"test\"}".to_string(),

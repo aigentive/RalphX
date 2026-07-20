@@ -17,11 +17,11 @@ mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
 mod chat_service_merge;
-#[cfg(test)]
-mod mcp_policy_launch_seam_tests;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
+#[cfg(test)]
+mod mcp_policy_launch_seam_tests;
 #[doc(hidden)]
 pub use chat_service_recovery::attempt_session_recovery;
 mod chat_service_replay;
@@ -37,9 +37,9 @@ pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 #[cfg(test)]
-mod continuation_runtime_tests;
-#[cfg(test)]
 mod chat_service_runtime_continuity_tests;
+#[cfg(test)]
+mod continuation_runtime_tests;
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
@@ -96,8 +96,8 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerExcerptReference,
-    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue,
-    QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
+    MessageQueue, QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
@@ -111,7 +111,6 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -145,10 +144,8 @@ pub use chat_service_errors::{
     parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
     ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR, VALIDATION_FAILED_ERROR_CODE,
 };
-pub use chat_service_helpers::{
-    context_type_to_process, get_agent_name, get_assistant_role, resolve_agent_with_team_mode,
-};
-pub use chat_service_helpers::{harness_supports_rx_native_team, harness_supports_team_mode};
+pub use chat_service_helpers::harness_supports_rx_native_team;
+pub use chat_service_helpers::{context_type_to_process, get_agent_name, get_assistant_role};
 pub use chat_service_merge::{
     merge_completion_watcher_loop, resolve_watcher_context, verify_merge_on_target,
     AutoCompleteGuard, MergeVerification,
@@ -181,8 +178,6 @@ pub use chat_service_types::{
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
     AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
-    TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
-    TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -404,10 +399,9 @@ fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
 
 fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let metadata = strip_resume_in_place_metadata(options.metadata.clone());
-    let excerpt_references =
-        chat_service_composer_references::normalize_excerpt_references(
-            &options.composer_excerpt_references,
-        );
+    let excerpt_references = chat_service_composer_references::normalize_excerpt_references(
+        &options.composer_excerpt_references,
+    );
     if options.composer_project_references.is_empty()
         && options.composer_integration_references.is_empty()
         && options.composer_artifact_references.is_empty()
@@ -771,19 +765,12 @@ pub fn agent_profile_for_conversation_mode(
 fn resolve_agent_name_for_send<'a>(
     context_type: &ChatContextType,
     entity_status: Option<&'a str>,
-    team_mode: bool,
     agent_name_override: Option<&'a str>,
     agent_conversation_mode: Option<AgentConversationWorkspaceMode>,
 ) -> &'a str {
     agent_name_override
         .or_else(|| agent_conversation_mode.map(agent_name_for_conversation_mode))
-        .unwrap_or_else(|| {
-            chat_service_helpers::resolve_agent_with_team_mode(
-                context_type,
-                entity_status,
-                team_mode,
-            )
-        })
+        .unwrap_or_else(|| chat_service_helpers::resolve_agent(context_type, entity_status))
 }
 
 fn preferred_agent_override<'a>(
@@ -1171,10 +1158,7 @@ pub(crate) fn codex_fast_mode_service_tier_override(enabled: Option<bool>) -> Op
 }
 
 pub(crate) fn coordination_mode_enables_team(coordination_mode: CoordinationMode) -> bool {
-    matches!(
-        coordination_mode,
-        CoordinationMode::LegacyClaudeTeam | CoordinationMode::RxNativeTeam
-    )
+    coordination_mode == CoordinationMode::RxNativeTeam
 }
 
 pub(crate) fn team_intent_for_persisted_coordination_mode(
@@ -1408,10 +1392,6 @@ pub trait ChatService: Send + Sync {
         context_ids: &[String],
     ) -> HashMap<String, AgentRunningState>;
 
-    /// Override team mode at runtime (interior mutability).
-    /// Default is a no-op; AppChatService uses AtomicBool.
-    fn set_team_mode(&self, _mode: bool) {}
-
     /// Override plan branch repo at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses std::sync::Mutex.
     fn set_plan_branch_repo(&self, _repo: Arc<dyn PlanBranchRepository>) {}
@@ -1486,12 +1466,6 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     webhook_publisher: std::sync::Mutex<Option<Arc<dyn WebhookPublisher>>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
     model: String,
-    /// When true, agent resolution uses team-lead variants if configured.
-    /// Uses AtomicBool for interior mutability so team_mode can be set
-    /// after Arc-wrapping (e.g., per-task metadata override).
-    team_mode: AtomicBool,
-    /// Team service for managing agent teams lifecycle (persistence + events).
-    team_service: Option<std::sync::Arc<crate::application::TeamService>>,
     /// Cache for streaming state, used to hydrate frontend on navigation.
     streaming_state_cache: StreamingStateCache,
     /// Registry of interactive processes with open stdin handles for multi-turn messaging.
@@ -1596,8 +1570,6 @@ impl<R: Runtime> AppChatService<R> {
             webhook_publisher: std::sync::Mutex::new(None),
             review_repo: None,
             model: "sonnet".to_string(),
-            team_mode: AtomicBool::new(false),
-            team_service: None,
             streaming_state_cache: StreamingStateCache::new(),
             interactive_process_registry: std::sync::Mutex::new(Arc::new(
                 InteractiveProcessRegistry::new(),
@@ -2069,19 +2041,10 @@ impl<R: Runtime> AppChatService<R> {
             .await?
         };
 
-        let requested_coordination_mode = if let Some(team_intent) = options.team_intent.as_ref() {
-            if team_intent.coordination_mode == CoordinationMode::LegacyClaudeTeam {
-                return Err(ChatServiceError::SpawnFailed(
-                    "Legacy Claude team mode is read-only; use Team mode for new writes"
-                        .to_string(),
-                ));
-            }
-            Some(team_intent.coordination_mode)
-        } else if conversation.coordination_mode == CoordinationMode::LegacyClaudeTeam {
-            Some(CoordinationMode::RxNativeTeam)
-        } else {
-            None
-        };
+        let requested_coordination_mode = options
+            .team_intent
+            .as_ref()
+            .map(|team_intent| team_intent.coordination_mode);
         if let Some(coordination_mode) = requested_coordination_mode {
             if conversation.coordination_mode != coordination_mode {
                 self.conversation_repo
@@ -2212,19 +2175,6 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
-        self
-    }
-
-    pub fn with_team_mode(mut self, team_mode: bool) -> Self {
-        self.team_mode = AtomicBool::new(team_mode);
-        self
-    }
-
-    pub fn with_team_service(
-        mut self,
-        service: std::sync::Arc<crate::application::TeamService>,
-    ) -> Self {
-        self.team_service = Some(service);
         self
     }
 
@@ -3777,7 +3727,6 @@ impl<R: Runtime> AppChatService<R> {
             entity_status,
             project_id,
             &[],
-            self.team_mode.load(Ordering::Relaxed),
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
             self.agent_lane_settings_repo.clone(),
@@ -3861,7 +3810,6 @@ impl<R: Runtime> AppChatService<R> {
         session_messages: &[crate::domain::entities::ChatMessage],
         session_total: usize,
         is_external_mcp: bool,
-        runtime_team_mode: bool,
         stored_session_id: Option<&str>,
         resolved_spawn_settings: &crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings,
         attachment_context_override: Option<&str>,
@@ -3963,7 +3911,6 @@ impl<R: Runtime> AppChatService<R> {
             entity_status,
             project_id,
             &filesystem_read_roots,
-            runtime_team_mode,
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
             Arc::clone(&self.ideation_session_repo),
@@ -3987,9 +3934,8 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
-        let effective_agent_name = agent_name_override.unwrap_or_else(|| {
-            resolve_agent_with_team_mode(&context_type, entity_status, runtime_team_mode)
-        });
+        let effective_agent_name = agent_name_override
+            .unwrap_or_else(|| chat_service_helpers::resolve_agent(&context_type, entity_status));
         #[cfg(any(test, feature = "test-utils"))]
         let should_await_external_mcp = self.app_handle.is_some();
         #[cfg(not(any(test, feature = "test-utils")))]
@@ -5209,7 +5155,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         )
         .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
-        let team_mode_val = self.team_mode.load(Ordering::Relaxed);
         let agent_conversation_mode = agent_conversation_mode_for_send(
             context_type,
             conversation.agent_mode,
@@ -5218,7 +5163,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let agent_name = resolve_agent_name_for_send(
             &context_type,
             entity_status.as_deref(),
-            team_mode_val,
             preferred_agent_override(
                 options.agent_name_override.as_deref(),
                 conversation.bound_agent_name.as_deref(),
@@ -6225,10 +6169,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             "ensure_provider_spawn_enabled",
             provider_spawn_check_started,
         );
-        let runtime_team_mode = chat_service_helpers::effective_team_mode_for_harness(
-            team_mode_val,
-            resolved_spawn_settings.effective_harness,
-        );
         if conversation.coordination_mode == CoordinationMode::RxNativeTeam {
             let team_intent = TeamIntent::rx_native(
                 options
@@ -6241,14 +6181,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 resolved_spawn_settings.effective_harness,
             )
             .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
-        }
-        if team_mode_val && !runtime_team_mode {
-            tracing::info!(
-                %context_type,
-                context_id,
-                harness = %resolved_spawn_settings.effective_harness,
-                "Disabling team mode because the selected harness does not support it"
-            );
         }
         let effective_model_id = resolved_spawn_settings.model.clone();
         if let Err(reason) =
@@ -6506,7 +6438,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     &session_messages,
                     session_total,
                     options.is_external_mcp,
-                    runtime_team_mode,
                     stored_session_id.as_deref(),
                     &resolved_spawn_settings,
                     Some(attachment_context.as_str()),
@@ -6675,12 +6606,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
-            team_mode: runtime_team_mode,
             assistant_message_attribution,
             persist_conversation_provider_session_ref: !options
                 .preserve_conversation_provider_session_ref,
             cancellation_token,
-            team_service: self.team_service.clone(),
             streaming_state_cache: self.streaming_state_cache.clone(),
             interactive_process_registry,
             interactive_process_token,
@@ -7388,10 +7317,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         states
     }
 
-    fn set_team_mode(&self, mode: bool) {
-        self.team_mode.store(mode, Ordering::Relaxed);
-    }
-
     fn set_plan_branch_repo(&self, repo: Arc<dyn PlanBranchRepository>) {
         *self.plan_branch_repo.lock().unwrap() = Some(repo);
     }
@@ -7693,8 +7618,7 @@ mod coordination_mode_send_tests {
     use super::SendMessageOptions;
     use crate::application::AppState;
     use crate::domain::entities::{
-        ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
-        TeamIntent,
+        ChatContextType, ChatConversation, CoordinationMode, ProjectId, TeamIntent,
     };
 
     #[tokio::test]
@@ -7730,77 +7654,6 @@ mod coordination_mode_send_tests {
             .expect("conversation should load")
             .expect("conversation should exist");
         assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
-    }
-
-    #[tokio::test]
-    async fn legacy_coordination_mode_normalizes_to_rx_native_on_next_send() {
-        let state = AppState::new_test();
-        let project_id = ProjectId::from_string("project-legacy-team-send".to_string());
-        let mut conversation = ChatConversation::new_project(project_id.clone());
-        conversation.set_coordination_mode(CoordinationMode::LegacyClaudeTeam);
-        let conversation_id = conversation.id;
-        state
-            .chat_conversation_repo
-            .create(conversation)
-            .await
-            .expect("conversation should persist");
-        let service = state.build_chat_service();
-
-        let (resolved, created) = service
-            .get_or_create_conversation_for_send(
-                ChatContextType::Project,
-                project_id.as_str(),
-                &SendMessageOptions {
-                    conversation_id_override: Some(conversation_id),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("conversation should resolve");
-
-        assert!(!created);
-        assert_eq!(resolved.coordination_mode, CoordinationMode::RxNativeTeam);
-        let stored = state
-            .chat_conversation_repo
-            .get_by_id(&conversation_id)
-            .await
-            .expect("conversation should load")
-            .expect("conversation should exist");
-        assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
-    }
-
-    #[tokio::test]
-    async fn legacy_team_intent_is_rejected_for_send_persistence() {
-        let state = AppState::new_test();
-        let project_id = ProjectId::from_string("project-legacy-write-send".to_string());
-        let conversation = state
-            .chat_conversation_repo
-            .create(ChatConversation::new_project(project_id.clone()))
-            .await
-            .expect("conversation should persist");
-        let service = state.build_chat_service();
-
-        let error = service
-            .get_or_create_conversation_for_send(
-                ChatContextType::Project,
-                project_id.as_str(),
-                &SendMessageOptions {
-                    conversation_id_override: Some(ChatConversationId::from_string(
-                        conversation.id.as_str(),
-                    )),
-                    team_intent: Some(TeamIntent {
-                        coordination_mode: CoordinationMode::LegacyClaudeTeam,
-                        strategy: None,
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect_err("legacy team intent should be rejected");
-
-        assert!(error
-            .to_string()
-            .contains("Legacy Claude team mode is read-only"));
     }
 }
 

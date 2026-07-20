@@ -294,26 +294,6 @@ fn provider_switch_send_options_can_reuse_fresh_provider_run() {
 }
 
 #[test]
-fn effective_queue_team_mode_uses_persisted_coordination_mode() {
-    assert!(effective_queue_team_mode(
-        false,
-        Some(CoordinationMode::RxNativeTeam)
-    ));
-    assert!(effective_queue_team_mode(
-        false,
-        Some(CoordinationMode::LegacyClaudeTeam)
-    ));
-    assert!(!effective_queue_team_mode(
-        false,
-        Some(CoordinationMode::Solo)
-    ));
-    assert!(effective_queue_team_mode(
-        true,
-        Some(CoordinationMode::Solo)
-    ));
-}
-
-#[test]
 fn fresh_provider_run_reuse_requires_matching_queued_harness() {
     let mut same_harness = QueuedMessage::new("same harness".to_string());
     same_harness.harness_override = Some(AgentHarnessKind::Codex);
@@ -402,7 +382,6 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
         None,
         None,
         None,
-        false,
         tokio_util::sync::CancellationToken::new(),
         None,
         None,
@@ -489,7 +468,6 @@ async fn missing_continuation_authority_records_failed_action_run() {
         None,
         None,
         None,
-        false,
         tokio_util::sync::CancellationToken::new(),
         None,
         None,

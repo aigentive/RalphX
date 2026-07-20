@@ -1,7 +1,6 @@
 ---
 paths:
   - "agents/ralphx-ideation/**"
-  - "agents/ralphx-ideation-team-lead/**"
   - "frontend/src/api/verification.ts"
   - "frontend/src/hooks/useVerificationStatus.ts"
   - "frontend/src/components/agents/**"

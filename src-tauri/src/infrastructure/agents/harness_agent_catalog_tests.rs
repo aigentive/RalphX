@@ -21,11 +21,6 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "ralphx-ideation",
     ),
     (
-        "ralphx-ideation-team-lead",
-        "ideation_team_lead",
-        "ralphx-ideation-team-lead",
-    ),
-    (
         "ralphx-utility-session-namer",
         "session_namer",
         "ralphx-utility-session-namer",
@@ -78,14 +73,8 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-research-deep-researcher",
 ];
 const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
-const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
-    (
-        "ralphx-execution-team-lead",
-        "worker_team_lead",
-        "ralphx-execution-team-lead",
-    ),
-    ("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer"),
-];
+const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] =
+    &[("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer")];
 const CLAUDE_ONLY_SHARED_PROMPT_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
 
 const CROSS_HARNESS_VERIFICATION_AGENTS: &[(&str, &str, &str)] = &[];
@@ -238,7 +227,6 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-execution-merger",
     "ralphx-memory-maintainer",
     "ralphx-memory-capture",
-    "ralphx-ideation-team-lead",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
@@ -346,10 +334,8 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-execution-orchestrator",
     "ralphx-project-analyzer",
     "ralphx-execution-reviewer",
-    "ralphx-execution-team-lead",
     "ralphx-ideation",
     "ralphx-ideation-readonly",
-    "ralphx-ideation-team-lead",
     "ralphx-qa-executor",
     "ralphx-qa-prep",
     "ralphx-research-deep-researcher",
@@ -368,7 +354,6 @@ const CANONICAL_CLAUDE_PERMISSION_MODE_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-execution-worker", "acceptEdits"),
     ("ralphx-execution-coder", "acceptEdits"),
     ("ralphx-execution-merger", "acceptEdits"),
-    ("ralphx-execution-team-lead", "acceptEdits"),
     ("ralphx-qa-executor", "acceptEdits"),
     ("ralphx-memory-maintainer", "acceptEdits"),
     ("ralphx-memory-capture", "acceptEdits"),
@@ -397,10 +382,8 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-execution-coder", "sonnet"),
     ("ralphx-execution-reviewer", "sonnet"),
     ("ralphx-execution-merger", "opus"),
-    ("ralphx-execution-team-lead", "sonnet"),
     ("ralphx-ideation", "opus"),
     ("ralphx-ideation-readonly", "opus"),
-    ("ralphx-ideation-team-lead", "opus"),
     ("ralphx-qa-prep", "sonnet"),
     ("ralphx-qa-executor", "sonnet"),
     ("ralphx-research-deep-researcher", "opus"),
@@ -453,18 +436,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ("ralphx-ideation", "base_tools", &["Task"], false),
     ("ralphx-ideation-readonly", "base_tools", &["Task"], false),
     (
-        "ralphx-ideation-team-lead",
-        "base_tools",
-        &[
-            "Task",
-            "TaskStop",
-            "TeamCreate",
-            "TeamDelete",
-            "SendMessage",
-        ],
-        false,
-    ),
-    (
         "ralphx-execution-worker",
         "base_tools",
         &["Write", "Edit", "LSP"],
@@ -485,21 +456,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     ("ralphx-execution-merger", "base_tools", &["Edit"], false),
-    (
-        "ralphx-execution-team-lead",
-        "base_tools",
-        &[
-            "Write",
-            "Edit",
-            "Task",
-            "LSP",
-            "TaskStop",
-            "TeamCreate",
-            "TeamDelete",
-            "SendMessage",
-        ],
-        false,
-    ),
     (
         "ralphx-research-deep-researcher",
         "base_tools",
@@ -1760,21 +1716,6 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
         }
     }
 
-    assert!(
-        resolve_harness_agent_prompt_path(
-            &root,
-            "ralphx-ideation-team-lead",
-            AgentPromptHarness::Claude
-        )
-        .is_some(),
-        "expected claude prompt path for ralphx-ideation-team-lead"
-    );
-    assert!(
-        resolve_harness_agent_prompt_path(&root, "ralphx-ideation-team-lead", AgentPromptHarness::Codex)
-            .is_none(),
-        "ralphx-ideation-team-lead should not have a codex prompt while Codex team mode is unsupported"
-    );
-
     for (agent_name, _, _) in CLAUDE_ONLY_CANONICAL_AGENTS {
         let claude_path =
             resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Claude);
@@ -2023,10 +1964,6 @@ fn canonical_claude_runtime_agent_list_matches_live_runtime_roster() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert_eq!(actual, expected);
-    assert!(
-        !actual.contains("ralphx-ideation-team-member"),
-        "compatibility teammate target should not be treated as a prompt-backed Claude runtime agent"
-    );
 }
 
 #[test]
@@ -2089,15 +2026,6 @@ fn codex_ideation_pilot_prompts_declare_codex_native_delegation_contract() {
         orchestrator.contains("Codex-native delegation"),
         "orchestrator codex prompt should describe Codex-native delegation semantics"
     );
-    assert!(
-        load_harness_agent_prompt(
-            &root,
-            "ralphx-ideation-team-lead",
-            AgentPromptHarness::Codex
-        )
-        .is_none(),
-        "ralphx-ideation-team-lead should not have a codex prompt while team mode is unsupported"
-    );
 }
 
 #[test]
@@ -2137,17 +2065,6 @@ fn ideation_prompts_preserve_model_native_verification_without_legacy_topology()
             );
         }
     }
-
-    let team_prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-ideation-team-lead",
-        AgentPromptHarness::Claude,
-    )
-    .expect("missing Claude prompt for ralphx-ideation-team-lead");
-    assert!(team_prompt.contains("backend-started Verify Plan"));
-    assert!(team_prompt.contains("complete_plan_verification"));
-    assert!(!team_prompt.contains("ralphx-plan-verifier"));
-    assert!(!team_prompt.contains("stop_verification"));
 }
 
 #[test]
@@ -2670,7 +2587,6 @@ fn execution_prompts_do_not_require_default_baseline_validation() {
         ("ralphx-execution-worker", AgentPromptHarness::Codex),
         ("ralphx-execution-coder", AgentPromptHarness::Claude),
         ("ralphx-execution-coder", AgentPromptHarness::Codex),
-        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
     ];
     let forbidden_normal_flow_phrases = [
         "baseline/final validation commands",
@@ -2714,7 +2630,6 @@ fn ticket_attachment_surface_is_prompted_only_for_granted_execution_agents() {
         ("ralphx-execution-worker", AgentPromptHarness::Codex),
         ("ralphx-execution-coder", AgentPromptHarness::Claude),
         ("ralphx-execution-coder", AgentPromptHarness::Codex),
-        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
     ];
     let attachment_tools = ["list_ticket_attachments", "fetch_ticket_attachment"];
     let forbidden_prompt_terms = [
@@ -2861,10 +2776,7 @@ fn canonical_agent_tree_is_schema_valid_and_loadable() {
         list_canonical_prompt_backed_agents(&root, AgentPromptHarness::Claude)
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-    let promptless_metadata_only_agents = std::collections::BTreeSet::from([
-        "ralphx-execution-team-member".to_string(),
-        "ralphx-ideation-team-member".to_string(),
-    ]);
+    let promptless_metadata_only_agents = std::collections::BTreeSet::<String>::new();
 
     for agent_name in canonical_agent_names(&root) {
         let definition = load_canonical_agent_definition(&root, &agent_name)

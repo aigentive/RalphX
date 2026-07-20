@@ -6,7 +6,6 @@ export const featureFlagsSchema = z.object({
   ideationPage: z.boolean().default(false),
   automationsPage: z.boolean().default(true),
   battleMode: z.boolean().default(true),
-  teamMode: z.boolean().default(false),
   atlassianOauth: z.boolean().default(false),
   ticketingDashboard: z.boolean().default(false),
   agentPersonas: z.boolean().default(false),

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::Path, extract::State, http::StatusCode, Json};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewActionKind,
@@ -22,13 +22,9 @@ use ralphx_lib::http_server::types::HttpServerState;
 use crate::common::MockGithubService;
 
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

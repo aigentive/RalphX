@@ -3424,8 +3424,6 @@ async fn test_create_ideation_session_emits_session_created_event() {
         project_id: project_id.to_string(),
         title: Some("Test Event Session".to_string()),
         seed_task_id: None,
-        team_mode: None,
-        team_config: None,
         analysis_base_ref_kind: None,
         analysis_base_ref: None,
         analysis_base_display_name: None,
@@ -3461,62 +3459,6 @@ async fn test_create_ideation_session_emits_session_created_event() {
 }
 
 #[tokio::test]
-async fn test_create_ideation_session_downgrades_team_mode_to_solo_for_codex() {
-    use ralphx_lib::testing::create_mock_app;
-
-    let app = create_mock_app();
-    let handle = app.handle().clone();
-    let state = setup_apply_test_state();
-    let project_id = ProjectId::new();
-    let mut project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    project.id = project_id.clone();
-    state.project_repo.create(project).await.unwrap();
-
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(
-            project_id.as_str(),
-            AgentLane::IdeationPrimary,
-            &AgentLaneSettings::new(AgentHarnessKind::Codex),
-        )
-        .await
-        .expect("configure codex ideation lane");
-
-    let input = CreateSessionInput {
-        project_id: project_id.to_string(),
-        title: Some("Codex Solo Session".to_string()),
-        seed_task_id: None,
-        team_mode: Some("research".to_string()),
-        team_config: Some(TeamConfigInput {
-            max_teammates: 3,
-            model_ceiling: "sonnet".to_string(),
-            budget_limit: None,
-            composition_mode: "balanced".to_string(),
-        }),
-        analysis_base_ref_kind: None,
-        analysis_base_ref: None,
-        analysis_base_display_name: None,
-    };
-
-    let result = create_ideation_session_impl(&handle, &state, input)
-        .await
-        .expect("create_ideation_session_impl should succeed");
-
-    assert_eq!(result.team_mode.as_deref(), Some("solo"));
-    assert!(result.team_config.is_none());
-
-    let stored = state
-        .ideation_session_repo
-        .get_by_id(&IdeationSessionId::from_string(result.id.clone()))
-        .await
-        .expect("load stored ideation session")
-        .expect("stored ideation session should exist");
-
-    assert_eq!(stored.team_mode.as_deref(), Some("solo"));
-    assert!(stored.team_config_json.is_none());
-}
-
-#[tokio::test]
 async fn test_create_ideation_session_local_branch_provisions_worktree() {
     use ralphx_lib::domain::entities::{
         IdeationAnalysisBaseRefKind, IdeationAnalysisWorkspaceKind,
@@ -3547,8 +3489,6 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
             project_id: project.id.to_string(),
             title: Some("Branch Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
             analysis_base_ref: Some("feature/analysis".to_string()),
             analysis_base_display_name: Some("feature/analysis".to_string()),
@@ -3631,8 +3571,6 @@ async fn test_create_ideation_session_project_default_locks_main_when_current_br
             project_id: project.id.to_string(),
             title: Some("Main Base Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("main".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),
@@ -3719,8 +3657,6 @@ async fn test_create_ideation_session_rejects_mislabeled_project_default_ref() {
             project_id: project.id.to_string(),
             title: Some("Mislabeled Base Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("pr/366".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),
@@ -3762,8 +3698,6 @@ async fn test_create_ideation_session_project_default_ignores_blank_ref() {
             project_id: project.id.to_string(),
             title: Some("Blank Base Ref Session".to_string()),
             seed_task_id: None,
-            team_mode: None,
-            team_config: None,
             analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             analysis_base_ref: Some("   ".to_string()),
             analysis_base_display_name: Some("Project default (main)".to_string()),

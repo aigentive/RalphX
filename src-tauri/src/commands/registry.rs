@@ -492,17 +492,6 @@ macro_rules! register_tauri_commands {
             commands::plan_commands::get_active_execution_plan,
             commands::plan_commands::clear_active_plan,
             commands::plan_commands::list_plan_selector_candidates,
-            // Team commands (agent teams collaboration)
-            commands::team_commands::create_team,
-            commands::team_commands::disband_team,
-            commands::team_commands::get_team_status,
-            commands::team_commands::send_team_message,
-            commands::team_commands::send_teammate_message,
-            commands::team_commands::stop_teammate,
-            commands::team_commands::stop_team,
-            commands::team_commands::get_team_messages,
-            commands::team_commands::get_teammate_cost,
-            commands::team_commands::get_team_history,
             // API key management commands (Tauri IPC — replaces HTTP fetch in settings UI)
             commands::api_key_commands::list_api_keys,
             commands::api_key_commands::create_api_key,

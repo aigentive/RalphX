@@ -15,7 +15,6 @@ let mockFeatureFlags: FeatureFlags = {
   ideationPage: false,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: true,
 };
@@ -53,7 +52,6 @@ describe("LeftNavRail", () => {
       ideationPage: false,
       automationsPage: true,
       battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: true,
     };

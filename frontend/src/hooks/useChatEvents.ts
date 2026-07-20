@@ -1232,8 +1232,8 @@ export function useChatEvents({
     );
 
     // ── agent:chunk (streaming text) ─────────────────────────────────
-    // Chunks are filtered by conversation_id via isRelevant — teammate chunks
-    // match when activeConversationId is the teammate's conversation.
+    // Chunks are filtered by conversation_id via isRelevant, including delegated
+    // conversations when one is active.
     if (supportsStreamingText) {
       unsubscribes.push(
         bus.subscribe<{

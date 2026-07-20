@@ -14,13 +14,6 @@ export const IdeationSessionResponseSchema = z.object({
   plan_artifact_id: z.string().nullable(),
   seed_task_id: z.string().nullable().optional(),
   parent_session_id: z.string().nullable(),
-  team_mode: z.enum(["solo", "research", "debate"]).nullable().optional(),
-  team_config: z.object({
-    max_teammates: z.number(),
-    model_ceiling: z.string(),
-    budget_limit: z.number().nullable().optional(),
-    composition_mode: z.string().nullable().optional(),
-  }).nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
   archived_at: z.string().nullable(),
@@ -230,18 +223,6 @@ export const ParentSessionContextResponseSchema = z.object({
       acceptance_criteria: z.array(z.string()),
     })
   ),
-});
-
-/**
- * Team mode and config schemas (snake_case from Rust)
- */
-export const TeamModeResponseSchema = z.enum(["solo", "research", "debate"]);
-export const CompositionModeResponseSchema = z.enum(["dynamic", "constrained"]);
-export const TeamConfigResponseSchema = z.object({
-  max_teammates: z.number(),
-  model_ceiling: z.string(),
-  budget_limit: z.number().nullable().optional(),
-  composition_mode: z.string().nullable().optional(),
 });
 
 /**

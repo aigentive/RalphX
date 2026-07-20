@@ -17,9 +17,8 @@ use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    DelegatedSession, DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose,
-    TaskId,
+    AgentRun, ChatContextType, ChatConversation, ChatConversationId, ChatMessage, DelegatedSession,
+    DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose, TaskId,
 };
 use crate::http_server::delegation::DelegationJobSnapshot;
 use crate::http_server::types::{
@@ -307,7 +306,10 @@ async fn resolve_ideation_delegate_parent(
     }
 
     let parent_session_id = req.parent_session_id.as_deref().ok_or_else(|| {
-        json_error(StatusCode::BAD_REQUEST, "delegate_start requires parent_session_id")
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start requires parent_session_id",
+        )
     })?;
     let parent_conversation_id =
         resolve_parent_conversation_id(state, req, parent_session_id).await?;
@@ -331,7 +333,9 @@ async fn load_parent_conversation(
     state
         .app_state
         .chat_conversation_repo
-        .get_by_id(&ChatConversationId::from_string(conversation_id.to_string()))
+        .get_by_id(&ChatConversationId::from_string(
+            conversation_id.to_string(),
+        ))
         .await
         .map_err(|error| {
             json_error(
@@ -347,8 +351,7 @@ async fn load_project_parent_conversation(
     req: &DelegateStartRequest,
     caller_context_id: &str,
 ) -> Result<Option<ChatConversation>, JsonError> {
-    let conversation = if let Some(parent_conversation_id) = req.parent_conversation_id.as_deref()
-    {
+    let conversation = if let Some(parent_conversation_id) = req.parent_conversation_id.as_deref() {
         Some(load_parent_conversation(state, parent_conversation_id).await?)
     } else {
         let candidate_id = ChatConversationId::from_string(caller_context_id.to_string());
@@ -503,7 +506,9 @@ async fn resolve_nested_delegation_parent(
     let session = state
         .app_state
         .delegated_session_repo
-        .get_by_id(&DelegatedSessionId::from_string(caller_context_id.to_string()))
+        .get_by_id(&DelegatedSessionId::from_string(
+            caller_context_id.to_string(),
+        ))
         .await
         .map_err(|error| {
             json_error(
@@ -574,7 +579,8 @@ async fn resolve_nested_delegation_parent(
         ));
     }
     let working_directory = if parent_conversation.context_type == ChatContextType::Project {
-        resolve_project_parent_working_directory(state, &project, Some(&parent_conversation)).await?
+        resolve_project_parent_working_directory(state, &project, Some(&parent_conversation))
+            .await?
     } else {
         let default_working_directory = validate_project_working_directory(&project)?;
         resolve_working_directory(
@@ -629,7 +635,7 @@ async fn mark_delegated_launch_failed(
 fn json_error_detail(error: &JsonError) -> String {
     error
         .1
-        .0
+         .0
         .get("error")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("Delegated launch setup failed")
@@ -703,7 +709,10 @@ fn build_delegated_prompt(
     let parent_line = if parent_context_type == ChatContextType::Ideation {
         format!("Parent ideation session: `{parent_context_id}`")
     } else {
-        format!("Parent {} context: `{parent_context_id}`", parent_context_type)
+        format!(
+            "Parent {} context: `{parent_context_id}`",
+            parent_context_type
+        )
     };
     let mut metadata_lines = vec![
         parent_line,
@@ -775,7 +784,6 @@ fn cached_streaming_task_from_started_payload(
             .or_else(|| payload.logical_model.clone()),
         status: "running".to_string(),
         agent_id: payload.delegated_agent_run_id.clone(),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),
@@ -821,7 +829,6 @@ fn cached_streaming_task_from_completed_payload(
             .agent_id
             .clone()
             .or_else(|| payload.delegated_agent_run_id.clone()),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),
@@ -865,7 +872,6 @@ pub fn build_delegated_task_started_payload(
         description: Some(snapshot.agent_name.clone()),
         subagent_type: Some("delegated".to_string()),
         model: logical_model.map(str::to_string),
-        teammate_name: None,
         delegated_job_id: Some(snapshot.job_id.clone()),
         delegated_session_id: Some(snapshot.delegated_session_id.clone()),
         delegated_conversation_id: snapshot.delegated_conversation_id.clone(),
@@ -906,7 +912,6 @@ pub fn build_delegated_task_completed_payload(
         total_duration_ms: latest_run.and_then(delegated_duration_ms),
         total_tokens: latest_run.and_then(delegated_total_tokens),
         total_tool_use_count: None,
-        teammate_name: None,
         delegated_job_id: Some(snapshot.job_id.clone()),
         delegated_session_id: Some(snapshot.delegated_session_id.clone()),
         delegated_conversation_id: snapshot.delegated_conversation_id.clone(),
@@ -1278,12 +1283,8 @@ pub(crate) async fn start_delegate_impl(
     {
         Ok(conversation) => conversation,
         Err(error) => {
-            mark_delegated_launch_failed(
-                state,
-                &delegated_session_id,
-                &json_error_detail(&error),
-            )
-            .await?;
+            mark_delegated_launch_failed(state, &delegated_session_id, &json_error_detail(&error))
+                .await?;
             return Err(error);
         }
     };

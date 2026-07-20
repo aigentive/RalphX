@@ -376,7 +376,6 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
         },
         &state.app_state,
         &state.execution_state,
-        state.team_service.clone(),
         app_handle,
     )
     .await

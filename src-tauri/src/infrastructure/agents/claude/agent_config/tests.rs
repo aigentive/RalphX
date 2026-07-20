@@ -6,12 +6,11 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AUTOMATION_SETUP, SHORT_BRANCH_UPDATER, SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER,
     SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE,
     SHORT_IDEATION_CRITIC, SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_FRONTEND,
-    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
-    SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
-    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY, SHORT_PERSONA_EXTRACTOR,
-    SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER, SHORT_QA_EXECUTOR,
-    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER,
-    SHORT_TASK_MANAGER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
+    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
+    SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
+    SHORT_PERSONA_EXTRACTOR, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
+    SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
+    SHORT_SESSION_NAMER, SHORT_TASK_MANAGER, SHORT_WORKER, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -338,11 +337,7 @@ fn test_all_agent_names_are_known() {
         SHORT_BRANCH_UPDATER,
         SHORT_MEMORY_MAINTAINER,
         SHORT_MEMORY_CAPTURE,
-        // Team lead variants
-        SHORT_IDEATION_TEAM_LEAD,
-        SHORT_WORKER_TEAM,
-        SHORT_IDEATION_TEAM_MEMBER,
-        // Ideation specialist agents (spawned by ralphx-ideation-team-lead)
+        // Ideation specialist agents
         SHORT_IDEATION_SPECIALIST_BACKEND,
         SHORT_IDEATION_SPECIALIST_FRONTEND,
         SHORT_IDEATION_SPECIALIST_INFRA,
@@ -372,9 +367,6 @@ fn test_all_live_runtime_agents_have_canonical_claude_prompts() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
 
     for agent in agent_configs() {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
         assert!(
             has_canonical_agent_definition(&project_root, &agent.name),
             "Missing canonical agent definition for {}",
@@ -494,10 +486,6 @@ fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
 #[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
-
         assert!(
             !agent.system_prompt_file.starts_with("plugins/app/agents/"),
             "live runtime agent {} still points at deleted legacy prompt path {}",
@@ -856,9 +844,6 @@ fn test_embedded_config_omits_runtime_system_prompt_paths_and_uses_canonical_pro
         parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
 
     for agent in &parsed.agents {
-        if agent.name == SHORT_IDEATION_TEAM_MEMBER {
-            continue;
-        }
         assert!(
             agent.system_prompt_file.starts_with("agents/"),
             "live runtime agent {} should resolve a canonical prompt path when config/ralphx.yaml omits system_prompt_file, got {}",
@@ -2348,7 +2333,7 @@ agents:
     assert!(agent.resolved_cli_tools.contains(&"Write".to_string()));
 }
 
-// ── Process mapping + team constraints integration tests ────────
+// ── Process mapping integration tests ────────
 
 #[test]
 fn test_process_mapping_parsed_from_full_config() {
@@ -2361,7 +2346,6 @@ claude:
 process_mapping:
   execution:
     default: ralphx-execution-worker
-    team: ralphx-execution-team-lead
   ideation:
     default: ralphx-ideation
 agents:
@@ -2381,53 +2365,8 @@ agents:
         "ralphx-ideation"
     );
     assert_eq!(
-        parsed.process_mapping.slots["execution"]
-            .variants
-            .get("team")
-            .unwrap(),
-        "ralphx-execution-team-lead"
-    );
-    assert_eq!(
         parsed.process_mapping.slots["review"].default,
         "ralphx-execution-reviewer"
-    );
-}
-
-#[test]
-fn test_team_constraints_parsed_from_full_config() {
-    let yaml = r#"
-claude:
-  mcp_server_name: ralphx
-  permission_mode: default
-  dangerously_skip_permissions: false
-  permission_prompt_tool: permission_request
-team_constraints:
-  _defaults:
-    max_teammates: 5
-    model_cap: sonnet
-  execution:
-    max_teammates: 3
-    mode: dynamic
-    timeout_minutes: 30
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
-agents:
-  - name: ralphx-execution-worker
-    system_prompt_file: plugins/app/agents/worker.md
-    tools: { extends: base_tools, include: [Write] }
-    mcp_tools: [get_task_context]
-    preapproved_cli_tools: []
-"#;
-    let parsed = parse_config(yaml).expect("config should parse");
-    let defaults = parsed.team_constraints.defaults.as_ref().unwrap();
-    assert_eq!(defaults.max_teammates, 5);
-    let exec = &parsed.team_constraints.processes["execution"];
-    assert_eq!(exec.max_teammates, 5);
-    assert_eq!(exec.timeout_minutes, 30);
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "haiku"
     );
 }
 
@@ -2451,11 +2390,6 @@ preapproved_cli_tools: []
         parsed.process_mapping,
         canonical_process_mapping(),
         "missing process_mapping should resolve to the canonical process mapping"
-    );
-    assert_eq!(
-        parsed.team_constraints,
-        canonical_team_constraints_config(),
-        "missing team_constraints should resolve to the canonical team constraints"
     );
 }
 
@@ -2482,39 +2416,9 @@ agents:
         parsed.process_mapping.slots["execution"].default,
         "ralphx-execution-worker"
     );
-    assert_eq!(
-        parsed.process_mapping.slots["execution"]
-            .variants
-            .get("team")
-            .map(String::as_str),
-        Some("ralphx-execution-team-lead")
-    );
-}
-
-#[test]
-fn test_canonical_team_constraints_override_divergent_runtime_yaml_process() {
-    let yaml = r#"
-claude:
-  mcp_server_name: ralphx
-  permission_mode: default
-  dangerously_skip_permissions: false
-  permission_prompt_tool: permission_request
-team_constraints:
-  execution:
-    max_teammates: 1
-    model_cap: haiku
-agents:
-  - name: ralphx-execution-worker
-    system_prompt_file: plugins/app/agents/worker.md
-    tools: { extends: base_tools, include: [Write] }
-    mcp_tools: [get_task_context]
-    preapproved_cli_tools: []
-"#;
-    let parsed = parse_config(yaml).expect("config should parse");
-    let execution = &parsed.team_constraints.processes["execution"];
-    assert_eq!(execution.max_teammates, 5);
-    assert_eq!(execution.model_cap, "sonnet");
-    assert_eq!(execution.timeout_minutes, 30);
+    assert!(parsed.process_mapping.slots["execution"]
+        .variants
+        .is_empty());
 }
 
 #[test]
@@ -2528,10 +2432,6 @@ claude:
 process_mapping:
   custom_process:
     default: yaml-agent
-team_constraints:
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
 agents:
   - name: ralphx-execution-worker
     system_prompt_file: plugins/app/agents/worker.md
@@ -2545,10 +2445,6 @@ agents:
 process_mapping:
   custom_process:
     default: overlay-agent
-team_constraints:
-  custom_process:
-    max_teammates: 4
-    model_cap: opus
 "#,
     )
     .expect("overlay should parse");
@@ -2558,14 +2454,6 @@ team_constraints:
     assert_eq!(
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].max_teammates,
-        4
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "opus"
     );
 }
 
@@ -2577,10 +2465,6 @@ claude:
   permission_mode: default
   dangerously_skip_permissions: false
   permission_prompt_tool: permission_request
-team_constraints:
-  custom_process:
-    max_teammates: 2
-    model_cap: haiku
 agents:
   - name: ralphx-execution-worker
     system_prompt_file: plugins/app/agents/worker.md
@@ -2603,10 +2487,6 @@ process_mapping:
     assert_eq!(
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
-    );
-    assert_eq!(
-        parsed.team_constraints.processes["custom_process"].model_cap,
-        "haiku"
     );
 }
 
@@ -2910,17 +2790,6 @@ fn test_permission_mode_merger_is_accept_edits() {
 }
 
 #[test]
-fn test_permission_mode_worker_team_inherits_accept_edits() {
-    let config = get_agent_config("ralphx-execution-team-lead")
-        .expect("ralphx-execution-team-lead should exist");
-    assert_eq!(
-        config.permission_mode.as_deref(),
-        Some("acceptEdits"),
-        "ralphx-execution-team-lead should have acceptEdits (inherited or explicit)"
-    );
-}
-
-#[test]
 fn test_permission_mode_qa_executor_is_accept_edits() {
     let config = get_agent_config("ralphx-qa-executor").expect("ralphx-qa-executor should exist");
     assert_eq!(
@@ -3018,7 +2887,6 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         "automations_page should default to true"
     );
     assert!(flags.battle_mode, "battle_mode should default to true");
-    assert!(!flags.team_mode, "team_mode should default to false");
     assert!(
         !flags.atlassian_oauth,
         "atlassian_oauth should default to false"
@@ -3123,10 +2991,6 @@ agents: []
         "automations_page should default to true when ui section absent"
     );
     assert!(
-        !cfg.runtime.ui_feature_flags.team_mode,
-        "team_mode should default to false when ui section absent"
-    );
-    assert!(
         !cfg.runtime.ui_feature_flags.atlassian_oauth,
         "atlassian_oauth should default to false when ui section absent"
     );
@@ -3187,7 +3051,6 @@ fn test_env_override_true_value_enables_flag() {
             ideation_page: false,
             automations_page: false,
             battle_mode: false,
-            team_mode: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
             agent_personas: false,
@@ -3229,7 +3092,6 @@ fn test_env_override_true_value_enables_flag() {
         cfg.ui_feature_flags.automations_page,
         "env '1' should enable automations_page"
     );
-    assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
         !cfg.ui_feature_flags.atlassian_oauth,
         "atlassian_oauth untouched"
@@ -3279,7 +3141,6 @@ fn test_env_override_battle_mode() {
         cfg.ui_feature_flags.automations_page,
         "automations_page untouched"
     );
-    assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
         !cfg.ui_feature_flags.atlassian_oauth,
         "atlassian_oauth untouched"
@@ -3298,40 +3159,6 @@ fn test_env_override_battle_mode() {
     assert!(
         cfg.ui_feature_flags.battle_mode,
         "env '1' should enable battle_mode"
-    );
-}
-
-#[test]
-fn test_env_override_team_mode() {
-    let mut cfg = runtime_config::AllRuntimeConfig {
-        stream: runtime_config::StreamTimeoutsConfig::default(),
-        reconciliation: runtime_config::ReconciliationConfig::default(),
-        git: runtime_config::GitRuntimeConfig::default(),
-        scheduler: runtime_config::SchedulerConfig::default(),
-        supervisor: runtime_config::SupervisorRuntimeConfig::default(),
-        limits: runtime_config::LimitsConfig::default(),
-        verification: runtime_config::VerificationConfig::default(),
-        external_mcp: runtime_config::ExternalMcpConfig::default(),
-        child_session_activity_threshold_secs: None,
-        ui_feature_flags: Default::default(),
-    };
-
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_TEAM_MODE" => Some("true".to_string()),
-        _ => None,
-    });
-    assert!(
-        cfg.ui_feature_flags.team_mode,
-        "env 'true' should enable team_mode"
-    );
-
-    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
-        "RALPHX_UI_TEAM_MODE" => Some("false".to_string()),
-        _ => None,
-    });
-    assert!(
-        !cfg.ui_feature_flags.team_mode,
-        "env 'false' should disable team_mode"
     );
 }
 
@@ -3413,7 +3240,6 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.ideation_page;
     let _ = flags.automations_page;
     let _ = flags.battle_mode;
-    let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;
     let _ = flags.ticketing_dashboard;
 }

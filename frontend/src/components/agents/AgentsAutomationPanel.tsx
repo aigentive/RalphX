@@ -731,7 +731,6 @@ export function AgentsAutomationPanel({
         automation.projectId,
         UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT,
         undefined,
-        undefined,
         {
           conversationId: automation.setupConversationId,
           providerHarness: automation.providerHarness,

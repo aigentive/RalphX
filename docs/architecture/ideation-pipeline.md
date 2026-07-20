@@ -265,9 +265,7 @@ Once `finalize_proposals` completes and session transitions to Accepted:
 
 ```
                     ┌─────────────────────────┐
-                    │   ralphx-ideation  │
-                    │   (or ralphx-ideation-team-lead │
-                    │    in team mode)         │
+                    │   ralphx-ideation        │
                     └───────────┬─────────────┘
                                 │ creates session, proposes plan
                                 ▼
@@ -296,7 +294,6 @@ Once `finalize_proposals` completes and session transitions to Accepted:
 | Agent | Context Type | Role in Pipeline |
 |-------|-------------|-----------------|
 | `ralphx-ideation` | `ideation` | Creates session, drives plan creation, calls finalize_proposals |
-| `ralphx-ideation-team-lead` | `ideation` | Team mode variant of orchestrator |
 | `ralphx-utility-session-namer` | `ideation` | Names session title via `update_session_title` MCP tool |
 | Active Plan-mode model | existing conversation | Reviews and, when needed, revises the current linked plan |
 | Model-selected general delegates | delegated conversations | Optional context-specific evidence or adversarial lenses |

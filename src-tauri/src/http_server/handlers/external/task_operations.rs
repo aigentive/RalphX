@@ -70,7 +70,6 @@ pub async fn external_task_transition_http(
             &state.app_state.task_repo,
             &state.app_state.task_step_repo,
             &task,
-            None,
         )
         .await
         {

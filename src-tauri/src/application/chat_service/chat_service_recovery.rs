@@ -161,7 +161,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
     plugin_dir: &Path,
     working_directory: &Path,
     _resolved_project_id: Option<String>,
-    team_mode: bool,
     chat_message_repo: Arc<dyn ChatMessageRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
@@ -268,11 +267,8 @@ pub async fn attempt_session_recovery<R: Runtime>(
     } else {
         None
     };
-    let recovery_agent_name = super::chat_service_helpers::resolve_agent_with_team_mode(
-        &context_type,
-        entity_status.as_deref(),
-        team_mode,
-    );
+    let recovery_agent_name =
+        super::chat_service_helpers::resolve_agent(&context_type, entity_status.as_deref());
     chat_service_context::await_required_external_mcp(
         app_handle,
         harness,
@@ -334,7 +330,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
         &[],
-        team_mode,
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,
@@ -433,8 +428,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None,                                       // no assistant message ID
         None,                                       // no question state
         tokio_util::sync::CancellationToken::new(), // standalone token for recovery
-        None,                                       // no team tracker for recovery
-        false,                                      // not team mode
         StreamingStateCache::new(),                 // fresh cache for recovery (no UI to hydrate)
         None,                                       // no heartbeat for recovery sessions
         None,                                       // no agent_run_repo for recovery
@@ -600,7 +593,6 @@ async fn build_ideation_recovery_metadata<R: Runtime>(
         plan_artifact_id: session.plan_artifact_id.map(|id| id.to_string()),
         proposal_count,
         parent_session_id: session.parent_session_id.map(|id| id.to_string()),
-        team_mode: session.team_mode,
         session_title: session.title,
         verification_status: verification_status_str,
         verification_in_progress: verification_was_in_progress,

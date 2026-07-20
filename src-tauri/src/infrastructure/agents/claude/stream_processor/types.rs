@@ -254,10 +254,6 @@ pub enum StreamEvent {
         description: Option<String>,
         subagent_type: Option<String>,
         model: Option<String>,
-        /// Teammate name if this Task spawns a team member (from args.name)
-        teammate_name: Option<String>,
-        /// Team name if this Task spawns a team member (from args.team_name)
-        team_name: Option<String>,
     },
     /// Task subagent completed (detected from Task tool_result)
     TaskCompleted {
@@ -284,32 +280,6 @@ pub enum StreamEvent {
     },
     /// Hook block (from synthetic user message with text content)
     HookBlock { reason: String },
-    /// Team created by lead (from TeamCreate tool result)
-    TeamCreated {
-        team_name: String,
-        config_path: String,
-    },
-    /// In-process teammate spawned by lead (from Task tool result with teammate_spawned status)
-    TeammateSpawned {
-        teammate_name: String,
-        team_name: String,
-        agent_id: String,
-        model: String,
-        color: String,
-        /// The teammate's initial task prompt (from Task tool's `prompt` field)
-        prompt: String,
-        /// Claude Code agent type controlling built-in tool set (e.g. "general-purpose")
-        agent_type: String,
-    },
-    /// Team message sent (from SendMessage tool result)
-    TeamMessageSent {
-        sender: String,
-        recipient: Option<String>,
-        content: String,
-        message_type: String,
-    },
-    /// Team deleted (from TeamDelete tool result)
-    TeamDeleted { team_name: String },
     /// Turn completed — the lead's result event signals the end of one
     /// agentic turn in interactive (multi-turn) mode. The CLI process stays
     /// alive for subsequent turns.

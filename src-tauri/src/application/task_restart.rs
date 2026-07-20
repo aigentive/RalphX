@@ -310,7 +310,6 @@ pub async fn prepare_terminal_task_for_ready_restart(
     task_repo: &Arc<dyn TaskRepository>,
     task_step_repo: &Arc<dyn TaskStepRepository>,
     old_task: &Task,
-    agent_variant: Option<&str>,
 ) -> AppResult<ReadyRestartPreparation> {
     if !old_task.internal_status.is_terminal() {
         return Ok(ReadyRestartPreparation::default());
@@ -341,14 +340,6 @@ pub async fn prepare_terminal_task_for_ready_restart(
     if let Some(obj) = meta.as_object_mut() {
         if old_task.internal_status == InternalStatus::Failed {
             obj.insert("preserve_steps".to_string(), serde_json::json!(true));
-        }
-        match agent_variant {
-            Some(variant) if !variant.is_empty() => {
-                obj.insert("agent_variant".to_string(), serde_json::json!(variant));
-            }
-            _ => {
-                obj.remove("agent_variant");
-            }
         }
     }
     task_mut.metadata = Some(meta.to_string());

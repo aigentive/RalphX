@@ -122,8 +122,6 @@ interface CreateSessionInput {
   projectId: string;
   title?: string;
   seedTaskId?: string;
-  teamMode?: string;
-  teamConfig?: { maxTeammates: number; modelCeiling: string; budgetLimit?: number | undefined; compositionMode: string };
   analysisBase?: IdeationAnalysisBaseSelection;
 }
 
@@ -149,8 +147,8 @@ export function useCreateIdeationSession() {
   const queryClient = useQueryClient();
 
   return useMutation<IdeationSessionResponse, Error, CreateSessionInput>({
-    mutationFn: ({ projectId, title, seedTaskId, teamMode, teamConfig, analysisBase }) =>
-      ideationApi.sessions.create(projectId, title, seedTaskId, teamMode, teamConfig, analysisBase),
+    mutationFn: ({ projectId, title, seedTaskId, analysisBase }) =>
+      ideationApi.sessions.create(projectId, title, seedTaskId, analysisBase),
     onSuccess: () => {
       // Broad invalidation: covers sessionList, sessionGroupCounts, and sessionsByGroup
       queryClient.invalidateQueries({

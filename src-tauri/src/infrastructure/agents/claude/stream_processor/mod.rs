@@ -84,10 +84,6 @@ impl StreamProcessor {
     }
 
     /// Detect team-related events from tool result JSON.
-    fn detect_team_event(tool_use_id: &str, result: &serde_json::Value) -> Option<StreamEvent> {
-        parser::detect_team_event(tool_use_id, result)
-    }
-
     /// Process a stream message with optional parent_tool_use_id, is_synthetic, and tool_use_result context.
     /// `tool_use_result` is the top-level structured metadata from Claude Code stream JSON
     /// (e.g. `{"status": "teammate_spawned", ...}`) — distinct from `message.content[].content`.
@@ -173,14 +169,6 @@ impl StreamProcessor {
                                     .map(|s| s.to_string()),
                                 model: args
                                     .get("model")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                                teammate_name: args
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                                team_name: args
-                                    .get("team_name")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string()),
                             });
@@ -308,14 +296,6 @@ impl StreamProcessor {
                                         .get("model")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string()),
-                                    teammate_name: input
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
-                                    team_name: input
-                                        .get("team_name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string()),
                                 });
                             }
 
@@ -427,10 +407,10 @@ impl StreamProcessor {
                     } = content
                     {
                         // Check if this is a Task tool_result by finding the matching tool_call
-                        let is_task_result = self
-                            .tool_calls
-                            .iter()
-                            .any(|tc| tc.id.as_ref() == Some(&tool_use_id) && (tc.name == "Task" || tc.name == "Agent"));
+                        let is_task_result = self.tool_calls.iter().any(|tc| {
+                            tc.id.as_ref() == Some(&tool_use_id)
+                                && (tc.name == "Task" || tc.name == "Agent")
+                        });
 
                         // Find the tool call by ID and update its result
                         if let Some(tool_call) = self
@@ -519,10 +499,6 @@ impl StreamProcessor {
                         // Check if this is a team event result.
                         // Use top-level tool_use_result (structured JSON from Claude Code stream)
                         // which contains the actual team metadata. The content field is just text.
-                        let team_data = tool_use_result.as_ref().unwrap_or(&content);
-                        if let Some(team_event) = Self::detect_team_event(&tool_use_id, team_data) {
-                            events.push(team_event);
-                        }
                     }
                 }
             }

@@ -32,11 +32,8 @@ import { logger } from "@/lib/logger";
 import { useMessageAttachments } from "@/hooks/useMessageAttachments";
 import { ChevronDown } from "lucide-react";
 import type { MessageAttachment } from "./MessageAttachments";
-import { useTeamStore, selectTeammateByName, selectTeamMessages, EMPTY_TEAM_MESSAGES } from "@/stores/teamStore";
 import { ToolCallStoreKeyContext } from "./tool-widgets/ToolCallStoreKeyContext";
 import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/ProjectOrchestrationWidget.utils";
-import type { TeamMessage } from "@/stores/teamStore";
-import { TeamMessageBubble } from "./TeamMessageBubble";
 import { isProviderRole } from "@/lib/chat/provider-role";
 import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
@@ -252,7 +249,6 @@ type TimelineMessageItem = {
 type TimelineItem =
   | TimelineMessageItem
   | { kind: "hook"; data: HookEvent | HookStartedEvent; sortTime: number }
-  | { kind: "team_event"; data: TeamMessage; sortTime: number }
   | { kind: "streaming_row"; data: LiveTranscriptRow; sortTime: number }
   | { kind: "streaming"; sortTime: number };
 
@@ -485,8 +481,6 @@ function ToolCallGroupToggleRow({
   senderGroupState,
   isLastInList,
   isExpanded,
-  teammateName,
-  teammateColor,
   onToggle,
   contentWidthClassName,
   rowRef,
@@ -499,8 +493,6 @@ function ToolCallGroupToggleRow({
   senderGroupState: typeof DEFAULT_ASSISTANT_GROUP_STATE;
   isLastInList: boolean;
   isExpanded: boolean;
-  teammateName: string | null;
-  teammateColor: string | null;
   onToggle: React.MouseEventHandler<HTMLButtonElement>;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
@@ -523,8 +515,6 @@ function ToolCallGroupToggleRow({
           isLastInList={isLastInList}
           toolCalls={null}
           contentBlocks={null}
-          teammateName={teammateName}
-          teammateColor={teammateColor}
           providerHarness={msg.providerHarness}
           providerSessionId={msg.providerSessionId}
           upstreamProvider={msg.upstreamProvider}
@@ -812,9 +802,7 @@ interface ChatMessageListProps {
   activeHooks?: HookStartedEvent[];
   /** Whether the conversation is finalizing (between message_created and query refetch) */
   isFinalizing?: boolean;
-  /** Team filter for message filtering (team mode) */
-  teamFilter?: "lead" | string | undefined;
-  /** Context key for team store lookup (team mode) */
+  /** Context key for tool-call widget state. */
   contextKey?: string | undefined;
   /** Provider metadata for the active conversation */
   providerHarness?: string | null | undefined;
@@ -853,7 +841,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hookEvents = EMPTY_HOOK_EVENTS,
       activeHooks = EMPTY_ACTIVE_HOOKS,
       isFinalizing = false,
-      teamFilter,
       contextKey,
       providerHarness,
       providerSessionId,
@@ -1117,13 +1104,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Forward the ref to parent
     useImperativeHandle(ref, () => virtuosoRef.current!, []);
 
-    // Team system messages for inline display
-    const teamMsgSelector = useMemo(
-      () => contextKey ? selectTeamMessages(contextKey) : () => EMPTY_TEAM_MESSAGES,
-      [contextKey],
-    );
-    const teamMessages = useTeamStore(teamMsgSelector);
-
     const { data: attachmentsMap } = useMessageAttachments(messages, conversationId, {
       enabled: !shouldShowInitialPaintCover,
     });
@@ -1215,11 +1195,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         })
         : messages;
 
-      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
-      // useConversation, so all messages in the data set belong to that conversation.
-      // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
-
       const pushMessageItem = (
         msg: ChatMessageData,
         toolCallGroup?: ToolCallGroupMarker,
@@ -1238,8 +1213,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         });
       };
 
-      for (let index = 0; index < teamFilteredMessages.length; index += 1) {
-        const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
+      for (let index = 0; index < filteredMessages.length; index += 1) {
+        const toolCallGroup = collectToolCallGroupRun(filteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
           const groupedToolCalls = toolCallGroup.map(persistedTimelineToolCall);
@@ -1262,7 +1237,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           continue;
         }
 
-        const msg = teamFilteredMessages[index];
+        const msg = filteredMessages[index];
         if (msg) {
           pushMessageItem(msg);
         }
@@ -1274,27 +1249,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
         for (const ev of activeHooks) {
           items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-      }
-
-      // Interleave team system messages (filtered by teammate tab)
-      if (teamMessages.length > 0) {
-        const filteredTeamMsgs = teamFilter
-          ? teamMessages.filter((msg) => {
-              if (teamFilter === "lead") {
-                // Lead sees ALL team messages (lead is the orchestrator)
-                return true;
-              }
-              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
-            })
-          : teamMessages;
-
-        for (const msg of filteredTeamMsgs) {
-          items.push({
-            kind: "team_event",
-            data: msg,
-            sortTime: new Date(msg.timestamp).getTime(),
-          });
         }
       }
 
@@ -1318,12 +1272,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0 || liveTranscriptRows.length > 0 || hasFooterStreamingContent) {
+      if (hasHookEvents || liveTranscriptRows.length > 0 || hasFooterStreamingContent) {
         items.sort((a, b) => a.sortTime - b.sortTime);
       }
 
       return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, liveTranscriptRows, hasFooterStreamingContent]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, liveTranscriptRows, hasFooterStreamingContent]);
 
     const timelineSenderGroups = useMemo(() => {
       let previousGroupKey: string | null = null;
@@ -1764,26 +1718,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       topInsetClassName,
     ]);
 
-    // Detect when a teammate tab filter produces zero timeline items but messages exist.
-    const isFilteredTabEmpty = teamFilter && teamFilter !== "lead" && timeline.length === 0 && messages.length > 0;
-    const emptyTabLabel = isFilteredTabEmpty
-      ? (teamFilter === "lead" ? "Lead" : teamFilter)
-      : null;
-
-    // Helper to look up teammate info from team store
-    const getTeammateInfo = useCallback((sender: string | null | undefined) => {
-      if (!sender || !contextKey) {
-        return { teammateName: null, teammateColor: null };
-      }
-      const selector = selectTeammateByName(contextKey, sender);
-      const teammate = selector(useTeamStore.getState());
-      return {
-        teammateName: teammate?.name ?? null,
-        teammateColor: teammate?.color ?? null,
-      };
-    }, [contextKey]);
-
-    // Memoize itemContent — lookup teammate info for team mode messages
+    // Memoize itemContent for virtualized rendering.
     const renderItem = useCallback((index: number, item: TimelineItem) => {
       const timelineIndex = index - firstItemIndex;
       const isLastVisibleTimelineItem = timelineIndex === lastVisibleTimelineIndex;
@@ -1792,21 +1727,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           <div className="px-3 w-full" style={contentContainerStyle}>
             <ContentShell className={contentWidthClassName}>
               <HookEventMessage event={item.data} />
-            </ContentShell>
-          </div>
-        );
-      }
-      if (item.kind === "team_event") {
-        const teamMsg = item.data;
-        return (
-          <div className="px-3 w-full" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>
-              <TeamMessageBubble
-                from={teamMsg.from}
-                to={teamMsg.to}
-                content={teamMsg.content}
-                timestamp={teamMsg.timestamp}
-              />
             </ContentShell>
           </div>
         );
@@ -1850,9 +1770,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const toolCallGroup = item.toolCallGroup;
       const isExpandedToolCallGroup =
         toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
-      const { teammateName, teammateColor } = isProviderRole(msg.role)
-        ? getTeammateInfo(msg.sender)
-        : { teammateName: null, teammateColor: null };
       const groupToggleRow = toolCallGroup?.position === "toggle"
         ? (
           <ToolCallGroupToggleRow
@@ -1861,8 +1778,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             senderGroupState={senderGroupState}
             isLastInList={isLastVisibleTimelineItem && !isExpandedToolCallGroup}
             isExpanded={isExpandedToolCallGroup}
-            teammateName={teammateName}
-            teammateColor={teammateColor}
             onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
             contentWidthClassName={contentWidthClassName}
             agentRun={agentRun}
@@ -1906,8 +1821,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               groupContentBlockToolCalls={toolCallGroup == null}
               {...(msg.attachments && { attachments: msg.attachments })}
               {...(composerReferences ? { composerReferences } : {})}
-              teammateName={teammateName}
-              teammateColor={teammateColor}
               providerHarness={msg.providerHarness}
               providerSessionId={msg.providerSessionId}
               upstreamProvider={msg.upstreamProvider}
@@ -1948,7 +1861,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       expandedToolGroupKeys,
       firstItemIndex,
       footerContent,
-      getTeammateInfo,
       handleLastRenderedRowRef,
       lastVisibleTimelineIndex,
       providerHarness,
@@ -1975,13 +1887,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               ariaHidden
             />
           )}
-          {isFilteredTabEmpty && (
-            <div className="flex-1 flex items-center justify-center h-full" data-testid="teammate-tab-empty">
-              <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-                No messages from {emptyTabLabel} yet
-              </span>
-            </div>
-          )}
           <div
             className={cn("px-3 w-full", topInsetClassName ?? "pt-3")}
             style={contentContainerStyle}
@@ -2002,21 +1907,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 <div key={`${item.kind}-${item.sortTime}-${index}`} className="px-3 w-full" style={contentContainerStyle}>
                   <ContentShell className={contentWidthClassName}>
                     <HookEventMessage event={item.data} />
-                  </ContentShell>
-                </div>
-              );
-            }
-            if (item.kind === "team_event") {
-              const teamMsg = item.data;
-              return (
-                <div key={`team-${teamMsg.id}`} className="px-3 w-full" style={contentContainerStyle}>
-                  <ContentShell className={contentWidthClassName}>
-                    <TeamMessageBubble
-                      from={teamMsg.from}
-                      to={teamMsg.to}
-                      content={teamMsg.content}
-                      timestamp={teamMsg.timestamp}
-                    />
                   </ContentShell>
                 </div>
               );
@@ -2061,9 +1951,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             const isExpandedToolCallGroup =
               toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
             const isLastVisibleTimelineItem = index === lastVisibleTimelineIndex;
-            const { teammateName, teammateColor } = isProviderRole(msg.role)
-              ? getTeammateInfo(msg.sender)
-              : { teammateName: null, teammateColor: null };
             const groupToggleRow = toolCallGroup?.position === "toggle"
               ? (
                 <ToolCallGroupToggleRow
@@ -2073,8 +1960,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   senderGroupState={senderGroupState}
                   isLastInList={isLastVisibleTimelineItem && !isExpandedToolCallGroup}
                   isExpanded={isExpandedToolCallGroup}
-                  teammateName={teammateName}
-                  teammateColor={teammateColor}
                   onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
                   contentWidthClassName={contentWidthClassName}
                   agentRun={agentRun}
@@ -2113,8 +1998,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     groupContentBlockToolCalls={toolCallGroup == null}
                     {...(msg.attachments && { attachments: msg.attachments })}
                     {...(composerReferences ? { composerReferences } : {})}
-                    teammateName={teammateName}
-                    teammateColor={teammateColor}
                     providerHarness={msg.providerHarness}
                     providerSessionId={msg.providerSessionId}
                     upstreamProvider={msg.upstreamProvider}
@@ -2172,13 +2055,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             testId="chat-transcript-settling-placeholders"
             ariaHidden
           />
-        )}
-        {isFilteredTabEmpty && (
-          <div className="absolute inset-0 flex items-center justify-center" data-testid="teammate-tab-empty">
-            <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-              No messages from {emptyTabLabel} yet
-            </span>
-          </div>
         )}
         <Virtuoso
           // Key forces complete remount when conversation changes - prevents scroll animation conflicts

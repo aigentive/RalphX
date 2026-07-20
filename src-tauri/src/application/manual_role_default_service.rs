@@ -264,11 +264,6 @@ fn provider_default(provider: AgentProviderSettings) -> ManualRoleDefault {
 }
 
 pub fn validate_role_value(role: RoutingRole, value: &ManualRoleDefault) -> AppResult<()> {
-    if value.coordination_mode == Some(CoordinationMode::LegacyClaudeTeam) {
-        return Err(AppError::Validation(
-            "legacy_claude_team cannot be used as a manual role default".into(),
-        ));
-    }
     if value.service_tier == ManualServiceTier::Fast
         && value.harness != crate::domain::agents::AgentHarnessKind::Codex
     {

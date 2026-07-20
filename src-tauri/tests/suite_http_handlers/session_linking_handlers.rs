@@ -1,5 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     ArtifactId, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
@@ -8,86 +8,6 @@ use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{CreateChildSessionRequest, HttpServerState};
 use std::sync::Arc;
 
-fn make_session(team_mode: Option<&str>) -> IdeationSession {
-    IdeationSession {
-        id: IdeationSessionId::new(),
-        project_id: ProjectId("proj-1".to_string()),
-        title: None,
-        status: IdeationSessionStatus::Active,
-        plan_artifact_id: None,
-        verified_plan_artifact_id: None,
-        verified_plan_agent_run_id: None,
-        inherited_plan_artifact_id: None,
-        seed_task_id: None,
-        parent_session_id: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        archived_at: None,
-        converted_at: None,
-        team_mode: team_mode.map(|s| s.to_string()),
-        team_config_json: None,
-        title_source: None,
-        verification_status: Default::default(),
-        verification_in_progress: false,
-        verification_generation: 0,
-        verification_current_round: None,
-        verification_max_rounds: None,
-        verification_gap_count: 0,
-        verification_gap_score: None,
-        verification_convergence_reason: None,
-        source_project_id: None,
-        source_session_id: None,
-        source_task_id: None,
-        source_context_type: None,
-        source_context_id: None,
-        spawn_reason: None,
-        blocker_fingerprint: None,
-        session_purpose: Default::default(),
-        session_flow: Default::default(),
-        cross_project_checked: true,
-        plan_version_last_read: None,
-        origin: Default::default(),
-        expected_proposal_count: None,
-        auto_accept_status: None,
-        auto_accept_started_at: None,
-        api_key_id: None,
-        idempotency_key: None,
-        external_activity_phase: None,
-        external_last_read_message_id: None,
-        dependencies_acknowledged: false,
-        pending_initial_prompt: None,
-        acceptance_status: None,
-        verification_confirmation_status: None,
-        analysis: Default::default(),
-        last_effective_model: None,
-    }
-}
-
-#[test]
-fn test_session_is_team_mode_research_returns_true() {
-    let session = make_session(Some("research"));
-    assert!(session_is_team_mode(&session));
-}
-
-#[test]
-fn test_session_is_team_mode_debate_returns_true() {
-    let session = make_session(Some("debate"));
-    assert!(session_is_team_mode(&session));
-}
-
-#[test]
-fn test_session_is_team_mode_solo_returns_false() {
-    let session = make_session(Some("solo"));
-    assert!(!session_is_team_mode(&session));
-}
-
-#[test]
-fn test_session_is_team_mode_none_returns_false() {
-    let session = make_session(None);
-    assert!(!session_is_team_mode(&session));
-}
-
-// ============================================================
 // Verification Auto-Initialization Integration Tests
 // ============================================================
 
@@ -97,13 +17,9 @@ mod verification_init_tests {
     async fn setup_sqlite_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_sqlite_test());
         let execution_state = Arc::new(ExecutionState::new());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -124,8 +40,6 @@ mod verification_init_tests {
             updated_at: chrono::Utc::now(),
             archived_at: None,
             converted_at: None,
-            team_mode: None,
-            team_config_json: None,
             title_source: None,
             verification_status: Default::default(),
             verification_in_progress: false,
@@ -194,8 +108,6 @@ mod verification_init_tests {
                 source_context_id: None,
                 spawn_reason: None,
                 blocker_fingerprint: None,
-                team_mode: None,
-                team_config: None,
                 purpose: Some("verification".to_string()),
                 is_external_trigger: false,
             }),
@@ -238,8 +150,6 @@ mod verification_init_tests {
             source_context_id: Some("task-123".to_string()),
             spawn_reason: Some("out_of_scope_failure".to_string()),
             blocker_fingerprint: Some("ood:task-123:abc123def456".to_string()),
-            team_mode: None,
-            team_config: None,
             purpose: None,
             is_external_trigger: false,
         };
@@ -296,8 +206,6 @@ mod verification_init_tests {
             source_context_id: Some("task-789".to_string()),
             spawn_reason: Some("worker_blocker_followup".to_string()),
             blocker_fingerprint: Some("ood:task-789:112233445566".to_string()),
-            team_mode: None,
-            team_config: None,
             purpose: None,
             is_external_trigger: false,
         };
@@ -318,8 +226,6 @@ mod verification_init_tests {
             source_context_id: Some("review-789".to_string()),
             spawn_reason: Some("out_of_scope_failure".to_string()),
             blocker_fingerprint: Some("ood:task-789:112233445566".to_string()),
-            team_mode: None,
-            team_config: None,
             purpose: None,
             is_external_trigger: false,
         };
@@ -376,8 +282,6 @@ mod verification_init_tests {
             source_context_id: Some("review-456".to_string()),
             spawn_reason: Some("out_of_scope_failure".to_string()),
             blocker_fingerprint: Some("ood:task-456:def456abc123".to_string()),
-            team_mode: None,
-            team_config: None,
             purpose: None,
             is_external_trigger: false,
         };
@@ -429,8 +333,6 @@ mod verification_init_tests {
             source_context_id: None,
             spawn_reason: None,
             blocker_fingerprint: None,
-            team_mode: None,
-            team_config: None,
             purpose: None, // non-verification
             is_external_trigger: false,
         };
@@ -497,8 +399,6 @@ mod verification_init_tests {
             source_context_id: None,
             spawn_reason: None,
             blocker_fingerprint: None,
-            team_mode: None,
-            team_config: None,
             purpose: None, // non-verification
             is_external_trigger: false,
         };
@@ -562,8 +462,6 @@ mod verification_init_tests {
             source_context_id: None,
             spawn_reason: None,
             blocker_fingerprint: None,
-            team_mode: None,
-            team_config: None,
             purpose: None,
             is_external_trigger: false,
         };

@@ -61,7 +61,6 @@ interface UseChatActionsProps {
     mutateAsync: (params: {
       content: string;
       attachmentIds?: string[];
-      target?: string;
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -172,7 +171,6 @@ export function useChatActions({
     async (
       content: string,
       attachmentIds?: string[],
-      target?: string,
       composerOptions?: {
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
@@ -204,7 +202,7 @@ export function useChatActions({
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {
-            if (activeConversationId && !target) {
+            if (activeConversationId) {
               const referenceMetadata = serializeComposerReferencesMetadata({
                 projectReferences: composerOptions?.projectReferences,
                 integrationReferences: composerOptions?.integrationReferences,
@@ -281,7 +279,6 @@ export function useChatActions({
               agentContextId,
               content,
               attachmentIds,
-              target,
               directSendOptions,
             );
             sentResult = result;
@@ -314,7 +311,6 @@ export function useChatActions({
           const params: {
             content: string;
             attachmentIds?: string[];
-            target?: string;
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -325,9 +321,6 @@ export function useChatActions({
           } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
-          }
-          if (target !== undefined) {
-            params.target = target;
           }
           if (composerOptions?.projectReferences?.length) {
             params.composerProjectReferences = composerOptions.projectReferences;
@@ -365,7 +358,6 @@ export function useChatActions({
           if (
             contextType === "ideation" &&
             ideationSessionId &&
-            !target &&
             result.conversationId &&
             (result.isNewConversation || result.queuedAsPending)
           ) {
@@ -374,7 +366,6 @@ export function useChatActions({
           if (
             contextType === "ideation" &&
             ideationSessionId &&
-            !target &&
             result.queuedAsPending
           ) {
             queryClient.setQueryData(
@@ -542,7 +533,6 @@ export function useChatActions({
           contextId,
           newContent,
           attachmentIds !== undefined && attachmentIds.length > 0 ? attachmentIds : undefined,
-          undefined,
           selectionSnapshot
             ? { ...sendOptions, composerSelectionSnapshot: selectionSnapshot }
             : sendOptions,

@@ -115,7 +115,6 @@ pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,
     ParseArtifactRelationTypeError, ParseArtifactTypeError, ProcessId, TeamArtifactMetadata,
-    VerificationFindingGap, VerificationFindingMetadata,
 };
 pub use artifact_flow::{
     create_plan_updated_sync_flow, create_research_to_dev_flow, ArtifactFlow, ArtifactFlowContext,

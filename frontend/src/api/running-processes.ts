@@ -16,7 +16,6 @@ export type {
   ExecutionLaneUsage,
   ExecutionCapacitySummary,
   ExecutionLaneName,
-  TeammateSummary,
 } from "./running-processes.types";
 
 // Re-export schemas for consumers that need validation
@@ -29,13 +28,11 @@ export {
   ExecutionLaneUsageSchema,
   ExecutionCapacitySummarySchema,
   ExecutionLaneNameSchema,
-  TeammateSummarySchema,
 } from "./running-processes.schemas";
 
 // Re-export transforms for consumers that need manual transformation
 export {
   transformStepProgressSummary,
-  transformTeammateSummary,
   transformRunningProcess,
   transformRunningIdeationSession,
   transformRunningWorkspaceSession,

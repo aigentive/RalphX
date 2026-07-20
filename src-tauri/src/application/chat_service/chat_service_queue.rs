@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::chat_service_context;
-use super::chat_service_helpers::{effective_team_mode_for_harness, get_assistant_role};
+use super::chat_service_helpers::get_assistant_role;
 use super::chat_service_streaming::{
     persist_message_text_timeline_item, process_stream_background,
 };
@@ -18,8 +18,8 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{
-    coordination_mode_enables_team, persona_resolve_flags_for_conversation,
-    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
+    persona_resolve_flags_for_conversation, team_intent_for_persisted_coordination_mode,
+    ChatService, SendMessageOptions,
 };
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
@@ -428,13 +428,6 @@ fn provider_switch_send_options_for_queued_message(
         force_new_provider_session,
         ..Default::default()
     }
-}
-
-fn effective_queue_team_mode(
-    team_mode: bool,
-    conversation_coordination_mode: Option<CoordinationMode>,
-) -> bool {
-    team_mode || conversation_coordination_mode.is_some_and(coordination_mode_enables_team)
 }
 
 fn queued_target_harness(
@@ -909,7 +902,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     app_handle: Option<AppHandle<R>>,
     project_id: Option<&str>,
     conversation_coordination_mode: Option<CoordinationMode>,
-    team_mode: bool,
     cancellation_token: CancellationToken,
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
@@ -919,7 +911,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     let mut last_run_id: Option<String> = None;
     let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
     let queue_key = QueueKey::new(context_type, queue_context_id);
-    let queue_team_mode = effective_queue_team_mode(team_mode, conversation_coordination_mode);
     let queue_team_intent =
         conversation_coordination_mode.and_then(team_intent_for_persisted_coordination_mode);
 
@@ -1934,7 +1925,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     } else {
                         None
                     },
-                    team_mode,
                     Arc::clone(chat_attachment_repo),
                     Arc::clone(artifact_repo),
                     agent_lane_settings_repo,
@@ -2144,8 +2134,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         Some(queue_assistant_msg_id.clone()),
                         question_state.clone(),
                         cancellation_token.clone(),
-                        None, // Queue processing doesn't need team events
-                        effective_team_mode_for_harness(queue_team_mode, harness),
                         streaming_state_cache.clone(),
                         None, // Queue processing doesn't have registry in scope
                         Some(Arc::clone(agent_run_repo)),

@@ -5,15 +5,13 @@ fn coordination_mode_serializes_snake_case() {
     let json = serde_json::to_string(&CoordinationMode::RxNativeTeam).unwrap();
     assert_eq!(json, "\"rx_native_team\"");
 
-    let parsed: CoordinationMode = serde_json::from_str("\"legacy_claude_team\"").unwrap();
-    assert_eq!(parsed, CoordinationMode::LegacyClaudeTeam);
+    assert!(serde_json::from_str::<CoordinationMode>("\"legacy_claude_team\"").is_err());
 }
 
 #[test]
 fn coordination_mode_display_and_from_str_cover_all_modes() {
     for (mode, value) in [
         (CoordinationMode::Solo, "solo"),
-        (CoordinationMode::LegacyClaudeTeam, "legacy_claude_team"),
         (CoordinationMode::RxNativeTeam, "rx_native_team"),
         (CoordinationMode::RxNativeWorkflow, "rx_native_workflow"),
         (CoordinationMode::CodexNativeUltra, "codex_native_ultra"),

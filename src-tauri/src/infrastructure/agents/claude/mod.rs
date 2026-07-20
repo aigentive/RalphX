@@ -2,51 +2,42 @@
 // Uses the claude CLI for agent interactions
 
 mod agent_config;
-pub mod cli_capabilities;
 pub mod agent_names;
 mod claude_code_client;
+pub mod cli_capabilities;
 pub mod effort_resolver;
 mod generated_plugin;
+pub(crate) mod mcp_catalog;
 pub mod model_labels;
 pub mod model_resolver;
-pub(crate) mod mcp_catalog;
 pub mod node_utils;
 mod stream_processor;
 
 #[cfg(test)]
 mod mcp_catalog_tests;
 
-#[allow(unused_imports)]
-pub use agent_config::team_config::{
-    env_variant_override, get_team_constraints, resolve_process_agent, validate_child_team_config,
-    validate_team_plan, ApprovedTeamPlan, ApprovedTeammate, ProcessMapping, ProcessSlot,
-    TeamConstraintError, TeamConstraints, TeamConstraintsConfig, TeamMode, TeammateSpawnRequest,
+pub(crate) use agent_config::configure_runtime_config_dir;
+pub use agent_config::live_flags::{
+    reset_agent_personas_override_for_test, set_agent_personas_override,
 };
+pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
-    claude_runtime_config,
-    config_path, defer_merge_enabled, execution_defaults_config, external_mcp_config,
-    external_mcp_config_path, file_logging_enabled, get_agent_config, get_agent_config_for_profile,
-    get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
-    get_effective_settings_profile, get_preapproved_tools, get_preapproved_tools_for_profile,
-    git_runtime_config, ideation_activity_threshold_secs, limits_config, process_mapping,
-    reconciliation_config, resolve_file_logging_early, scheduler_config, stream_timeouts,
-    supervisor_runtime_config, team_constraints_config, ui_feature_flags_config,
+    claude_runtime_config, config_path, defer_merge_enabled, execution_defaults_config,
+    external_mcp_config, external_mcp_config_path, file_logging_enabled, get_agent_config,
+    get_agent_config_for_profile, get_allowed_tools, get_allowed_tools_for_profile,
+    get_effective_settings, get_effective_settings_profile, get_preapproved_tools,
+    get_preapproved_tools_for_profile, git_runtime_config, ideation_activity_threshold_secs,
+    limits_config, process_mapping, reconciliation_config, resolve_file_logging_early,
+    scheduler_config, stream_timeouts, supervisor_runtime_config, ui_feature_flags_config,
     validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
     GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
     StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
-pub use agent_config::live_flags::{
-    reset_agent_personas_override_for_test, set_agent_personas_override,
-};
-pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;
-pub use claude_code_client::{
-    StreamEvent as ClientStreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig,
-    TeammateSpawnResult,
-};
+pub use claude_code_client::{StreamEvent as ClientStreamEvent, StreamingSpawnResult};
 pub use cli_capabilities::{
     clear_claude_cli_capability_cache, is_claude_sonnet_5_model,
     normalize_claude_effort_for_cli_path, parse_claude_cli_capabilities, parse_claude_version,
@@ -81,14 +72,12 @@ use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::domain::agents::{
-    AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
-};
+use crate::domain::agents::{AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
-    render_agent_runtime_profile_context,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_plugin_dir,
-    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness,
+    render_agent_runtime_profile_context, resolve_harness_agent_prompt_path,
+    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata_for_profile,
+    AgentPromptHarness,
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -277,7 +266,6 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
     match short_name {
         "orchestrator-ideation" => "ralphx-ideation",
         "orchestrator-ideation-readonly" => "ralphx-ideation-readonly",
-        "ideation-team-lead" => "ralphx-ideation-team-lead",
         "ideation-advocate" => "ralphx-ideation-advocate",
         "ideation-critic" => "ralphx-ideation-critic",
         "ideation-specialist-backend" => "ralphx-ideation-specialist-backend",
@@ -285,7 +273,6 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "ideation-specialist-infra" => "ralphx-ideation-specialist-infra",
         "chat-task" => "ralphx-chat-task",
         "chat-project" => "ralphx-chat-project",
-        "ralphx-worker-team" => "ralphx-execution-team-lead",
         "ralphx-worker" => "ralphx-execution-worker",
         "ralphx-coder" => "ralphx-execution-coder",
         "ralphx-reviewer" => "ralphx-execution-reviewer",
@@ -396,7 +383,11 @@ pub fn resolve_permission_mode(agent_type: Option<&str>) -> String {
     let default = claude_permission_runtime_override()
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().and_then(|value| value.permission_mode.clone()))
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|value| value.permission_mode.clone())
+        })
         .unwrap_or_else(|| claude_runtime_config().permission_mode.clone());
     match agent_type {
         Some(name) => get_agent_config(name)
@@ -740,10 +731,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
             );
             e
         })?;
-        cmd.args([
-            "--mcp-config",
-            temp_path.to_str().unwrap_or(""),
-        ]);
+        cmd.args(["--mcp-config", temp_path.to_str().unwrap_or("")]);
         tracing::debug!(
             path = %temp_path.display(),
             agent_type = agent,
@@ -959,11 +947,8 @@ pub(crate) fn build_mcp_config_with_runtime_context_for_profile(
     let short_name = mcp_agent_type(agent_type);
     let mcp_server_name = &claude_runtime_config().mcp_server_name;
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
-    let claude_metadata = try_load_canonical_claude_metadata_for_profile(
-        &project_root,
-        short_name,
-        agent_profile,
-    )?;
+    let claude_metadata =
+        try_load_canonical_claude_metadata_for_profile(&project_root, short_name, agent_profile)?;
     let mut mcp_servers = serde_json::Map::new();
     let mut server_names = Vec::new();
 
@@ -1162,8 +1147,7 @@ fn append_system_prompt_args<F>(
     system_prompt: &str,
     use_file: bool,
     write_system_prompt_temp: F,
-)
-where
+) where
     F: FnOnce(&str) -> Result<PathBuf, String>,
 {
     if use_file {
@@ -1296,11 +1280,7 @@ impl std::fmt::Debug for SpawnableCommand {
 impl SpawnableCommand {
     #[cfg(test)]
     pub(crate) fn new(cmd: Command, stdin_prompt: Option<String>) -> Self {
-        Self::new_with_stdin_transport(
-            cmd,
-            stdin_prompt,
-            SpawnableStdinTransport::Inherited,
-        )
+        Self::new_with_stdin_transport(cmd, stdin_prompt, SpawnableStdinTransport::Inherited)
     }
 
     pub(crate) fn new_with_stdin_transport(
@@ -1730,20 +1710,30 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         mcp_runtime_context,
         true,
     )?;
-    let prompt_args =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        None,
+        agent,
+        None,
+        resume_session,
+        false,
+    );
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_args.stdin_prompt.is_some(),
+    );
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1782,18 +1772,20 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_args.stdin_prompt.is_some(),
+    );
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1843,20 +1835,30 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let prompt_args =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        None,
+        agent,
+        None,
+        resume_session,
+        false,
+    );
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_args.stdin_prompt.is_some(),
+    );
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1896,18 +1898,20 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_args.stdin_prompt.is_some(),
+    );
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Build a ready-to-spawn interactive CLI command (no `-p` flag).
@@ -2010,17 +2014,15 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         true,
     );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2117,17 +2119,15 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         true,
     );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(
-        SpawnableCommand::new_with_stdin_transport(
-            cmd,
-            prompt_args.stdin_prompt,
-            SpawnableStdinTransport::Piped,
-        )
-        .with_persona_injection_outcome(
-            prompt_args.persona_injected,
-            prompt_args.persona_injection_skipped_reason,
-        ),
+    Ok(SpawnableCommand::new_with_stdin_transport(
+        cmd,
+        prompt_args.stdin_prompt,
+        SpawnableStdinTransport::Piped,
     )
+    .with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Find the Claude CLI path (uses same approach as ClaudeCodeClient)

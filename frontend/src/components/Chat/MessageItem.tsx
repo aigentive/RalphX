@@ -92,10 +92,6 @@ export interface MessageItemProps {
   attachments?: MessageAttachment[];
   /** Structured project and integration references for user messages */
   composerReferences?: MessageComposerReferences;
-  /** Teammate name for team mode messages */
-  teammateName?: string | null | undefined;
-  /** Teammate color for left-border indicator */
-  teammateColor?: string | null | undefined;
   providerHarness?: string | null | undefined;
   providerSessionId?: string | null | undefined;
   upstreamProvider?: string | null | undefined;
@@ -226,8 +222,6 @@ export const MessageItem = React.memo(function MessageItem({
   groupContentBlockToolCalls = true,
   attachments,
   composerReferences,
-  teammateName,
-  teammateColor,
   providerHarness,
   providerSessionId,
   upstreamProvider,
@@ -279,16 +273,13 @@ export const MessageItem = React.memo(function MessageItem({
   const shouldShowProviderMeta =
     showProviderMeta &&
     !isUser &&
-    !teammateName &&
     (providerHarnessLabel !== null || modelEffortLabel !== null);
   const shouldShowPersonaMeta =
     agentPersonasEnabled &&
     !isUser &&
-    !teammateName &&
     personaSlug != null &&
     personaInjected != null;
-  const shouldReserveAssistantIconSpace =
-    !isUser && !teammateName && reserveAssistantIconSpace;
+  const shouldReserveAssistantIconSpace = !isUser && reserveAssistantIconSpace;
 
   // Use pre-parsed data directly (parsing now happens at API layer)
   const { contentBlocks: parsedContentBlocks, toolCalls: parsedToolCalls } = useMemo(
@@ -526,7 +517,6 @@ export const MessageItem = React.memo(function MessageItem({
         isUser ? "justify-end" : "justify-start"
       )}
       data-chat-message-item="true"
-      style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
       {shouldReserveAssistantIconSpace && (
@@ -540,18 +530,6 @@ export const MessageItem = React.memo(function MessageItem({
           />
         )
       )}
-      {/* Teammate name badge */}
-      {!isUser && teammateName && (
-        <div className="flex items-center gap-1 mt-2 mr-2 shrink-0">
-          {teammateColor && (
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: teammateColor }} />
-          )}
-          <span className="text-[0.625rem] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
-            {teammateName}
-          </span>
-        </div>
-      )}
-
       <div className="flex flex-col gap-3 min-w-0 w-full">
         {(shouldShowProviderMeta || shouldShowPersonaMeta) && (
           <div
@@ -649,8 +627,6 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.groupContentBlockToolCalls === next.groupContentBlockToolCalls
     && prev.attachments === next.attachments
     && prev.composerReferences === next.composerReferences
-    && prev.teammateName === next.teammateName
-    && prev.teammateColor === next.teammateColor
     && prev.providerHarness === next.providerHarness
     && prev.providerSessionId === next.providerSessionId
     && prev.upstreamProvider === next.upstreamProvider

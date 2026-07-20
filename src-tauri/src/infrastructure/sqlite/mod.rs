@@ -14,18 +14,16 @@ pub mod sqlite_agent_conversation_workspace_repo;
 #[cfg(test)]
 mod sqlite_agent_conversation_workspace_repo_tests;
 pub mod sqlite_agent_lane_settings_repo;
-pub mod sqlite_manual_role_default_repo;
-pub mod sqlite_mcp_policy_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
 pub mod sqlite_agent_run_repo;
 pub mod sqlite_agent_task_repo;
+#[cfg(test)]
+mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_workflow_repo;
 #[cfg(test)]
 mod sqlite_agent_workflow_repo_tests;
-#[cfg(test)]
-mod sqlite_agent_task_repo_tests;
 pub mod sqlite_api_key_repo;
 pub mod sqlite_app_state_repo;
 pub mod sqlite_artifact_bucket_repo;
@@ -44,9 +42,6 @@ mod sqlite_chat_attachment_repo_tests;
 pub mod sqlite_chat_conversation_repo;
 #[cfg(test)]
 mod sqlite_chat_conversation_repo_tests;
-pub mod sqlite_persona_repo;
-#[cfg(test)]
-mod sqlite_persona_repo_tests;
 pub mod sqlite_chat_message_repo;
 #[cfg(test)]
 mod sqlite_chat_message_repo_tests;
@@ -76,6 +71,8 @@ pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
 pub mod sqlite_linear_integration_settings_repo;
 pub mod sqlite_linear_webhook_store;
+pub mod sqlite_manual_role_default_repo;
+pub mod sqlite_mcp_policy_repo;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
 mod sqlite_memory_archive_job_repository_tests;
@@ -86,13 +83,16 @@ pub mod sqlite_memory_event_repository;
 mod sqlite_memory_event_repository_tests;
 pub mod sqlite_methodology_repo;
 pub mod sqlite_notification_repo;
-pub mod sqlite_notification_settings_repo;
 #[cfg(test)]
 mod sqlite_notification_repo_tests;
+pub mod sqlite_notification_settings_repo;
 pub mod sqlite_orphan_worktree_cleanup_marker_repo;
 #[cfg(test)]
 mod sqlite_orphan_worktree_cleanup_marker_repo_tests;
 pub mod sqlite_permission_repo;
+pub mod sqlite_persona_repo;
+#[cfg(test)]
+mod sqlite_persona_repo_tests;
 pub mod sqlite_plan_artifact_approval_repo;
 #[cfg(test)]
 mod sqlite_plan_artifact_approval_repo_tests;
@@ -113,17 +113,11 @@ pub mod sqlite_task_proposal_repo;
 pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
+pub mod sqlite_ticket_canonical_branch_repo;
+pub mod sqlite_ticketing_status_catalog_repo;
 pub mod sqlite_ui_feature_flag_overrides_repo;
 #[cfg(test)]
 mod sqlite_ui_feature_flag_overrides_repo_tests;
-pub mod sqlite_team_message_repo;
-#[cfg(test)]
-mod sqlite_team_message_repo_tests;
-pub mod sqlite_team_session_repo;
-#[cfg(test)]
-mod sqlite_team_session_repo_tests;
-pub mod sqlite_ticket_canonical_branch_repo;
-pub mod sqlite_ticketing_status_catalog_repo;
 pub mod sqlite_validation_run_repo;
 #[cfg(test)]
 mod sqlite_validation_run_repo_tests;
@@ -167,7 +161,6 @@ pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRun
 pub use sqlite_branch_update_repo::SqliteBranchUpdateRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
-pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;
 pub use sqlite_chat_timeline_repo::SqliteChatTimelineRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
@@ -194,6 +187,7 @@ pub use sqlite_notification_repo::SqliteNotificationRepository;
 pub use sqlite_notification_settings_repo::SqliteNotificationSettingsRepository;
 pub use sqlite_orphan_worktree_cleanup_marker_repo::SqliteOrphanWorktreeCleanupMarkerRepository;
 pub use sqlite_permission_repo::SqlitePermissionRepository;
+pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_plan_artifact_approval_repo::SqlitePlanArtifactApprovalRepository;
 pub use sqlite_plan_branch_repo::SqlitePlanBranchRepository;
 pub use sqlite_plan_selection_stats_repo::SqlitePlanSelectionStatsRepository;
@@ -212,11 +206,9 @@ pub use sqlite_task_proposal_repo::SqliteTaskProposalRepository;
 pub use sqlite_task_qa_repo::SqliteTaskQARepository;
 pub use sqlite_task_repo::SqliteTaskRepository;
 pub use sqlite_task_step_repo::SqliteTaskStepRepository;
-pub use sqlite_ui_feature_flag_overrides_repo::SqliteUiFeatureFlagOverridesRepository;
-pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
-pub use sqlite_team_session_repo::SqliteTeamSessionRepository;
 pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;
 pub use sqlite_ticketing_status_catalog_repo::SqliteTicketingStatusCatalogRepository;
+pub use sqlite_ui_feature_flag_overrides_repo::SqliteUiFeatureFlagOverridesRepository;
 pub use sqlite_validation_run_repo::SqliteValidationRunRepository;
 pub use sqlite_webhook_registration_repo::SqliteWebhookRegistrationRepository;
 pub use sqlite_workflow_repo::SqliteWorkflowRepository;

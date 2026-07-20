@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use axum::{extract::State, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
     AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole,
@@ -243,13 +243,9 @@ async fn seed_bound_active_project_persona(
 
 fn build_state(app_state: Arc<AppState>) -> HttpServerState {
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

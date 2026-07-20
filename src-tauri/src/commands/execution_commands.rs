@@ -17,7 +17,6 @@ use crate::application::reconciliation::UserRecoveryAction;
 use crate::application::task_restart::{
     classify_failed_restart, prepare_terminal_task_for_ready_restart, FailedRestartClassification,
 };
-use crate::application::team_state_tracker::TeamStateTracker;
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, task_step::StepProgressSummary, types::IdeationSessionId,
@@ -173,7 +172,6 @@ pub async fn restart_task(
     task_id: String,
     force: bool,
     note: Option<String>,
-    agent_variant: Option<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<RestartResult, String> {
@@ -231,7 +229,6 @@ pub async fn restart_task(
                     &state.task_repo,
                     &state.task_step_repo,
                     &task,
-                    agent_variant.as_deref(),
                 )
                 .await
                 .map_err(|error| format!("Failed to prepare task restart: {error}"))?;
@@ -331,14 +328,9 @@ pub async fn restart_task(
         });
     }
     if transition_target == InternalStatus::Ready && task.internal_status.is_terminal() {
-        prepare_terminal_task_for_ready_restart(
-            &state.task_repo,
-            &state.task_step_repo,
-            &task,
-            agent_variant.as_deref(),
-        )
-        .await
-        .map_err(|e| format!("Failed to prepare task restart: {e}"))?;
+        prepare_terminal_task_for_ready_restart(&state.task_repo, &state.task_step_repo, &task)
+            .await
+            .map_err(|e| format!("Failed to prepare task restart: {e}"))?;
     }
 
     // 7. Transition to target status: clear stop metadata and optionally store restart_note

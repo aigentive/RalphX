@@ -114,22 +114,7 @@ import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailab
 import { extractErrorMessage } from "@/lib/errors";
 import { PERSONA_UNAVAILABLE_PREFIX } from "@/lib/personaErrors";
 import { getModelLabel } from "@/lib/model-utils";
-import { selectIsTeamActive, selectEffectiveModel } from "@/stores/chatStore";
-import {
-  useTeamStore,
-  selectTeammates,
-  selectActiveTeam,
-  selectTeammateByName,
-  type TeammateStatus,
-} from "@/stores/teamStore";
-import { useTeamEvents } from "@/hooks/useTeamEvents";
-import { useTeamActions } from "@/hooks/useTeamActions";
-import { TeamContextBar } from "./TeamContextBar";
-import { TeamPlanApproval } from "./TeamPlanApproval";
-import { TeamFilterTabs, type TeamFilterValue } from "./TeamFilterTabs";
-import { useTeamHistory } from "@/hooks/useTeamHistory";
-import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
-import { getTeamStatus } from "@/api/team";
+import { selectEffectiveModel } from "@/stores/chatStore";
 import { TimeoutWarning } from "./TimeoutWarning";
 import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNavigationContext";
 import { ChildSessionTranscriptModal } from "./ChildSessionTranscriptModal";
@@ -497,9 +482,6 @@ export function IntegratedChatPanel({
     storeContextKey,
     enabled: !isHistoryMode,
   });
-  const { ideationTeamModeAvailable, executionTeamModeAvailable } =
-    useTeamModeAvailability(projectId);
-
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
 
   // Refs for stable agent:run_started handler — prevent stale closure writes during context transitions.
@@ -515,142 +497,6 @@ export function IntegratedChatPanel({
     isHistoryModeRef.current = isHistoryMode;
   }, [storeContextKey, currentContextType, currentContextId, isHistoryMode]);
 
-  // Team mode state
-  const isTeamActiveSelector = useMemo(
-    () => selectIsTeamActive(storeContextKey),
-    [storeContextKey],
-  );
-  const isTeamActive = useChatStore(isTeamActiveSelector);
-  const teammatesSelector = useMemo(
-    () => selectTeammates(storeContextKey),
-    [storeContextKey],
-  );
-  const teammates = useTeamStore(teammatesSelector);
-  const pendingPlan = useTeamStore((s) => s.pendingPlans[storeContextKey]);
-  const [teamFilter, setTeamFilter] = useState<TeamFilterValue>("lead");
-  const teamModeUiAvailable =
-    currentContextType === "ideation"
-      ? ideationTeamModeAvailable
-      : currentContextType === "task_execution"
-        ? executionTeamModeAvailable
-        : false;
-  const showTeamUi = isTeamActive && teamModeUiAvailable;
-  const sendTarget = teamFilter === "lead" || !teamFilter ? "lead" : teamFilter;
-
-  // Teammate tab: resolve the teammate's conversation_id for standard chat pipeline
-  const isTeammateTab = showTeamUi && !!teamFilter && teamFilter !== "lead";
-  const activeTeammateSelector = useMemo(
-    () =>
-      isTeammateTab
-        ? selectTeammateByName(storeContextKey, teamFilter)
-        : () => null,
-    [storeContextKey, teamFilter, isTeammateTab],
-  );
-  const activeTeammate = useTeamStore(activeTeammateSelector);
-  const teammateConversationId = isTeammateTab
-    ? (activeTeammate?.conversationId ?? null)
-    : null;
-
-  // Track whether the team in this context is historical (hydrated from backend)
-  const activeTeamSelector = useMemo(
-    () => selectActiveTeam(storeContextKey),
-    [storeContextKey],
-  );
-  const activeTeam = useTeamStore(activeTeamSelector);
-  const isTeamHistorical = activeTeam?.isHistorical === true;
-
-  useEffect(() => {
-    if (!showTeamUi && teamFilter !== "lead") {
-      setTeamFilter("lead");
-    }
-  }, [showTeamUi, teamFilter]);
-
-  // Team events subscription — always pass contextKey so team:created is never missed
-  useTeamEvents(storeContextKey);
-
-  // Rehydrate team state on mount — handles both live and historical teams.
-  // If the user navigated away and missed the team:created event, isTeamActive
-  // and teamName are unset. We query the most recent session from history:
-  //   - disbandedAt === null → team still active → fetch live status and hydrate as live
-  //     (unlocks Effect 2 in useTeamEvents and useTeamStatus polling)
-  //   - disbandedAt !== null → team done → hydrate as historical
-  const { data: teamHistory } = useTeamHistory(
-    currentContextType,
-    currentContextId,
-  );
-  const hydrateFromHistory = useTeamStore((s) => s.hydrateFromHistory);
-  const createTeam = useTeamStore((s) => s.createTeam);
-  const addTeammate = useTeamStore((s) => s.addTeammate);
-  const setTeamActive = useChatStore((s) => s.setTeamActive);
-
-  useEffect(() => {
-    if (!teamHistory?.session || isTeamActive) return;
-
-    const session = teamHistory.session;
-
-    if (session.disbandedAt) {
-      // Team is disbanded — hydrate as historical view
-      hydrateFromHistory(storeContextKey, teamHistory);
-      setTeamActive(storeContextKey, true);
-      return;
-    }
-
-    // Team still active in backend — rehydrate as live
-    let cancelled = false;
-    void getTeamStatus(session.teamName)
-      .then((liveStatus) => {
-        if (cancelled) return;
-        if (!liveStatus) {
-          // Team no longer in live tracker (e.g. app restarted) — fall back to historical
-          hydrateFromHistory(storeContextKey, teamHistory);
-          setTeamActive(storeContextKey, true);
-          return;
-        }
-        createTeam(
-          storeContextKey,
-          liveStatus.name,
-          liveStatus.lead_name ?? liveStatus.name,
-        );
-        for (const mate of liveStatus.teammates) {
-          addTeammate(storeContextKey, {
-            name: mate.name,
-            color: mate.color,
-            model: mate.model,
-            roleDescription: mate.role,
-            status: (mate.status as TeammateStatus) || "idle",
-            currentActivity: null,
-            tokensUsed: mate.cost.input_tokens + mate.cost.output_tokens,
-            estimatedCostUsd: mate.cost.estimated_usd,
-            conversationId: mate.conversation_id ?? null,
-          });
-        }
-        setTeamActive(storeContextKey, true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // On error fetching live status, fall back to historical
-        hydrateFromHistory(storeContextKey, teamHistory);
-        setTeamActive(storeContextKey, true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    teamHistory,
-    isTeamActive,
-    storeContextKey,
-    hydrateFromHistory,
-    setTeamActive,
-    createTeam,
-    addTeammate,
-  ]);
-
-  // Team actions
-  const teamActions = useTeamActions(
-    currentContextType as ContextType,
-    currentContextId,
-  );
-
   // Agent lifecycle events (useAgentEvents) are handled inside useChat — no duplicate subscription needed.
 
   // If a new run starts in this context, switch to its conversation (live mode only).
@@ -660,11 +506,8 @@ export function IntegratedChatPanel({
       context_type: string;
       context_id: string;
       conversation_id: string;
-      teammate_name?: string | null;
     }>("agent:run_started", (payload) => {
       if (isHistoryModeRef.current) return;
-      // Ignore teammate run_started — their conversations are handled via team filter tabs
-      if (payload.teammate_name) return;
 
       // Existing exact match
       if (
@@ -770,8 +613,7 @@ export function IntegratedChatPanel({
   const bashStartTime = activeBashCall
     ? toolCallStartTimes[activeBashCall.id]
     : undefined;
-  // Context-aware threshold: 3600s for team mode, 600s otherwise
-  const effectiveTimeoutMs = showTeamUi ? 3_600_000 : 600_000;
+  const effectiveTimeoutMs = 600_000;
   const showTimeoutWarning =
     activeBashCall !== undefined &&
     bashStartTime !== undefined &&
@@ -887,31 +729,10 @@ export function IntegratedChatPanel({
 
   // Load active transcript windows through the shared tail-window query. The
   // backend returns each newest window oldest-to-newest; older pages prepend.
-  const teammateConversationHistory = useConversationTimelineWindow(
-    isTeammateTab ? teammateConversationId : null,
-    {
-      enabled: !!teammateConversationId && isTeammateTab,
-      pageSize: 40,
-    },
-  );
-  const teammateTimelineHasMessages = transcriptWindowHasMessages(
-    teammateConversationHistory.data,
-  );
-  const teammateLogicalConversationHistory = useConversationHistoryWindow(
-    isTeammateTab ? teammateConversationId : null,
-    {
-      enabled:
-        !!teammateConversationId &&
-        isTeammateTab &&
-        !teammateConversationHistory.isLoading &&
-        !teammateTimelineHasMessages,
-      pageSize: 40,
-    },
-  );
   const primaryConversationHistory = useConversationTimelineWindow(
-    !isTeammateTab ? activeConversationId : null,
+    activeConversationId,
     {
-      enabled: !!activeConversationId && !isTeammateTab,
+      enabled: !!activeConversationId,
       pageSize: 40,
     },
   );
@@ -919,11 +740,10 @@ export function IntegratedChatPanel({
     primaryConversationHistory.data,
   );
   const primaryLogicalConversationHistory = useConversationHistoryWindow(
-    !isTeammateTab ? activeConversationId : null,
+    activeConversationId,
     {
       enabled:
         !!activeConversationId &&
-        !isTeammateTab &&
         !primaryConversationHistory.isLoading &&
         !primaryTimelineHasMessages,
       pageSize: 40,
@@ -932,17 +752,10 @@ export function IntegratedChatPanel({
   const primaryLegacyHasMessages = transcriptWindowHasMessages(
     primaryLogicalConversationHistory.data,
   );
-  const teammateLegacyHasMessages = transcriptWindowHasMessages(
-    teammateLogicalConversationHistory.data,
-  );
   const shouldUsePrimaryLogicalHistory =
     !primaryTimelineHasMessages &&
     !primaryConversationHistory.isLoading &&
     primaryLegacyHasMessages;
-  const shouldUseTeammateLogicalHistory =
-    !teammateTimelineHasMessages &&
-    !teammateConversationHistory.isLoading &&
-    teammateLegacyHasMessages;
   const shouldUsePrimaryOptimisticFallback =
     !!activeConversationId && isOptimisticConversationId(activeConversationId);
   const shouldUsePrimaryRegularFallback =
@@ -950,29 +763,17 @@ export function IntegratedChatPanel({
     !primaryConversationHistory.isLoading &&
     !primaryLegacyHasMessages;
 
-  const primaryConversationData = !isTeammateTab
-    ? shouldUsePrimaryLogicalHistory
-      ? primaryLogicalConversationHistory.data
-      : (primaryConversationHistory.data ??
-        (shouldUsePrimaryOptimisticFallback || shouldUsePrimaryRegularFallback
-          ? regularChatData.messages.data
-          : undefined))
-    : regularChatData.messages.data;
+  const primaryConversationData = shouldUsePrimaryLogicalHistory
+    ? primaryLogicalConversationHistory.data
+    : (primaryConversationHistory.data ??
+      (shouldUsePrimaryOptimisticFallback || shouldUsePrimaryRegularFallback
+        ? regularChatData.messages.data
+        : undefined));
   const primaryTranscriptWindow = shouldUsePrimaryLogicalHistory
     ? primaryLogicalConversationHistory
     : primaryConversationHistory;
-  const teammateConversationData = shouldUseTeammateLogicalHistory
-    ? teammateLogicalConversationHistory.data
-    : teammateConversationHistory.data;
-  const teammateTranscriptWindow = shouldUseTeammateLogicalHistory
-    ? teammateLogicalConversationHistory
-    : teammateConversationHistory;
-  const activeTranscriptConversationId = isTeammateTab
-    ? teammateConversationId
-    : activeConversationId;
-  const activeTranscriptRequiresLogicalHistory = isTeammateTab
-    ? shouldUseTeammateLogicalHistory
-    : shouldUsePrimaryLogicalHistory;
+  const activeTranscriptConversationId = activeConversationId;
+  const activeTranscriptRequiresLogicalHistory = shouldUsePrimaryLogicalHistory;
 
   useEffect(() => {
     if (
@@ -999,21 +800,11 @@ export function IntegratedChatPanel({
       primaryConversationData.conversation.id === activeConversationId)
       ? primaryConversationData
       : null;
-  const currentTeammateConversationData =
-    teammateConversationId &&
-    teammateConversationData &&
-    (!teammateConversationData.conversation?.id ||
-      teammateConversationData.conversation.id === teammateConversationId)
-      ? teammateConversationData
-      : null;
-
   // Check if active conversation belongs to current context (needed by recovery effects below)
-  const activeConversationContext = isTeammateTab
-    ? currentTeammateConversationData?.conversation
-    : (currentPrimaryConversationData?.conversation ??
-      conversationsData?.find(
-        (conversation) => conversation.id === activeConversationId,
-      ));
+  const activeConversationContext = currentPrimaryConversationData?.conversation ??
+    conversationsData?.find(
+      (conversation) => conversation.id === activeConversationId,
+    );
   const isConversationInCurrentContext = useMemo(
     () =>
       Boolean(
@@ -1085,10 +876,7 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
-  const effectiveConversationId = isTeammateTab
-    ? teammateConversationId
-    : activeConversationId;
+  const effectiveConversationId = activeConversationId;
   const composerDraftKey = effectiveConversationId
     ? `conversation:${effectiveConversationId}`
     : null;
@@ -1110,9 +898,7 @@ export function IntegratedChatPanel({
     draftKey: composerDraftKey,
   });
   const activeConversationMeta = useMemo(() => {
-    const queriedConversation = isTeammateTab
-      ? currentTeammateConversationData?.conversation
-      : currentPrimaryConversationData?.conversation;
+    const queriedConversation = currentPrimaryConversationData?.conversation;
 
     if (queriedConversation) {
       return queriedConversation;
@@ -1124,8 +910,6 @@ export function IntegratedChatPanel({
       ) ?? null
     );
   }, [
-    isTeammateTab,
-    currentTeammateConversationData?.conversation,
     currentPrimaryConversationData?.conversation,
     conversationsData,
     effectiveConversationId,
@@ -1156,17 +940,12 @@ export function IntegratedChatPanel({
   // Memoize messagesData to avoid dependency chain issues in useEffect hooks
   // No time-based filtering needed - we switch context types based on historical state
   const messagesData = useMemo(() => {
-    if (isTeammateTab) {
-      return currentTeammateConversationData?.messages ?? [];
-    }
     return activeConversationId &&
       isConversationInCurrentContext &&
       currentPrimaryConversationData
       ? currentPrimaryConversationData.messages
       : [];
   }, [
-    isTeammateTab,
-    currentTeammateConversationData?.messages,
     activeConversationId,
     isConversationInCurrentContext,
     currentPrimaryConversationData,
@@ -1175,17 +954,11 @@ export function IntegratedChatPanel({
   // Loading state: show skeleton when conversations list is loading OR active conversation is loading
   const isConversationsLoading = conversations.isLoading;
   const isActiveConversationLoading = activeConversationId
-    ? isTeammateTab
-      ? (teammateConversationHistory.isLoading ||
-          (shouldUseTeammateLogicalHistory &&
-            teammateLogicalConversationHistory.isLoading) ||
-          (shouldUseTeammateLogicalHistory && !teammateConversationData)) &&
-        !currentTeammateConversationData
-      : (primaryConversationHistory.isLoading ||
-          (shouldUsePrimaryLogicalHistory &&
-            primaryLogicalConversationHistory.isLoading) ||
-          (shouldUsePrimaryLogicalHistory && !primaryConversationData)) &&
-        !primaryConversationData
+    ? (primaryConversationHistory.isLoading ||
+        (shouldUsePrimaryLogicalHistory &&
+          primaryLogicalConversationHistory.isLoading) ||
+        (shouldUsePrimaryLogicalHistory && !primaryConversationData)) &&
+      !primaryConversationData
     : false;
   const isLoading = isConversationsLoading || isActiveConversationLoading;
   const transcriptConversationId =
@@ -1235,7 +1008,7 @@ export function IntegratedChatPanel({
     onPersonaUnavailable: handlePersonaUnavailable,
   });
 
-  // Wrap handleSend to include attachment IDs, team target, and clear attachments after send.
+  // Wrap handleSend to include attachment IDs and clear attachments after send.
   // Auto-scroll on new user messages is handled by ChatMessageList (see its
   // "new user message → scrollToBottom" effect).
   const handleSend = useCallback(
@@ -1254,12 +1027,10 @@ export function IntegratedChatPanel({
       const attachmentIds = attachments.map((a) => a.id);
       logger.debug("[ChatScroll] handleSend firing", {
         hasAttachments: attachmentIds.length > 0,
-        isTeamActive: showTeamUi,
       });
       await handleSendBase(
         message,
         attachmentIds.length > 0 ? attachmentIds : undefined,
-        showTeamUi ? sendTarget : undefined,
         options,
       );
       if (composerDraftKey) {
@@ -1274,8 +1045,6 @@ export function IntegratedChatPanel({
       clearComposerDraft,
       composerDraftKey,
       handleSendBase,
-      showTeamUi,
-      sendTarget,
     ],
   );
 
@@ -1314,17 +1083,11 @@ export function IntegratedChatPanel({
 
   // Handle stopping agent - clear streaming state
   const handleStopAgentWrapper = useCallback(async () => {
-    // Stop all teammates when team is active, otherwise just stop the lead agent
-    if (showTeamUi) {
-      teamActions.stopTeam.mutate();
-    }
     await handleStopAgent();
     setStreamingToolCalls((prev) => (prev.length === 0 ? prev : []));
     setStreamingContentBlocks((prev) => (prev.length === 0 ? prev : []));
     setStreamingTasks((prev) => (prev.size === 0 ? prev : new Map()));
   }, [
-    showTeamUi,
-    teamActions,
     handleStopAgent,
     setStreamingToolCalls,
     setStreamingContentBlocks,
@@ -1765,18 +1528,6 @@ export function IntegratedChatPanel({
             />
           )}
 
-          {/* Team Context Bar (team mode only) */}
-          {showTeamUi && teammates.length > 0 && (
-            <TeamContextBar
-              contextKey={storeContextKey}
-              activeFilter={teamFilter}
-              isHistorical={isTeamHistorical}
-              onStopTeammate={(name) => {
-                teamActions.stopTeammate.mutate(name);
-              }}
-            />
-          )}
-
           {/* Timeout Warning Banner — shown when bash tool call approaches timeout */}
           {showTimeoutWarning && (
             <TimeoutWarning
@@ -1821,11 +1572,7 @@ export function IntegratedChatPanel({
                     : null
                 }
                 onInitialPaintReady={handleTranscriptInitialPaintReady}
-                firstItemIndex={
-                  isTeammateTab
-                    ? teammateTranscriptWindow.loadedStartIndex
-                    : primaryTranscriptWindow.loadedStartIndex
-                }
+                firstItemIndex={primaryTranscriptWindow.loadedStartIndex}
                 failedRun={failedRunProp}
                 onDismissFailedRun={setDismissedErrorId}
                 isSending={isSending}
@@ -1850,10 +1597,6 @@ export function IntegratedChatPanel({
                   isHistoryMode ? taskHistoryState?.timestamp : null
                 }
                 isFinalizing={isFinalizing}
-                teamFilter={showTeamUi && activeTeam ? teamFilter : undefined}
-                contextKey={
-                  showTeamUi && activeTeam ? storeContextKey : undefined
-                }
                 providerHarness={
                   activeConversationMeta?.providerHarness ?? null
                 }
@@ -1865,21 +1608,9 @@ export function IntegratedChatPanel({
                 agentPersonasEnabled={featureFlags.agentPersonas === true}
                 contentWidthClassName={contentWidthClassName}
                 topInsetClassName={transcriptTopInsetClassName}
-                hasOlderMessages={
-                  isTeammateTab
-                    ? teammateTranscriptWindow.hasOlderMessages
-                    : primaryTranscriptWindow.hasOlderMessages
-                }
-                isFetchingOlderMessages={
-                  isTeammateTab
-                    ? teammateTranscriptWindow.isFetchingOlderMessages
-                    : primaryTranscriptWindow.isFetchingOlderMessages
-                }
-                onLoadOlderMessages={
-                  isTeammateTab
-                    ? teammateTranscriptWindow.fetchOlderMessages
-                    : primaryTranscriptWindow.fetchOlderMessages
-                }
+                hasOlderMessages={primaryTranscriptWindow.hasOlderMessages}
+                isFetchingOlderMessages={primaryTranscriptWindow.isFetchingOlderMessages}
+                onLoadOlderMessages={primaryTranscriptWindow.fetchOlderMessages}
               />
             )}
 
@@ -1887,18 +1618,6 @@ export function IntegratedChatPanel({
               data-testid="chat-below-transcript-chrome"
               className="shrink-0"
             >
-              {/* Team Plan Approval (shown when lead requests plan approval) */}
-              {showTeamUi && pendingPlan && (
-                <div className="px-3">
-                  <div className={conversationContentShellClassName}>
-                    <TeamPlanApproval
-                      plan={pendingPlan}
-                      contextKey={storeContextKey}
-                    />
-                  </div>
-                </div>
-              )}
-
               {/* Child Session Notification - shows when follow-up is created (ideation mode only) */}
               {ideationSessionId && !isHistoryMode && (
                 <div className="px-3">
@@ -1939,19 +1658,6 @@ export function IntegratedChatPanel({
                     </div>
                   </div>
                 )}
-
-              {/* Team Filter Tabs (team mode — above input area) */}
-              {showTeamUi && teammates.length > 0 && (
-                <div className="px-3">
-                  <div className={conversationContentShellClassName}>
-                    <TeamFilterTabs
-                      teammates={teammates}
-                      activeFilter={teamFilter}
-                      onFilterChange={setTeamFilter}
-                    />
-                  </div>
-                </div>
-              )}
 
               {/* Input Area — same theme-agnostic tint as header for symmetric
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded

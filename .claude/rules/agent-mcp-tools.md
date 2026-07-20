@@ -75,7 +75,7 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 
 ## Ticket Attachment Tools (NON-NEGOTIABLE)
 
-`list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker, coder, and team-lead surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
+`list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker and coder surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
 
 ## Failure Diagnosis
 

@@ -702,7 +702,7 @@ pub async fn request_task_changes_from_reviewing(
     };
 
     // 3. Stop the reviewer agent (SIGTERM + mark agent_run failed + agent:stopped event)
-    let chat_service = create_chat_service(&state, app.clone(), &execution_state, None);
+    let chat_service = create_chat_service(&state, app.clone(), &execution_state);
     if let Err(e) = chat_service
         .stop_agent(ChatContextType::Review, task_id.as_str())
         .await

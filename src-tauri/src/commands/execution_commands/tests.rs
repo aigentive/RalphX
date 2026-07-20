@@ -1467,7 +1467,7 @@ async fn test_resume_relaunches_one_queued_message_for_active_ideation_session()
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1521,7 +1521,7 @@ async fn test_resume_relaunches_durable_queued_ideation_message() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1574,7 +1574,7 @@ async fn test_resume_clears_durable_queue_for_inactive_ideation_session() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -3227,7 +3227,7 @@ async fn test_resume_respects_project_ideation_cap_for_same_project() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with project cap");
@@ -3328,7 +3328,7 @@ async fn test_resume_skips_project_capped_ideation_queue_and_relaunches_other_pr
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -3417,7 +3417,7 @@ async fn test_resume_borrowing_stays_blocked_when_ready_execution_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with ready execution");
@@ -3491,7 +3491,7 @@ async fn test_resume_borrowing_stays_blocked_when_workspace_queue_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume queued ideation with workspace pressure");
@@ -4024,7 +4024,7 @@ async fn test_resume_priority_relaunches_slot_work_before_ideation_when_only_one
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4168,7 +4168,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4292,7 +4292,7 @@ async fn test_resume_mixed_context_relaunches_workspace_execution_ideation_and_t
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -6332,7 +6332,6 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
         task_id.as_str().to_string(),
         false,
         None,
-        None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6425,7 +6424,6 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
         task_id.as_str().to_string(),
         true,
         Some("retry failed task".to_string()),
-        Some("team".to_string()),
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6455,9 +6453,6 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
     assert!(stored.task_branch.is_none());
     assert!(stored.worktree_path.is_none());
     assert!(stored.merge_commit_sha.is_none());
-    let metadata: serde_json::Value =
-        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
-    assert_eq!(metadata["agent_variant"], "team");
 }
 
 #[tokio::test]
@@ -6476,7 +6471,6 @@ async fn restart_task_from_failed_with_current_completion_proof_recovers_to_revi
     let result = restart_task(
         task_id.as_str().to_string(),
         false,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
@@ -6551,7 +6545,6 @@ async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
         task_id.as_str().to_string(),
         false,
         None,
-        Some("team".to_string()),
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6608,7 +6601,6 @@ async fn restart_task_from_stopped_merge_returns_validation_warning_before_trans
     let result = restart_task(
         task_id.as_str().to_string(),
         true,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),

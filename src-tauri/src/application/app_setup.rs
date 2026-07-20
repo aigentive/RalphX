@@ -9,7 +9,6 @@ use crate::application::setup_settings::initialize_settings_defaults;
 use crate::application::startup_cleanup::run_startup_cleanup;
 use crate::application::startup_pipeline_launch::launch_startup_pipeline;
 use crate::application::AppPaths;
-use crate::application::TeamStateTracker;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::shell::event_sink::TauriEventSink;
 use crate::AppState;
@@ -156,8 +155,6 @@ pub(crate) fn run_app_setup(
     startup_active_project_state: Arc<ActiveProjectState>,
     startup_pr_fix_review_publish_resumer_factory: StartupPrFixReviewPublishResumerFactory,
     http_execution_state: Arc<ExecutionState>,
-    http_team_tracker: TeamStateTracker,
-    service_team_tracker: TeamStateTracker,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
     let startup_tasks_app_handle = app_handle.clone();
@@ -197,12 +194,7 @@ pub(crate) fn run_app_setup(
         &app_state,
         Arc::clone(&startup_execution_state),
     );
-    start_server_boot(
-        &app_state,
-        app_handle,
-        http_execution_state,
-        http_team_tracker,
-    );
+    start_server_boot(&app_state, app_handle, http_execution_state);
     launch_startup_pipeline(
         app,
         &app_state,
@@ -211,7 +203,7 @@ pub(crate) fn run_app_setup(
         pr_fix_review_publish_resumer,
     );
 
-    register_managed_state(app, app_state, service_team_tracker);
+    register_managed_state(app, app_state);
     spawn_tasks_disabled_startup_reconciliation(
         startup_tasks_app_handle,
         Arc::clone(&startup_execution_state),

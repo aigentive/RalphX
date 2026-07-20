@@ -53,9 +53,6 @@ pub struct CachedStreamingTask {
     /// Agent ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Teammate name if this is a team member task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub teammate_name: Option<String>,
     /// RalphX native delegation job id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_job_id: Option<String>,

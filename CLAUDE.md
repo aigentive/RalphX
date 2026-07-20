@@ -42,7 +42,6 @@ ralphx/
 | Load narrowly | Read project instructions plus files relevant to the current scope; use bounded delegation when the live harness exposes it and parallel work is genuinely independent. |
 | Follow the live profile | Agent conversation Plan profile is read-only; implementation profiles may edit. Do not infer Claude Team/Task behavior on Codex or native delegation paths. |
 | Canonical non-team topology | `agents/<agent>/agent.yaml` `delegation.allowed_targets` owns RalphX-native delegation; see `.claude/rules/delegation-topology.md`. |
-| Claude team mode is optional | Apply TeamCreate/Task coordination rules only when that Claude team surface is actually active; architecture: `docs/architecture/agent-teams-system-card.md`. |
 | Preserve context | Keep durable global invariants here; volatile status belongs in trackers and specialized behavior belongs in path-scoped rules or agent prompts. |
 
 ## MCP Architecture

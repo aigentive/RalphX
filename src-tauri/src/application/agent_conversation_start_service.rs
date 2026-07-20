@@ -21,7 +21,7 @@ use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
 };
-use crate::application::{AppState, ChatService, SendResult, TeamService};
+use crate::application::{AppState, ChatService, SendResult};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualServiceTier, DEFAULT_AGENT_HARNESS,
@@ -125,7 +125,6 @@ pub struct AgentConversationStartResult {
 pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
     pub state: &'a AppState,
     pub execution_state: &'a Arc<ExecutionState>,
-    pub team_service: Option<Arc<TeamService>>,
     pub app_handle: tauri::AppHandle<R>,
 }
 
@@ -802,13 +801,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let service_create_started = Instant::now();
-        let mut service = self.deps.state.build_chat_service_for_runtime(
+        let service = self.deps.state.build_chat_service_for_runtime(
             Some(Arc::clone(self.deps.execution_state)),
             Some(self.deps.app_handle.clone()),
         );
-        if let Some(team_service) = self.deps.team_service {
-            service = service.with_team_service(team_service);
-        }
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),

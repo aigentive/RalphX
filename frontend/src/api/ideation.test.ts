@@ -131,85 +131,6 @@ describe("ideationApi.sessions", () => {
       await expect(ideationApi.sessions.create("project-1")).rejects.toThrow();
     });
 
-    it("should spread teamMode when provided", async () => {
-      const session = createMockSessionRaw();
-      mockInvoke.mockResolvedValue(session);
-
-      await ideationApi.sessions.create("project-1", "Title", undefined, "research");
-
-      expect(mockInvoke).toHaveBeenCalledWith("create_ideation_session", {
-        input: expect.objectContaining({
-          team_mode: "research",
-        }),
-      });
-    });
-
-    it("should spread teamConfig with snake_case field names", async () => {
-      const session = createMockSessionRaw();
-      mockInvoke.mockResolvedValue(session);
-
-      await ideationApi.sessions.create("project-1", "Title", undefined, "debate", {
-        maxTeammates: 4,
-        modelCeiling: "opus",
-        compositionMode: "specialist",
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith("create_ideation_session", {
-        input: expect.objectContaining({
-          team_mode: "debate",
-          team_config: {
-            max_teammates: 4,
-            model_ceiling: "opus",
-            composition_mode: "specialist",
-          },
-        }),
-      });
-    });
-
-    it("should include budget_limit in teamConfig when provided", async () => {
-      const session = createMockSessionRaw();
-      mockInvoke.mockResolvedValue(session);
-
-      await ideationApi.sessions.create("project-1", "Title", undefined, "research", {
-        maxTeammates: 3,
-        modelCeiling: "sonnet",
-        budgetLimit: 5.0,
-        compositionMode: "generalist",
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith("create_ideation_session", {
-        input: expect.objectContaining({
-          team_config: expect.objectContaining({
-            budget_limit: 5.0,
-          }),
-        }),
-      });
-    });
-
-    it("should omit budget_limit from teamConfig when undefined", async () => {
-      const session = createMockSessionRaw();
-      mockInvoke.mockResolvedValue(session);
-
-      await ideationApi.sessions.create("project-1", "Title", undefined, "research", {
-        maxTeammates: 3,
-        modelCeiling: "sonnet",
-        compositionMode: "generalist",
-      });
-
-      const calledInput = mockInvoke.mock.calls[0]![1].input;
-      expect(calledInput.team_config).not.toHaveProperty("budget_limit");
-    });
-
-    it("should omit teamMode/teamConfig when both undefined", async () => {
-      const session = createMockSessionRaw();
-      mockInvoke.mockResolvedValue(session);
-
-      await ideationApi.sessions.create("project-1", "Title");
-
-      const calledInput = mockInvoke.mock.calls[0]![1].input;
-      expect(calledInput).not.toHaveProperty("team_mode");
-      expect(calledInput).not.toHaveProperty("team_config");
-    });
 
     it("sends analysis base selection when provided", async () => {
       const session = createMockSessionRaw();
@@ -218,8 +139,6 @@ describe("ideationApi.sessions", () => {
       await ideationApi.sessions.create(
         "project-1",
         "Title",
-        undefined,
-        undefined,
         undefined,
         {
           kind: "current_branch",

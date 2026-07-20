@@ -11,7 +11,6 @@ use std::{fmt, str::FromStr};
 pub enum CoordinationMode {
     #[default]
     Solo,
-    LegacyClaudeTeam,
     RxNativeTeam,
     RxNativeWorkflow,
     CodexNativeUltra,
@@ -21,7 +20,6 @@ impl fmt::Display for CoordinationMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Solo => write!(f, "solo"),
-            Self::LegacyClaudeTeam => write!(f, "legacy_claude_team"),
             Self::RxNativeTeam => write!(f, "rx_native_team"),
             Self::RxNativeWorkflow => write!(f, "rx_native_workflow"),
             Self::CodexNativeUltra => write!(f, "codex_native_ultra"),
@@ -35,12 +33,11 @@ impl FromStr for CoordinationMode {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "solo" => Ok(Self::Solo),
-            "legacy_claude_team" => Ok(Self::LegacyClaudeTeam),
             "rx_native_team" => Ok(Self::RxNativeTeam),
             "rx_native_workflow" => Ok(Self::RxNativeWorkflow),
             "codex_native_ultra" => Ok(Self::CodexNativeUltra),
             other => Err(format!(
-                "Invalid coordination mode '{}'. Valid values: solo, legacy_claude_team, rx_native_team, rx_native_workflow, codex_native_ultra",
+                "Invalid coordination mode '{}'. Valid values: solo, rx_native_team, rx_native_workflow, codex_native_ultra",
                 other
             )),
         }
