@@ -13,14 +13,6 @@ vi.mock("@/hooks/useTaskSteps", () => ({
   useTaskSteps: vi.fn(),
 }));
 
-let mockExecutionTeamModeAvailable = true;
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: mockExecutionTeamModeAvailable,
-  }),
-}));
-
 const mockConfirmation = {
   confirm: vi.fn(async () => true),
   confirmationDialogProps: {},
@@ -554,7 +546,6 @@ describe("BasicTaskDetail", () => {
         expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
           false,
-          undefined,
           undefined
         );
       });
@@ -575,7 +566,6 @@ describe("BasicTaskDetail", () => {
         expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
           false,
-          undefined,
           undefined
         );
         expect(mockApiExecutionResume).toHaveBeenCalledWith(task.projectId);
@@ -645,8 +635,7 @@ describe("BasicTaskDetail", () => {
         expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
           false,
-          "Fix the broken import",
-          undefined
+          "Fix the broken import"
         );
       });
       expect(mockApiTasksMove).not.toHaveBeenCalled();
@@ -697,7 +686,6 @@ describe("BasicTaskDetail", () => {
         expect(mockApiTasksRestart).toHaveBeenCalledWith(
           task.id,
           false,
-          undefined,
           undefined
         );
       });
@@ -741,115 +729,6 @@ describe("BasicTaskDetail", () => {
       expect(screen.getByText("Stopped from")).toBeInTheDocument();
       expect(screen.getByText(/Manual halt during pipeline/i)).toBeInTheDocument();
       expect(screen.getByText("Reason")).toBeInTheDocument();
-    });
-  });
-
-  describe("execution mode selector", () => {
-    beforeEach(() => {
-      vi.clearAllMocks();
-      mockExecutionTeamModeAvailable = true;
-      mockUseTaskSteps.mockReturnValue({
-        data: [],
-        isLoading: false,
-        isError: false,
-      } as ReturnType<typeof useTaskSteps>);
-      mockConfirmation.confirm = vi.fn(async () => true);
-    });
-
-    it("renders ExecutionModeSelector for ready state", () => {
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.getByTestId("execution-mode-selector")).toBeInTheDocument();
-      expect(screen.getByTestId("mode-solo")).toBeInTheDocument();
-      expect(screen.getByTestId("mode-team")).toBeInTheDocument();
-    });
-
-    it("renders ExecutionModeSelector for failed state", () => {
-      const task = createTestTask({ internalStatus: "failed" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.getByTestId("execution-mode-selector")).toBeInTheDocument();
-    });
-
-    it("defaults to solo mode", () => {
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      const soloBtn = screen.getByTestId("mode-solo");
-      // Solo button should have non-transparent background (selected state)
-      expect(soloBtn).toHaveStyle({ backgroundColor: "var(--overlay-moderate)" });
-    });
-
-    it("switches to team mode with orange styling on click", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      const teamBtn = screen.getByTestId("mode-team");
-      await user.click(teamBtn);
-
-      // Team button should have warm orange background when selected
-      expect(teamBtn).toHaveStyle({ backgroundColor: "var(--accent-muted)" });
-    });
-
-    it("passes 'team' agentVariant to API when team mode selected", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      // Select team mode
-      await user.click(screen.getByTestId("mode-team"));
-      // Click start
-      await user.click(screen.getByTestId("start-button"));
-
-      await waitFor(() => {
-        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", "team", undefined);
-      });
-    });
-
-    it("passes 'team' agentVariant through failed recover-or-restart", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "failed" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      await user.click(screen.getByTestId("mode-team"));
-      await user.click(screen.getByTestId("restart-button"));
-
-      await waitFor(() => {
-        expect(mockApiTasksRestart).toHaveBeenCalledWith(
-          task.id,
-          false,
-          undefined,
-          "team"
-        );
-      });
-    });
-
-    it("confirmation dialog includes mode note for team mode", async () => {
-      const user = userEvent.setup();
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      await user.click(screen.getByTestId("mode-team"));
-      await user.click(screen.getByTestId("start-button"));
-
-      await waitFor(() => {
-        expect(mockConfirmation.confirm).toHaveBeenCalledWith(
-          expect.objectContaining({
-            description: expect.stringContaining("in team mode"),
-          }),
-        );
-      });
-    });
-
-    it("hides the execution mode selector when team mode is unavailable", () => {
-      mockExecutionTeamModeAvailable = false;
-      const task = createTestTask({ internalStatus: "ready" });
-      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.queryByTestId("execution-mode-selector")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("mode-team")).not.toBeInTheDocument();
     });
   });
 

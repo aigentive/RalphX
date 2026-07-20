@@ -16,8 +16,8 @@ import {
 } from "./chat";
 
 describe("ViewTypeSchema", () => {
-  it("should have 13 view type values", () => {
-    expect(VIEW_TYPE_VALUES.length).toBe(13);
+  it("should have 12 view type values", () => {
+    expect(VIEW_TYPE_VALUES.length).toBe(12);
   });
 
   it("should parse all valid view types", () => {

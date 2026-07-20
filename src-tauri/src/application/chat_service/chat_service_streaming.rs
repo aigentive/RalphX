@@ -2231,6 +2231,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     description,
                                     subagent_type,
                                     model,
+                                    teammate_name: None,
                                     delegated_job_id: None,
                                     delegated_session_id: None,
                                     delegated_conversation_id: None,
@@ -2282,6 +2283,7 @@ pub async fn process_stream_background<R: Runtime>(
                             let _ = handle.emit(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
+                                    teammate_name: None,
                                     tool_use_id,
                                     agent_id,
                                     status: Some("completed".to_string()),

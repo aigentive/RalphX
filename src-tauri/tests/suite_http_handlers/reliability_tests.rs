@@ -7,7 +7,6 @@
 use axum::{extract::State, Json};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
-use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::{
     Artifact, ArtifactId, ArtifactType, Complexity, IdeationSession, IdeationSessionId,
     IdeationSessionStatus, Priority, Project, ProjectId, ProposalCategory, ProposalStatus,
@@ -193,6 +192,7 @@ async fn c2_internal_parent_rejects_verification_child() {
 }
 
 // ============================================================================
+#[tokio::test]
 async fn c5a_external_trigger_sets_external_origin_for_general_child() {
     let state = setup_sqlite_state().await;
     let project_id = ProjectId::from_string("proj-c5a".to_string());

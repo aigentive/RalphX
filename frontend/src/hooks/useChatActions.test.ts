@@ -201,7 +201,7 @@ describe("useChatActions", () => {
       const { result, mutateAsync } = setup();
 
       await act(async () => {
-        await result.current.handleSend("hello Team", undefined, undefined, {
+        await result.current.handleSend("hello Team", undefined, {
           teamIntent: { coordinationMode: "rx_native_team" },
         });
       });
@@ -252,7 +252,7 @@ describe("useChatActions", () => {
       const { result } = setup({ onUserMessageSent });
 
       await act(async () => {
-        await result.current.handleSend("work on jira", undefined, undefined, {
+        await result.current.handleSend("work on jira", undefined, {
           integrationReferences: [jiraReference],
         });
       });
@@ -328,7 +328,6 @@ describe("useChatActions", () => {
         "task-42",
         "looks good",
         undefined,
-        undefined,
         undefined
       );
       expect(mockActions.setSending).toHaveBeenCalledWith("review:task-42", true);
@@ -344,7 +343,7 @@ describe("useChatActions", () => {
       });
 
       await act(async () => {
-        await result.current.handleSend("review with Team", undefined, undefined, {
+        await result.current.handleSend("review with Team", undefined, {
           teamIntent: { coordinationMode: "rx_native_team" },
         });
       });
@@ -354,7 +353,6 @@ describe("useChatActions", () => {
         "review",
         "task-42",
         "review with Team",
-        undefined,
         undefined,
         { teamIntent: { coordinationMode: "rx_native_team" } },
       );
@@ -412,7 +410,7 @@ describe("useChatActions", () => {
       });
 
       await act(async () => {
-        await result.current.handleSend("review this", undefined, undefined, {
+        await result.current.handleSend("review this", undefined, {
           folderReferences: [
             {
               id: "folder-1",
@@ -733,7 +731,6 @@ describe("useChatActions", () => {
         "task-1",
         "updated content",
         undefined,
-        undefined,
         undefined
       );
     });
@@ -780,7 +777,6 @@ describe("useChatActions", () => {
         "task-1",
         "updated content",
         ["att-1"],
-        undefined,
         undefined
       );
       expect(mockActions.queueMessage).toHaveBeenCalledWith(
@@ -814,7 +810,6 @@ describe("useChatActions", () => {
         "task",
         "task-1",
         "updated content",
-        undefined,
         undefined,
         { composerSelectionSnapshot: selectionSnapshot },
       );
@@ -878,7 +873,6 @@ describe("useChatActions", () => {
         "project-1",
         "updated content",
         undefined,
-        undefined,
         {
           conversationId: "conv-agent",
           providerHarness: "codex",
@@ -920,7 +914,6 @@ describe("useChatActions", () => {
         "merge",
         "task-99",
         "merge it",
-        undefined,
         undefined,
         undefined
       );

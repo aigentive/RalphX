@@ -27,9 +27,7 @@ pub use claude::{
     reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
     reset_standalone_conversations_override_for_test,
 };
-pub use claude::{
-    StreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig, TeammateSpawnResult,
-};
+pub use claude::{StreamEvent, StreamingSpawnResult};
 pub use codex::stream_processor::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_error_message, extract_codex_file_change_snapshot, extract_codex_thread_id,

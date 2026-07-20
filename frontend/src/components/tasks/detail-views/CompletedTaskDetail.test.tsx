@@ -213,7 +213,7 @@ describe("CompletedTaskDetail", () => {
       fireEvent.click(screen.getByTestId("rerun-confirm"));
     });
     await waitFor(() => {
-      expect(moveMock).toHaveBeenCalledWith("task-c-1", "ready", undefined, "go");
+      expect(moveMock).toHaveBeenCalledWith("task-c-1", "ready", "go");
       expect(resumeMock).toHaveBeenCalledWith("proj-1");
     });
     await waitFor(() => {

@@ -7305,7 +7305,6 @@ describe("AgentsArtifactPane", () => {
         "project-1",
         expect.stringContaining("Implement the approved plan directly"),
         undefined,
-        undefined,
         {
           conversationId: "conversation-1",
           suppressUserMessage: true,

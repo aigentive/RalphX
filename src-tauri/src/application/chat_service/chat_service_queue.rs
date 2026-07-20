@@ -2645,7 +2645,6 @@ pub async fn process_queued_messages_for_test_with_persona_feature<R: Runtime + 
         Some(app_handle),
         None,
         None,
-        false,
         CancellationToken::new(),
         None,
         None,

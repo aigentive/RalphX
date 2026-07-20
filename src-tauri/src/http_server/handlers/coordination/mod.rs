@@ -873,6 +873,7 @@ pub fn build_delegated_task_started_payload(
     let parent_tool_use_id = snapshot.parent_tool_use_id.as_ref()?;
     let parent_conversation_id = snapshot.parent_conversation_id.as_ref()?;
     Some(AgentTaskStartedPayload {
+        teammate_name: None,
         tool_use_id: parent_tool_use_id.clone(),
         tool_name: "delegate_start".to_string(),
         description: Some(snapshot.agent_name.clone()),
@@ -912,6 +913,7 @@ pub fn build_delegated_task_completed_payload(
     let parent_conversation_id = snapshot.parent_conversation_id.as_ref()?;
     let latest_run_id = latest_run.map(|run| run.agent_run_id.clone());
     Some(AgentTaskCompletedPayload {
+        teammate_name: None,
         tool_use_id: parent_tool_use_id.clone(),
         agent_id: latest_run_id.or_else(|| snapshot.delegated_agent_run_id.clone()),
         status: Some(status.to_string()),

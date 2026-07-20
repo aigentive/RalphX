@@ -3552,7 +3552,6 @@ describe("AgentsActiveConversationPanel", () => {
           "Planning focus: The CLI surface needs planning before implementation.",
         ),
         undefined,
-        undefined,
         expect.objectContaining({
           conversationId: "conversation-1",
           providerHarness: "claude",
@@ -3735,7 +3734,6 @@ describe("AgentsActiveConversationPanel", () => {
       "project-1",
       expect.stringContaining("Implement the approved plan directly"),
       undefined,
-      undefined,
       {
         conversationId: "conversation-1",
         providerHarness: "codex",
@@ -3827,7 +3825,6 @@ describe("AgentsActiveConversationPanel", () => {
         "project",
         "project-1",
         "continue this thread",
-        undefined,
         undefined,
         {
           conversationId: "conversation-fork",

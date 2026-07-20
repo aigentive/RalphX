@@ -687,7 +687,6 @@ describe("IntegratedChatPanel", () => {
         "retry this",
         undefined,
         undefined,
-        undefined,
       );
     });
 

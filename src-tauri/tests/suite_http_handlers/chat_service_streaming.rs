@@ -5,7 +5,6 @@ use ralphx_lib::application::chat_service::{
     StreamOutcome, StreamTimeoutConfig,
 };
 use ralphx_lib::domain::entities::{AgentRunUsage, ChatContextType};
-use ralphx_lib::infrastructure::agents::claude::stream_timeouts;
 use ralphx_lib::utils::secret_redactor::redact;
 use std::time::Duration;
 
@@ -449,6 +448,7 @@ fn test_payloads_serialize_with_seq() {
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,
@@ -482,6 +482,7 @@ fn test_payloads_serialize_with_seq() {
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,

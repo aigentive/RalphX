@@ -1,5 +1,5 @@
 use super::chat_service_context::*;
-use super::chat_service_helpers::resolve_agent_with_team_mode;
+use super::chat_service_helpers::resolve_agent;
 use super::conversation_launch_security::{
     conversation_launch_security_class, validate_conversation_launch_identity,
     ConversationLaunchSecurityClass,
@@ -973,7 +973,7 @@ async fn build_fresh_claude_interactive_prompt_for_test(
     .await
     .expect("fresh ideation prompt should build");
 
-    let agent_name = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, false);
+    let agent_name = resolve_agent(&ChatContextType::Ideation, None);
     let spawnable = build_spawnable_interactive_command_for_test(
         cli_path,
         plugin_dir,

@@ -26,12 +26,7 @@ pub use agent_config::live_flags::{
     reset_standalone_conversations_override_for_test, set_agent_personas_override,
     set_composer_folder_references_override, set_standalone_conversations_override,
 };
-#[allow(unused_imports)]
-pub use agent_config::team_config::{
-    env_variant_override, get_team_constraints, resolve_process_agent, validate_child_team_config,
-    validate_team_plan, ApprovedTeamPlan, ApprovedTeammate, ProcessMapping, ProcessSlot,
-    TeamConstraintError, TeamConstraints, TeamConstraintsConfig, TeamMode, TeammateSpawnRequest,
-};
+pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
     claude_runtime_config, composer_folder_references_enabled, config_path, defer_merge_enabled,
@@ -41,7 +36,7 @@ pub use agent_config::{
     get_preapproved_tools, get_preapproved_tools_for_profile, git_runtime_config,
     ideation_activity_threshold_secs, limits_config, process_mapping, reconciliation_config,
     resolve_file_logging_early, scheduler_config, standalone_conversations_enabled,
-    stream_timeouts, supervisor_runtime_config, team_constraints_config, ui_feature_flags_config,
+    stream_timeouts, supervisor_runtime_config, ui_feature_flags_config,
     validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
     GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
@@ -49,10 +44,7 @@ pub use agent_config::{
 };
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;
-pub use claude_code_client::{
-    StreamEvent as ClientStreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig,
-    TeammateSpawnResult,
-};
+pub use claude_code_client::{StreamEvent as ClientStreamEvent, StreamingSpawnResult};
 pub use cli_capabilities::{
     clear_claude_cli_capability_cache, is_claude_sonnet_5_model,
     normalize_claude_effort_for_cli_path, parse_claude_cli_capabilities, parse_claude_version,
@@ -296,7 +288,6 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
     match short_name {
         "orchestrator-ideation" => "ralphx-ideation",
         "orchestrator-ideation-readonly" => "ralphx-ideation-readonly",
-        "ideation-team-lead" => "ralphx-ideation-team-lead",
         "ideation-advocate" => "ralphx-ideation-advocate",
         "ideation-critic" => "ralphx-ideation-critic",
         "ideation-specialist-backend" => "ralphx-ideation-specialist-backend",
@@ -304,7 +295,6 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "ideation-specialist-infra" => "ralphx-ideation-specialist-infra",
         "chat-task" => "ralphx-chat-task",
         "chat-project" => "ralphx-chat-project",
-        "ralphx-worker-team" => "ralphx-execution-team-lead",
         "ralphx-worker" => "ralphx-execution-worker",
         "ralphx-coder" => "ralphx-execution-coder",
         "ralphx-reviewer" => "ralphx-execution-reviewer",
