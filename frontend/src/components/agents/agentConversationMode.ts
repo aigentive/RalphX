@@ -17,7 +17,7 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
   { id: "persona_builder", label: "Persona", description: "Build or refine a reusable agent persona.", disabled: true, disabledReason: "Persona mode is fixed when the conversation starts." },
-  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
+  { id: "review_pr", label: "Review PR", description: "Review a remote GitHub PR through its local checkout and propose a user-approved GitHub review." },
 ];
 
 const TASKS_MODE_OPTION = {

@@ -12,6 +12,7 @@ export interface AgentWorkspacePrReviewActionCopy {
 }
 
 export interface AgentWorkspacePrReviewPresentation {
+  isTerminal: boolean;
   pendingAction: AgentWorkspacePrReviewAction | null;
   headStatus: AgentWorkspacePrReviewActionHeadStatus | null;
   headDetail: string;
@@ -72,8 +73,17 @@ export function lastResolvedPrReviewAction(
 export function getAgentWorkspacePrReviewPresentation(
   context: AgentWorkspacePrReviewContext,
 ): AgentWorkspacePrReviewPresentation {
+  const publicationStatus = context.workspace.publicationPrStatus
+    ?.trim()
+    .toLowerCase();
+  const isTerminal =
+    publicationStatus === "merged" ||
+    publicationStatus === "closed" ||
+    context.monitor?.status === "terminal";
   const pendingAction =
-    context.pendingAction?.status === "pending" ? context.pendingAction : null;
+    !isTerminal && context.pendingAction?.status === "pending"
+      ? context.pendingAction
+      : null;
   const headStatus = pendingAction
     ? (context.pendingActionHeadStatus ?? "unverified")
     : null;
@@ -101,6 +111,7 @@ export function getAgentWorkspacePrReviewPresentation(
     : `Head ${shortPrReviewSha(context.currentHeadSha)}`;
 
   return {
+    isTerminal,
     pendingAction,
     headStatus,
     headDetail,
@@ -109,7 +120,9 @@ export function getAgentWorkspacePrReviewPresentation(
     ),
     submitBlockedMessage,
     consistencyMessage:
-      !pendingAction && context.monitor?.status === "awaiting_user"
+      !isTerminal &&
+      !pendingAction &&
+      context.monitor?.status === "awaiting_user"
         ? "The reviewer proposal is temporarily unavailable. RalphX will keep trying to restore it."
         : null,
   };
@@ -121,6 +134,5 @@ export function shouldPollForPrReviewContext(
   if (!context) {
     return true;
   }
-  const presentation = getAgentWorkspacePrReviewPresentation(context);
-  return !presentation.canSubmit;
+  return !getAgentWorkspacePrReviewPresentation(context).isTerminal;
 }

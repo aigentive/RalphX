@@ -169,7 +169,10 @@ async fn enable_subsequent_auto_approval(
 #[tokio::test]
 async fn propose_pr_review_action_records_one_durable_action_notification_with_conversation_target()
 {
-    let (app_state, state, workspace, _) = setup_review_workspace(false).await;
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    github
+        .expect("GitHub mock should exist")
+        .will_return_sync_state(current_head_sync_state());
 
     let Json(response) = propose_agent_workspace_pr_review_action(
         State(state),
@@ -217,9 +220,9 @@ async fn propose_pr_review_action_records_one_durable_action_notification_with_c
 #[tokio::test]
 async fn pr_review_submit_failure_does_not_duplicate_existing_awaiting_user_notification() {
     let (app_state, state, workspace, github) = setup_review_workspace(true).await;
-    github
-        .expect("GitHub mock should exist")
-        .will_return_sync_state(current_head_sync_state());
+    let github = github.expect("GitHub mock should exist");
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_return_sync_state(current_head_sync_state());
 
     let Json(response) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
@@ -493,6 +496,7 @@ async fn manual_pr_review_submission_resolves_first_action_and_keeps_monitoring(
     let (_app_state, state, workspace, github) = setup_review_workspace(true).await;
     let github = github.expect("GitHub mock should exist");
     github.will_return_sync_state(current_head_sync_state());
+    github.will_return_sync_state(current_head_sync_state());
     github.will_submit_pr_review("review-manual", None);
 
     let Json(proposal) = propose_agent_workspace_pr_review_action(
@@ -522,7 +526,10 @@ async fn manual_pr_review_submission_resolves_first_action_and_keeps_monitoring(
 
 #[tokio::test]
 async fn skipped_pr_review_action_resolves_first_action_without_enabling_monitoring() {
-    let (_app_state, state, workspace, _) = setup_review_workspace(false).await;
+    let (_app_state, state, workspace, github) = setup_review_workspace(true).await;
+    github
+        .expect("GitHub mock should exist")
+        .will_return_sync_state(current_head_sync_state());
     let Json(proposal) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
@@ -551,7 +558,10 @@ async fn skipped_pr_review_action_resolves_first_action_without_enabling_monitor
 
 #[tokio::test]
 async fn skip_rejects_pending_action_for_a_previous_workspace_pr_without_mutation() {
-    let (app_state, state, mut workspace, _) = setup_review_workspace(false).await;
+    let (app_state, state, mut workspace, github) = setup_review_workspace(true).await;
+    github
+        .expect("GitHub mock should exist")
+        .will_return_sync_state(current_head_sync_state());
     let Json(proposal) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
@@ -621,6 +631,7 @@ async fn skip_rejects_pending_action_for_a_previous_workspace_pr_without_mutatio
 async fn pr_review_submission_fails_closed_when_current_head_cannot_be_verified() {
     let (app_state, state, workspace, github) = setup_review_workspace(true).await;
     let github = github.expect("GitHub mock should exist");
+    github.will_return_sync_state(current_head_sync_state());
     let Json(proposal) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
@@ -658,6 +669,7 @@ async fn pr_review_submission_fails_closed_when_current_head_cannot_be_verified(
 async fn pr_review_submission_rejects_a_changed_remote_head_without_claiming_action() {
     let (app_state, state, workspace, github) = setup_review_workspace(true).await;
     let github = github.expect("GitHub mock should exist");
+    github.will_return_sync_state(current_head_sync_state());
     let Json(proposal) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
@@ -711,6 +723,7 @@ async fn passing_subsequent_pr_review_auto_submits_once_without_action_notificat
     let github = github.expect("GitHub mock should exist");
     enable_subsequent_auto_approval(&app_state, &workspace).await;
     github.will_return_sync_state(current_head_sync_state());
+    github.will_return_sync_state(current_head_sync_state());
     github.will_submit_pr_review(
         "review-2",
         Some("https://github.com/mock/review/2".to_string()),
@@ -749,6 +762,7 @@ async fn failed_auto_approval_restores_manual_pending_action_and_one_notificatio
     let (app_state, state, workspace, github) = setup_review_workspace(true).await;
     let github = github.expect("GitHub mock should exist");
     enable_subsequent_auto_approval(&app_state, &workspace).await;
+    github.will_return_sync_state(current_head_sync_state());
     github.will_return_sync_state(current_head_sync_state());
     github.will_fail_submit_pr_review("temporary GitHub outage");
 

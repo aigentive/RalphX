@@ -59,27 +59,28 @@ pub(crate) fn review_pr_monitor_for_workspace(
 pub(crate) async fn ensure_review_pr_monitor_for_workspace(
     workspace_repo: &dyn AgentConversationWorkspaceRepository,
     workspace: Option<&AgentConversationWorkspace>,
-) -> Result<(), String> {
+) -> Result<Option<AgentWorkspacePrReviewMonitor>, String> {
     let Some(monitor) = workspace
         .map(review_pr_monitor_for_workspace)
         .transpose()?
         .flatten()
     else {
-        return Ok(());
+        return Ok(None);
     };
 
-    if workspace_repo
+    let monitor = if let Some(existing) = workspace_repo
         .get_pr_review_monitor(&monitor.conversation_id)
         .await
         .map_err(|error| error.to_string())?
-        .is_none()
     {
+        existing
+    } else {
         workspace_repo
             .upsert_pr_review_monitor(monitor)
             .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+            .map_err(|error| error.to_string())?
+    };
+    Ok(Some(monitor))
 }
 
 pub(crate) async fn ensure_linked_branch_workspace_available(

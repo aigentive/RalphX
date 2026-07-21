@@ -118,7 +118,10 @@ import {
   useAgentSidebarPublicationGroup,
   useProjectGroupLatestOrder,
 } from "./useAgentSidebarPublicationGroup";
-import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
+import {
+  useAgentSidebarPublicationPolling,
+  workspacePublicationFingerprint,
+} from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 import {
@@ -1870,7 +1873,13 @@ function AgentSidebarConversationRowsPanel({
   const publicationCurrentStates = useMemo(() => {
     const map = new Map<string, string>();
     for (const row of visibleEffectRows) {
-      map.set(row.conversation.id, row.publicationState);
+      map.set(
+        row.conversation.id,
+        workspacePublicationFingerprint(
+          row.publicationState,
+          row.publicationLabel,
+        ),
+      );
     }
     return map;
   }, [visibleEffectRows]);
@@ -3162,7 +3171,13 @@ function ProjectSessionGroup({
   const projectPublicationCurrentStates = useMemo(() => {
     const map = new Map<string, string>();
     for (const row of visibleEffectRows) {
-      map.set(row.conversation.id, row.publicationState);
+      map.set(
+        row.conversation.id,
+        workspacePublicationFingerprint(
+          row.publicationState,
+          row.publicationLabel,
+        ),
+      );
     }
     return map;
   }, [visibleEffectRows]);
