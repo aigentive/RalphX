@@ -27,7 +27,7 @@ use ralphx_lib::domain::services::github_service::{
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryPlanBranchRepository, MemoryTaskOutcomeRepository,
 };
 
 use crate::common::MockGithubService;
@@ -223,6 +223,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::new(MemoryAgentRunRepository::new()),
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -280,6 +281,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::new(MemoryAgentRunRepository::new()),
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -324,6 +326,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )
@@ -366,6 +369,7 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )
@@ -406,6 +410,7 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );
 

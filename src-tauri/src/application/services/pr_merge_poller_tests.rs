@@ -4230,6 +4230,7 @@ async fn agent_workspace_poller_start_reports_unavailable_without_github() {
         std::path::PathBuf::from("/tmp/review-pr"),
         workspace_repo,
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
     );
 
