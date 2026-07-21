@@ -2099,6 +2099,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     ? async () => {}
                     : handleApproveReviewAnyway
                 }
+                {...(!isReviewPrWorkspace &&
+                reviewDisplayContext?.monitor.reviewConversationId
+                  ? { onViewTranscript: handleOpenReview }
+                  : {})}
                 planArtifact={planArtifact}
                 isPlanLoading={isPlanHydrating}
                 onPlanUpdated={handlePlanUpdated}
@@ -2185,6 +2189,7 @@ type ArtifactContentProps = {
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
   onApproveAnyway: () => Promise<void>;
+  onViewTranscript?: () => void;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -2262,6 +2267,7 @@ function ArtifactContent({
   onStartReview,
   onFixIssues,
   onApproveAnyway,
+  onViewTranscript,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -2423,6 +2429,7 @@ function ArtifactContent({
         onStartReview={onStartReview}
         onFixIssues={onFixIssues}
         onApproveAnyway={onApproveAnyway}
+        {...(onViewTranscript ? { onViewTranscript } : {})}
       />
     );
   }

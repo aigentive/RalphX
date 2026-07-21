@@ -3289,6 +3289,45 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("opens the exact Workspace Review transcript without starting review mutations", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    const onPublishWorkspace = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewConversationId: "review-conversation-current",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane("review", workspace({ mode: "edit" }), conversation(), {
+      onFocusWorkspaceReview,
+      onPublishWorkspace,
+    });
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "View transcript" }),
+    );
+
+    expect(onFocusWorkspaceReview).toHaveBeenCalledOnce();
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
+      "review-conversation-current",
+    );
+    expect(
+      screen
+        .getByTestId("agents-artifact-tab-review")
+        .querySelector("span[style='background: var(--accent-primary);']"),
+    ).not.toBeNull();
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+    expect(startWorkspaceReviewFixerMock).not.toHaveBeenCalled();
+    expect(approveWorkspaceReviewAnywayMock).not.toHaveBeenCalled();
+    expect(onPublishWorkspace).not.toHaveBeenCalled();
+  });
+
   it("does not focus Review chat when the Review tab has no child conversation", async () => {
     const onFocusWorkspaceReview = vi.fn();
     getWorkspaceReviewContextMock.mockResolvedValue(
@@ -3315,6 +3354,9 @@ describe("AgentsArtifactPane", () => {
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens Review and focuses the Review chat from the publish Review CTA", async () => {
