@@ -2494,7 +2494,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 if !workspace_authorized {
                     return Ok(None);
                 }
-                let monitor_authority = conn
+                let mut monitor_authority = conn
                     .query_row(
                         "SELECT status, updated_at
                            FROM agent_workspace_pr_review_monitors
@@ -2503,6 +2503,36 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
                     .optional()?;
+                if monitor_authority.is_none() && action_mutation.is_none() {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO agent_workspace_pr_review_monitors (
+                            conversation_id, project_id, pr_number, status, monitor_enabled,
+                            first_review_completed, last_seen_head_sha, last_review_outcome,
+                            last_error, created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                        rusqlite::params![
+                            conversation_id,
+                            monitor.project_id.as_str(),
+                            pr_number,
+                            monitor.status.to_string(),
+                            monitor.monitor_enabled,
+                            monitor.first_review_completed,
+                            monitor.last_seen_head_sha,
+                            monitor.last_review_outcome,
+                            monitor.last_error,
+                            monitor.created_at.to_rfc3339(),
+                        ],
+                    )?;
+                    monitor_authority = conn
+                        .query_row(
+                            "SELECT status, updated_at
+                               FROM agent_workspace_pr_review_monitors
+                              WHERE conversation_id = ?1 AND pr_number = ?2",
+                            rusqlite::params![conversation_id, pr_number],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                        )
+                        .optional()?;
+                }
                 let Some((existing_status, existing_updated_at)) = monitor_authority else {
                     return Ok(None);
                 };

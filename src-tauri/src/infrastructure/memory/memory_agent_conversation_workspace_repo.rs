@@ -1261,8 +1261,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
 
         let mut monitors = self.pr_review_monitors.write().await;
-        let Some(existing_monitor) = monitors.get(&monitor.conversation_id).cloned() else {
-            return Ok(None);
+        let existing_monitor = match monitors.get(&monitor.conversation_id).cloned() {
+            Some(existing_monitor) => existing_monitor,
+            None if action_mutation.is_none() => {
+                monitors.insert(monitor.conversation_id.clone(), monitor.clone());
+                monitor.clone()
+            }
+            None => return Ok(None),
         };
         if existing_monitor.pr_number != monitor.pr_number
             || existing_monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
