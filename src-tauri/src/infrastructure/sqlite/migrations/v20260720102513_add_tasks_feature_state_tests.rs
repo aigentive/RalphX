@@ -85,3 +85,31 @@ fn migration_can_resume_after_the_column_exists_without_overwriting_draining() {
         "rerun backfill must preserve an in-progress shutdown"
     );
 }
+
+#[test]
+fn migration_reports_a_missing_settings_table() {
+    let conn = Connection::open_in_memory().expect("in-memory database should open");
+
+    let error = v20260720102513_add_tasks_feature_state::migrate(&conn)
+        .expect_err("migration must report a missing settings table");
+
+    assert!(error.to_string().contains("ideation_settings"));
+}
+
+#[test]
+fn migration_reports_a_missing_legacy_tasks_enabled_column() {
+    let conn = Connection::open_in_memory().expect("in-memory database should open");
+    conn.execute_batch(
+        "CREATE TABLE ideation_settings (
+            id INTEGER PRIMARY KEY,
+            tasks_feature_state TEXT NOT NULL DEFAULT 'disabled'
+                CHECK (tasks_feature_state IN ('enabled', 'draining', 'disabled'))
+        );",
+    )
+    .unwrap();
+
+    let error = v20260720102513_add_tasks_feature_state::migrate(&conn)
+        .expect_err("migration backfill must report a missing legacy column");
+
+    assert!(error.to_string().contains("tasks_enabled"));
+}

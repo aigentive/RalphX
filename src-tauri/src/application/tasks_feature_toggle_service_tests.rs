@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use tokio::sync::Mutex;
 
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -11,16 +13,72 @@ use crate::domain::entities::{
     BranchUpdateWorkspaceOwnership, ChatConversationId, GitTargetIdentity,
     IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Project, Task,
 };
-use crate::domain::ideation::TasksFeatureState;
+use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::repositories::{
     BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
-    ProjectRepository,
+    IdeationSettingsRepository, ProjectRepository,
 };
 use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryBranchUpdateRepository;
 
 struct FailingProjectRepository;
+
+struct ScriptedCasIdeationSettingsRepository {
+    settings: Mutex<IdeationSettings>,
+    cas_results: Mutex<VecDeque<bool>>,
+}
+
+impl ScriptedCasIdeationSettingsRepository {
+    fn new(initial_state: TasksFeatureState, cas_results: impl IntoIterator<Item = bool>) -> Self {
+        let settings = IdeationSettings {
+            tasks_enabled: initial_state.tasks_enabled(),
+            tasks_feature_state: initial_state,
+            ..IdeationSettings::default()
+        };
+        Self {
+            settings: Mutex::new(settings),
+            cas_results: Mutex::new(cas_results.into_iter().collect()),
+        }
+    }
+}
+
+#[async_trait]
+impl IdeationSettingsRepository for ScriptedCasIdeationSettingsRepository {
+    async fn get_settings(&self) -> Result<IdeationSettings, Box<dyn std::error::Error>> {
+        Ok(self.settings.lock().await.clone())
+    }
+
+    async fn update_settings(
+        &self,
+        settings: &IdeationSettings,
+    ) -> Result<IdeationSettings, Box<dyn std::error::Error>> {
+        let mut stored = self.settings.lock().await;
+        let feature_state = stored.tasks_feature_state;
+        *stored = settings.clone();
+        stored.tasks_feature_state = feature_state;
+        stored.tasks_enabled = feature_state.tasks_enabled();
+        Ok(stored.clone())
+    }
+
+    async fn compare_and_set_tasks_feature_state(
+        &self,
+        expected: TasksFeatureState,
+        next: TasksFeatureState,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let should_apply = self.cas_results.lock().await.pop_front().unwrap_or(true);
+        if !should_apply {
+            return Ok(false);
+        }
+        let mut stored = self.settings.lock().await;
+        if stored.tasks_feature_state != expected {
+            return Ok(false);
+        }
+        stored.tasks_feature_state = next;
+        stored.tasks_enabled = next.tasks_enabled();
+        Ok(true)
+    }
+}
 
 async fn enable_tasks(state: &AppState) {
     let current = state.ideation_settings_repo.get_settings().await.unwrap();
@@ -637,4 +695,122 @@ async fn enabling_tasks_when_already_enabled_keeps_the_setting_enabled() {
         .expect("an already enabled Tasks setting must stay enabled");
 
     assert!(updated.tasks_enabled);
+}
+
+#[tokio::test]
+async fn enabling_tasks_rejects_an_incomplete_drain() {
+    let mut state = AppState::new_test();
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Draining,
+        [],
+    ));
+
+    let error = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(true)
+        .await
+        .expect_err("Tasks cannot enable while shutdown is still draining");
+
+    assert!(error
+        .to_string()
+        .starts_with("ralphx:tasks_drain_incomplete"));
+}
+
+#[tokio::test]
+async fn disabled_state_retries_drain_and_reports_remaining_failures() {
+    let mut state = AppState::new_test();
+    state.project_repo = Arc::new(FailingProjectRepository);
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Disabled,
+        [],
+    ));
+
+    let error = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect_err("a disabled state must still retry incomplete cleanup");
+
+    assert!(error
+        .to_string()
+        .starts_with("ralphx:tasks_drain_incomplete"));
+    assert_eq!(
+        state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .unwrap()
+            .tasks_feature_state,
+        TasksFeatureState::Disabled
+    );
+}
+
+#[tokio::test]
+async fn disabling_an_already_disabled_quiescent_state_is_idempotent() {
+    let mut state = AppState::new_test();
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Disabled,
+        [],
+    ));
+
+    let settings = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect("an already disabled quiescent state should remain disabled");
+
+    assert_eq!(settings.tasks_feature_state, TasksFeatureState::Disabled);
+}
+
+#[tokio::test]
+async fn enabling_reports_when_disabled_authority_changes_concurrently() {
+    let mut state = AppState::new_test();
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Disabled,
+        [false],
+    ));
+
+    let error = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(true)
+        .await
+        .expect_err("lost enable authority must be reported");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("while enabling")));
+}
+
+#[tokio::test]
+async fn disabling_reports_when_enabled_authority_changes_concurrently() {
+    let mut state = AppState::new_test();
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Enabled,
+        [false],
+    ));
+
+    let error = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect_err("lost disable authority must be reported");
+
+    assert!(matches!(error, AppError::Conflict(message) if message.contains("while disabling")));
+}
+
+#[tokio::test]
+async fn disabling_reports_when_final_shutdown_authority_changes_concurrently() {
+    let mut state = AppState::new_test();
+    state.ideation_settings_repo = Arc::new(ScriptedCasIdeationSettingsRepository::new(
+        TasksFeatureState::Enabled,
+        [true, false],
+    ));
+
+    let error = state
+        .build_tasks_feature_toggle_service_for_test()
+        .set_tasks_enabled(false)
+        .await
+        .expect_err("lost final shutdown authority must be reported");
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.contains("before shutdown completed"))
+    );
 }

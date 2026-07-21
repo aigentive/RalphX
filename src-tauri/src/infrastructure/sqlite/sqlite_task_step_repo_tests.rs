@@ -60,6 +60,120 @@ async fn task_step_history_mutation_requires_tasks_enabled() {
 }
 
 #[tokio::test]
+async fn guarded_step_lifecycle_checks_authority_for_every_history_mutation() {
+    let db = setup_test_db();
+    let task_id = TaskId::new();
+    create_test_task(&db, &task_id);
+    let shared = db.shared_conn();
+    let settings_repo = SqliteIdeationSettingsRepository::from_shared(shared.clone());
+    assert!(settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap());
+    let repo = SqliteTaskStepRepository::from_shared(shared).with_tasks_feature_policy();
+
+    let parent = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Parent".to_string(),
+            0,
+            "user".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut child = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Child".to_string(),
+            1,
+            "user".to_string(),
+        ))
+        .await
+        .unwrap();
+    child.parent_step_id = Some(parent.id.clone());
+    repo.update(&child)
+        .await
+        .expect("guarded update should preserve the parent relationship");
+    assert_eq!(
+        repo.get_by_id(&child.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .parent_step_id,
+        Some(parent.id.clone())
+    );
+
+    let bulk = repo
+        .bulk_create(vec![
+            TaskStep::new(
+                task_id.clone(),
+                "Bulk one".to_string(),
+                2,
+                "user".to_string(),
+            ),
+            TaskStep::new(
+                task_id.clone(),
+                "Bulk two".to_string(),
+                3,
+                "user".to_string(),
+            ),
+        ])
+        .await
+        .expect("guarded bulk creation should succeed while enabled");
+    repo.reorder(
+        &task_id,
+        vec![
+            bulk[1].id.clone(),
+            child.id.clone(),
+            parent.id.clone(),
+            bulk[0].id.clone(),
+        ],
+    )
+    .await
+    .expect("guarded reorder should succeed while enabled");
+
+    child.status = TaskStepStatus::Failed;
+    repo.update(&child).await.unwrap();
+    assert_eq!(repo.reset_all_to_pending(&task_id).await.unwrap(), 1);
+    assert_eq!(
+        repo.get_by_id(&child.id).await.unwrap().unwrap().status,
+        TaskStepStatus::Pending
+    );
+
+    repo.delete(&bulk[0].id)
+        .await
+        .expect("guarded single delete should succeed while enabled");
+    assert!(repo.get_by_id(&bulk[0].id).await.unwrap().is_none());
+    repo.delete_by_task(&task_id)
+        .await
+        .expect("guarded task delete should succeed while enabled");
+    assert!(repo.get_by_task(&task_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn guarded_step_create_rejects_a_missing_task_without_writing() {
+    let db = setup_test_db();
+    let task_id = TaskId::new();
+    let repo = SqliteTaskStepRepository::from_shared(db.shared_conn()).with_tasks_feature_policy();
+
+    let error = repo
+        .create(TaskStep::new(
+            task_id.clone(),
+            "Orphan step".to_string(),
+            0,
+            "user".to_string(),
+        ))
+        .await
+        .expect_err("a guarded step must belong to a persisted task");
+
+    assert!(matches!(error, AppError::TaskNotFound(id) if id == task_id.as_str()));
+    assert!(repo.get_by_task(&task_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_create_and_get_by_id() {
     let db = setup_test_db();
     let task_id = TaskId::new();

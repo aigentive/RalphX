@@ -1,5 +1,6 @@
 use super::query::{
-    get_session_task_history_availability_for_app_state, get_task_agent_workspace_for_app_state,
+    get_session_task_history_availability, get_session_task_history_availability_for_app_state,
+    get_task_agent_workspace_for_app_state, get_task_dependency_graph,
     get_task_dependency_graph_for_app_state,
 };
 use crate::application::AppState;
@@ -7,6 +8,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
     IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Project, Task,
 };
+use tauri::Manager;
 
 #[tokio::test]
 async fn resolves_a_linked_task_to_its_active_agent_conversation() {
@@ -156,6 +158,63 @@ async fn dependency_graph_keeps_session_scoped_branch_update_blocked_tasks() {
     .await
     .expect("graph query should succeed");
 
+    assert_eq!(graph.nodes.len(), 1);
+    assert_eq!(graph.nodes[0].task_id, task.id.as_str());
+    assert_eq!(
+        graph.nodes[0].internal_status,
+        InternalStatus::BranchUpdateBlocked.as_str()
+    );
+}
+
+#[tokio::test]
+async fn task_query_commands_preserve_archived_history_and_blocked_graph_nodes() {
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("task query command app should build");
+    let state = app.state::<AppState>();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Task query command project".into(),
+            "/tmp/task-query-command-project".into(),
+        ))
+        .await
+        .expect("project should persist");
+    let session_id = IdeationSessionId::from_string("session-task-query-command");
+    let mut task = Task::new(project.id.clone(), "Blocked history".into());
+    task.ideation_session_id = Some(session_id.clone());
+    task.internal_status = InternalStatus::BranchUpdateBlocked;
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should persist");
+    state
+        .task_repo
+        .archive(&task.id)
+        .await
+        .expect("task should archive");
+
+    let availability = get_session_task_history_availability(
+        project.id.as_str().to_string(),
+        session_id.as_str().to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("history command should include archived rows");
+    assert!(availability.has_history);
+    assert_eq!(availability.task_count, 1);
+
+    let graph = get_task_dependency_graph(
+        project.id.as_str().to_string(),
+        Some(true),
+        Some(session_id.as_str().to_string()),
+        None,
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("graph command should include archived session rows");
     assert_eq!(graph.nodes.len(), 1);
     assert_eq!(graph.nodes[0].task_id, task.id.as_str());
     assert_eq!(

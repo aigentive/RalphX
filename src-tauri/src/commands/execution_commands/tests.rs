@@ -274,6 +274,45 @@ async fn resolve_recovery_prompt_rejects_progress_while_tasks_are_disabled() {
     );
 }
 
+#[tokio::test]
+async fn recovery_prompt_preparation_validates_action_and_task_before_dispatch() {
+    let app_state = AppState::new_test();
+    let missing_id = TaskId::from_string("missing-recovery-task".to_string());
+
+    let error = prepare_recovery_prompt_action(&missing_id, "unexpected", &app_state)
+        .await
+        .expect_err("unknown recovery actions must be rejected");
+    assert_eq!(error, "Invalid recovery action");
+    assert!(
+        prepare_recovery_prompt_action(&missing_id, "restart", &app_state)
+            .await
+            .expect("a missing recovery task should be a non-error")
+            .is_none()
+    );
+
+    enable_tasks_for_progress(&app_state).await;
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Recovery action project".into(),
+            "/tmp/recovery-action-project".into(),
+        ))
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(project.id, "Cancel interrupted execution".into()))
+        .await
+        .unwrap();
+
+    let (prepared_task, action) = prepare_recovery_prompt_action(&task.id, "cancel", &app_state)
+        .await
+        .expect("cancel preparation should succeed")
+        .expect("persisted task should be prepared");
+    assert_eq!(prepared_task.id, task.id);
+    assert_eq!(action, UserRecoveryAction::Cancel);
+}
+
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();
