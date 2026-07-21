@@ -1,6 +1,70 @@
 import { parseToolCalls, type ActiveStreamingTaskResponse } from "@/api/chat";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import {
+  extractDelegationMetadata,
+  isDelegationStartToolCall,
+  reconcileDelegationTaskMap,
+  reconcileDelegationTaskMarkers,
+} from "@/components/Chat/delegation-tool-calls";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
+
+interface ActiveDelegationAliases {
+  providerIdByTaskId: Map<string, string>;
+  promotedProviderIds: Set<string>;
+}
+
+function activeDelegationAliases(
+  rawToolCalls: unknown[],
+  tasks: ActiveStreamingTaskResponse[],
+): ActiveDelegationAliases {
+  const providerStarts = parseToolCalls(rawToolCalls).filter((toolCall) =>
+    isDelegationStartToolCall(toolCall.name)
+  );
+  const providerIdByJob = new Map<string, string>();
+  const unresolvedProviderIds: string[] = [];
+  for (const toolCall of providerStarts) {
+    const jobId = extractDelegationMetadata(toolCall.arguments, toolCall.result).jobId;
+    if (jobId) providerIdByJob.set(jobId, toolCall.id);
+    else unresolvedProviderIds.push(toolCall.id);
+  }
+
+  const delegatedTasks = tasks.filter((task) => task.delegated_job_id != null);
+  const unmatchedDelegatedTasks = delegatedTasks.filter((task) =>
+    task.delegated_job_id != null && !providerIdByJob.has(task.delegated_job_id)
+  );
+  const provisionalProviderId = unresolvedProviderIds.length === 1
+    && unmatchedDelegatedTasks.length === 1
+      ? unresolvedProviderIds[0]
+      : undefined;
+  const providerIdByTaskId = new Map<string, string>();
+  const promotedProviderIds = new Set<string>();
+  for (const task of delegatedTasks) {
+    const providerId = task.delegated_job_id
+      ? providerIdByJob.get(task.delegated_job_id) ?? provisionalProviderId
+      : undefined;
+    if (providerId) {
+      providerIdByTaskId.set(task.tool_use_id, providerId);
+      promotedProviderIds.add(providerId);
+    }
+  }
+  return { providerIdByTaskId, promotedProviderIds };
+}
+
+function providerTaskMetadata(
+  providerId: string | undefined,
+  rawToolCalls: unknown[],
+): { toolName?: string; description?: string } {
+  if (!providerId) return {};
+  const toolCall = parseToolCalls(rawToolCalls).find((call) => call.id === providerId);
+  if (!toolCall) return {};
+  const metadata = extractDelegationMetadata(toolCall.arguments, toolCall.result);
+  return {
+    toolName: toolCall.name,
+    ...((metadata.title ?? metadata.prompt) != null
+      ? { description: metadata.title ?? metadata.prompt }
+      : {}),
+  };
+}
 
 function mapActiveTaskToStreamingTask(
   task: ActiveStreamingTaskResponse,
@@ -150,14 +214,38 @@ function mapActiveTaskToStreamingTask(
 export function mergeActiveStreamingTasks(
   previous: Map<string, StreamingTask>,
   tasks: ActiveStreamingTaskResponse[],
+  rawToolCalls: unknown[] = [],
 ): Map<string, StreamingTask> {
   if (tasks.length === 0) {
     return previous;
   }
 
-  const next = new Map(previous);
+  let next = new Map(previous);
+  const aliases = activeDelegationAliases(rawToolCalls, tasks);
   for (const task of tasks) {
-    next.set(task.tool_use_id, mapActiveTaskToStreamingTask(task, previous.get(task.tool_use_id)));
+    const providerToolUseId = aliases.providerIdByTaskId.get(task.tool_use_id);
+    const provider = providerTaskMetadata(providerToolUseId, rawToolCalls);
+    const existing = previous.get(providerToolUseId ?? task.tool_use_id)
+      ?? [...previous.values()].find((candidate) =>
+        task.delegated_job_id != null && candidate.delegatedJobId === task.delegated_job_id
+      );
+    const mapped = mapActiveTaskToStreamingTask(task, existing);
+    const delegatedJobId = task.delegated_job_id ?? existing?.delegatedJobId;
+    if (delegatedJobId) mapped.delegatedJobId = delegatedJobId;
+    if (provider.toolName) mapped.toolName = provider.toolName;
+    if (provider.description) mapped.description = provider.description;
+    if (delegatedJobId != null) {
+      next = reconcileDelegationTaskMap(next, {
+        source: "active-state",
+        toolUseId: task.tool_use_id,
+        ...(providerToolUseId ? { providerToolUseId } : {}),
+        jobId: delegatedJobId,
+        allowSingleUnresolvedPlaceholder: true,
+        task: mapped,
+      }).tasks;
+    } else {
+      next.set(task.tool_use_id, mapped);
+    }
   }
   return next;
 }
@@ -165,6 +253,7 @@ export function mergeActiveStreamingTasks(
 export function mergeActiveStreamingToolCalls(
   previous: ToolCall[],
   rawToolCalls: unknown[],
+  tasks: ActiveStreamingTaskResponse[] = [],
 ): ToolCall[] {
   const toolCalls = parseToolCalls(rawToolCalls);
   if (toolCalls.length === 0) {
@@ -181,7 +270,8 @@ export function mergeActiveStreamingToolCalls(
       next.push(toolCall);
     }
   }
-  return next;
+  const aliases = activeDelegationAliases(rawToolCalls, tasks);
+  return next.filter((toolCall) => !aliases.promotedProviderIds.has(toolCall.id));
 }
 
 function mergePartialTextBlock(
@@ -273,12 +363,29 @@ export function mergeActiveStreamingContentBlocks(
   },
 ): StreamingContentBlock[] {
   let next = mergePartialTextBlock(previous, activeState.partial_text);
-  const taskToolUseIds = new Set(
-    activeState.streaming_tasks.map((task) => task.tool_use_id),
+  const aliases = activeDelegationAliases(
+    activeState.tool_calls,
+    activeState.streaming_tasks,
   );
+  const taskToolUseIds = new Set(activeState.streaming_tasks.flatMap((task) => [
+    task.tool_use_id,
+    aliases.providerIdByTaskId.get(task.tool_use_id),
+  ].filter((id): id is string => id != null)));
 
   for (const task of activeState.streaming_tasks) {
-    next = mergeTaskMarker(next, task.tool_use_id);
+    const providerToolUseId = aliases.providerIdByTaskId.get(task.tool_use_id);
+    if (task.delegated_job_id != null) {
+      next = reconcileDelegationTaskMarkers(next, {
+        canonicalKey: providerToolUseId ?? task.tool_use_id,
+        aliasKeys: [
+          task.tool_use_id,
+          providerToolUseId,
+          `delegate-job:${task.delegated_job_id}`,
+        ].filter((id): id is string => id != null),
+      });
+    } else {
+      next = mergeTaskMarker(next, task.tool_use_id);
+    }
   }
 
   for (const toolCall of parseToolCalls(activeState.tool_calls)) {
