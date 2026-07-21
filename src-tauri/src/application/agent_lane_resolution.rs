@@ -422,7 +422,9 @@ pub async fn resolve_manual_role_spawn_settings(
         .filter(|_| {
             resolved.source != ManualDefaultSource::ProviderDefault && !utility_legacy_harness_only
         });
-    let selected = settings_match_effective_harness.then_some(&resolved.value);
+    let selected = settings_match_effective_harness
+        .then_some(&resolved.value)
+        .filter(|_| !utility_legacy_harness_only);
     let harness_defaults = manual_role_harness_defaults(role, effective_harness);
 
     let model = model_override
