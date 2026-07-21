@@ -89,10 +89,6 @@ import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
-import {
-  selectArtifactSelection,
-  useArtifactSelectionStore,
-} from "@/stores/artifactSelectionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
@@ -979,12 +975,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const roleDefaultQuery = useConversationRoleDefault(selectedConversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
-  const artifactSelectionSnapshot = useArtifactSelectionStore(
-    selectArtifactSelection(selectedConversationId),
-  );
-  const clearArtifactSelection = useArtifactSelectionStore(
-    (state) => state.clearSelection,
-  );
   const {
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
@@ -2844,12 +2834,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 options.artifactReferences,
                             }
                           : {}),
-                        ...(options?.selectionSnapshot
-                          ? {
-                              composerSelectionSnapshot:
-                                options.selectionSnapshot,
-                            }
-                          : {}),
                         ...(options?.excerptReferences?.length
                           ? {
                               composerExcerptReferences:
@@ -3002,10 +2986,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     }
                     autoFocus={composerProps.autoFocus}
                     conversationId={selectedConversationId}
-                    selectionSnapshot={artifactSelectionSnapshot}
-                    onClearSelectionSnapshot={() =>
-                      clearArtifactSelection(selectedConversationId)
-                    }
                     {...(!isFocusedChildChat
                       ? {
                           onForkSession: () => runForkCommand(""),

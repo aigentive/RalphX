@@ -10,7 +10,6 @@ import {
   type GranolaNoteSummary,
 } from "@/api/granola";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useArtifactSelectionStore } from "@/stores/artifactSelectionStore";
 
 import { AgentsGranolaNotePanel } from "./AgentsGranolaNotePanel";
 
@@ -102,7 +101,6 @@ function renderPanel() {
 describe("AgentsGranolaNotePanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useArtifactSelectionStore.getState().clearAllSelections();
     getNoteMock.mockResolvedValue(null);
     listNotesMock.mockResolvedValue({
       notes: [noteSummary()],
@@ -148,30 +146,17 @@ describe("AgentsGranolaNotePanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("selects frozen lines from the bound Granola note", async () => {
+  it("removes line selection while keeping bound Granola content selectable", async () => {
     getNoteMock.mockResolvedValue(boundNote());
 
     renderPanel();
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Select Granola note lines" }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Line 9: Alex: Ship it" }),
-    );
-
+    const summary = await screen.findByText("Discussed the plan");
     expect(
-      useArtifactSelectionStore.getState().selections["conversation-1"],
-    ).toEqual({
-      sourceType: "note",
-      sourceKind: "granola",
-      sourceId: "not_1234567890ABCD",
-      sourceTitle: "Planning sync",
-      provider: "granola",
-      sourceRevision: "2026-06-20T13:00:00Z",
-      startLine: 9,
-      endLine: 9,
-      content: "Alex: Ship it",
-    });
+      screen.queryByRole("button", { name: "Select Granola note lines" }),
+    ).not.toBeInTheDocument();
+    expect(
+      summary.closest("[data-artifact-selectable-region='true']"),
+    ).not.toBeNull();
   });
 });
