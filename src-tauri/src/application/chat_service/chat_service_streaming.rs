@@ -2180,7 +2180,7 @@ pub async fn process_stream_background<R: Runtime>(
                         } else {
                             false
                         };
-                        if !assistant_message_persisted {
+                        if chat_message_repo.is_some() && !assistant_message_persisted {
                             return Err(StreamError::LocalToolFailed {
                                 message: "Failed to persist the final assistant message"
                                     .to_string(),
