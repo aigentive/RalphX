@@ -455,14 +455,21 @@ pub async fn resolve_manual_role_spawn_settings(
         .filter(|_| {
             resolved.source != ManualDefaultSource::ProviderDefault && !utility_legacy_harness_only
         });
-    let selected = settings_match_effective_harness.then_some(&resolved.value);
+    let selected = settings_match_effective_harness
+        .then_some(&resolved.value)
+        .filter(|_| !utility_legacy_harness_only);
+    let model_and_effort = if role == RoutingRole::DelegatedSubagent {
+        selected
+    } else {
+        configured
+    };
     let harness_defaults = manual_role_harness_defaults(role, effective_harness);
 
     let model = selected_runtime
         .as_ref()
         .and_then(|value| value.model.clone())
         .or_else(|| model_override.map(str::to_string))
-        .or_else(|| configured.and_then(|value| value.model.clone()))
+        .or_else(|| model_and_effort.and_then(|value| value.model.clone()))
         .or_else(|| {
             harness_defaults
                 .as_ref()
@@ -472,7 +479,7 @@ pub async fn resolve_manual_role_spawn_settings(
     let logical_effort = selected_runtime
         .as_ref()
         .and_then(|value| value.effort)
-        .or_else(|| configured.and_then(|value| value.effort))
+        .or_else(|| model_and_effort.and_then(|value| value.effort))
         .or_else(|| {
             harness_defaults
                 .as_ref()

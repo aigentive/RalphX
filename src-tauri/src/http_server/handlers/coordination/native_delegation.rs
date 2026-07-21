@@ -707,7 +707,11 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     let parent = resolve_delegate_parent(state, &req).await?;
     let parent_agent_run_id =
         resolve_trusted_parent_agent_run_id(state, &parent, trusted_parent_run_id).await?;
-    let requested_harness = req.harness.or(parent.inherited_harness);
+    let requested_session = preflight_requested_delegated_session(state, &req, &parent).await?;
+    let requested_harness = requested_session
+        .as_ref()
+        .map(|session| session.harness)
+        .or(req.harness);
     let project = state
         .app_state
         .project_repo
@@ -752,7 +756,9 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         req.caller_agent_profile.as_deref(),
         &req.agent_name,
     )?;
-    let delegated_session_id = resolve_delegated_session_id(state, &req, &parent, harness).await?;
+    let delegated_session_id =
+        resolve_delegated_session_id(state, &req, &parent, requested_session.as_ref(), harness)
+            .await?;
     let logical_effort = req.logical_effort.or(resolved_spawn.logical_effort);
     let approval_policy = req
         .approval_policy
