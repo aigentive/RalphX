@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -265,5 +265,40 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
       "data-view-conversation-id",
       "exec-conversation",
     );
+  });
+
+  it("closes an open editor immediately when the host becomes read-only", () => {
+    useTasksMock.mockReturnValue({
+      data: [task({ internalStatus: "backlog" })],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    function Harness() {
+      const [readOnly, setReadOnly] = useState(false);
+      return (
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={0}>
+            <button type="button" onClick={() => setReadOnly(true)}>
+              Make read-only
+            </button>
+            <AgentsTaskDetailOverlay
+              projectId="project-1"
+              selectedTaskIdOverride="task-1"
+              readOnly={readOnly}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>
+      );
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit task" }));
+    expect(screen.getByTestId("mock-task-edit-form")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Make read-only" }));
+
+    expect(screen.queryByTestId("mock-task-edit-form")).not.toBeInTheDocument();
+    expect(screen.getByTestId("mock-task-detail-panel")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit task" })).not.toBeInTheDocument();
   });
 });

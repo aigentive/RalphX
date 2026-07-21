@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::domain::ideation::IdeationSettings;
+use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::repositories::IdeationSettingsRepository;
 
 /// In-memory implementation of IdeationSettingsRepository for testing
@@ -30,6 +30,8 @@ impl MemoryIdeationSettingsRepository {
 
     /// Create with specific settings (for tests)
     pub fn with_settings(settings: IdeationSettings) -> Self {
+        let mut settings = settings;
+        settings.tasks_enabled = settings.tasks_feature_state.tasks_enabled();
         Self {
             settings: Arc::new(RwLock::new(settings)),
         }
@@ -48,8 +50,25 @@ impl IdeationSettingsRepository for MemoryIdeationSettingsRepository {
         new_settings: &IdeationSettings,
     ) -> Result<IdeationSettings, Box<dyn std::error::Error>> {
         let mut settings = self.settings.write().await;
+        let feature_state = settings.tasks_feature_state;
         *settings = new_settings.clone();
+        settings.tasks_feature_state = feature_state;
+        settings.tasks_enabled = feature_state.tasks_enabled();
         Ok(settings.clone())
+    }
+
+    async fn compare_and_set_tasks_feature_state(
+        &self,
+        expected: TasksFeatureState,
+        next: TasksFeatureState,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut settings = self.settings.write().await;
+        if settings.tasks_feature_state != expected {
+            return Ok(false);
+        }
+        settings.tasks_feature_state = next;
+        settings.tasks_enabled = next.tasks_enabled();
+        Ok(true)
     }
 }
 

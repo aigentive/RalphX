@@ -38,6 +38,7 @@ export const ManualRoleCatalogEntryResponseSchema = z.object({
   description: z.string().trim().min(1),
   family: z.string().min(1),
   family_display_name: z.string().min(1),
+  requires_tasks: z.boolean().default(false),
   configured: ManualRoleDefaultResponseSchema.nullable().optional(),
   effective: ManualRoleDefaultResponseSchema.nullable().optional(),
   source: z.string().nullable().optional(),

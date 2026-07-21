@@ -216,6 +216,7 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
   useIdeationSettings: () => ({
     settings: {
       tasksEnabled: tasksEnabledRef.current,
+      tasksFeatureState: tasksEnabledRef.current ? "enabled" : "disabled",
       autoVerifyPlans: false,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: false,
@@ -398,12 +399,15 @@ vi.mock("@/components/Ideation/VerificationPanel", () => ({
 vi.mock("@/components/tasks/TaskBoard", () => ({
   TaskBoard: ({
     onTaskSelect,
+    readOnly,
   }: {
     onTaskSelect?: (taskId: string) => void;
+    readOnly?: boolean;
   }) => (
     <button
       type="button"
       data-testid="mock-agent-task-card"
+      data-read-only={readOnly ? "true" : "false"}
       onClick={() => onTaskSelect?.("task-1")}
     >
       Open task
@@ -414,10 +418,12 @@ vi.mock("@/components/tasks/TaskBoard", () => ({
 vi.mock("@/components/TaskGraph", () => ({
   TaskGraphView: ({
     hidePlanSelector,
+    readOnly,
   }: {
     hidePlanSelector?: boolean;
+    readOnly?: boolean;
   }) => (
-    <div data-testid="mock-agent-task-graph">
+    <div data-testid="mock-agent-task-graph" data-read-only={readOnly ? "true" : "false"}>
       <div data-testid="floating-graph-filters">Graph filters</div>
       {!hidePlanSelector && (
         <div data-testid="global-plan-selector">Global plan selector</div>
@@ -431,6 +437,7 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
     onFocusTaskRuntime,
     selectedTaskIdOverride,
     onCloseOverride,
+    readOnly,
   }: {
     onFocusTaskRuntime?: (
       taskId: string,
@@ -438,11 +445,13 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
     ) => void;
     selectedTaskIdOverride?: string | null;
     onCloseOverride?: () => void;
+    readOnly?: boolean;
   }) =>
     selectedTaskIdOverride ? (
       <div
         data-testid="mock-agent-task-detail"
         data-task-id={selectedTaskIdOverride}
+        data-read-only={readOnly ? "true" : "false"}
       >
         <button
           type="button"
@@ -577,10 +586,25 @@ vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
 
 vi.mock("@/hooks/useTasks", () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
+  useSessionTaskHistoryAvailability: (_projectId: string, sessionId: string | null) => {
+    const result = useTasksMock() as {
+      data?: Array<{ ideationSessionId?: string | null }>;
+      isError?: boolean;
+    };
+    const taskCount = (result.data ?? []).filter(
+      (task) => task.ideationSessionId === sessionId,
+    ).length;
+    return {
+      data: { hasHistory: taskCount > 0, taskCount },
+      isError: result.isError ?? false,
+    };
+  },
   taskKeys: {
     all: ["tasks"],
     lists: () => ["tasks", "list"],
     list: (projectId: string) => ["tasks", "list", projectId],
+    sessionHistory: (projectId: string, sessionId: string) =>
+      ["tasks", "session-history", projectId, sessionId],
   },
 }));
 
@@ -2389,6 +2413,69 @@ describe("AgentsArtifactPane", () => {
       "task-1",
     );
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("keeps durable task history visible and read-only while Tasks are off", async () => {
+    tasksEnabledRef.current = false;
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-1", ideationSessionId: "session-1" })],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+    );
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "kanban" },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
+      "Tasks are off",
+    );
+    const card = screen.getByTestId("mock-agent-task-card");
+    expect(card).toHaveAttribute("data-read-only", "true");
+    fireEvent.click(card);
+    expect(await screen.findByTestId("mock-agent-task-detail")).toHaveAttribute(
+      "data-read-only",
+      "true",
+    );
+  });
+
+  it("keeps a read-only Tasks shell visible when history availability fails", async () => {
+    useTasksMock.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+    );
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "graph" },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
+      "Task history could not be checked",
+    );
+    expect(screen.getByTestId("mock-agent-task-graph")).toHaveAttribute(
+      "data-read-only",
+      "true",
+    );
   });
 
   it("shows graph filters without the global plan selector in the Tasks artifact", async () => {
@@ -6529,7 +6616,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
-  it("ignores a project active execution plan that belongs to another planning session", async () => {
+  it("keeps durable session history visible when the active execution plan is foreign", async () => {
     usePlanStore.setState({
       activePlanByProject: { "project-1": "session-other" },
       activeExecutionPlanIdByProject: { "project-1": "exec-foreign" },
@@ -6569,7 +6656,7 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
     expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
   });
 
   it("opens the Tasks tab from the accepted Plan progress banner", async () => {
