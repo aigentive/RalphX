@@ -654,6 +654,7 @@ export const ideationApi = {
             require_plan_approval: false,
             suggest_plans_for_complex: false,
             auto_link_proposals: false,
+            auto_verify_draft_plans: settings.autoVerifyDraftPlans,
             auto_verify_plans: settings.autoVerifyPlans,
             require_accept_for_finalize: settings.requireAcceptForFinalize,
             require_verification_for_proposals: false,

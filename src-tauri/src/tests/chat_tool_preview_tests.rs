@@ -1023,6 +1023,9 @@ async fn stream_background_previews_heavy_live_tool_result() {
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
     .expect("stream should process");

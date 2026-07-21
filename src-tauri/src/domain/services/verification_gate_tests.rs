@@ -16,6 +16,7 @@ fn settings(required: bool) -> IdeationSettings {
         suggest_plans_for_complex: false,
         auto_link_proposals: false,
         auto_verify_plans: false,
+        auto_verify_draft_plans: true,
         require_verification_for_accept: required,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,

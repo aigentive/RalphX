@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
-use crate::domain::entities::Notification;
+use crate::domain::entities::{Notification, NotificationCategory};
 use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::error::AppResult;
 
@@ -21,6 +21,10 @@ impl Default for MemoryNotificationRepository {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn is_retention_protected(row: &Notification) -> bool {
+    row.category == NotificationCategory::PlanApproval && row.read_at.is_none()
 }
 
 #[async_trait]
@@ -131,14 +135,26 @@ impl NotificationRepository for MemoryNotificationRepository {
     }
     async fn prune(&self, read_before: DateTime<Utc>, max_rows: u32) -> AppResult<()> {
         let mut rows = self.notifications.write().await;
-        rows.retain(|row| row.read_at.is_none_or(|read_at| read_at >= read_before));
+        rows.retain(|row| {
+            is_retention_protected(row) || row.read_at.is_none_or(|read_at| read_at >= read_before)
+        });
         rows.sort_by(|left, right| {
             right
                 .created_at
                 .cmp(&left.created_at)
                 .then_with(|| right.id.cmp(&left.id))
         });
-        rows.truncate(max_rows as usize);
+        let mut unprotected_retained = 0usize;
+        rows.retain(|row| {
+            if is_retention_protected(row) {
+                return true;
+            }
+            if unprotected_retained >= max_rows as usize {
+                return false;
+            }
+            unprotected_retained += 1;
+            true
+        });
         Ok(())
     }
 }

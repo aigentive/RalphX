@@ -1506,6 +1506,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     shouldLoadIdeationData && effectiveActiveTab === "plan" && planArtifactId
       ? (attachedSessionId ?? undefined)
       : undefined,
+    conversationId,
   );
   const dependencyGraph =
     attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;
@@ -2726,8 +2727,7 @@ function AgentPlanPanel({
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
-    verificationState !== null &&
-    !isPlanVerificationSatisfied;
+    verificationState !== null;
   const canCreateProposals =
     (canShowManualPlanContinuationActions || canRetryTaskDecomposition) &&
     session !== null &&
@@ -2926,6 +2926,17 @@ function AgentPlanPanel({
     if (!session || !canVerifyPlan || verificationInProgress) {
       return;
     }
+    if (isPlanVerificationSatisfied) {
+      const confirmed = await confirm({
+        title: "Verify this plan again?",
+        description:
+          "The current plan is already verified. This queues another visible review turn and keeps the existing proof unless the plan changes.",
+        confirmText: "Verify again",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
     setIsStartingPlanVerification(true);
     try {
       await verificationApi.confirm(session.id);
@@ -2949,7 +2960,14 @@ function AgentPlanPanel({
     } finally {
       setIsStartingPlanVerification(false);
     }
-  }, [canVerifyPlan, queryClient, session, verificationInProgress]);
+  }, [
+    canVerifyPlan,
+    confirm,
+    isPlanVerificationSatisfied,
+    queryClient,
+    session,
+    verificationInProgress,
+  ]);
 
   const handleRestartImplementation = useCallback(() => {
     if (!session || !canRestartImplementation) {
@@ -3232,13 +3250,18 @@ function AgentPlanPanel({
     const verifyAction = canVerifyPlan
       ? ({
           key: "verify",
-          label: verifyPending ? "Verifying..." : "Verify Plan",
+          label: verifyPending
+            ? "Verifying..."
+            : isPlanVerificationSatisfied
+              ? "Verified"
+              : "Verify Plan",
           onClick: () => {
             void handleVerifyPlan();
           },
           icon: ShieldCheck,
           disabled: isPlanRecommendationPending,
           loading: verifyPending,
+          tone: isPlanVerificationSatisfied ? "success" : "default",
           testId: "plan-lifecycle-verify-button",
         } satisfies PlanLifecycleAction)
       : null;
@@ -3326,6 +3349,7 @@ function AgentPlanPanel({
     isApprovingPlan,
     isImplementingPlanDirectly,
     isPlanRecommendationPending,
+    isPlanVerificationSatisfied,
     isStartingPlanVerification,
     isStartingTasks,
     planLifecycleState,

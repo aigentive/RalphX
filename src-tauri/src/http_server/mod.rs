@@ -184,7 +184,10 @@ pub async fn start_http_server(
         .route("/api/get_session_messages", post(get_session_messages))
         // Plan artifact tools (ralphx-ideation agent)
         // NOTE: All ideation mutation routes MUST call assert_session_mutable() after fetching the session.
-        .route("/api/create_plan_artifact", post(create_plan_artifact))
+        .route(
+            "/api/create_plan_artifact",
+            post(create_plan_artifact_with_headers),
+        )
         .route("/api/update_plan_artifact", post(update_plan_artifact))
         .route("/api/edit_plan_artifact", post(edit_plan_artifact))
         // UI-owned Plan-mode action; intentionally not exposed as an agent MCP tool.

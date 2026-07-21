@@ -12,6 +12,7 @@ use crate::domain::entities::{
     AgentRun, ChatContextType, ChatConversation, ChatConversationId, IdeationSessionId, ProjectId,
     TaskId,
 };
+use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{MessageQueue, QueuedMessage};
 use crate::infrastructure::agents::claude::ToolCall;
 
@@ -51,6 +52,8 @@ pub struct MockChatService {
     fail_next_delete_queued_message: Mutex<bool>,
     /// When set, the next successful send reports a different conversation identity.
     mismatch_next_send_result_identity: Mutex<bool>,
+    /// Optional production-style run sink used by authority-sensitive tests.
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
 }
 
 pub struct MockChatResponse {
@@ -77,6 +80,7 @@ impl MockChatService {
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
+            agent_run_repo: None,
         }
     }
 
@@ -97,6 +101,14 @@ impl MockChatService {
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
+            agent_run_repo: None,
+        }
+    }
+
+    pub fn with_agent_run_repo(agent_run_repo: Arc<dyn AgentRunRepository>) -> Self {
+        Self {
+            agent_run_repo: Some(agent_run_repo),
+            ..Self::new()
         }
     }
 
@@ -227,8 +239,14 @@ impl ChatService for MockChatService {
             conversation.id = conversation_id_override;
         }
         let mut agent_run = AgentRun::new(conversation.id);
+        agent_run.apply_action_metadata_json(options.metadata.as_deref());
         if let Some(preallocated_agent_run_id) = options.preallocated_agent_run_id {
             agent_run.id = preallocated_agent_run_id;
+        }
+        if let Some(repo) = self.agent_run_repo.as_ref() {
+            repo.create(agent_run.clone())
+                .await
+                .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
         }
 
         let mismatch_result_identity =

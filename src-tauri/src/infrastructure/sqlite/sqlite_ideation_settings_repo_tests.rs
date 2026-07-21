@@ -19,6 +19,7 @@ fn setup_tasks_authorization_db() -> Connection {
             ext_require_verification_for_proposals INTEGER,
             ext_require_accept_for_finalize INTEGER,
             auto_verify_plans INTEGER NOT NULL DEFAULT 0,
+            auto_verify_draft_plans INTEGER NOT NULL DEFAULT 1,
             ext_auto_verify_plans INTEGER,
             tasks_enabled INTEGER NOT NULL DEFAULT 0,
             tasks_feature_state TEXT NOT NULL DEFAULT 'disabled'
@@ -48,8 +49,36 @@ async fn test_get_default_settings() {
     assert!(!settings.require_plan_approval);
     assert!(settings.suggest_plans_for_complex);
     assert!(settings.auto_link_proposals);
+    assert!(settings.auto_verify_draft_plans);
+    assert!(!settings.auto_verify_plans);
     assert!(!settings.require_verification_for_accept);
     assert!(!settings.require_verification_for_proposals);
+}
+
+#[tokio::test]
+async fn completion_and_acceptance_verification_settings_persist_independently() {
+    let db = SqliteTestDb::new("sqlite_ideation_settings_repo_tests-auto-verify-independent");
+    let repo = SqliteIdeationSettingsRepository::from_shared(db.shared_conn());
+
+    let first = IdeationSettings {
+        auto_verify_draft_plans: false,
+        auto_verify_plans: true,
+        ..Default::default()
+    };
+    repo.update_settings(&first).await.unwrap();
+    let first_read = repo.get_settings().await.unwrap();
+    assert!(!first_read.auto_verify_draft_plans);
+    assert!(first_read.auto_verify_plans);
+
+    let second = IdeationSettings {
+        auto_verify_draft_plans: true,
+        auto_verify_plans: false,
+        ..first_read
+    };
+    repo.update_settings(&second).await.unwrap();
+    let second_read = repo.get_settings().await.unwrap();
+    assert!(second_read.auto_verify_draft_plans);
+    assert!(!second_read.auto_verify_plans);
 }
 
 #[tokio::test]

@@ -399,6 +399,7 @@ interface PlanComposerCtaAction {
   isPrimary: boolean;
   isPending: boolean;
   disabled: boolean;
+  tone?: "default" | "success";
   onClick: () => void;
 }
 
@@ -539,6 +540,15 @@ function PlanComposerCtaRow({
         type="button"
         size="sm"
         variant={action.isPrimary ? "default" : "outline"}
+        style={
+          action.tone === "success"
+            ? {
+                backgroundColor: "var(--status-success-muted)",
+                borderColor: "var(--status-success-border)",
+                color: "var(--status-success)",
+              }
+            : undefined
+        }
         onClick={action.onClick}
         disabled={action.disabled || action.isPending}
         data-testid={`${testIdPrefix}-${action.id}`}
@@ -1975,6 +1985,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
   const planVerificationQuery = useVerificationStatus(
     planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
+    activeWorkspace?.conversationId,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =
@@ -1986,8 +1997,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
       planApprovalArtifact &&
-      !isPlanVerificationLoading &&
-      !isPlanVerificationSatisfied,
+      !isPlanVerificationLoading,
   );
 
   const handleApprovePlanFromQuestion = useCallback(async () => {
@@ -2131,6 +2141,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ) {
       return;
     }
+    if (isPlanVerificationSatisfied) {
+      const confirmed = await confirm({
+        title: "Verify this plan again?",
+        description:
+          "The current plan is already verified. This queues another visible review turn and keeps the existing proof unless the plan changes.",
+        confirmText: "Verify again",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
     setIsStartingPlanVerification(true);
     try {
       await verificationApi.confirm(planApprovalSessionId);
@@ -2154,6 +2175,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
   }, [
     canVerifyComposerPlan,
+    confirm,
+    isPlanVerificationSatisfied,
     planApprovalSessionId,
     planVerificationInProgress,
     queryClient,
@@ -2192,12 +2215,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
       ? {
           id: "verify",
-          label: "Verify Plan",
+          label: isPlanVerificationSatisfied ? "Verified" : "Verify Plan",
           icon: ShieldCheck,
           isPrimary: false,
           isPending:
             isStartingPlanVerification || planVerificationInProgress,
           disabled: isPlanRecommendationPending,
+          tone: isPlanVerificationSatisfied ? "success" : "default",
           onClick: () => {
             void handleVerifyPlanFromComposer();
           },
@@ -2291,6 +2315,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isImplementingPlanDirectly,
     isPlanApproved,
     isPlanRecommendationPending,
+    isPlanVerificationSatisfied,
     isStartingPlanVerification,
     planApprovalArtifact,
     planApprovalSessionId,

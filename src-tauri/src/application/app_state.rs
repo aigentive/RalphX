@@ -2300,10 +2300,19 @@ impl AppState {
             ))),
             message_queue: Arc::new(MessageQueue::new()),
             queued_message_repo: Arc::new(MemoryQueuedMessageRepository::new()),
-            db: crate::infrastructure::sqlite::DbConnection::new(
-                open_connection(&std::path::PathBuf::from(":memory:"))
-                    .expect("Failed to create in-memory connection for db field"),
-            ),
+            db: {
+                let conn = open_connection(&std::path::PathBuf::from(":memory:"))
+                    .expect("Failed to create in-memory connection for db field");
+                conn.execute_batch(
+                    "CREATE TABLE deferred_plan_approval_notifications (
+                        session_id TEXT PRIMARY KEY NOT NULL,
+                        artifact_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );",
+                )
+                .expect("Failed to create deferred plan approval marker table for tests");
+                crate::infrastructure::sqlite::DbConnection::new(conn)
+            },
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),

@@ -232,6 +232,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
+    let phase_started_at = startup_phase_started("deferred_plan_approval_reconciliation");
+    if let Err(error) = crate::application::plan_approval_notification_service::reconcile_deferred_plan_approvals_on_startup(&app_state).await {
+        tracing::warn!(error = %error, "Deferred plan approval reconciliation did not complete");
+    }
+    startup_phase_completed("deferred_plan_approval_reconciliation", phase_started_at);
+
     // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
     // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");

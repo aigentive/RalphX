@@ -34,6 +34,7 @@ export type ExternalIdeationOverrides = z.infer<typeof ExternalIdeationOverrides
 
 export const IdeationSettingsSchema = z.object({
   tasksEnabled: z.boolean(),
+  autoVerifyDraftPlans: z.boolean(),
   tasksFeatureState: TasksFeatureStateSchema,
   autoVerifyPlans: z.boolean(),
   requireAcceptForFinalize: z.boolean(),
@@ -48,6 +49,7 @@ export type IdeationSettings = z.infer<typeof IdeationSettingsSchema>;
  */
 export const defaultIdeationSettings: IdeationSettings = {
   tasksEnabled: false,
+  autoVerifyDraftPlans: true,
   tasksFeatureState: "disabled",
   autoVerifyPlans: false,
   requireAcceptForFinalize: false,
@@ -74,6 +76,7 @@ export const IdeationSettingsResponseSchema = z.object({
   suggest_plans_for_complex: z.boolean().optional(),
   auto_link_proposals: z.boolean().optional(),
   auto_verify_plans: z.boolean().default(false),
+  auto_verify_draft_plans: z.boolean().default(true),
   require_accept_for_finalize: z.boolean(),
   require_verification_for_accept: z.boolean().default(false),
   require_verification_for_proposals: z.boolean().default(false),

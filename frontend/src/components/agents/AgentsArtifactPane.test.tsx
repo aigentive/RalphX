@@ -218,6 +218,7 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
       tasksEnabled: tasksEnabledRef.current,
       tasksFeatureState: tasksEnabledRef.current ? "enabled" : "disabled",
       autoVerifyPlans: false,
+      autoVerifyDraftPlans: true,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: false,
       externalOverrides: {},
@@ -5632,7 +5633,10 @@ describe("AgentsArtifactPane", () => {
       expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"),
     );
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
   });
 
   it("hydrates a Plan workspace from a plan artifact tool result when the workspace link is stale", async () => {
@@ -8070,6 +8074,38 @@ describe("AgentsArtifactPane", () => {
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
+  it("keeps a verified Plan banner control and confirms a manual rerun", async () => {
+    useVerificationStatusMock.mockReturnValue({
+      data: { status: "verified", inProgress: false },
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({ mode: "plan", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Verified" }),
+    );
+
+    expect(screen.getByText("Verify this plan again?")).toBeInTheDocument();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Verify again" }),
+    );
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1"),
+    );
+  });
+
   it("hides right-side approved plan CTAs when the workspace has changes", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -8307,7 +8343,10 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
     expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
       "session-1",
       "verification",
