@@ -267,6 +267,11 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
 async fn concurrent_verification_requests_admit_exactly_one_turn() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
+    state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(session.id.clone()))
+        .await
+        .expect("active ideation conversation should be created");
     let chat = mock_chat(&state);
 
     let (first, second) = tokio::join!(
@@ -284,8 +289,26 @@ async fn concurrent_verification_requests_admit_exactly_one_turn() {
         ),
     );
 
-    first.expect("first request should settle");
-    second.expect("second request should settle");
+    let outcomes = [
+        first.expect("first request should settle"),
+        second.expect("second request should settle"),
+    ];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == PlanVerificationRequestOutcome::Queued)
+            .count(),
+        1,
+        "exactly one request should launch the verifier"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == PlanVerificationRequestOutcome::AlreadyRunning)
+            .count(),
+        1,
+        "the serialized follower should observe the active typed run"
+    );
     assert_eq!(
         chat.call_count(),
         1,
