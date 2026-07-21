@@ -2184,6 +2184,126 @@ async fn guarded_pr_review_transition_is_atomic_and_rejects_terminal_authority()
 }
 
 #[tokio::test]
+async fn terminal_monitor_rearms_only_after_live_open_and_rejects_terminal_settings() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 270,
+        url: None,
+        title: None,
+        head_ref_name: "feature/rearm".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+
+    assert!(repo
+        .settle_pr_review_terminal(&conversation_id, 270, "invalid", "Invalid")
+        .await
+        .is_err());
+    let settled = repo
+        .settle_pr_review_terminal(&conversation_id, 270, "merged", "Merged")
+        .await
+        .unwrap();
+    assert!(settled.superseded_action_ids.is_empty());
+    assert!(repo
+        .rearm_terminal_pr_review_monitor_after_live_open(&conversation_id, 270)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .set_pr_review_auto_approve_enabled(&conversation_id, true)
+        .await
+        .is_err());
+    assert!(repo
+        .set_pr_review_monitor_enabled(&conversation_id, true)
+        .await
+        .is_err());
+
+    repo.update_publication(
+        &conversation_id,
+        Some(270),
+        None,
+        Some("open"),
+        Some("pushed"),
+    )
+    .await
+    .unwrap();
+    let rearmed = repo
+        .rearm_terminal_pr_review_monitor_after_live_open(&conversation_id, 270)
+        .await
+        .unwrap()
+        .expect("live open observation rearms terminal monitor");
+    assert_eq!(
+        rearmed.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert!(rearmed.monitor_enabled);
+    assert!(rearmed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn guarded_action_mutations_require_live_review_pr_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 271,
+        url: None,
+        title: None,
+        head_ref_name: "feature/guarded-actions".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        271,
+        "head".to_string(),
+        AgentWorkspacePrReviewActionKind::Approve,
+        "Approve".to_string(),
+        "Looks good".to_string(),
+        None,
+        Some("run-guarded".to_string()),
+    );
+    let saved = repo
+        .create_or_update_pr_review_action_if_nonterminal(action.clone())
+        .await
+        .unwrap();
+    assert!(!repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 999)
+        .await
+        .unwrap());
+    assert!(repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 271)
+        .await
+        .unwrap());
+
+    repo.settle_pr_review_terminal(&conversation_id, 271, "closed", "Closed")
+        .await
+        .unwrap();
+    assert!(repo
+        .create_or_update_pr_review_action_if_nonterminal(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            271,
+            "new-head".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Approve".to_string(),
+            "Looks good".to_string(),
+            None,
+            Some("run-late".to_string()),
+        ))
+        .await
+        .is_err());
+    assert!(!repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 271)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
 async fn pr_review_monitor_rejects_stale_disabled_upserts_after_pause_and_restart() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
