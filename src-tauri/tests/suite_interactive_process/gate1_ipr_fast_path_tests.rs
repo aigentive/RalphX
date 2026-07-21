@@ -228,6 +228,7 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
             interactive_key.clone(),
             child.stdin.take().expect("cat stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: Some("preserved-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
@@ -341,6 +342,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
             interactive_key.clone(),
             old_process.stdin.take().expect("old process stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: Some("preserved-provider-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
@@ -459,6 +461,7 @@ async fn mid_turn_persona_mismatch_queues_behind_active_run() {
             interactive_key.clone(),
             child.stdin.take().expect("active process stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -535,6 +538,7 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -686,6 +690,7 @@ async fn queue_message_persona_mismatch_queues_instead_of_writing_stale_stdin() 
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -762,6 +767,7 @@ async fn queue_message_matching_persona_writes_through() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -828,6 +834,7 @@ async fn queue_message_persona_guard_flag_off_writes_through() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: None,
                 provider_session_id: None,
                 persona_id: Some("stale-persona".to_string()),
@@ -938,6 +945,7 @@ async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
             interactive_key.clone(),
             stdin,
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
