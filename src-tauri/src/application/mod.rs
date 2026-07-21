@@ -62,6 +62,10 @@ pub mod agent_workspace_review_auto_merge;
 mod agent_workspace_review_auto_merge_tests;
 #[cfg(test)]
 mod agent_workspace_review_run_guard_tests;
+#[cfg(test)]
+mod agent_workspace_review_unfinished_git_tests;
+#[cfg(test)]
+mod agent_workspace_review_unfinished_git_recovery_tests;
 pub(crate) mod agent_workspace_review_approval;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;

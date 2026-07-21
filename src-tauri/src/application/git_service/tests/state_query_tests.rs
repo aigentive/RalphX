@@ -132,3 +132,70 @@ fn test_is_merge_in_progress_worktree_style() {
 
     assert!(GitService::is_merge_in_progress(temp_dir.path()));
 }
+
+#[test]
+fn state_query_unfinished_operation_reports_checked_regular_repo_state() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let git_dir = temp_dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+
+    let settled = GitService::unfinished_operation_state(temp_dir.path()).unwrap();
+    assert!(!settled.is_unfinished());
+
+    std::fs::write(git_dir.join("MERGE_HEAD"), "abc123\n").unwrap();
+    std::fs::create_dir(git_dir.join("rebase-apply")).unwrap();
+
+    let unfinished = GitService::unfinished_operation_state(temp_dir.path()).unwrap();
+    assert!(unfinished.is_unfinished());
+    assert!(unfinished.merge_in_progress);
+    assert!(unfinished.rebase_in_progress);
+}
+
+#[test]
+fn state_query_unfinished_operation_follows_relative_linked_worktree_git_dir() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let worktree = temp_dir.path().join("worktree");
+    let git_dir = worktree.join("metadata").join("worktrees").join("linked");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(worktree.join(".git"), "gitdir: metadata/worktrees/linked\n").unwrap();
+    std::fs::create_dir(git_dir.join("rebase-merge")).unwrap();
+
+    let state = GitService::unfinished_operation_state(&worktree).unwrap();
+
+    assert!(!state.merge_in_progress);
+    assert!(state.rebase_in_progress);
+}
+
+#[test]
+fn state_query_unfinished_operation_rejects_malformed_git_indirection() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join(".git"), "not-a-gitdir\n").unwrap();
+
+    let error = GitService::unfinished_operation_state(temp_dir.path())
+        .expect_err("malformed linked-worktree metadata must fail closed");
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn state_query_unfinished_operation_rejects_empty_git_indirection() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join(".git"), "gitdir: \n").unwrap();
+
+    let error = GitService::unfinished_operation_state(temp_dir.path())
+        .expect_err("empty linked-worktree metadata must fail closed");
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn state_query_unfinished_operation_rejects_unsafe_git_indirection() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join(".git"), "gitdir: ../../escaped\n").unwrap();
+
+    let error = GitService::unfinished_operation_state(temp_dir.path())
+        .expect_err("unsafe linked-worktree metadata must fail closed");
+
+    assert!(matches!(error, AppError::Validation(_)));
+}

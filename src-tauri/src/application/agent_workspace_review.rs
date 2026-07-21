@@ -49,6 +49,8 @@ const WORKSPACE_REVIEW_GOAL_POLICY: &str =
     "Goal Wins: explicit parent workspace requests and linked/approved plan artifacts are authoritative unless the diff introduces a concrete security, data-loss, build, or correctness blocker.";
 const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
     "Workspace reviewer completion did not match the current Review target";
+pub(crate) const WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR: &str =
+    "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
 const WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace reviewer was interrupted when the app restarted";
 const WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR: &str =
@@ -3357,9 +3359,16 @@ async fn workspace_delta_tree_fingerprints(
     repo: &Path,
     base_ref: &str,
 ) -> AppResult<WorkspaceDeltaTreeFingerprints> {
+    ensure_workspace_review_git_is_settled(repo).await?;
     let base_tree = rev_parse(repo, &format!("{base_ref}^{{tree}}")).await?;
     let head_tree = rev_parse(repo, "HEAD^{tree}").await?;
-    let index_tree = git_stdout_lossy(&["write-tree"], repo).await?;
+    let index_tree = match git_stdout_lossy(&["write-tree"], repo).await {
+        Ok(index_tree) => index_tree,
+        Err(write_tree_error) => match ensure_workspace_review_git_is_settled(repo).await {
+            Ok(()) => return Err(write_tree_error),
+            Err(error) => return Err(error),
+        },
+    };
     let index_tree = index_tree.trim().to_string();
     if index_tree.is_empty() {
         return Err(AppError::GitOperation(
@@ -3412,12 +3421,25 @@ async fn workspace_delta_tree_fingerprints(
         ));
     }
 
+    ensure_workspace_review_git_is_settled(repo).await?;
+
     Ok(WorkspaceDeltaTreeFingerprints {
         base_tree,
         head_tree,
         index_tree,
         target_tree: target_tree.to_string(),
     })
+}
+
+async fn ensure_workspace_review_git_is_settled(repo: &Path) -> AppResult<()> {
+    let unfinished_operation = GitService::unfinished_operation_state(repo)?;
+    let conflict_files = GitService::get_conflict_files(repo).await?;
+    if unfinished_operation.is_unfinished() || !conflict_files.is_empty() {
+        return Err(AppError::Conflict(
+            WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn workspace_review_source_snapshot_fingerprint(
