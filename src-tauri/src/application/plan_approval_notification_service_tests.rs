@@ -14,7 +14,7 @@ use crate::domain::entities::{
     AgentRunId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, Project,
 };
-use crate::domain::ideation::IdeationSettings;
+use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::repositories::{IdeationSettingsRepository, PlanApprovalActor};
 use crate::infrastructure::memory::MemoryPlanArtifactApprovalRepository;
 
@@ -30,6 +30,14 @@ impl IdeationSettingsRepository for FailingIdeationSettingsRepository {
         &self,
         _settings: &IdeationSettings,
     ) -> Result<IdeationSettings, Box<dyn std::error::Error>> {
+        Err("injected settings write failure".into())
+    }
+
+    async fn compare_and_set_tasks_feature_state(
+        &self,
+        _expected: TasksFeatureState,
+        _next: TasksFeatureState,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         Err("injected settings write failure".into())
     }
 }
