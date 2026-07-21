@@ -6,7 +6,9 @@ import {
   loadAgentsDisclosures,
   loadAgentsTab,
   loadActiveSection,
+  loadActiveDestination,
   migrateActiveSectionPreference,
+  migrateSettingsUiState,
   saveAgentsFamiliesExpanded,
   saveAgentsFamilyExpanded,
   saveAgentsRoleExpanded,
@@ -19,43 +21,51 @@ describe("settings-ui-state", () => {
     localStorage.clear();
   });
 
-  it("migrates legacy Settings default sections to Providers", () => {
-    expect(migrateActiveSectionPreference("execution", 0)).toBe("providers");
-    expect(migrateActiveSectionPreference("repository", 1)).toBe("providers");
-    expect(migrateActiveSectionPreference(null, 0)).toBe("providers");
+  it("maps legacy standalone sections to parent sections and tabs", () => {
+    expect(migrateActiveSectionPreference("execution", 3)).toEqual({ section: "workspace", tab: "general" });
+    expect(migrateActiveSectionPreference("review", 3)).toEqual({ section: "tasks", tab: "review-policy" });
+    expect(migrateActiveSectionPreference("autonomy", 3)).toEqual({ section: "tasks", tab: "autonomy-policy" });
+    expect(migrateActiveSectionPreference("workspace-review", 3)).toEqual({ section: "workspace", tab: "review" });
+    expect(migrateActiveSectionPreference("global-execution", 3)).toEqual({ section: "capacity" });
+    expect(migrateActiveSectionPreference("ideation-workflow", 3)).toEqual({ section: "tasks", tab: "general" });
   });
 
-  it("preserves explicit non-default section choices during migration", () => {
-    expect(migrateActiveSectionPreference("review", 0)).toBe("review");
+  it("defaults missing legacy preferences to Providers", () => {
+    expect(migrateActiveSectionPreference(null, 0)).toEqual({ section: "providers" });
   });
 
   it("preserves current-version section choices", () => {
-    expect(migrateActiveSectionPreference("execution", 3)).toBe("execution");
+    expect(migrateActiveSectionPreference("planning", 4)).toEqual({ section: "planning" });
   });
 
   it("migrates saved Execution and Ideation agent pages into Agents", () => {
-    expect(migrateActiveSectionPreference("execution-harnesses", 2)).toBe("agents");
-    expect(migrateActiveSectionPreference("ideation-harnesses", 2)).toBe("agents");
+    expect(migrateActiveSectionPreference("execution-harnesses", 2)).toEqual({ section: "agents" });
+    expect(migrateActiveSectionPreference("ideation-harnesses", 2)).toEqual({ section: "agents" });
   });
 
-  it("loads Providers and writes the migrated active-section version", () => {
+  it("loads a legacy tab deterministically before persisting its parent section", () => {
     localStorage.setItem("ralphx-settings-active-section", "execution");
 
-    expect(loadActiveSection()).toBe("providers");
+    expect(loadActiveDestination()).toEqual({ section: "workspace", tab: "general" });
+    expect(loadActiveDestination()).toEqual({ section: "workspace", tab: "general" });
+
+    migrateSettingsUiState();
+
+    expect(loadActiveSection()).toBe("workspace");
     expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
-      "providers",
+      "workspace",
     );
     expect(localStorage.getItem("ralphx-settings-active-section-version")).toBe(
-      "3",
+      "4",
     );
   });
 
   it("saves explicit user choices at the current preference version", () => {
-    saveActiveSection("review");
+    saveActiveSection("tasks");
 
-    expect(loadActiveSection()).toBe("review");
+    expect(loadActiveSection()).toBe("tasks");
     expect(localStorage.getItem("ralphx-settings-active-section-version")).toBe(
-      "3",
+      "4",
     );
   });
 

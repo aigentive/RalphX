@@ -53,7 +53,6 @@ function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
     agentPersonas: false,
     agentConversationTeam: false,
     agentConversationWorkflows: false,
-    composerFolderReferences: false,
     ...overrides,
   };
 }
@@ -274,7 +273,7 @@ describe("AgentsView start conversation", () => {
     useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
     view.queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: false }),
+      enabledFeatureFlags({ agentPersonas: true }),
     );
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
@@ -284,14 +283,6 @@ describe("AgentsView start conversation", () => {
     expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
-    await userEvent.keyboard("{Escape}");
-
-    view.queryClient.setQueryData(
-      FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags({ agentPersonas: true, composerFolderReferences: true }),
-    );
-    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
   });
 
@@ -305,7 +296,6 @@ describe("AgentsView start conversation", () => {
         standaloneConversations: true,
         agentPersonas: true,
         agentConversationTeam: true,
-        composerFolderReferences: true,
       }),
     );
 
@@ -4008,7 +3998,6 @@ describe("AgentsView start conversation", () => {
     queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
       enabledFeatureFlags({
-        composerFolderReferences: true,
         standaloneConversations: true,
       }),
     );
@@ -4058,7 +4047,7 @@ describe("AgentsView start conversation", () => {
     const { queryClient } = renderAgentsView();
     queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags({ composerFolderReferences: true }),
+      enabledFeatureFlags(),
     );
 
     fireEvent.click(

@@ -111,7 +111,6 @@ async fn standalone_persona_builder_start_accepts_codex_and_persists_provider_mo
 async fn standalone_builder_seed_with_folder_reference_starts_with_enforced_root() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
-    set_composer_folder_references_override(Some(true));
     set_standalone_conversations_override(Some(true));
     let _allow_spawn =
         super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
@@ -155,7 +154,6 @@ async fn standalone_builder_seed_with_folder_reference_starts_with_enforced_root
             display_name: "Folder root".to_string(),
         },
         app.state::<AppState>().inner(),
-        true,
     )
     .await
     .expect("pre-start folder reference registration succeeds");

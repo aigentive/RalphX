@@ -36,11 +36,6 @@ impl UiFeatureFlagOverridesRepository for MemoryUiFeatureFlagOverridesRepository
         Ok(())
     }
 
-    async fn set_composer_folder_references(&self, value: Option<bool>) -> AppResult<()> {
-        self.overrides.write().await.composer_folder_references = value;
-        Ok(())
-    }
-
     async fn update_agent_capabilities(
         &self,
         team: Option<bool>,
