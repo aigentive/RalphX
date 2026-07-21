@@ -9,6 +9,8 @@ capabilities:
     - fs_glob
     - get_artifact
     - get_workspace_review_context
+    - list_workspace_review_files
+    - get_workspace_review_diff_page
     - write_workspace_review_artifact
     - write_workspace_review_hunk_annotations
     - complete_workspace_review_run
@@ -33,6 +35,8 @@ harnesses:
       - fs_glob
       - get_artifact
       - get_workspace_review_context
+      - list_workspace_review_files
+      - get_workspace_review_diff_page
       - write_workspace_review_artifact
       - write_workspace_review_hunk_annotations
       - complete_workspace_review_run

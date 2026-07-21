@@ -502,6 +502,14 @@ pub async fn start_http_server(
             get(get_agent_workspace_review_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-files",
+            get(list_agent_workspace_review_files),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-diff-page",
+            get(get_agent_workspace_review_diff_page),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-start-preview",
             get(get_agent_workspace_review_start_preview),
         )

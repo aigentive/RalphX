@@ -45,6 +45,13 @@ pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+mod agent_workspace_review_diff_cursor;
+pub mod agent_workspace_review_diff;
+mod agent_workspace_review_diff_inventory;
+#[cfg(test)]
+mod agent_workspace_review_diff_scope_tests;
+#[cfg(test)]
+mod agent_workspace_review_diff_tests;
 pub mod agent_workspace_review_context;
 #[cfg(test)]
 mod agent_workspace_review_context_tests;
