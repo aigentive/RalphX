@@ -2219,11 +2219,25 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
 #[test]
 fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
     let root = project_root();
+    let required_review_lenses = [
+        "industry best practices",
+        "reuses existing components",
+        "UI/UX",
+        "product sense",
+        "remote base branch drift",
+        "instead of assuming no drift",
+    ];
     for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
         let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
             .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
         assert!(prompt.contains("backend-started Verify Plan"));
         assert!(prompt.contains("complete_plan_verification"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} ideation prompt must require the {required_lens:?} review lens"
+            );
+        }
         for retired in [
             "ralphx-plan-verifier",
             "create_child_session(purpose: \"verification\")",
@@ -2246,8 +2260,26 @@ fn ideation_prompts_preserve_model_native_verification_without_legacy_topology()
     .expect("missing Claude prompt for ralphx-ideation-team-lead");
     assert!(team_prompt.contains("backend-started Verify Plan"));
     assert!(team_prompt.contains("complete_plan_verification"));
+    for required_lens in required_review_lenses {
+        assert!(
+            team_prompt.contains(required_lens),
+            "team-lead prompt must require the {required_lens:?} review lens"
+        );
+    }
     assert!(!team_prompt.contains("ralphx-plan-verifier"));
     assert!(!team_prompt.contains("stop_verification"));
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt =
+            load_harness_agent_prompt_for_profile(&root, "ralphx-ideation", harness, Some("plan"))
+                .unwrap_or_else(|| panic!("missing {harness:?} Plan profile prompt"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} Plan profile prompt must require the {required_lens:?} review lens"
+            );
+        }
+    }
 }
 
 #[test]
