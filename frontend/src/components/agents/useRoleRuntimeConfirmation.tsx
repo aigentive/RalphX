@@ -35,6 +35,7 @@ export function useRoleRuntimeConfirmation({
       confirmText,
       pendingText,
       prepareDescription,
+      recoverFromPrepareError,
       recoverFromError,
       onConfirm,
     }: {
@@ -44,6 +45,14 @@ export function useRoleRuntimeConfirmation({
       confirmText: string;
       pendingText?: string;
       prepareDescription?: () => Promise<string>;
+      recoverFromPrepareError?: (
+        error: unknown,
+      ) =>
+        | Promise<
+            Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">> | null
+          >
+        | Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">>
+        | null;
       recoverFromError?: (
         error: unknown,
       ) => Promise<
@@ -99,6 +108,7 @@ export function useRoleRuntimeConfirmation({
             ),
           };
         },
+        ...(recoverFromPrepareError ? { recoverFromPrepareError } : {}),
         onConfirm: async () => {
           const selection = latestSelectionRef.current;
           if (!selection) throw new Error("Runtime selection is not ready");

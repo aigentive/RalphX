@@ -486,6 +486,8 @@ describe("useWorkspaceReviewActions", () => {
       ).toBeInTheDocument();
     });
     expect(within(dialog).getByRole("button", { name: "Start review" })).toBeDisabled();
+  });
+
   it("refreshes a stale blocker receipt and requires reconfirmation before retrying Fix Issues", async () => {
     const context: AgentWorkspaceReviewContext = {
       success: true,
