@@ -62,7 +62,6 @@ function fixerDescription(context: AgentWorkspaceReviewContext): string {
     ? `The Repair agent will address: ${context.monitor.reviewBlockingSummary}`
     : "The Repair agent will address the current blocking findings.";
 }
-
 function blockedWorkspaceReviewCopy(error: unknown): string | null {
   return error instanceof AgentWorkspaceHttpError &&
     error.status === 409 &&
