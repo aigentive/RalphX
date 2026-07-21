@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import {
   AlertDialog,
@@ -19,9 +19,11 @@ export interface ConfirmOptions {
   pendingText?: string;
   cancelText?: string;
   variant?: "default" | "destructive";
+  body?: ReactNode;
+  confirmDisabled?: boolean;
   onConfirm?: () => Promise<unknown> | unknown;
   /** Runs after the dialog shell opens; return copy updates for the same dialog. */
-  prepare?: () =>
+  prepare?: (controller: ConfirmationController) =>
     | Promise<Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>>
     | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>;
   /** Return updated copy after a recoverable action error to keep the dialog open for reconfirmation. */
@@ -33,6 +35,11 @@ export interface ConfirmOptions {
       >
     | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>
     | null;
+}
+
+export interface ConfirmationController {
+  update: (patch: Partial<ConfirmOptions>) => boolean;
+  isCurrent: () => boolean;
 }
 
 interface ConfirmationDialogProps {
@@ -72,6 +79,7 @@ function ConfirmationDialogComponent({
         <AlertDialogHeader>
           <AlertDialogTitle>{options.title}</AlertDialogTitle>
           <AlertDialogDescription>{options.description}</AlertDialogDescription>
+          {options.body}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onCancel} disabled={isSubmitting}>
@@ -83,7 +91,12 @@ function ConfirmationDialogComponent({
               onConfirm();
             }}
             variant={options.variant ?? "default"}
-            disabled={isSubmitting || isPreparing || prepareFailed}
+            disabled={
+              isSubmitting ||
+              isPreparing ||
+              prepareFailed ||
+              options.confirmDisabled
+            }
             className="gap-2"
           >
             {(isSubmitting || isPreparing) && (
@@ -138,8 +151,20 @@ export function useConfirmation(): UseConfirmationReturn {
     setIsOpen(true);
     const requestId = ++requestIdRef.current;
     if (opts.prepare) {
-      void Promise.resolve()
-        .then(opts.prepare)
+      const controller: ConfirmationController = {
+        update: (patch) => {
+          if (requestId !== requestIdRef.current) return false;
+          setOptions((current) => (current ? { ...current, ...patch } : current));
+          return true;
+        },
+        isCurrent: () => requestId === requestIdRef.current,
+      };
+      const prepareAfterPaint = () =>
+        new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+        });
+      void prepareAfterPaint()
+        .then(() => opts.prepare?.(controller))
         .then((prepared) => {
           if (requestId !== requestIdRef.current) return;
           if (prepared) {

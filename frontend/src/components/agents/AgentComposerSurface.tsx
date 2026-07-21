@@ -103,7 +103,9 @@ import type {
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
   ComposerRuntimeOption,
+  ComposerRuntimePersonaField,
   ComposerRuntimeProviderField,
+  ComposerRuntimeSpeedField,
 } from "./composer/runtime/runtimeSelectorTypes";
 import type { AgentComposerSkill } from "@/api/agent-composer";
 
@@ -201,6 +203,8 @@ interface ProjectFieldConfig {
 type ProviderFieldConfig = ComposerRuntimeProviderField;
 type ModelFieldConfig = ComposerRuntimeModelField;
 type EffortFieldConfig = ComposerRuntimeEffortField;
+type PersonaFieldConfig = ComposerRuntimePersonaField;
+type SpeedFieldConfig = ComposerRuntimeSpeedField;
 
 interface ModeFieldConfig {
   value: string;
@@ -271,6 +275,8 @@ export interface AgentComposerSurfaceProps {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  persona?: PersonaFieldConfig;
+  speed?: SpeedFieldConfig;
   runtimeDefault?: {
     source?: string | null;
     isResetting?: boolean;
@@ -352,6 +358,8 @@ export function AgentComposerSurface({
   provider,
   model,
   effort,
+  persona,
+  speed,
   runtimeDefault,
   onSend,
   onStop,
@@ -428,6 +436,22 @@ export function AgentComposerSurface({
     Map<string, ComposerExcerptReference>
   >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const runtimePersona =
+    persona ??
+    (personaControl
+      ? {
+          value: "conversation",
+          onValueChange: () => undefined,
+          options: [
+            {
+              id: "conversation",
+              label: "Conversation persona",
+              description: "Choose the persona for this conversation below.",
+            },
+          ],
+          footerAction: personaControl,
+        }
+      : undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
@@ -2105,6 +2129,8 @@ export function AgentComposerSurface({
                 model={model}
                 effort={effort}
                 {...(capability ? { capability } : {})}
+                {...(runtimePersona ? { persona: runtimePersona } : {})}
+                {...(speed ? { speed } : {})}
                 {...(runtimeDefault ? { runtimeDefault } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
@@ -2123,12 +2149,6 @@ export function AgentComposerSurface({
 
             {!capability && team && (
               <ComposerTeamSwitch team={team} compact={compact} />
-            )}
-
-            {personaControl && (
-              <div className="agent-composer-persona-slot flex shrink-0">
-                {personaControl}
-              </div>
             )}
 
             <Button

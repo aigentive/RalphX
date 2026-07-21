@@ -418,6 +418,8 @@ fn provider_switch_send_options_for_queued_message(
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
         service_tier_override: queued_msg.service_tier_override.clone(),
+        preserve_conversation_provider_session_ref: queued_msg
+            .preserve_conversation_provider_session_ref,
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),

@@ -70,7 +70,10 @@ use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, RoutingRole,
+    DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -1254,6 +1257,8 @@ pub struct SendMessageOptions {
     /// Backend-owned semantic role for orchestrated launches whose parent context
     /// cannot be reconstructed from the delegated conversation alone.
     pub routing_role_override: Option<RoutingRole>,
+    /// Complete permission-free runtime tuple for the backend-derived role.
+    pub manual_role_runtime_override: Option<ManualRoleRuntimeOverride>,
     /// Optional JSON metadata string to attach to the user message.
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
@@ -1949,7 +1954,24 @@ impl<R: Runtime> AppChatService<R> {
         options: &SendMessageOptions,
         conversation_id: Option<String>,
     ) -> Result<QueuedMessage, ChatServiceError> {
-        let queued = self
+        let complete_runtime = options.manual_role_runtime_override.as_ref();
+        let queued_harness = complete_runtime
+            .map(|runtime| runtime.harness)
+            .or(options.harness_override);
+        let queued_model = complete_runtime
+            .and_then(|runtime| runtime.model.clone())
+            .or_else(|| options.model_override.clone());
+        let queued_effort = complete_runtime
+            .and_then(|runtime| runtime.effort)
+            .or(options.logical_effort_override);
+        let queued_service_tier = complete_runtime
+            .map(|runtime| match runtime.service_tier {
+                crate::domain::agents::ManualServiceTier::ProviderDefault => String::new(),
+                crate::domain::agents::ManualServiceTier::Standard => "standard".to_string(),
+                crate::domain::agents::ManualServiceTier::Fast => "fast".to_string(),
+            })
+            .or_else(|| options.service_tier_override.clone());
+        let mut queued = self
             .message_queue
             .queue_with_runtime_overrides_and_project_references(
                 context_type,
@@ -1957,12 +1979,12 @@ impl<R: Runtime> AppChatService<R> {
                 message.to_string(),
                 options.metadata.clone(),
                 options.created_at.map(|ts| ts.to_rfc3339()),
-                options.harness_override,
+                queued_harness,
                 options.agent_name_override.clone(),
                 options.persona_directive.clone(),
-                options.model_override.clone(),
-                options.logical_effort_override,
-                options.service_tier_override.clone(),
+                queued_model,
+                queued_effort,
+                queued_service_tier,
                 options.force_new_provider_session,
                 options.composer_project_references.clone(),
                 options.composer_integration_references.clone(),
@@ -1973,6 +1995,8 @@ impl<R: Runtime> AppChatService<R> {
                 ),
                 options.attachment_ids.clone(),
             );
+        queued.preserve_conversation_provider_session_ref =
+            options.preserve_conversation_provider_session_ref;
         let key = Self::queued_key(context_type, context_id);
         if let Err(error) = self.persist_queued_back(&key, &queued).await {
             self.message_queue
@@ -6327,6 +6351,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     project_id.as_deref(),
                     project_root.as_deref(),
                     routing_role,
+                    options.manual_role_runtime_override.as_ref(),
                     spawn_harness_override,
                     options.model_override.as_deref(),
                     defaults,
@@ -7243,6 +7268,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             model_override: queued_msg.model_override.clone(),
             logical_effort_override: queued_msg.logical_effort_override,
             service_tier_override: queued_msg.service_tier_override.clone(),
+            preserve_conversation_provider_session_ref: queued_msg
+                .preserve_conversation_provider_session_ref,
             force_new_provider_session: queued_msg.force_new_provider_session,
             conversation_id_override,
             composer_project_references: queued_msg.composer_project_references.clone(),

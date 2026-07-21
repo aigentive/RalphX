@@ -298,6 +298,7 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
     let input = || ActivateAgentTaskPipelineInput {
         conversation_id: conversation.id.as_str().to_string(),
         session_id: seeded.session_id.clone(),
+        runtime_override: None,
     };
     let activated = activate_agent_task_pipeline_for_state(input(), &state)
         .await
@@ -376,6 +377,7 @@ async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace()
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id,
+            runtime_override: None,
         },
         &state,
     )
@@ -441,6 +443,7 @@ async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id,
+            runtime_override: None,
         },
         &state,
     )
@@ -502,6 +505,7 @@ async fn stale_conversation_projection_cannot_activate_tasks_pipeline() {
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id,
+            runtime_override: None,
         },
         &state,
     )
@@ -541,6 +545,7 @@ async fn unapproved_plan_cannot_activate_tasks_pipeline() {
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id,
+            runtime_override: None,
         },
         &state,
     )
@@ -609,6 +614,7 @@ async fn stale_plan_approval_cannot_activate_tasks_pipeline() {
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id,
+            runtime_override: None,
         },
         &state,
     )
@@ -792,6 +798,7 @@ async fn start_authority_rejects_stale_state_and_accepts_restored_exact_state() 
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id.clone(),
+            runtime_override: None,
         },
         &state,
     )
@@ -1014,6 +1021,7 @@ async fn supervised_apply_requires_the_owning_tasks_conversation() {
         ActivateAgentTaskPipelineInput {
             conversation_id: conversation.id.as_str().to_string(),
             session_id: seeded.session_id.clone(),
+            runtime_override: None,
         },
         &state,
     )

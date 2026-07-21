@@ -14,8 +14,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -1376,6 +1377,65 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .cloned())
     }
 
+    async fn claim_workspace_review_fixer(
+        &self,
+        conversation_id: &ChatConversationId,
+        snapshot: &AgentWorkspaceReviewFixerSnapshot,
+        attempt_id: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        if attempt_id.trim().is_empty()
+            || monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
+            || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
+            || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
+            || monitor.current_target_scope != Some(snapshot.target_scope)
+            || monitor.reviewed_target_scope != Some(snapshot.target_scope)
+            || monitor.current_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.reviewed_diff_fingerprint.as_deref()
+                != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
+            || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || monitor.review_blocking_fingerprint.as_deref()
+                != Some(snapshot.blocking_fingerprint.as_str())
+            || matches!(
+                monitor.review_fixer_status.as_deref(),
+                Some("routing" | "queued" | "running")
+            )
+        {
+            return Ok(None);
+        }
+        monitor.review_fixer_status = Some("routing".to_string());
+        monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
+        monitor.review_fixer_run_id = None;
+        monitor.review_fixer_conversation_id = None;
+        monitor.last_error = None;
+        monitor.updated_at = claimed_at;
+        Ok(Some(monitor.clone()))
+    }
+
+    async fn settle_workspace_review_fixer_attempt(
+        &self,
+        mut next: AgentWorkspaceReviewMonitor,
+        expected_attempt_id: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(current) = monitors.get(&next.conversation_id) else {
+            return Ok(None);
+        };
+        if current.review_fixer_attempt_id.as_deref() != Some(expected_attempt_id) {
+            return Ok(None);
+        }
+        next.created_at = current.created_at;
+        next.updated_at = Utc::now();
+        monitors.insert(next.conversation_id, next.clone());
+        Ok(Some(next))
+    }
+
     async fn fail_reserved_workspace_review_start(
         &self,
         conversation_id: &ChatConversationId,
@@ -1406,6 +1466,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         monitor.review_fixer_run_id = None;
         monitor.review_fixer_conversation_id = None;
         monitor.review_fixer_status = None;
+        monitor.review_fixer_attempt_id = None;
         monitor.last_error = Some(error.to_string());
         monitor.updated_at = Utc::now();
         Ok(true)
@@ -1475,6 +1536,21 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing)
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn list_routing_workspace_review_fixers(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self
+            .workspace_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| monitor.review_fixer_status.as_deref() == Some("routing"))
             .cloned()
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));

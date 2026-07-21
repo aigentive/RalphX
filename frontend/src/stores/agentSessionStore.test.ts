@@ -3,12 +3,52 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   getShownArtifactTabs,
   migrateAgentSessionStore,
+  mergeAgentSessionStore,
   selectArtifactState,
   selectHasStoredArtifactState,
   useAgentSessionStore,
 } from "./agentSessionStore";
 
 describe("agentSessionStore", () => {
+  it("drops structurally corrupt current-version runtime preferences", () => {
+    const merged = mergeAgentSessionStore(
+      {
+        serviceTierByConversationId: { good: "standard", bad: "turbo" },
+        roleRuntimeOverridesByConversationId: {
+          conversation: {
+            workspace_reviewer: {
+              provider: "claude",
+              model: "sonnet",
+              effort: "high",
+              serviceTier: "fast",
+              coordinationMode: "solo",
+              personaId: null,
+            },
+            workspace_repair: {
+              provider: "codex",
+              model: [],
+              effort: "high",
+              serviceTier: "fast",
+              coordinationMode: "solo",
+              personaId: null,
+            },
+          },
+        },
+      },
+      useAgentSessionStore.getState(),
+    );
+
+    expect(merged.serviceTierByConversationId).toEqual({ good: "standard" });
+    expect(merged.roleRuntimeOverridesByConversationId).toEqual({
+      conversation: {
+        workspace_reviewer: expect.objectContaining({
+          provider: "claude",
+          serviceTier: "fast",
+        }),
+      },
+    });
+  });
+
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
     expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
@@ -838,6 +878,57 @@ describe("agentSessionStore", () => {
         modelId: "sonnet",
         effort: "high",
       });
+    });
+
+    it("isolates complete launch overrides by conversation and role and preserves three-state speed", () => {
+      const state = useAgentSessionStore.getState();
+      const reviewer = {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "high",
+        serviceTier: "provider_default" as const,
+        coordinationMode: "solo" as const,
+        personaId: null,
+      };
+      const repair = {
+        ...reviewer,
+        serviceTier: "standard" as const,
+      };
+
+      state.setRoleRuntimeOverride("conversation-a", "workspace_reviewer", reviewer);
+      state.setRoleRuntimeOverride("conversation-a", "workspace_repair", repair);
+      state.setRoleRuntimeOverride("conversation-b", "workspace_reviewer", {
+        ...reviewer,
+        serviceTier: "fast",
+      });
+      state.setServiceTierForConversation("conversation-a", "provider_default");
+
+      expect(
+        useAgentSessionStore.getState().roleRuntimeOverridesByConversationId,
+      ).toEqual({
+        "conversation-a": {
+          workspace_reviewer: reviewer,
+          workspace_repair: repair,
+        },
+        "conversation-b": {
+          workspace_reviewer: { ...reviewer, serviceTier: "fast" },
+        },
+      });
+      expect(
+        useAgentSessionStore.getState().serviceTierByConversationId["conversation-a"],
+      ).toBe("provider_default");
+
+      state.clearRoleRuntimeOverride("conversation-a", "workspace_reviewer");
+      state.clearRoleRuntimeOverride("conversation-a", "workspace_repair");
+      state.clearServiceTierForConversation("conversation-a");
+      expect(
+        useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+          "conversation-a"
+        ],
+      ).toBeUndefined();
+      expect(
+        useAgentSessionStore.getState().serviceTierByConversationId["conversation-a"],
+      ).toBeUndefined();
     });
 
     it("remembers branch base cache and selected branch per project", () => {

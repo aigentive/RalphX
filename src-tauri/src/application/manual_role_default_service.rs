@@ -196,6 +196,16 @@ impl ManualRoleDefaultService {
         }
         Ok(())
     }
+
+    /// Validate a complete explicit runtime value against the same role,
+    /// provider, capability, and persona rules used by persisted defaults.
+    pub async fn validate_explicit_value(
+        &self,
+        role: RoutingRole,
+        value: &ManualRoleDefault,
+    ) -> AppResult<()> {
+        self.validate_value(role, value).await
+    }
 }
 
 fn legacy_lane_for_role_default(role: RoutingRole) -> Option<AgentLane> {

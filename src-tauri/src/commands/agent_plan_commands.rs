@@ -53,6 +53,7 @@ pub struct ImportAgentConversationPlanInput {
 pub struct ActivateAgentTaskPipelineInput {
     pub conversation_id: String,
     pub session_id: String,
+    pub runtime_override: Option<crate::domain::agents::ManualRoleRuntimeOverride>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +195,35 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
     input: ActivateAgentTaskPipelineInput,
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
+    if let Some(runtime_override) = input.runtime_override.as_ref() {
+        let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
+        let conversation = state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+        let project = state
+            .project_repo
+            .get_by_id(&crate::domain::entities::ProjectId::from_string(
+                conversation.context_id,
+            ))
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Project not found for plan continuation".to_string())?;
+        crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+            crate::infrastructure::agents::claude::agent_names::AGENT_ORCHESTRATOR_IDEATION,
+            Some(project.id.as_str()),
+            Some(std::path::Path::new(&project.working_directory)),
+            crate::domain::agents::RoutingRole::IdeationPrimary,
+            Some(runtime_override),
+            None,
+            None,
+            &state.manual_role_default_service(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     let workspace =
         activate_agent_task_pipeline_service(state, &input.conversation_id, &input.session_id)
             .await?;
@@ -366,6 +396,7 @@ async fn seed_agent_conversation_plan(
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         state,
         ModeSwitchInitiator::User,

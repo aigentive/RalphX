@@ -726,6 +726,7 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
         RoutingRole::WorkspaceEdit,
         None,
         None,
+        None,
         &service,
     )
     .await
@@ -779,6 +780,7 @@ async fn workspace_plan_codex_override_ignores_configured_claude_model() {
         None,
         None,
         RoutingRole::WorkspacePlan,
+        None,
         Some(AgentHarnessKind::Codex),
         None,
         &service,
@@ -832,6 +834,7 @@ async fn workspace_plan_claude_override_ignores_configured_codex_model() {
         None,
         None,
         RoutingRole::WorkspacePlan,
+        None,
         Some(AgentHarnessKind::Claude),
         None,
         &service,

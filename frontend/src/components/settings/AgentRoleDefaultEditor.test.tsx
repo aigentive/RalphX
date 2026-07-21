@@ -84,11 +84,11 @@ describe("AgentRoleDefaultEditor", () => {
     const user = userEvent.setup();
     const onUpdate = renderEditor();
 
-    fireEvent.keyDown(screen.getByRole("combobox", { name: "Edit provider" }), {
-      key: "ArrowDown",
-      code: "ArrowDown",
-    });
-    await user.click(screen.getByRole("option", { name: "Codex" }));
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(
+      screen.getByTestId("agent-composer-runtime-provider-menu-trigger"),
+    );
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-codex"));
 
     expect(onUpdate).toHaveBeenCalledWith({
       ...value,
@@ -102,22 +102,17 @@ describe("AgentRoleDefaultEditor", () => {
     const user = userEvent.setup();
     renderEditor();
 
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Capabilities,/ }));
     expect(screen.getByText("Team is currently unavailable")).toBeInTheDocument();
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Speed,/ }));
     expect(screen.getByText("Fast is unavailable for this model")).toBeInTheDocument();
-    const speedDescription = screen.getByRole("combobox", { name: "Edit speed" })
-      .getAttribute("aria-describedby");
-    expect(speedDescription).not.toBeNull();
-    expect(document.getElementById(speedDescription ?? ""))
-      .toHaveTextContent("Fast is unavailable for this model");
-    expect(screen.queryByRole("combobox", { name: "Edit persona" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-persona-menu-trigger"),
+    ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Persona & access" }));
-
-    expect(screen.getByText("Personas are unavailable for this role")).toBeInTheDocument();
-    const persona = screen.getByRole("combobox", { name: "Edit persona" });
-    expect(persona).toBeDisabled();
-    expect(document.getElementById(persona.getAttribute("aria-describedby") ?? ""))
-      .toHaveTextContent("Personas are unavailable for this role");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Permissions" }));
     expect(screen.getByRole("combobox", { name: "Edit approval policy" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Edit sandbox mode" })).toBeInTheDocument();
   });
@@ -126,7 +121,7 @@ describe("AgentRoleDefaultEditor", () => {
     const user = userEvent.setup();
     renderEditor(vi.fn(), true);
 
-    const disclosure = screen.getByRole("button", { name: "Persona & access" });
+    const disclosure = screen.getByRole("button", { name: "Permissions" });
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
     expect(disclosure).toHaveAttribute("aria-disabled", "true");
 

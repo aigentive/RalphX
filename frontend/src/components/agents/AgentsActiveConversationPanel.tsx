@@ -1,12 +1,10 @@
 import {
-  isValidElement,
   memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import {
   CheckCircle2,
@@ -95,6 +93,7 @@ import type {
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
+import type { ManualServiceTier } from "@/api/manual-role-defaults.types";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
@@ -164,6 +163,7 @@ import {
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
+import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -171,41 +171,6 @@ import {
 } from "./agentWorkspaceQueries";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
-
-interface MemoizedPersonaControlProps {
-  control: ReactNode;
-}
-
-function arePersonaControlsEqual(
-  previous: MemoizedPersonaControlProps,
-  next: MemoizedPersonaControlProps,
-): boolean {
-  const previousControl = previous.control;
-  const nextControl = next.control;
-  if (previousControl === nextControl) return true;
-  if (
-    !isValidElement<Record<string, unknown>>(previousControl) ||
-    !isValidElement<Record<string, unknown>>(nextControl) ||
-    previousControl.type !== nextControl.type ||
-    previousControl.key !== nextControl.key
-  ) {
-    return false;
-  }
-
-  const previousProps = previousControl.props;
-  const nextProps = nextControl.props;
-  const previousKeys = Object.keys(previousProps);
-  return (
-    previousKeys.length === Object.keys(nextProps).length &&
-    previousKeys.every((key) => Object.is(previousProps[key], nextProps[key]))
-  );
-}
-
-const MemoizedPersonaControl = memo(function MemoizedPersonaControl({
-  control,
-}: MemoizedPersonaControlProps) {
-  return control;
-}, arePersonaControlsEqual);
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
@@ -999,8 +964,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const [isApprovingAutomation, setIsApprovingAutomation] = useState(false);
   const [isRunningAutomation, setIsRunningAutomation] = useState(false);
-  const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
-    useState<Record<string, boolean>>({});
   const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
   const [
     shouldLoadWorkspaceBaseOptions,
@@ -1151,30 +1114,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     },
     [activeConversation.coordinationMode, confirm, onActiveCapabilityChange],
   );
-  const codexProviderFastMode =
-    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
   const conversationServiceTier = activeConversation.serviceTier
     ?.trim()
     .toLowerCase();
-  const conversationFastMode =
-    conversationServiceTier === "fast"
-      ? true
-      : conversationServiceTier === "standard"
-        ? false
-        : codexProviderFastMode;
-  const runtimeControlFastModeFallback =
-    activeConversation.id === runtimeControlConversationId
-      ? conversationFastMode
-      : codexProviderFastMode;
-  const activeCodexFastMode =
-    codexFastModeByConversationId[runtimeControlConversationId] ??
-    runtimeControlFastModeFallback;
-  const handleActiveCodexFastModeChange = useCallback(
-    (value: boolean) => {
-      setCodexFastModeByConversationId((current) => ({
-        ...current,
-        [runtimeControlConversationId]: value,
-      }));
+  const persistedConversationServiceTier = useAgentSessionStore(
+    (state) => state.serviceTierByConversationId[runtimeControlConversationId],
+  );
+  const activeServiceTier: ManualServiceTier =
+    persistedConversationServiceTier ??
+    (conversationServiceTier === "fast" || conversationServiceTier === "standard"
+      ? conversationServiceTier
+      : "provider_default");
+  const handleActiveServiceTierChange = useCallback(
+    (value: string) => {
+      useAgentSessionStore
+        .getState()
+        .setServiceTierForConversation(
+          runtimeControlConversationId,
+          value as ManualServiceTier,
+        );
     },
     [runtimeControlConversationId],
   );
@@ -1239,16 +1197,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           activeProjectId,
           nextRuntime,
         );
-      setCodexFastModeByConversationId((current) => {
-        const next = { ...current };
-        if (resolved.value.serviceTier === "provider_default") {
-          delete next[selectedConversationId];
-        } else {
-          next[selectedConversationId] =
-            resolved.value.serviceTier === "fast";
-        }
-        return next;
-      });
+      useAgentSessionStore
+        .getState()
+        .setServiceTierForConversation(
+          selectedConversationId,
+          resolved.value.serviceTier,
+        );
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -1306,13 +1260,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const activeCodexFastModeOption =
     normalizedActiveRuntime.provider === "codex" &&
     codexFastModeAvailability.supported
-      ? activeCodexFastMode
+      ? activeServiceTier === "provider_default"
+        ? null
+        : activeServiceTier === "fast"
       : null;
-  const selectableCodexFastMode =
-    normalizedActiveRuntime.provider === "codex" &&
-    codexFastModeAvailability.supported
-      ? activeCodexFastMode
-      : false;
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -1376,6 +1327,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const workspaceSendRuntime = usesWorkspaceRuntimeControls
     ? selectableWorkspaceRuntime
     : normalizedActiveRuntime;
+  const panelCodexFastModeOption = focusedWorkspaceReviewConversationId
+    ? workspaceSendRuntime.provider === "codex"
+      ? false
+      : null
+    : activeCodexFastModeOption;
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
   const runtimeStatusStoreKey = runtimeStatusConversationId
@@ -1989,6 +1945,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       planApprovalArtifact &&
       !isPlanVerificationLoading,
   );
+  const {
+    confirmImplementDirectly,
+    confirmCreateProposals,
+    confirmationDialogProps: planContinuationDialogProps,
+    ConfirmationDialog: PlanContinuationDialog,
+  } = useApprovedPlanContinuation({
+    conversationId: activeWorkspace?.conversationId ?? null,
+    projectId: activeProjectId,
+  });
 
   const handleApprovePlanFromQuestion = useCallback(async () => {
     if (!planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
@@ -2024,27 +1989,36 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planApprovalSessionId,
     queryClient,
   ]);
-  const handleCreatePlanProposals = useCallback(async () => {
+  const handleCreatePlanProposals = useCallback(() => {
     if (!planApprovalSessionId || !canCreatePlanProposals) {
       return;
     }
-    setIsCreatingPlanProposals(true);
-    try {
-      await activateAgentPlanProposals({
+    let workspaceActivationCompleted = activeWorkspace?.mode === "tasks";
+    void confirmCreateProposals(async (runtimeOverride) => {
+      setIsCreatingPlanProposals(true);
+      try {
+        await activateAgentPlanProposals({
         sessionId: planApprovalSessionId,
         workspace: activeWorkspace,
         queryClient,
         canPromoteWorkspace: true,
         onConversationModeSwitched,
-        onFocusIdeationSessionForConversation,
-      });
-      toast.success("Proposal creation requested");
-    } catch (err) {
-      console.error("Failed to create proposals:", err);
-      toast.error("Failed to request proposal creation");
-    } finally {
-      setIsCreatingPlanProposals(false);
-    }
+          onFocusIdeationSessionForConversation,
+          runtimeOverride,
+          workspaceActivationCompleted,
+          onWorkspaceActivated: () => {
+            workspaceActivationCompleted = true;
+          },
+        });
+        toast.success("Proposal creation requested");
+      } catch (err) {
+        console.error("Failed to create proposals:", err);
+        toast.error("Failed to request proposal creation");
+        throw err;
+      } finally {
+        setIsCreatingPlanProposals(false);
+      }
+    });
   }, [
     activeWorkspace,
     canCreatePlanProposals,
@@ -2052,8 +2026,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     onFocusIdeationSessionForConversation,
     planApprovalSessionId,
     queryClient,
+    confirmCreateProposals,
   ]);
-  const handleImplementPlanDirectly = useCallback(async () => {
+  const handleImplementPlanDirectly = useCallback(() => {
     if (
       !planApprovalSessionId ||
       !activeWorkspace?.conversationId ||
@@ -2061,12 +2036,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ) {
       return;
     }
-    setIsImplementingPlanDirectly(true);
-    try {
-      if (activeWorkspace.mode !== "edit") {
+    let modeTransitionCompleted = activeWorkspace.mode === "edit";
+    void confirmImplementDirectly(async (runtimeOverride) => {
+      setIsImplementingPlanDirectly(true);
+      try {
+      if (!modeTransitionCompleted) {
         const result = await chatApi.switchAgentConversationMode({
           conversationId: activeWorkspace.conversationId,
           mode: "edit",
+          runtimeOverride,
         });
         if (result.workspace) {
           queryClient.setQueryData(
@@ -2083,7 +2061,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           queryClient,
           activeWorkspace.conversationId,
         );
-      } else {
+        modeTransitionCompleted = true;
+      } else if (activeWorkspace.mode === "edit") {
         onConversationModeSwitched(
           activeWorkspace.conversationId,
           "edit",
@@ -2099,29 +2078,43 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         undefined,
         {
           conversationId: activeWorkspace.conversationId,
-          providerHarness: workspaceSendRuntime.provider,
-          modelId: workspaceSendRuntime.modelId,
-          logicalEffort: workspaceSendRuntime.effort,
-          codexFastMode: activeCodexFastModeOption,
+          runtimeOverride,
           suppressUserMessage: true,
         },
       );
+      useAgentSessionStore.getState().setRuntimeForConversation(
+        activeWorkspace.conversationId,
+        activeProjectId,
+        {
+          provider: runtimeOverride.provider as "claude" | "codex",
+          modelId: runtimeOverride.model ?? workspaceSendRuntime.modelId,
+          effort: (runtimeOverride.effort ?? workspaceSendRuntime.effort) as typeof workspaceSendRuntime.effort,
+        },
+      );
+      useAgentSessionStore
+        .getState()
+        .setServiceTierForConversation(
+          activeWorkspace.conversationId,
+          runtimeOverride.serviceTier,
+        );
       toast.success("Implementation started");
-    } catch (err) {
+      } catch (err) {
       console.error("Failed to implement plan directly:", err);
       toast.error(err instanceof Error ? err.message : "Failed to start implementation");
-    } finally {
+        throw err;
+      } finally {
       setIsImplementingPlanDirectly(false);
-    }
+      }
+    });
   }, [
     activeProjectId,
     activeWorkspace,
-    activeCodexFastModeOption,
     canImplementPlanDirectly,
     onConversationModeSwitched,
     planApprovalSessionId,
     queryClient,
     workspaceSendRuntime,
+    confirmImplementDirectly,
   ]);
   const handleVerifyPlanFromComposer = useCallback(async () => {
     if (
@@ -2767,7 +2760,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     providerHarness: workspaceSendRuntime.provider,
                     modelId: workspaceSendRuntime.modelId,
                     logicalEffort: workspaceSendRuntime.effort,
-                    codexFastMode: activeCodexFastModeOption,
+                    codexFastMode: panelCodexFastModeOption,
                   },
                 }
               : {})}
@@ -3037,14 +3030,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         }
                       : {})}
                     {...(activeConversation.contextType === "project" &&
-                    composerProps.personaControl !== undefined
-                      ? {
-                          personaControl: (
-                            <MemoizedPersonaControl
-                              control={composerProps.personaControl}
-                            />
-                          ),
-                        }
+                    composerProps.persona !== undefined
+                      ? { persona: composerProps.persona }
+                      : activeConversation.contextType === "project" &&
+                          composerProps.personaControl !== undefined
+                        ? { personaControl: composerProps.personaControl }
                       : {})}
                     {...(composerProps.value !== undefined
                       ? {
@@ -3161,15 +3151,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             fastMode: {
                               visible:
                                 normalizedActiveRuntime.provider === "codex",
-                              value: selectableCodexFastMode,
-                              onValueChange: handleActiveCodexFastModeChange,
+                              value: activeServiceTier === "fast",
+                              onValueChange: (value) =>
+                                handleActiveServiceTierChange(
+                                  value ? "fast" : "standard",
+                                ),
                               disabled:
                                 !providerSettingsReady ||
                                 !codexFastModeAvailability.supported,
                               description:
                                 codexFastModeAvailability.reason ??
                                 CODEX_FAST_MODE_DESCRIPTION,
-                              testId: "agents-conversation-codex-fast-mode",
                             },
                             onOpenModelSettings: () =>
                               openModal("settings", { section: "models" }),
@@ -3186,6 +3178,44 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             disabled: Boolean(workspaceProviderStatusMessage),
                             testId: "agents-conversation-effort",
                           },
+                          ...(normalizedActiveRuntime.provider === "codex"
+                            ? {
+                                speed: {
+                                  value: activeServiceTier,
+                                  onValueChange: handleActiveServiceTierChange,
+                                  options: [
+                                    {
+                                      id: "provider_default",
+                                      label: "Provider default",
+                                      description:
+                                        "Use the service tier configured for Codex.",
+                                    },
+                                    {
+                                      id: "standard",
+                                      label: "Standard",
+                                      description: "Use standard processing.",
+                                    },
+                                    {
+                                      id: "fast",
+                                      label: "Fast",
+                                      description:
+                                        codexFastModeAvailability.reason ??
+                                        CODEX_FAST_MODE_DESCRIPTION,
+                                      ...(!providerSettingsReady ||
+                                      !codexFastModeAvailability.supported
+                                        ? {
+                                            disabled: true,
+                                            disabledReason:
+                                              codexFastModeAvailability.reason ??
+                                              "Fast processing is unavailable.",
+                                          }
+                                        : {}),
+                                    },
+                                  ],
+                                  testId: "agents-conversation-speed",
+                                },
+                              }
+                            : {}),
                         };
                       }
                       // Child chat: use the focused session's actual runtime
@@ -3321,6 +3351,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         setDockElement={setTerminalChatDockElement}
       />
       <ConfirmationDialog {...confirmationDialogProps} />
+      <PlanContinuationDialog {...planContinuationDialogProps} />
     </div>
   );
 });

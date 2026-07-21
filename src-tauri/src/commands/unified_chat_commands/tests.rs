@@ -6919,6 +6919,7 @@ async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -6980,6 +6981,7 @@ async fn switching_to_edit_without_existing_workspace_creates_workspace() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7047,6 +7049,7 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
                 base_ref_name: Some("main".to_string()),
                 head_ref_oid: Some(source_sha.clone()),
             }),
+            runtime_override: None,
         },
         &state,
     )
@@ -7162,6 +7165,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7180,6 +7184,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         ModeSwitchInitiator::User,
@@ -7297,6 +7302,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7370,6 +7376,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7442,6 +7449,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7504,6 +7512,7 @@ async fn switching_agent_mode_preserves_provider_session_for_native_resume() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )

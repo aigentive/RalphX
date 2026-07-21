@@ -5,10 +5,10 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
-    ProjectId,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -30,6 +30,63 @@ fn pr_review_action(
         None,
         Some(format!("run-{head_sha}")),
     )
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-fixer-claim");
+    let artifact_id = ArtifactId::from_string("artifact-fixer-claim");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-claim".to_string(),
+        artifact_id,
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-claim".to_string(),
+    };
+
+    let claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-one",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("claim should succeed")
+        .expect("exact snapshot should win");
+    assert_eq!(claimed.review_fixer_status.as_deref(), Some("routing"));
+    assert_eq!(
+        claimed.review_fixer_attempt_id.as_deref(),
+        Some("attempt-one")
+    );
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-two",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("losing claim should be a clean rejection")
+        .is_none());
 }
 
 #[tokio::test]

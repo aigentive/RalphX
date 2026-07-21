@@ -50,6 +50,29 @@ import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+const { approvedPlanRuntime } = vi.hoisted(() => ({
+  approvedPlanRuntime: {
+    provider: "claude",
+    model: "opus",
+    effort: "high",
+    serviceTier: "provider_default",
+    coordinationMode: "solo",
+    personaId: null,
+  } as const,
+}));
+
+vi.mock("./useApprovedPlanContinuation", () => ({
+  useApprovedPlanContinuation: () => ({
+    confirmImplementDirectly: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime),
+    confirmCreateProposals: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime),
+    confirmationDialogProps: {},
+    ConfirmationDialog: () => null,
+  }),
+}));
 const initialPlanStoreActions = {
   loadActivePlan: usePlanStore.getState().loadActivePlan,
   setActivePlan: usePlanStore.getState().setActivePlan,
@@ -282,11 +305,43 @@ vi.mock("@/api/chat", async (importOriginal) => {
 vi.mock("./useWorkspaceReviewActions", () => ({
   useWorkspaceReviewActions: ({
     onStartReview,
+    onStartFixer,
   }: {
     onStartReview: (input: { force: boolean }) => Promise<unknown>;
+    onStartFixer: (input: {
+      confirmation: {
+        targetScope: string;
+        diffFingerprint: string;
+        artifactId: string;
+        artifactVersion: number;
+        blockingFingerprint: string;
+      };
+      runtimeOverride: typeof approvedPlanRuntime;
+    }) => Promise<unknown>;
   }) => ({
     startReview: (force: boolean) => {
       void onStartReview({ force }).catch(() => undefined);
+    },
+    startFixer: (context: AgentWorkspaceReviewContext) => {
+      const { target, monitor } = context;
+      if (
+        !target ||
+        !monitor.reviewArtifactId ||
+        !monitor.reviewArtifactVersion ||
+        !monitor.reviewBlockingFingerprint
+      ) {
+        return;
+      }
+      void onStartFixer({
+        confirmation: {
+          targetScope: target.scope,
+          diffFingerprint: target.diffFingerprint,
+          artifactId: monitor.reviewArtifactId,
+          artifactVersion: monitor.reviewArtifactVersion,
+          blockingFingerprint: monitor.reviewBlockingFingerprint,
+        },
+        runtimeOverride: approvedPlanRuntime,
+      }).catch(() => undefined);
     },
     confirmationDialogProps: {},
     ConfirmationDialog: () => null,
@@ -1048,6 +1103,7 @@ function workspaceReviewContext(
     reviewArtifactVersion?: number | null;
     reviewConversationId?: string | null;
     reviewBlockingSummary?: string | null;
+    reviewBlockingFingerprint?: string | null;
     reviewFixerStatus?: string | null;
     reviewFixerRunId?: string | null;
     reviewFixerConversationId?: string | null;
@@ -1123,7 +1179,11 @@ function workspaceReviewContext(
       reviewGateBypassedArtifactVersion:
         overrides.reviewGateBypassedArtifactVersion ?? null,
       reviewBlockingSummary: overrides.reviewBlockingSummary ?? null,
-      reviewBlockingFingerprint: null,
+      reviewBlockingFingerprint:
+        overrides.reviewBlockingFingerprint ??
+        (overrides.reviewOutcome === "blocking"
+          ? "blocking-fingerprint-1"
+          : null),
       reviewFixerStatus: overrides.reviewFixerStatus ?? null,
       reviewFixerRunId: overrides.reviewFixerRunId ?? null,
       reviewFixerConversationId: overrides.reviewFixerConversationId ?? null,
@@ -3717,6 +3777,16 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(startWorkspaceReviewFixerMock).toHaveBeenCalledWith(
         "conversation-1",
+        {
+          confirmation: {
+            targetScope: "selected_source",
+            diffFingerprint: "fingerprint-351",
+            artifactId: "review-artifact-1",
+            artifactVersion: 2,
+            blockingFingerprint: "blocking-fingerprint-1",
+          },
+          runtimeOverride: approvedPlanRuntime,
+        },
       ),
     );
     await waitFor(() =>
@@ -6012,6 +6082,7 @@ describe("AgentsArtifactPane", () => {
       expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         sessionId: "session-1",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     await waitFor(() =>
@@ -6019,6 +6090,9 @@ describe("AgentsArtifactPane", () => {
         "ideation",
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
+        undefined,
+        undefined,
+        { runtimeOverride: approvedPlanRuntime },
       ),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
@@ -6072,6 +6146,9 @@ describe("AgentsArtifactPane", () => {
         "ideation",
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
+        undefined,
+        undefined,
+        undefined,
       ),
     );
   });
@@ -7563,6 +7640,7 @@ describe("AgentsArtifactPane", () => {
       expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         mode: "edit",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     await waitFor(() =>
@@ -7574,6 +7652,7 @@ describe("AgentsArtifactPane", () => {
         undefined,
         {
           conversationId: "conversation-1",
+          runtimeOverride: approvedPlanRuntime,
           suppressUserMessage: true,
         },
       ),

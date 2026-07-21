@@ -33,17 +33,17 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer,
+    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer_with_override,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
-    AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
 };
 use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
-    start_guarded_agent_workspace_review, WorkspaceReviewStartConfirmation,
-    WorkspaceReviewStartOrigin,
+    start_guarded_agent_workspace_review, start_guarded_agent_workspace_review_with_runtime_override,
+    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
 };
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
@@ -55,6 +55,9 @@ use crate::application::publish_resilience::{
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
 use crate::application::{AppState, ChatService, GitService};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
+};
 use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
@@ -717,12 +720,15 @@ pub struct AgentWorkspaceReviewContextQuery {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartAgentWorkspaceReviewRequest {
     pub force: Option<bool>,
     pub confirmation: Option<StartAgentWorkspaceReviewConfirmationRequest>,
+    pub runtime_override: Option<ManualRoleRuntimeOverrideRequest>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub target_scope: Option<String>,
     pub diff_fingerprint: Option<String>,
@@ -732,6 +738,66 @@ pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub merge_method: Option<String>,
     #[serde(default)]
     pub restore_after_publish: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualRoleRuntimeOverrideRequest {
+    pub provider: AgentHarnessKind,
+    pub model: Option<String>,
+    pub effort: Option<LogicalEffort>,
+    pub service_tier: ManualServiceTier,
+    pub coordination_mode: Option<crate::domain::entities::CoordinationMode>,
+    pub persona_id: Option<String>,
+}
+
+impl From<ManualRoleRuntimeOverrideRequest> for ManualRoleRuntimeOverride {
+    fn from(value: ManualRoleRuntimeOverrideRequest) -> Self {
+        Self {
+            harness: value.provider,
+            model: value.model,
+            effort: value.effort,
+            service_tier: value.service_tier,
+            coordination_mode: value.coordination_mode,
+            persona_id: value.persona_id.map(crate::domain::entities::PersonaId::from_string),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartAgentWorkspaceReviewFixerRequest {
+    pub confirmation: StartAgentWorkspaceReviewFixerConfirmationRequest,
+    pub runtime_override: Option<ManualRoleRuntimeOverrideRequest>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartAgentWorkspaceReviewFixerConfirmationRequest {
+    pub target_scope: String,
+    pub diff_fingerprint: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub blocking_fingerprint: String,
+}
+
+impl TryFrom<StartAgentWorkspaceReviewFixerConfirmationRequest>
+    for WorkspaceReviewFixerConfirmation
+{
+    type Error = AppError;
+
+    fn try_from(
+        value: StartAgentWorkspaceReviewFixerConfirmationRequest,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            target_scope: AgentWorkspaceReviewTargetScope::from_str(&value.target_scope)
+                .map_err(AppError::Validation)?,
+            diff_fingerprint: value.diff_fingerprint,
+            artifact_id: value.artifact_id,
+            artifact_version: value.artifact_version,
+            blocking_fingerprint: value.blocking_fingerprint,
+        })
+    }
 }
 
 impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest> for WorkspaceReviewStartConfirmation {
@@ -1369,12 +1435,14 @@ pub async fn start_agent_workspace_review_run(
         .map_err(workspace_review_action_error)?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let start = start_guarded_agent_workspace_review(
+    let runtime_override = req.runtime_override.map(ManualRoleRuntimeOverride::from);
+    let start = start_guarded_agent_workspace_review_with_runtime_override(
         std::sync::Arc::clone(&state.app_state),
         &workspace,
         force,
         WorkspaceReviewStartOrigin::Manual,
         confirmation.as_ref(),
+        runtime_override.as_ref(),
     )
     .await
     .map_err(workspace_review_action_error)?;
@@ -1435,13 +1503,22 @@ pub async fn start_agent_workspace_review_run(
 pub async fn start_agent_workspace_review_fixer_run(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
+    Json(req): Json<StartAgentWorkspaceReviewFixerRequest>,
 ) -> Result<Json<StartAgentWorkspaceReviewFixerResponse>, JsonError> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let start = start_agent_workspace_review_blocking_fixer(state.app_state.as_ref(), &workspace)
-        .await
+    let confirmation = WorkspaceReviewFixerConfirmation::try_from(req.confirmation)
         .map_err(workspace_review_action_error)?;
+    let runtime_override = req.runtime_override.map(ManualRoleRuntimeOverride::from);
+    let start = start_agent_workspace_review_blocking_fixer_with_override(
+        state.app_state.as_ref(),
+        &workspace,
+        Some(&confirmation),
+        runtime_override.as_ref(),
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
     let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
     let diff_fingerprint = compact_workspace_review_log_fingerprint(
         start

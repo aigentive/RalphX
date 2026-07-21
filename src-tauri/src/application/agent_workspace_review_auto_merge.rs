@@ -7,7 +7,8 @@ use tracing::warn;
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_review::{
     apply_current_target_to_monitor, load_or_create_monitor, resolve_review_target,
-    start_agent_workspace_review, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    start_agent_workspace_review_with_runtime_override, AgentWorkspaceReviewStart,
+    AgentWorkspaceReviewTarget,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -138,6 +139,25 @@ pub async fn start_guarded_agent_workspace_review(
     origin: WorkspaceReviewStartOrigin,
     confirmation: Option<&WorkspaceReviewStartConfirmation>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    start_guarded_agent_workspace_review_with_runtime_override(
+        state,
+        workspace,
+        force,
+        origin,
+        confirmation,
+        None,
+    )
+    .await
+}
+
+pub async fn start_guarded_agent_workspace_review_with_runtime_override(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+    origin: WorkspaceReviewStartOrigin,
+    confirmation: Option<&WorkspaceReviewStartConfirmation>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewStart> {
     let preview = match origin {
         WorkspaceReviewStartOrigin::Manual => {
             let manual_preview =
@@ -160,7 +180,13 @@ pub async fn start_guarded_agent_workspace_review(
         }
     };
     let Some(preview) = preview else {
-        let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
+        let start = start_agent_workspace_review_with_runtime_override(
+            Arc::clone(&state),
+            workspace,
+            force,
+            runtime_override,
+        )
+        .await?;
         return settle_skipped_guarded_workspace_review_start(
             state.as_ref(),
             workspace,
@@ -187,7 +213,13 @@ pub async fn start_guarded_agent_workspace_review(
                         .to_string(),
                 ));
             }
-            let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
+            let start = start_agent_workspace_review_with_runtime_override(
+                Arc::clone(&state),
+                workspace,
+                force,
+                runtime_override,
+            )
+            .await?;
             return settle_skipped_guarded_workspace_review_start(
                 state.as_ref(),
                 workspace,
@@ -296,7 +328,13 @@ pub async fn start_guarded_agent_workspace_review(
     )
     .await;
 
-    let started = start_agent_workspace_review(Arc::clone(&state), workspace, force).await;
+    let started = start_agent_workspace_review_with_runtime_override(
+        Arc::clone(&state),
+        workspace,
+        force,
+        runtime_override,
+    )
+    .await;
     match started {
         Ok(start) if start.started => Ok(start),
         Ok(start) => {

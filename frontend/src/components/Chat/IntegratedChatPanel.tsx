@@ -109,7 +109,8 @@ import {
   type ChatAttachment as PendingChatAttachment,
 } from "@/hooks/useChatAttachments";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useSwitchConversationPersona } from "@/hooks/usePersonas";
+import { usePersonas, useSwitchConversationPersona } from "@/hooks/usePersonas";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { usePersonaRunEvents } from "@/hooks/usePersonaRunEvents";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
@@ -137,6 +138,8 @@ import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNaviga
 import { ChildSessionTranscriptModal } from "./ChildSessionTranscriptModal";
 import { cn } from "@/lib/utils";
 import { PersonaChip } from "./PersonaChip";
+import type { ComposerRuntimePersonaField } from "@/components/agents/composer/runtime/runtimeSelectorTypes";
+import { toast } from "sonner";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
@@ -312,6 +315,8 @@ export interface IntegratedChatComposerRenderProps {
   providerHarness?: string | null | undefined;
   /** Conversation persona confirmation for host-owned composer surfaces. */
   personaControl?: React.ReactNode;
+  /** Native runtime-picker persona field for Agent composer surfaces. */
+  persona?: ComposerRuntimePersonaField;
 }
 
 export function IntegratedChatPanel({
@@ -351,6 +356,12 @@ export function IntegratedChatPanel({
   const { data: featureFlags } = useFeatureFlags();
   const openModal = useUiStore((s) => s.openModal);
   const switchConversationPersona = useSwitchConversationPersona();
+  const { data: personas = [] } = usePersonas();
+  const {
+    confirm: confirmPersonaChange,
+    confirmationDialogProps: personaConfirmationDialogProps,
+    ConfirmationDialog: PersonaConfirmationDialog,
+  } = useConfirmation();
   const pollStartRef = useRef<number | null>(null);
   const personaRetryAttemptRef = useRef<PersonaRetryAttempt | null>(null);
   const [personaUnavailableError, setPersonaUnavailableError] = useState<
@@ -1576,6 +1587,80 @@ export function IntegratedChatPanel({
     featureFlags.agentPersonas === true &&
     activeConversationMeta?.agentMode !== "persona_builder" &&
     effectiveConversationId !== null;
+  const activePersonaOptions = useMemo(
+    () => [
+      {
+        id: "__no_persona__",
+        label: "No persona",
+        description: "Use the conversation's normal agent instructions.",
+      },
+      ...personas
+        .filter(
+          (persona) =>
+            persona.status === "active" &&
+            (persona.projectId === null || persona.projectId === projectId),
+        )
+        .map((persona) => ({
+          id: persona.id,
+          label: persona.name,
+          description:
+            persona.projectId === null ? "Global persona" : "Project persona",
+        })),
+    ],
+    [personas, projectId],
+  );
+  const selectComposerPersona = useCallback(
+    async (nextValue: string) => {
+      if (!effectiveConversationId || switchConversationPersona.isPending) return;
+      const nextPersonaId = nextValue === "__no_persona__" ? null : nextValue;
+      if (nextPersonaId === (activeConversationMeta?.personaId ?? null)) return;
+      if (isAgentRunning) {
+        const confirmed = await confirmPersonaChange({
+          title: "Change persona?",
+          description:
+            "Changing the persona stops the current run. Conversation history is preserved and the next message resumes the same session.",
+          confirmText: "Change persona",
+        });
+        if (!confirmed) return;
+      }
+      try {
+        await switchConversationPersona.mutateAsync({
+          conversationId: effectiveConversationId,
+          personaId: nextPersonaId,
+        });
+      } catch (error) {
+        toast.error(
+          extractErrorMessage(error, "Could not change the conversation persona."),
+        );
+      }
+    },
+    [
+      activeConversationMeta?.personaId,
+      confirmPersonaChange,
+      effectiveConversationId,
+      isAgentRunning,
+      switchConversationPersona,
+    ],
+  );
+  const composerPersona: ComposerRuntimePersonaField | undefined =
+    showPersonaChip
+      ? {
+          value: activeConversationMeta?.personaId ?? "__no_persona__",
+          onValueChange: selectComposerPersona,
+          options: activePersonaOptions,
+          disabled: switchConversationPersona.isPending,
+          testId: "agent-composer-persona",
+          footerAction: (
+            <button
+              type="button"
+              className="w-full rounded px-2 py-1.5 text-left text-xs font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)]"
+              onClick={() => openModal("settings", { section: "personas" })}
+            >
+              Manage personas
+            </button>
+          ),
+        }
+      : undefined;
   const personaChip =
     showPersonaChip && effectiveConversationId ? (
       <PersonaChip
@@ -1781,7 +1866,7 @@ export function IntegratedChatPanel({
               {...(effectiveModel !== undefined
                 ? { modelDisplay: effectiveModel }
                 : {})}
-              {...(personaChip !== undefined
+              {...(!renderComposer && personaChip !== undefined
                 ? {
                     personaChip,
                   }
@@ -2070,8 +2155,8 @@ export function IntegratedChatPanel({
                           activeConversationMeta?.providerHarness ??
                           fallbackProviderHarness ??
                           null,
-                        ...(personaChip !== undefined
-                          ? { personaControl: personaChip }
+                        ...(composerPersona !== undefined
+                          ? { persona: composerPersona }
                           : {}),
                         ...(activeQuestion
                           ? {
@@ -2148,6 +2233,7 @@ export function IntegratedChatPanel({
           </ChildSessionNavigationContext.Provider>
         </div>
       </div>
+      <PersonaConfirmationDialog {...personaConfirmationDialogProps} />
     </>
   );
 }

@@ -7,8 +7,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -31,6 +32,62 @@ fn setup_repo() -> (
     seed_conversation(&db, &conversation_id);
     let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
     (db, repo, conversation_id)
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-claim");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-claim".to_string(),
+        artifact_id,
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-claim".to_string(),
+    };
+
+    let claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-one",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .expect("exact snapshot should win");
+    assert_eq!(
+        claimed.review_fixer_attempt_id.as_deref(),
+        Some("attempt-one")
+    );
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-two",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .is_none());
 }
 
 fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {

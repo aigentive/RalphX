@@ -568,6 +568,8 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_run_id: Option<String>,
     pub review_fixer_conversation_id: Option<ChatConversationId>,
     pub review_fixer_status: Option<String>,
+    /// Backend-owned identity for the exact blocker repair reservation.
+    pub review_fixer_attempt_id: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
@@ -613,6 +615,7 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_run_id: None,
             review_fixer_conversation_id: None,
             review_fixer_status: None,
+            review_fixer_attempt_id: None,
             last_run_id: None,
             last_error: None,
             auto_merge_guard: None,
@@ -697,6 +700,15 @@ pub struct AgentWorkspaceReviewApprovalSnapshot {
     pub diff_fingerprint: String,
     pub artifact_id: ArtifactId,
     pub artifact_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewFixerSnapshot {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+    pub blocking_fingerprint: String,
 }
 
 impl AgentWorkspaceReviewApprovalSnapshot {

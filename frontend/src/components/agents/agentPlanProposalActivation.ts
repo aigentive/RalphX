@@ -6,6 +6,7 @@ import {
   type AgentConversationWorkspaceMode,
   type SendAgentMessageResult,
 } from "@/api/chat";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -34,6 +35,9 @@ interface ActivateAgentPlanProposalsParams {
     conversationId: string,
     sessionId: string
   ) => void;
+  runtimeOverride?: ManualRoleRuntimeSelection;
+  workspaceActivationCompleted?: boolean;
+  onWorkspaceActivated?: () => void;
 }
 
 function pinIdeationConversation(
@@ -60,24 +64,29 @@ export async function activateAgentPlanProposals({
   canPromoteWorkspace,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
+  runtimeOverride,
+  workspaceActivationCompleted = false,
+  onWorkspaceActivated,
 }: ActivateAgentPlanProposalsParams): Promise<SendAgentMessageResult> {
   const conversationId = workspace?.conversationId ?? null;
   const ownsSession =
     Boolean(conversationId) &&
     (workspace?.taskPipelineSessionId === sessionId ||
       workspace?.linkedIdeationSessionId === sessionId);
-  let workspaceIsTasks = workspace?.mode === "tasks";
+  let workspaceIsTasks = workspaceActivationCompleted || workspace?.mode === "tasks";
 
   if (
     canPromoteWorkspace &&
     ownsSession &&
     workspace &&
+    !workspaceActivationCompleted &&
     workspace.mode !== "tasks" &&
     conversationId
   ) {
     const activatedWorkspace = await chatApi.activateAgentTaskPipeline({
       conversationId,
       sessionId,
+      ...(runtimeOverride ? { runtimeOverride } : {}),
     });
     queryClient.setQueryData(
       agentWorkspaceKeys.workspace(conversationId),
@@ -90,6 +99,7 @@ export async function activateAgentPlanProposals({
     );
     void invalidateWorkspaceQueries(queryClient, conversationId);
     workspaceIsTasks = activatedWorkspace.mode === "tasks";
+    if (workspaceIsTasks) onWorkspaceActivated?.();
   } else if (ownsSession && workspaceIsTasks && conversationId) {
     onConversationModeSwitched?.(conversationId, "tasks", workspace);
   }
@@ -102,6 +112,9 @@ export async function activateAgentPlanProposals({
     "ideation",
     sessionId,
     PLAN_TO_PROPOSALS_REQUEST,
+    undefined,
+    undefined,
+    runtimeOverride ? { runtimeOverride } : undefined,
   );
   pinIdeationConversation(queryClient, sessionId, sendResult.conversationId);
   return sendResult;

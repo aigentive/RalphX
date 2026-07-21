@@ -107,6 +107,29 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
 }));
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+const { approvedPlanRuntime } = vi.hoisted(() => ({
+  approvedPlanRuntime: {
+    provider: "claude",
+    model: "opus",
+    effort: "high",
+    serviceTier: "provider_default",
+    coordinationMode: "solo",
+    personaId: null,
+  } as const,
+}));
+
+vi.mock("./useApprovedPlanContinuation", () => ({
+  useApprovedPlanContinuation: () => ({
+    confirmImplementDirectly: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime),
+    confirmCreateProposals: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime),
+    confirmationDialogProps: {},
+    ConfirmationDialog: () => null,
+  }),
+}));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
@@ -1398,7 +1421,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
     rerenderPanel({ publishingConversationId: "another-conversation" });
 
-    expect(CountingPersonaControl).toHaveBeenCalledOnce();
+    expect(CountingPersonaControl).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
@@ -3329,12 +3352,16 @@ describe("AgentsActiveConversationPanel", () => {
       expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         sessionId: "planning-session-1",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "ideation",
       "planning-session-1",
       expect.stringContaining("Create implementation task proposals"),
+      undefined,
+      undefined,
+      { runtimeOverride: approvedPlanRuntime },
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
@@ -3848,6 +3875,7 @@ describe("AgentsActiveConversationPanel", () => {
       expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         mode: "edit",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
@@ -3858,10 +3886,7 @@ describe("AgentsActiveConversationPanel", () => {
       undefined,
       {
         conversationId: "conversation-1",
-        providerHarness: "codex",
-        modelId: "gpt-5.5",
-        logicalEffort: "high",
-        codexFastMode: false,
+        runtimeOverride: approvedPlanRuntime,
         suppressUserMessage: true,
       },
     );
@@ -3990,7 +4015,7 @@ describe("AgentsActiveConversationPanel", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "high",
-          codexFastMode: false,
+          codexFastMode: null,
         },
       ),
     );

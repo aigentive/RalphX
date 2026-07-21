@@ -11,6 +11,15 @@ import {
 
 import { useWorkspaceReviewActions } from "./useWorkspaceReviewActions";
 
+const reviewerRuntime = {
+  provider: "claude",
+  model: "sonnet",
+  effort: "high",
+  serviceTier: "provider_default" as const,
+  coordinationMode: "solo" as const,
+  personaId: null,
+};
+
 vi.mock("@/api/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/chat")>();
   return {
@@ -21,6 +30,59 @@ vi.mock("@/api/chat", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    registry: {
+      claude: [
+        {
+          id: "sonnet",
+          label: "Sonnet",
+          menuLabel: "Sonnet",
+          defaultEffort: "high",
+          supportedEfforts: ["high"],
+        },
+      ],
+    },
+  }),
+}));
+
+vi.mock("@/hooks/usePersonas", () => ({
+  usePersonas: () => ({ data: [] }),
+}));
+
+vi.mock("@/api/manual-role-defaults", () => ({
+  manualRoleDefaultsApi: {
+    list: vi.fn().mockResolvedValue({
+      roles: [
+        {
+          role: "workspace_reviewer",
+          displayName: "Reviewer",
+          familyDisplayName: "Feedback Loops",
+          description: "Reviews local workspace changes.",
+          configured: null,
+          effective: {
+            provider: "claude",
+            model: "sonnet",
+            effort: "high",
+            serviceTier: "provider_default",
+            coordinationMode: "solo",
+            personaId: null,
+          },
+          source: "provider_default",
+          diagnostics: [],
+          controls: {
+            capabilities: [{ value: "solo", enabled: true, disabledReason: null }],
+            speeds: [
+              { value: "provider_default", enabled: true, disabledReason: null },
+            ],
+            persona: { enabled: false, disabledReason: null },
+          },
+        },
+      ],
+    }),
+  },
+}));
 
 function Harness({
   onStartReview,
@@ -33,7 +95,9 @@ function Harness({
   const { startReview, confirmationDialogProps, ConfirmationDialog } =
     useWorkspaceReviewActions({
       conversationId: "conversation-1",
+      projectId: "project-1",
       onStartReview,
+      onStartFixer: vi.fn(),
     });
   return (
     <>
@@ -93,6 +157,7 @@ describe("useWorkspaceReviewActions", () => {
       expect(onStartReview).toHaveBeenCalledWith({
         force: false,
         confirmation: preview.confirmation,
+        runtimeOverride: reviewerRuntime,
       });
     });
   });
@@ -150,7 +215,9 @@ describe("useWorkspaceReviewActions", () => {
     await user.click(screen.getByRole("button", { name: "Run review" }));
 
     const dialog = await screen.findByRole("alertdialog");
-    await user.click(within(dialog).getByRole("button", { name: "Start review" }));
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Start review" }),
+    );
 
     await waitFor(() => {
       expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(2);
@@ -167,6 +234,7 @@ describe("useWorkspaceReviewActions", () => {
       expect(onStartReview).toHaveBeenLastCalledWith({
         force: false,
         confirmation: refreshedPreview.confirmation,
+        runtimeOverride: reviewerRuntime,
       });
     });
   });
