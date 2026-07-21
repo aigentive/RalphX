@@ -234,85 +234,6 @@ async fn test_set_active_project_persists_when_project_changes() {
     assert_eq!(persisted, Some(project.id));
 }
 
-#[tokio::test]
-async fn resolve_recovery_prompt_rejects_progress_while_tasks_are_disabled() {
-    let app_state = AppState::new_test();
-    enable_tasks_for_progress(&app_state).await;
-    let project = app_state
-        .project_repo
-        .create(Project::new(
-            "Recovery policy project".into(),
-            "/tmp/recovery-policy-project".into(),
-        ))
-        .await
-        .unwrap();
-    let mut task = Task::new(project.id, "Interrupted execution".into());
-    task.internal_status = InternalStatus::Executing;
-    let task = app_state.task_repo.create(task).await.unwrap();
-    assert!(app_state
-        .ideation_settings_repo
-        .compare_and_set_tasks_feature_state(
-            crate::domain::ideation::TasksFeatureState::Enabled,
-            crate::domain::ideation::TasksFeatureState::Disabled,
-        )
-        .await
-        .unwrap());
-    let error = prepare_recovery_prompt_action(&task.id, "restart", &app_state)
-        .await
-        .expect_err("manual recovery progress must be rejected while Tasks are disabled");
-
-    assert!(error.starts_with("ralphx:tasks_disabled"));
-    assert_eq!(
-        app_state
-            .task_repo
-            .get_by_id(&task.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .internal_status,
-        InternalStatus::Executing
-    );
-}
-
-#[tokio::test]
-async fn recovery_prompt_preparation_validates_action_and_task_before_dispatch() {
-    let app_state = AppState::new_test();
-    let missing_id = TaskId::from_string("missing-recovery-task".to_string());
-
-    let error = prepare_recovery_prompt_action(&missing_id, "unexpected", &app_state)
-        .await
-        .expect_err("unknown recovery actions must be rejected");
-    assert_eq!(error, "Invalid recovery action");
-    assert!(
-        prepare_recovery_prompt_action(&missing_id, "restart", &app_state)
-            .await
-            .expect("a missing recovery task should be a non-error")
-            .is_none()
-    );
-
-    enable_tasks_for_progress(&app_state).await;
-    let project = app_state
-        .project_repo
-        .create(Project::new(
-            "Recovery action project".into(),
-            "/tmp/recovery-action-project".into(),
-        ))
-        .await
-        .unwrap();
-    let task = app_state
-        .task_repo
-        .create(Task::new(project.id, "Cancel interrupted execution".into()))
-        .await
-        .unwrap();
-
-    let (prepared_task, action) = prepare_recovery_prompt_action(&task.id, "cancel", &app_state)
-        .await
-        .expect("cancel preparation should succeed")
-        .expect("persisted task should be prepared");
-    assert_eq!(prepared_task.id, task.id);
-    assert_eq!(action, UserRecoveryAction::Cancel);
-}
-
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();
@@ -6654,7 +6575,6 @@ async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
     let error = restart_task(
         task.id.as_str().to_string(),
         false,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
