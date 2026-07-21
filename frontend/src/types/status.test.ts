@@ -72,15 +72,16 @@ describe("InternalStatusSchema", () => {
 });
 
 describe("Status Categories", () => {
-  it("should have 3 idle statuses", () => {
-    expect(IDLE_STATUSES.length).toBe(3);
+  it("should classify branch-update attention as idle/waiting", () => {
+    expect(IDLE_STATUSES.length).toBe(4);
     expect(IDLE_STATUSES).toContain("backlog");
     expect(IDLE_STATUSES).toContain("ready");
     expect(IDLE_STATUSES).toContain("blocked");
+    expect(IDLE_STATUSES).toContain("branch_update_blocked");
   });
 
-  it("should have 16 active statuses", () => {
-    expect(ACTIVE_STATUSES.length).toBe(16);
+  it("should have 14 active statuses", () => {
+    expect(ACTIVE_STATUSES.length).toBe(14);
     expect(ACTIVE_STATUSES).toContain("executing");
     expect(ACTIVE_STATUSES).toContain("re_executing");
     expect(ACTIVE_STATUSES).toContain("qa_refining");
@@ -93,19 +94,18 @@ describe("Status Categories", () => {
     expect(ACTIVE_STATUSES).toContain("pending_merge");
     expect(ACTIVE_STATUSES).toContain("merging");
     expect(ACTIVE_STATUSES).toContain("waiting_on_pr");
-    expect(ACTIVE_STATUSES).toContain("merge_incomplete");
     expect(ACTIVE_STATUSES).toContain("updating_plan_branch");
     expect(ACTIVE_STATUSES).toContain("updating_task_branch");
-    expect(ACTIVE_STATUSES).toContain("branch_update_blocked");
   });
 
-  it("should have 5 terminal statuses", () => {
-    expect(TERMINAL_STATUSES.length).toBe(5);
+  it("should classify merge-incomplete as terminal-like", () => {
+    expect(TERMINAL_STATUSES.length).toBe(6);
     expect(TERMINAL_STATUSES).toContain("approved");
     expect(TERMINAL_STATUSES).toContain("merged");
     expect(TERMINAL_STATUSES).toContain("failed");
     expect(TERMINAL_STATUSES).toContain("cancelled");
     expect(TERMINAL_STATUSES).toContain("stopped");
+    expect(TERMINAL_STATUSES).toContain("merge_incomplete");
   });
 
   it("should have no overlap between categories", () => {
@@ -196,6 +196,7 @@ describe("categorizeStatus", () => {
     expect(categorizeStatus("backlog")).toBe("idle");
     expect(categorizeStatus("ready")).toBe("idle");
     expect(categorizeStatus("blocked")).toBe("idle");
+    expect(categorizeStatus("branch_update_blocked")).toBe("idle");
   });
 
   it("should return 'done' for terminal statuses", () => {
@@ -204,6 +205,7 @@ describe("categorizeStatus", () => {
     expect(categorizeStatus("failed")).toBe("done");
     expect(categorizeStatus("cancelled")).toBe("done");
     expect(categorizeStatus("stopped")).toBe("done");
+    expect(categorizeStatus("merge_incomplete")).toBe("done");
   });
 
   it("should return 'active' for all other statuses", () => {
@@ -216,7 +218,6 @@ describe("categorizeStatus", () => {
     expect(categorizeStatus("qa_passed")).toBe("active");
     expect(categorizeStatus("merge_conflict")).toBe("active");
     expect(categorizeStatus("updating_plan_branch")).toBe("active");
-    expect(categorizeStatus("branch_update_blocked")).toBe("active");
   });
 });
 

@@ -18,6 +18,8 @@ use crate::application::git_artifact_cleanup::{
     LOCAL_CLEANUP_STATUS_FAILED_UNSAFE,
 };
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
+use crate::application::interactive_notification_producer::pr_review_notification_key;
+use crate::application::NotificationService;
 use crate::domain::entities::{
     AgentConversationWorkspaceStatus, ChatContextType, ChatConversationId, PlanBranch, Project,
 };
@@ -185,6 +187,46 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
         project,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn settle_review_pr_terminal_observation(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    chat_service: Option<Arc<dyn ChatService>>,
+    notification_service: Option<Arc<NotificationService>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    pr_number: i64,
+    status: &str,
+    summary: &str,
+) -> crate::AppResult<TerminalAgentWorkspaceOutcome> {
+    let settlement = workspace_repo
+        .settle_pr_review_terminal(conversation_id, pr_number, status, summary)
+        .await?;
+
+    if let Some(notification_service) = notification_service {
+        for action_id in settlement.superseded_action_ids {
+            notification_service
+                .resolve_workflow_notification(&pr_review_notification_key(
+                    conversation_id.as_str(),
+                    &action_id,
+                ))
+                .await;
+        }
+    }
+
+    Ok(terminalize_agent_workspace_after_pr(
+        workspace_repo,
+        agent_run_repo,
+        plan_branch_repo,
+        chat_service,
+        conversation_id,
+        project,
+        TerminalAgentWorkspaceCause::from_pr_status(status),
+    )
+    .await)
 }
 
 pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(

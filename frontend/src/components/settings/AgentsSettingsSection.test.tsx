@@ -21,6 +21,7 @@ const testState = vi.hoisted(() => ({
   saveError: null as unknown,
   isSaving: false,
   roles: [] as ManualRoleCatalogEntry[],
+  tasksFeatureState: "enabled" as "enabled" | "draining" | "disabled",
 }));
 
 vi.mock("./SettingsDialog.performance", () => ({
@@ -48,6 +49,17 @@ vi.mock("@/hooks/useManualRoleDefaults", () => ({
       clearDefaultAsync,
     };
   },
+}));
+
+vi.mock("@/hooks/useIdeationSettings", () => ({
+  useIdeationSettings: () => ({
+    settings: {
+      tasksEnabled: testState.tasksFeatureState === "enabled",
+      tasksFeatureState: testState.tasksFeatureState,
+    },
+    isLoading: false,
+    isError: false,
+  }),
 }));
 
 vi.mock("@/hooks/useAgentModels", () => ({
@@ -111,6 +123,7 @@ const roleFixtures: ManualRoleCatalogEntry[] = families.map(
     description: `Handles ${familyDisplayName.toLowerCase()} work.`,
     family,
     familyDisplayName,
+    requiresTasks: family === "execution",
     configured: index === 0 ? defaultValue : null,
     effective: defaultValue,
     source: index === 0 ? "global_ui" : "provider_default",
@@ -160,6 +173,7 @@ describe("AgentsSettingsSection", () => {
     testState.saveError = null;
     testState.isSaving = false;
     testState.roles = roleFixtures;
+    testState.tasksFeatureState = "enabled";
   });
 
   it("renders seven collapsed backend-returned family overviews without mounting role editors", () => {
@@ -189,6 +203,32 @@ describe("AgentsSettingsSection", () => {
     await waitFor(() => {
       expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
     });
+  });
+
+  it("hides Tasks-only execution roles without deleting their configured overrides", () => {
+    testState.tasksFeatureState = "disabled";
+    testState.roles = roleFixtures.map((role) =>
+      role.family === "execution" ? { ...role, configured: defaultValue } : role,
+    );
+
+    const { rerender } = renderSection();
+
+    expect(screen.queryByRole("button", { name: /^Execution/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId("tasks-required-roles-hidden-notice")).toHaveTextContent(
+      "Saved overrides are preserved",
+    );
+    expect(testState.roles.find((role) => role.family === "execution")?.configured)
+      .toEqual(defaultValue);
+
+    testState.tasksFeatureState = "enabled";
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <TooltipProvider>
+          <AgentsSettingsSection />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("button", { name: /^Execution/ })).toBeInTheDocument();
   });
 
   it("opens a family into compact role summaries and mounts controls only after role disclosure", async () => {

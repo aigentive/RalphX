@@ -826,7 +826,7 @@ export function AgentReviewPanel({
                 <span style={{ color: "var(--text-secondary)" }}>
                   {prReviewMonitor.monitorEnabled
                     ? "Monitoring new PR heads"
-                    : "Monitoring paused"}
+                    : "New-head reviews paused · PR lifecycle still monitored"}
                 </span>
                 <Button
                   type="button"

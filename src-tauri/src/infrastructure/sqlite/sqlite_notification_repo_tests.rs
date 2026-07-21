@@ -46,6 +46,32 @@ async fn sqlite_notification_repo_dedupes_and_prunes_with_shared_fixture() {
 }
 
 #[tokio::test]
+async fn sqlite_prune_keeps_actionable_plan_approval_but_removes_it_after_settlement() {
+    let db = SqliteTestDb::new("sqlite-notification-protected-plan");
+    let repo = SqliteNotificationRepository::from_shared(db.shared_conn());
+    let now = Utc::now();
+    let mut approval = notification("plan:session-1:artifact-1", now - Duration::days(40));
+    approval.category = NotificationCategory::PlanApproval;
+    let newest = notification("newest-task", now);
+    repo.create_with_dedupe(approval.clone()).await.unwrap();
+    repo.create_with_dedupe(newest.clone()).await.unwrap();
+
+    repo.prune(now - Duration::days(30), 1).await.unwrap();
+    let retained = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(retained.iter().any(|row| row.id == approval.id));
+    assert!(retained.iter().any(|row| row.id == newest.id));
+
+    repo.mark_read(&approval.id, now - Duration::days(35))
+        .await
+        .unwrap();
+    repo.prune(now - Duration::days(30), 1).await.unwrap();
+    let retained = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(retained.iter().all(|row| row.id != approval.id));
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, newest.id);
+}
+
+#[tokio::test]
 async fn sqlite_notification_repo_marks_only_the_exact_dedupe_key_once() {
     let db = SqliteTestDb::new("sqlite-notification-exact-key");
     let repo = SqliteNotificationRepository::from_shared(db.shared_conn());

@@ -188,6 +188,20 @@ pub(super) struct ArtifactMutationAuthority {
     conversation_id: String,
 }
 
+impl ArtifactMutationAuthority {
+    fn plan_approval_authority(
+        &self,
+    ) -> Option<crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority>
+    {
+        Some(
+            crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
+                self.agent_run_id.parse().ok()?,
+                self.conversation_id.parse().ok()?,
+            ),
+        )
+    }
+}
+
 pub(super) fn resolve_artifact_mutation_authority(
     headers: &axum::http::HeaderMap,
 ) -> Option<ArtifactMutationAuthority> {
@@ -211,66 +225,17 @@ pub(super) async fn reconcile_plan_notifications(
     prior_artifact_id: Option<&str>,
     current_artifact: &Artifact,
     sessions: &[IdeationSession],
+    mutation_authority: Option<&ArtifactMutationAuthority>,
 ) {
-    let resolver =
-        crate::application::NotificationContextResolver::from_app_state(&state.app_state);
-    for session in sessions
-        .iter()
-        .filter(|session| session.session_flow == IdeationSessionFlow::Planning)
-    {
-        if let Some(prior_artifact_id) = prior_artifact_id {
-            state
-                .app_state
-                .notification_service()
-                .resolve_workflow_notification(
-                    &crate::application::interactive_notification_producer::plan_notification_key(
-                        session.id.as_str(),
-                        prior_artifact_id,
-                    ),
-                )
-                .await;
-        }
-        let excluded = match resolver.session_is_automation_owned(session).await {
-            Ok(true) => true,
-            Ok(false) => match resolver.session_has_implementation_task(session).await {
-                Ok(has_task) => has_task,
-                Err(error) => {
-                    tracing::warn!(error = %error, session_id = %session.id, "Failed to check implementation ownership for plan notification");
-                    true
-                }
-            },
-            Err(error) => {
-                tracing::warn!(error = %error, session_id = %session.id, "Failed to check automation ownership for plan notification");
-                true
-            }
-        };
-        if excluded {
-            continue;
-        }
-        match resolver.resolve_ideation_session_target(session).await {
-            Ok(resolved) if resolved.target.kind != NotificationTargetKind::None => {
-                state
-                    .app_state
-                    .notification_service()
-                    .record(
-                        crate::application::interactive_notification_producer::InteractiveNotificationProducer::plan_approval(
-                            session.project_id.to_string(),
-                            session.id.as_str(),
-                            current_artifact.id.as_str(),
-                            session.title.as_deref(),
-                            resolved.target,
-                        ),
-                    )
-                    .await;
-            }
-            Ok(_) => {
-                tracing::warn!(session_id = %session.id, "Skipped plan notification without a navigable target")
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, session_id = %session.id, "Failed to resolve plan notification target")
-            }
-        }
-    }
+    let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
+    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
+        &state.app_state,
+        prior_artifact_id,
+        current_artifact.id.as_str(),
+        sessions,
+        publish_authority.as_ref(),
+    )
+    .await;
 }
 
 #[doc(hidden)]

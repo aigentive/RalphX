@@ -312,8 +312,11 @@ impl DiffService {
     ///
     /// Old = committed HEAD version; New = staged (index) version.
     pub fn get_staged_file_diff(&self, file_path: &str, project_path: &str) -> AppResult<FileDiff> {
-        let raw_diff = run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
-            .unwrap_or_default();
+        validate_diff_file_path(file_path)?;
+        let raw_diff = run_git_text(
+            project_path,
+            &["diff", "--no-ext-diff", "--cached", "HEAD", "--", file_path],
+        )?;
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -340,7 +343,8 @@ impl DiffService {
         file_path: &str,
         project_path: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff = run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        validate_diff_file_path(file_path)?;
+        let raw_diff = run_git_text(project_path, &["diff", "--no-ext-diff", "--", file_path])?;
         if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
             return self.get_untracked_file_diff(file_path, project_path);
         }
@@ -442,6 +446,7 @@ impl DiffService {
         project_path: &str,
         base_branch: &str,
     ) -> AppResult<FileDiff> {
+        validate_diff_file_path(file_path)?;
         let raw_diff =
             run_git_text(project_path, &["diff", base_branch, "--", file_path]).unwrap_or_default();
         if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
@@ -616,8 +621,11 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff = run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
-            .unwrap_or_default();
+        validate_diff_file_path(file_path)?;
+        let raw_diff = run_git_text(
+            project_path,
+            &["diff", "--no-ext-diff", from_ref, to_ref, "--", file_path],
+        )?;
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -812,9 +820,11 @@ impl DiffService {
     }
 
     fn count_lines_on_disk(project_path: &str, file_path: &str) -> u32 {
-        let full_path = std::path::Path::new(project_path).join(file_path);
-        std::fs::read_to_string(&full_path)
-            .map(|c| c.lines().count() as u32)
+        read_validated_worktree_file_bytes(project_path, file_path)
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|content| content.lines().count() as u32)
             .unwrap_or(0)
     }
 
@@ -1491,6 +1501,44 @@ fn validated_worktree_file_path(project_path: &str, file_path: &str) -> AppResul
         ))
     })?;
     Ok(canonical_parent.join(file_name))
+}
+
+pub(crate) fn validate_worktree_diff_file_containment(
+    project_path: &str,
+    file_path: &str,
+) -> AppResult<()> {
+    let file_path = validated_worktree_file_path(project_path, file_path)?;
+    let metadata = match std::fs::symlink_metadata(&file_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::Infrastructure(format!(
+                "Failed to inspect diff file {}: {error}",
+                file_path.display()
+            )));
+        }
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    let canonical_root = Path::new(project_path).canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to canonicalize workspace root {project_path}: {error}"
+        ))
+    })?;
+    let canonical_target = file_path.canonicalize().map_err(|error| {
+        AppError::Validation(format!(
+            "Diff symlink target is unavailable for {}: {error}",
+            file_path.display()
+        ))
+    })?;
+    if !canonical_target.starts_with(canonical_root) {
+        return Err(AppError::Validation(format!(
+            "Diff symlink target escapes workspace root: {}",
+            file_path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn read_validated_worktree_file_bytes(

@@ -12,6 +12,7 @@
 import { useState } from "react";
 import { ShieldCheck, ChevronDown, ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { useUiStore } from "@/stores/uiStore";
 import type { ExternalIdeationOverrides } from "@/types/ideation-config";
 import { SectionCard } from "./SettingsView.shared";
@@ -210,15 +212,51 @@ export function IdeationSettingsContent({
   surface,
   embedded = false,
 }: IdeationSettingsContentProps) {
-  const { settings, updateSettings, isLoading, isUpdating, updateError } = controller;
+  const {
+    settings,
+    updateSettings,
+    fetchTasksDisableImpact,
+    setTasksEnabled,
+    isLoading,
+    isUpdating,
+    updateError,
+  } = controller;
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const autoAcceptPlans = useUiStore((s) => s.autoAcceptPlans);
   const setAutoAcceptPlans = useUiStore((s) => s.setAutoAcceptPlans);
   const [showExternalOverrides, setShowExternalOverrides] = useState(false);
 
   const handleTasksEnabledChange = (checked: boolean) => {
-    updateSettings({
-      ...settings,
-      tasksEnabled: checked,
+    if (checked) {
+      void setTasksEnabled(true);
+      return;
+    }
+    void confirm({
+      title: "Turn Tasks off?",
+      description: "Checking task-managed work before shutdown…",
+      confirmText: "Pause task-managed work and turn Tasks off",
+      pendingText: "Pausing task-managed work…",
+      variant: "destructive",
+      prepare: async () => {
+        const impact = await fetchTasksDisableImpact();
+        return {
+          description: `${impact.activeStandaloneTasks} active standalone task${impact.activeStandaloneTasks === 1 ? "" : "s"} and ${impact.activeAttachedAgentWorkspaces} attached Agent workspace${impact.activeAttachedAgentWorkspaces === 1 ? "" : "s"} will be paused. ${impact.activeBranchUpdateOperations} active branch update operation${impact.activeBranchUpdateOperations === 1 ? "" : "s"} will be fenced. Task history and worktrees are retained; new, restart, and resume actions are blocked. Direct Agent implementation remains available, and re-enabling Tasks will not resume paused work automatically.`,
+        };
+      },
+      onConfirm: () => setTasksEnabled(false),
+      recoverFromError: (error) => {
+        if (
+          error instanceof Error &&
+          error.message.includes("ralphx:tasks_drain_incomplete")
+        ) {
+          return {
+            title: "Tasks shutdown is incomplete",
+            description: `${error.message} Task-managed work remains fenced while shutdown is retried.`,
+            confirmText: "Retry shutdown",
+          };
+        }
+        return null;
+      },
     });
   };
 
@@ -233,6 +271,13 @@ export function IdeationSettingsContent({
     updateSettings({
       ...settings,
       autoVerifyPlans: checked,
+    });
+  };
+
+  const handleAutoVerifyDraftPlansChange = (checked: boolean) => {
+    updateSettings({
+      ...settings,
+      autoVerifyDraftPlans: checked,
     });
   };
 
@@ -263,25 +308,85 @@ export function IdeationSettingsContent({
         <CheckboxSettingRow
           id="enable-tasks"
           label="Enable Tasks"
-          description="Off by default. Plans can still be implemented directly; attached Agent pipelines may finish, while active standalone Tasks are paused."
+          description="Off by default. Disabling pauses all task-managed work immediately; history and worktrees are retained, and plans can still be implemented directly."
           checked={settings.tasksEnabled}
-          disabled={isLoading || isUpdating}
+          disabled={
+            isLoading || isUpdating || settings.tasksFeatureState === "draining"
+          }
           onChange={handleTasksEnabledChange}
         />
-        {updateError instanceof Error &&
-          updateError.message.includes("ralphx:tasks_drain_incomplete") && (
-            <p role="alert" className="py-2 text-xs text-[var(--status-warning)]">
-              Tasks is off. Some running Task processes could not be stopped yet and will be retried.
-              <span className="block mt-1">{updateError.message}</span>
-            </p>
-          )}
-        <CheckboxSettingRow id="require-accept-for-finalize" label="Require confirmation before finalizing" description="Pause finalize_proposals for user Accept/Reject before tasks are created" checked={settings.requireAcceptForFinalize} disabled={isUpdating} onChange={handleRequireAcceptForFinalizeChange} />
-        <CheckboxSettingRow id="require-verification-for-accept" label="Require verification before accepting" description="The exact current plan artifact must have verification proof before it can be accepted" checked={settings.requireVerificationForAccept} disabled={isUpdating} onChange={handleRequireVerificationForAcceptChange} />
-        <CheckboxSettingRow id="auto-accept-plans" label="Skip finalization confirmation" description="Automatically confirm all pending finalize dialogs without prompting (resets on app restart)" checked={autoAcceptPlans} disabled={false} onChange={setAutoAcceptPlans} />
+        {settings.tasksFeatureState === "draining" && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 py-2 text-xs text-[var(--status-warning)]"
+          >
+            <span>
+              Tasks shutdown is incomplete. Task-managed work remains fenced until cleanup
+              succeeds.
+              {updateError instanceof Error && (
+                <span className="block mt-1">{updateError.message}</span>
+              )}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isUpdating}
+              onClick={() => void setTasksEnabled(false)}
+            >
+              Retry shutdown
+            </Button>
+          </div>
+        )}
+        {/* Require agent confirmation before finalizing proposals */}
+        <CheckboxSettingRow
+          id="require-accept-for-finalize"
+          label="Require confirmation before finalizing"
+          description="Pause finalize_proposals for user Accept/Reject before tasks are created"
+          checked={settings.requireAcceptForFinalize}
+          disabled={isUpdating}
+          onChange={handleRequireAcceptForFinalizeChange}
+        />
+
+        <CheckboxSettingRow
+          id="require-verification-for-accept"
+          label="Require verification before accepting"
+          description="The exact current plan artifact must have verification proof before it can be accepted"
+          checked={settings.requireVerificationForAccept}
+          disabled={isUpdating}
+          onChange={handleRequireVerificationForAcceptChange}
+        />
+
+        {/* Auto-accept finalization dialogs (in-memory only) */}
+        <CheckboxSettingRow
+          id="auto-accept-plans"
+          label="Skip finalization confirmation"
+          description="Automatically confirm all pending finalize dialogs without prompting (resets on app restart)"
+          checked={autoAcceptPlans}
+          disabled={false}
+          onChange={setAutoAcceptPlans}
+        />
           </>
         )}
         {surface !== "tasks" && (
-          <CheckboxSettingRow id="auto-verify-plans" label="Verify automatically on acceptance" description="When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting" checked={settings.autoVerifyPlans} disabled={isUpdating} onChange={handleAutoVerifyPlansChange} />
+          <>
+            <CheckboxSettingRow
+              id="auto-verify-draft-plans"
+              label="Verify draft plans automatically"
+              description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation"
+              checked={settings.autoVerifyDraftPlans}
+              disabled={isUpdating}
+              onChange={handleAutoVerifyDraftPlansChange}
+            />
+            <CheckboxSettingRow
+              id="auto-verify-plans"
+              label="Queue missing verification on acceptance"
+              description="When verification is required, an acceptance attempt queues a visible Verify Plan turn"
+              checked={settings.autoVerifyPlans}
+              disabled={isUpdating}
+              onChange={handleAutoVerifyPlansChange}
+            />
+          </>
         )}
         <div className="pt-1">
           <button type="button" data-testid="external-overrides-toggle" onClick={() => setShowExternalOverrides((v) => !v)} className="flex items-center gap-2 w-full py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
@@ -302,14 +407,20 @@ export function IdeationSettingsContent({
         </div>
     </>
   );
-  if (embedded) return content;
+  const body = (
+    <>
+      {content}
+      <ConfirmationDialog {...confirmationDialogProps} />
+    </>
+  );
+  if (embedded) return body;
   return (
     <SectionCard
       icon={<ShieldCheck className="w-[18px] h-[18px] text-[var(--accent-primary)]" />}
       title={surface === "planning" ? "Planning" : "Tasks"}
       description={surface === "planning" ? "Configure automatic plan verification" : "Configure task and acceptance gates"}
     >
-      {content}
+      {body}
     </SectionCard>
   );
 }

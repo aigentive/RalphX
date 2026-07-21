@@ -38,7 +38,10 @@ Session Created
       ▼
 Plan Created (artifacts.rs)
       │
-      ├─ Draft / Revise ───────────────────────────── [no automatic verification]
+      ├─ Ordinary Plan turn persists + completes ──── [default-on auto admission]
+      │                                      │
+      │                                      └─ queue fresh visible Verify Plan turn
+      │                                             └─ exact proof or terminal failure
       │
       ▼
 ◉ BREAKPOINT — finalize_proposals() (ideation.rs:134)
@@ -112,11 +115,16 @@ Four independent creation paths, all emitting the same 3-layer event.
 }
 ```
 
-**Acceptance-bound verification:** Draft creation and revision do not queue verification. If
-acceptance requires exact proof and effective policy enables automatic verification, the first
-unverified acceptance attempt queues a typed `verify_plan` turn in the same Plan conversation and
-remains blocked. Capacity-deferred turns retain their action metadata; acceptance is retried after
-the active planning model records proof for the current artifact.
+**Automatic draft verification:** With the default-on draft policy, the latest successful ordinary
+Plan turn queues a typed `verify_plan` turn in the same conversation after assistant persistence and
+guarded run completion. Admission rejects stale or failed turns and is idempotent. The verifier gets
+a fresh process even when an interactive Claude process is idle, while provider session continuity
+may be retained. The separate default-off acceptance policy remains a compatibility fallback when
+acceptance requires exact proof. Capacity-deferred turns retain their action metadata.
+
+The Plan Approval notification is deferred at publication while automatic review is pending. A
+durable exact-artifact marker suppresses toast, Attention, history, and desktop presentations until
+the verifier settles; terminal and startup reconciliation then record the current notification once.
 
 **Autonomous:** Yes.
 

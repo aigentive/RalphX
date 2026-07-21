@@ -30,6 +30,8 @@ import {
   callGetAgentWorkspacePrFixContextTool,
   callGetPrReviewContextTool,
   callGetWorkspaceReviewContextTool,
+  callGetWorkspaceReviewDiffPageTool,
+  callListWorkspaceReviewFilesTool,
   callGetAgentWorkspacePublishStatusTool,
   callPublishAgentWorkspaceTool,
   callProposePrReviewActionTool,
@@ -1086,6 +1088,8 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).toContain('fs_glob');
     expect(tools).toContain('get_artifact');
     expect(tools).toContain('get_workspace_review_context');
+    expect(tools).toContain('list_workspace_review_files');
+    expect(tools).toContain('get_workspace_review_diff_page');
     expect(tools).toContain('write_workspace_review_artifact');
     expect(tools).toContain('write_workspace_review_hunk_annotations');
     expect(tools).toContain('complete_workspace_review_run');
@@ -1648,6 +1652,132 @@ describe('agent workspace publish tool transport', () => {
         },
       }
     );
+  });
+
+  it('routes encoded workspace Review file and diff pages with runtime identity', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      conversationId: 'review-conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
+
+    await callListWorkspaceReviewFilesTool(
+      callTauriGet,
+      { cursor: 'cursor/with+symbols=', limit: 75 },
+      runtimeContext
+    );
+    await callGetWorkspaceReviewDiffPageTool(
+      callTauriGet,
+      { path: 'src/file with spaces.rs', source: 'unstaged', limit: 120 },
+      runtimeContext
+    );
+
+    const options = {
+      headers: {
+        'x-ralphx-agent-run-id': 'run-from-runtime',
+        'x-ralphx-conversation-id': 'review-conversation-from-runtime',
+      },
+    };
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      1,
+      'agent-workspaces/conversation-from-runtime/workspace-review-files?cursor=cursor%2Fwith%2Bsymbols%3D&limit=75',
+      options
+    );
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      2,
+      'agent-workspaces/conversation-from-runtime/workspace-review-diff-page?path=src%2Ffile+with+spaces.rs&source=unstaged&limit=120',
+      options
+    );
+  });
+
+  it('ignores undeclared caller workspace identity for Review paging tools', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      conversationId: 'review-conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
+
+    await callListWorkspaceReviewFilesTool(
+      callTauriGet,
+      { conversation_id: 'caller-controlled-conversation' },
+      runtimeContext
+    );
+    await callGetWorkspaceReviewDiffPageTool(
+      callTauriGet,
+      {
+        conversation_id: 'caller-controlled-conversation',
+        path: 'src/lib.rs',
+        source: 'unstaged',
+      },
+      runtimeContext
+    );
+
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      1,
+      'agent-workspaces/conversation-from-runtime/workspace-review-files',
+      expect.anything()
+    );
+    expect(callTauriGet).toHaveBeenNthCalledWith(
+      2,
+      'agent-workspaces/conversation-from-runtime/workspace-review-diff-page?path=src%2Flib.rs&source=unstaged',
+      expect.anything()
+    );
+  });
+
+  it('keeps workspace Review paging identity and target fields off model schemas', () => {
+    for (const toolName of [
+      'list_workspace_review_files',
+      'get_workspace_review_diff_page',
+    ]) {
+      const tool = AGENT_WORKSPACE_TOOLS.find((candidate) => candidate.name === toolName);
+      expect(tool, toolName).toBeDefined();
+      const properties = (tool?.inputSchema.properties ?? {}) as Record<string, unknown>;
+      for (const forbidden of [
+        'conversation_id',
+        'run_id',
+        'target_scope',
+        'head_sha',
+        'diff_fingerprint',
+        'base_ref',
+        'head_ref',
+      ]) {
+        expect(properties).not.toHaveProperty(forbidden);
+      }
+    }
+
+    const diffTool = AGENT_WORKSPACE_TOOLS.find(
+      (candidate) => candidate.name === 'get_workspace_review_diff_page'
+    );
+    expect(diffTool?.inputSchema).not.toHaveProperty('oneOf');
+  });
+
+  it('rejects mixed or incomplete workspace Review diff page selections', async () => {
+    const callTauriGet = vi.fn();
+    const runtimeContext = { parentConversationId: 'conversation-from-runtime' };
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { cursor: 'cursor', path: 'src/lib.rs', source: 'unstaged' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { path: 'src/lib.rs' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    await expect(
+      callGetWorkspaceReviewDiffPageTool(
+        callTauriGet,
+        { cursor: 'cursor', path: 'src/lib.rs' },
+        runtimeContext
+      )
+    ).rejects.toThrow('either path and source');
+    expect(callTauriGet).not.toHaveBeenCalled();
   });
 
   it('routes workspace Review artifact writes to the runtime workspace conversation', async () => {
@@ -2272,6 +2402,8 @@ describe('delegation bridge tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('parent_turn_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_message_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_conversation_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
     expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
     expect(tool?.inputSchema.required).toEqual(

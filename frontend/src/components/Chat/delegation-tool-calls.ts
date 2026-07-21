@@ -1,10 +1,12 @@
 import type { ToolCall } from "./tool-widgets/shared.constants";
 import { parseMcpToolResultRaw } from "./tool-widgets/shared.constants";
 import { canonicalizeToolName } from "./tool-widgets/tool-name";
+import type { StreamingTask } from "@/types/streaming-task";
 
 export const DELEGATION_START_TOOL_NAME = "delegate_start";
 export const DELEGATION_WAIT_TOOL_NAME = "delegate_wait";
 export const DELEGATION_CANCEL_TOOL_NAME = "delegate_cancel";
+export const DELEGATION_TERMINAL_TOOL_NAME = "delegate_terminal";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -147,7 +149,11 @@ function toDelegationStartName(name: string): string {
   if (canonical === DELEGATION_START_TOOL_NAME) {
     return name;
   }
-  if (canonical === DELEGATION_WAIT_TOOL_NAME || canonical === DELEGATION_CANCEL_TOOL_NAME) {
+  if (
+    canonical === DELEGATION_WAIT_TOOL_NAME
+    || canonical === DELEGATION_CANCEL_TOOL_NAME
+    || canonical === DELEGATION_TERMINAL_TOOL_NAME
+  ) {
     const namespaceSeparator = name.lastIndexOf("::");
     if (namespaceSeparator >= 0) {
       return `${name.slice(0, namespaceSeparator + 2)}${DELEGATION_START_TOOL_NAME}`;
@@ -163,11 +169,89 @@ export function isDelegationStartToolCall(name: string): boolean {
 
 export function isDelegationControlToolCall(name: string): boolean {
   const canonical = canonicalizeToolName(name);
-  return canonical === DELEGATION_WAIT_TOOL_NAME || canonical === DELEGATION_CANCEL_TOOL_NAME;
+  return canonical === DELEGATION_WAIT_TOOL_NAME
+    || canonical === DELEGATION_CANCEL_TOOL_NAME
+    || canonical === DELEGATION_TERMINAL_TOOL_NAME;
 }
 
 export function isDelegationToolCall(name: string): boolean {
   return isDelegationStartToolCall(name) || isDelegationControlToolCall(name);
+}
+
+export function parseToolResultId(name: string): string | undefined {
+  if (!name.startsWith("result:")) return undefined;
+  const toolUseId = name.slice("result:".length).trim();
+  return toolUseId.length > 0 ? toolUseId : undefined;
+}
+
+export function findDelegationTaskKey(
+  tasks: ReadonlyMap<string, StreamingTask>,
+  toolUseId: string | undefined,
+  jobId: string | undefined,
+): string | undefined {
+  if (toolUseId && tasks.has(toolUseId)) return toolUseId;
+  if (!jobId) return undefined;
+  for (const [key, task] of tasks) {
+    if (task.delegatedJobId === jobId) return key;
+  }
+  return undefined;
+}
+
+export function mergeDelegationTaskMetadata(
+  task: StreamingTask,
+  metadata: DelegationMetadata,
+  completedAt = Date.now(),
+): StreamingTask {
+  const inferredFailure = metadata.status == null
+    && metadata.textOutput?.trim().startsWith("ERROR:");
+  const parsedStatus = metadata.status === "running"
+    || metadata.status === "completed"
+    || metadata.status === "failed"
+    || metadata.status === "cancelled"
+      ? metadata.status
+      : inferredFailure
+        ? "failed"
+        : task.status;
+  const taskIsTerminal = task.status === "completed"
+    || task.status === "failed"
+    || task.status === "cancelled";
+  const status = taskIsTerminal && parsedStatus === "running" ? task.status : parsedStatus;
+  const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  return {
+    ...task,
+    status,
+    model: metadata.effectiveModelId ?? metadata.logicalModel ?? task.model,
+    ...(metadata.agentName ? { subagentType: "delegated" } : {}),
+    ...(metadata.providerHarness ? { providerHarness: metadata.providerHarness } : {}),
+    ...(metadata.providerSessionId ? { providerSessionId: metadata.providerSessionId } : {}),
+    ...(metadata.upstreamProvider ? { upstreamProvider: metadata.upstreamProvider } : {}),
+    ...(metadata.providerProfile ? { providerProfile: metadata.providerProfile } : {}),
+    ...(metadata.jobId ? { delegatedJobId: metadata.jobId } : {}),
+    ...(metadata.delegatedSessionId ? { delegatedSessionId: metadata.delegatedSessionId } : {}),
+    ...(metadata.delegatedConversationId
+      ? { delegatedConversationId: metadata.delegatedConversationId }
+      : {}),
+    ...(metadata.delegatedAgentRunId
+      ? { delegatedAgentRunId: metadata.delegatedAgentRunId }
+      : {}),
+    ...(metadata.logicalModel ? { logicalModel: metadata.logicalModel } : {}),
+    ...(metadata.effectiveModelId ? { effectiveModelId: metadata.effectiveModelId } : {}),
+    ...(metadata.logicalEffort ? { logicalEffort: metadata.logicalEffort } : {}),
+    ...(metadata.effectiveEffort ? { effectiveEffort: metadata.effectiveEffort } : {}),
+    ...(metadata.approvalPolicy ? { approvalPolicy: metadata.approvalPolicy } : {}),
+    ...(metadata.sandboxMode ? { sandboxMode: metadata.sandboxMode } : {}),
+    ...(metadata.inputTokens != null ? { inputTokens: metadata.inputTokens } : {}),
+    ...(metadata.outputTokens != null ? { outputTokens: metadata.outputTokens } : {}),
+    ...(metadata.cacheCreationTokens != null
+      ? { cacheCreationTokens: metadata.cacheCreationTokens }
+      : {}),
+    ...(metadata.cacheReadTokens != null ? { cacheReadTokens: metadata.cacheReadTokens } : {}),
+    ...(metadata.totalTokens != null ? { totalTokens: metadata.totalTokens } : {}),
+    ...(metadata.estimatedUsd != null ? { estimatedUsd: metadata.estimatedUsd } : {}),
+    ...(metadata.durationMs != null ? { totalDurationMs: metadata.durationMs } : {}),
+    ...(metadata.textOutput ? { textOutput: metadata.textOutput } : {}),
+    ...(terminal ? { completedAt: task.completedAt ?? completedAt } : {}),
+  };
 }
 
 export function extractDelegationMetadata(
@@ -181,18 +265,20 @@ export function extractDelegationMetadata(
   const latestRun = getFirstRecord(delegatedStatus, "latest_run", "latestRun");
   const session = getFirstRecord(delegatedStatus, "session");
 
-  const inputTokens = getFirstNumber(latestRun, "input_tokens", "inputTokens");
-  const outputTokens = getFirstNumber(latestRun, "output_tokens", "outputTokens");
+  const inputTokens = getFirstNumber(latestRun, "input_tokens", "inputTokens")
+    ?? getFirstNumber(resultRecord, "input_tokens", "inputTokens");
+  const outputTokens = getFirstNumber(latestRun, "output_tokens", "outputTokens")
+    ?? getFirstNumber(resultRecord, "output_tokens", "outputTokens");
   const cacheCreationTokens = getFirstNumber(
     latestRun,
     "cache_creation_tokens",
     "cacheCreationTokens",
-  );
+  ) ?? getFirstNumber(resultRecord, "cache_creation_tokens", "cacheCreationTokens");
   const cacheReadTokens = getFirstNumber(
     latestRun,
     "cache_read_tokens",
     "cacheReadTokens",
-  );
+  ) ?? getFirstNumber(resultRecord, "cache_read_tokens", "cacheReadTokens");
 
   const totalTokens =
     inputTokens != null ||
@@ -231,11 +317,14 @@ export function extractDelegationMetadata(
     ?? getFirstString(argRecord, "harness", "harness_override", "harnessOverride");
   const providerSessionId =
     getFirstString(latestRun, "provider_session_id", "providerSessionId")
+    ?? getFirstString(resultRecord, "provider_session_id", "providerSessionId")
     ?? getFirstString(session, "provider_session_id", "providerSessionId");
   const upstreamProvider =
-    getFirstString(latestRun, "upstream_provider", "upstreamProvider");
+    getFirstString(latestRun, "upstream_provider", "upstreamProvider")
+    ?? getFirstString(resultRecord, "upstream_provider", "upstreamProvider");
   const providerProfile =
-    getFirstString(latestRun, "provider_profile", "providerProfile");
+    getFirstString(latestRun, "provider_profile", "providerProfile")
+    ?? getFirstString(resultRecord, "provider_profile", "providerProfile");
   const delegatedSessionId =
     getFirstString(resultRecord, "delegated_session_id", "delegatedSessionId")
     ?? getFirstString(argRecord, "delegated_session_id", "delegatedSessionId");
@@ -247,24 +336,33 @@ export function extractDelegationMetadata(
     ?? getFirstString(latestRun, "agent_run_id", "agentRunId");
   const logicalModel =
     getFirstString(latestRun, "logical_model", "logicalModel")
+    ?? getFirstString(resultRecord, "logical_model", "logicalModel")
     ?? getFirstString(argRecord, "model", "logical_model", "logicalModel");
   const effectiveModelId =
-    getFirstString(latestRun, "effective_model_id", "effectiveModelId");
+    getFirstString(latestRun, "effective_model_id", "effectiveModelId")
+    ?? getFirstString(resultRecord, "effective_model_id", "effectiveModelId");
   const logicalEffort =
     getFirstString(latestRun, "logical_effort", "logicalEffort")
+    ?? getFirstString(resultRecord, "logical_effort", "logicalEffort")
     ?? getFirstString(argRecord, "logical_effort", "logicalEffort");
   const effectiveEffort =
-    getFirstString(latestRun, "effective_effort", "effectiveEffort");
+    getFirstString(latestRun, "effective_effort", "effectiveEffort")
+    ?? getFirstString(resultRecord, "effective_effort", "effectiveEffort");
   const approvalPolicy =
     getFirstString(latestRun, "approval_policy", "approvalPolicy")
+    ?? getFirstString(resultRecord, "approval_policy", "approvalPolicy")
     ?? getFirstString(argRecord, "approval_policy", "approvalPolicy");
   const sandboxMode =
     getFirstString(latestRun, "sandbox_mode", "sandboxMode")
+    ?? getFirstString(resultRecord, "sandbox_mode", "sandboxMode")
     ?? getFirstString(argRecord, "sandbox_mode", "sandboxMode");
-  const estimatedUsd = getFirstNumber(latestRun, "estimated_usd", "estimatedUsd");
+  const estimatedUsd = getFirstNumber(latestRun, "estimated_usd", "estimatedUsd")
+    ?? getFirstNumber(resultRecord, "estimated_usd", "estimatedUsd");
   const durationMs = deriveDurationMs(
-    getFirstString(latestRun, "started_at", "startedAt"),
-    getFirstString(latestRun, "completed_at", "completedAt"),
+    getFirstString(latestRun, "started_at", "startedAt")
+      ?? getFirstString(resultRecord, "started_at", "startedAt"),
+    getFirstString(latestRun, "completed_at", "completedAt")
+      ?? getFirstString(resultRecord, "completed_at", "completedAt"),
   );
 
   return {

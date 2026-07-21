@@ -89,10 +89,6 @@ import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
-import {
-  selectArtifactSelection,
-  useArtifactSelectionStore,
-} from "@/stores/artifactSelectionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
@@ -399,6 +395,7 @@ interface PlanComposerCtaAction {
   isPrimary: boolean;
   isPending: boolean;
   disabled: boolean;
+  tone?: "default" | "success";
   onClick: () => void;
 }
 
@@ -458,6 +455,7 @@ function PlanComposerCtaRow({
   testIdPrefix = "agents-plan-composer-cta",
   actionGroupLabel = "Plan actions",
   compactHintOverride,
+  suppressDetails = false,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
@@ -465,6 +463,7 @@ function PlanComposerCtaRow({
   testIdPrefix?: string;
   actionGroupLabel?: string;
   compactHintOverride?: string | undefined;
+  suppressDetails?: boolean;
 }) {
   const { artifactState } = useResolvedAgentArtifactState(
     viewPlanAction?.conversationId ?? null,
@@ -496,7 +495,9 @@ function PlanComposerCtaRow({
   }
   const compactHint =
     compactHintOverride ?? getPlanComposerCompactHint(hint, resolvedActions);
-  const hintDetails = getPlanComposerHintDetails(hint, compactHint);
+  const hintDetails = suppressDetails
+    ? null
+    : getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
   const isRecommendationCheckPending = compactHint.startsWith(
     "Checking recommended next action",
@@ -535,6 +536,15 @@ function PlanComposerCtaRow({
         type="button"
         size="sm"
         variant={action.isPrimary ? "default" : "outline"}
+        style={
+          action.tone === "success"
+            ? {
+                backgroundColor: "var(--status-success-muted)",
+                borderColor: "var(--status-success-border)",
+                color: "var(--status-success)",
+              }
+            : undefined
+        }
         onClick={action.onClick}
         disabled={action.disabled || action.isPending}
         data-testid={`${testIdPrefix}-${action.id}`}
@@ -965,12 +975,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const roleDefaultQuery = useConversationRoleDefault(selectedConversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
-  const artifactSelectionSnapshot = useArtifactSelectionStore(
-    selectArtifactSelection(selectedConversationId),
-  );
-  const clearArtifactSelection = useArtifactSelectionStore(
-    (state) => state.clearSelection,
-  );
   const {
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
@@ -1826,10 +1830,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     const eligibleOptions = buildAgentConversationModeOptions({
       currentMode: activeConversationMode ?? "chat",
       taskPipelineAvailable:
-        activeWorkspace?.taskPipelineAvailable ??
-        Boolean(activeWorkspace?.taskPipelineSessionId),
+        tasksEnabled &&
+        (activeWorkspace?.taskPipelineAvailable ??
+          Boolean(activeWorkspace?.taskPipelineSessionId)),
       autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
-    });
+    }).filter((option) => tasksEnabled || option.id !== "tasks");
     if (!resolvedConversationModeLocked) {
       return eligibleOptions;
     }
@@ -1848,6 +1853,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace?.taskPipelineAvailable,
     activeWorkspace?.taskPipelineSessionId,
     featureFlags.agentConversationAutopilot,
+    tasksEnabled,
   ]);
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
@@ -1934,7 +1940,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !!planApprovalSessionId &&
     isPlanApproved &&
     !activeAutomationRunId &&
-    (tasksEnabled || activeWorkspace?.taskPipelineSessionId === planApprovalSessionId);
+    tasksEnabled;
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
@@ -1969,6 +1975,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
   const planVerificationQuery = useVerificationStatus(
     planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
+    activeWorkspace?.conversationId,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =
@@ -1980,8 +1987,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
       planApprovalArtifact &&
-      !isPlanVerificationLoading &&
-      !isPlanVerificationSatisfied,
+      !isPlanVerificationLoading,
   );
 
   const handleApprovePlanFromQuestion = useCallback(async () => {
@@ -2125,6 +2131,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ) {
       return;
     }
+    if (isPlanVerificationSatisfied) {
+      const confirmed = await confirm({
+        title: "Verify this plan again?",
+        description:
+          "The current plan is already verified. This queues another visible review turn and keeps the existing proof unless the plan changes.",
+        confirmText: "Verify again",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
     setIsStartingPlanVerification(true);
     try {
       await verificationApi.confirm(planApprovalSessionId);
@@ -2148,6 +2165,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
   }, [
     canVerifyComposerPlan,
+    confirm,
+    isPlanVerificationSatisfied,
     planApprovalSessionId,
     planVerificationInProgress,
     queryClient,
@@ -2160,7 +2179,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
     if (!tasksEnabled && isPlanApproved) {
-      return "Tasks is off. Implement this approved plan directly.";
+      return "Recommended: Implement Directly.";
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
@@ -2186,12 +2205,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
       ? {
           id: "verify",
-          label: "Verify Plan",
+          label: isPlanVerificationSatisfied ? "Verified" : "Verify Plan",
           icon: ShieldCheck,
           isPrimary: false,
           isPending:
             isStartingPlanVerification || planVerificationInProgress,
           disabled: isPlanRecommendationPending,
+          tone: isPlanVerificationSatisfied ? "success" : "default",
           onClick: () => {
             void handleVerifyPlanFromComposer();
           },
@@ -2285,6 +2305,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isImplementingPlanDirectly,
     isPlanApproved,
     isPlanRecommendationPending,
+    isPlanVerificationSatisfied,
     isStartingPlanVerification,
     planApprovalArtifact,
     planApprovalSessionId,
@@ -2813,12 +2834,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 options.artifactReferences,
                             }
                           : {}),
-                        ...(options?.selectionSnapshot
-                          ? {
-                              composerSelectionSnapshot:
-                                options.selectionSnapshot,
-                            }
-                          : {}),
                         ...(options?.excerptReferences?.length
                           ? {
                               composerExcerptReferences:
@@ -2902,11 +2917,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
                       viewPlanAction={planComposerViewPlanAction}
-                      compactHintOverride={
-                        !tasksEnabled && isPlanApproved
-                          ? "Tasks is off"
-                          : undefined
-                      }
+                      suppressDetails={!tasksEnabled && isPlanApproved}
                     />
                   )}
                   {shouldShowAutomationComposerCta && (
@@ -2975,10 +2986,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     }
                     autoFocus={composerProps.autoFocus}
                     conversationId={selectedConversationId}
-                    selectionSnapshot={artifactSelectionSnapshot}
-                    onClearSelectionSnapshot={() =>
-                      clearArtifactSelection(selectedConversationId)
-                    }
                     {...(!isFocusedChildChat
                       ? {
                           onForkSession: () => runForkCommand(""),

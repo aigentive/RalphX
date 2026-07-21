@@ -353,6 +353,7 @@
                     status: "modified".to_string(),
                     sources: vec!["committed".to_string()],
                 }],
+                changed_files_truncated: false,
                 hunk_anchors: vec![
                     crate::application::agent_workspace_review::AgentWorkspaceReviewHunkAnchor {
                         path: "src/lib.rs".to_string(),
@@ -364,6 +365,7 @@
                         new_lines: 2,
                     },
                 ],
+                hunk_anchors_truncated: false,
                 patch_excerpt: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
                 patch_excerpt_truncated: false,
                 notes: vec![],
@@ -494,6 +496,7 @@
             review_packet: AgentWorkspaceReviewPacket {
                 summary: AgentWorkspaceReviewDiffSummary::default(),
                 changed_files: Vec::new(),
+                changed_files_truncated: false,
                 hunk_anchors: vec![AgentWorkspaceReviewHunkAnchor {
                     path: "src/lib.rs".to_string(),
                     source: "committed".to_string(),
@@ -503,6 +506,7 @@
                     new_start: 1,
                     new_lines: 2,
                 }],
+                hunk_anchors_truncated: false,
                 patch_excerpt: String::new(),
                 patch_excerpt_truncated: false,
                 notes: Vec::new(),
@@ -1331,6 +1335,10 @@
             .mark_pr_review_first_action_resolved(&conversation_id)
             .await
             .unwrap();
+        // Proposal consumes the configured health response; automatic signed submission then
+        // falls back to the configured sync-state response for its separate head check.
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
+        github.state().check_pr_sync_state_result = Some(Ok(open_review_pr_health().sync_state));
 
         let Json(response) = propose_agent_workspace_pr_review_action(
             State(state),

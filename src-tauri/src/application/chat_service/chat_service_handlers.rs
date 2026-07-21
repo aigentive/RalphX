@@ -1432,7 +1432,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
     )
     .await;
-    super::chat_service_send_background::finalize_assistant_message(
+    let _ = super::chat_service_send_background::finalize_assistant_message(
         chat_message_repo,
         app_handle,
         event_ctx,

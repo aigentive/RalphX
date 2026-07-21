@@ -53,7 +53,7 @@ use crate::domain::agents::{
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::ProjectId;
-use crate::domain::ideation::IdeationSettings;
+use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -1262,12 +1262,14 @@ impl AppState {
 
         let state = Self {
             task_repo: Arc::clone(&task_repo),
-            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
-            task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            branch_update_repo: Arc::new(
+                SqliteBranchUpdateRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
+            task_step_repo: Arc::new(
+                SqliteTaskStepRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
             project_repo: Arc::clone(&project_repo),
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1565,7 +1567,7 @@ impl AppState {
             .expect("Failed to open in-memory SQLite for handler tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
         conn.execute(
-            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            "UPDATE ideation_settings SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
             [],
         )
         .expect("Failed to enable Tasks for legacy handler tests");
@@ -1637,6 +1639,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
@@ -1760,7 +1763,7 @@ impl AppState {
             .expect("Failed to open in-memory SQLite for handler tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
         conn.execute(
-            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            "UPDATE ideation_settings SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
             [],
         )
         .expect("Failed to enable Tasks for legacy handler tests");
@@ -1830,6 +1833,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
@@ -1959,7 +1963,7 @@ impl AppState {
             .expect("Failed to open in-memory SQLite for apply_proposals_core tests");
         run_migrations(&conn).expect("Failed to run migrations on in-memory test DB");
         conn.execute(
-            "UPDATE ideation_settings SET tasks_enabled = 1 WHERE id = 1",
+            "UPDATE ideation_settings SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
             [],
         )
         .expect("Failed to enable Tasks for legacy apply tests");
@@ -1978,9 +1982,10 @@ impl AppState {
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
+            task_step_repo: Arc::new(
+                SqliteTaskStepRepository::from_shared(Arc::clone(&shared_conn))
+                    .with_tasks_feature_policy(),
+            ),
             project_repo: Arc::new(SqliteProjectRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2032,6 +2037,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
@@ -2214,6 +2220,7 @@ impl AppState {
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::with_settings(
                 IdeationSettings {
                     tasks_enabled: true,
+                    tasks_feature_state: TasksFeatureState::Enabled,
                     ..Default::default()
                 },
             )),
@@ -2293,10 +2300,19 @@ impl AppState {
             ))),
             message_queue: Arc::new(MessageQueue::new()),
             queued_message_repo: Arc::new(MemoryQueuedMessageRepository::new()),
-            db: crate::infrastructure::sqlite::DbConnection::new(
-                open_connection(&std::path::PathBuf::from(":memory:"))
-                    .expect("Failed to create in-memory connection for db field"),
-            ),
+            db: {
+                let conn = open_connection(&std::path::PathBuf::from(":memory:"))
+                    .expect("Failed to create in-memory connection for db field");
+                conn.execute_batch(
+                    "CREATE TABLE deferred_plan_approval_notifications (
+                        session_id TEXT PRIMARY KEY NOT NULL,
+                        artifact_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );",
+                )
+                .expect("Failed to create deferred plan approval marker table for tests");
+                crate::infrastructure::sqlite::DbConnection::new(conn)
+            },
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),

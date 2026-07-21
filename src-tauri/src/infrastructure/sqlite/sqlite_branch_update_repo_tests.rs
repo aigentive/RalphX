@@ -37,6 +37,163 @@ fn operation(task_id: crate::domain::entities::TaskId, history_id: &str) -> Bran
     )
 }
 
+#[tokio::test]
+async fn retry_rechecks_tasks_feature_state_inside_the_write_transaction() {
+    let db = SqliteTestDb::new("branch-update-retry-tasks-off-race");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+    let repo =
+        SqliteBranchUpdateRepository::from_shared(db.shared_conn()).with_tasks_feature_policy();
+    let operation = operation(task.id.clone(), "history-retry-tasks-off");
+    let operation_id = operation.id.clone();
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation_id.as_str());
+    let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "retry".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("activation should apply");
+    };
+    repo.block_operation(BlockBranchUpdate {
+        operation_id: operation_id.clone(),
+        task_id: task.id.clone(),
+        originating_history_id: "history-retry-tasks-off".into(),
+        update_status: InternalStatus::UpdatingPlanBranch,
+        owner: owner.clone(),
+        fencing_epoch,
+        failure_kind: crate::domain::entities::BranchUpdateFailureKind::Conflict,
+        diagnostics: "resolve conflict".into(),
+        conflict_files: vec![PathBuf::from("src/lib.rs")],
+    })
+    .await
+    .unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 0, tasks_feature_state = 'draining' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+
+    let error = repo
+        .retry_operation(RetryBranchUpdate {
+            operation_id: operation_id.clone(),
+            new_operation_id: crate::domain::entities::BranchUpdateOperationId::new(),
+            task_id: task.id.clone(),
+            originating_history_id: "history-retry-tasks-off".into(),
+            update_status: InternalStatus::UpdatingPlanBranch,
+            owner,
+            fencing_epoch,
+            history_id: "history-retry-tasks-off-new".into(),
+        })
+        .await
+        .expect_err("a retry authorized before draining must be rejected at the write");
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert_eq!(
+        repo.get_operation(&operation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .phase,
+        crate::domain::entities::BranchUpdatePhase::Blocked
+    );
+    db.with_connection(|conn| {
+        let status: String = conn
+            .query_row(
+                "SELECT internal_status FROM tasks WHERE id = ?1",
+                [task.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "branch_update_blocked");
+        let retry_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_state_history WHERE id = 'history-retry-tasks-off-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retry_history, 0);
+    });
+}
+
+#[tokio::test]
+async fn begin_git_mutation_rechecks_tasks_feature_state_inside_the_write_transaction() {
+    let db = SqliteTestDb::new("branch-update-begin-mutation-tasks-off-race");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 1, tasks_feature_state = 'enabled' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+    let repo =
+        SqliteBranchUpdateRepository::from_shared(db.shared_conn()).with_tasks_feature_policy();
+    let operation = operation(task.id.clone(), "history-begin-mutation-tasks-off");
+    let operation_id = operation.id.clone();
+    let identity = operation.target_identity.clone();
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation_id.as_str());
+    let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "begin-mutation".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("activation should apply");
+    };
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE ideation_settings
+             SET tasks_enabled = 0, tasks_feature_state = 'draining' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    });
+
+    let error = repo
+        .begin_git_mutation(BeginGitMutation {
+            identity: identity.clone(),
+            owner,
+            fencing_epoch,
+            claim_id: "must-not-start".into(),
+            kind: GitMutationKind::Merge,
+        })
+        .await
+        .expect_err("a task-owned Git mutation must not start after draining begins");
+
+    assert!(error.to_string().starts_with("ralphx:tasks_disabled"));
+    assert!(
+        repo.get_target_lease(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .active_mutation()
+            .is_none(),
+        "rejected admission must leave the durable mutation claim empty"
+    );
+}
+
 fn operation_with_continuation(
     task_id: crate::domain::entities::TaskId,
     history_id: &str,
@@ -280,6 +437,7 @@ async fn branch_update_controls_are_fenced_and_preserve_pause_authority() {
         owner: owner.clone(),
         fencing_epoch,
         history_id: uuid::Uuid::new_v4().to_string(),
+        task_metadata: None,
     };
 
     repo.begin_git_mutation(BeginGitMutation {

@@ -87,6 +87,36 @@ pub enum AgentRunActionKind {
     VerifyPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunAction {
+    pub kind: AgentRunActionKind,
+    pub context_id: String,
+    pub target_id: String,
+}
+
+impl AgentRunAction {
+    /// Parse only a complete backend-owned action tuple.
+    pub fn from_metadata_json(metadata: Option<&str>) -> Option<Self> {
+        let value = serde_json::from_str::<serde_json::Value>(metadata?).ok()?;
+        let object = value.as_object()?;
+        let kind = object
+            .get("ralphx_action_kind")?
+            .as_str()?
+            .parse::<AgentRunActionKind>()
+            .ok()?;
+        let context_id = object.get("ralphx_action_context_id")?.as_str()?.trim();
+        let target_id = object.get("ralphx_action_target_id")?.as_str()?.trim();
+        if context_id.is_empty() || target_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind,
+            context_id: context_id.to_string(),
+            target_id: target_id.to_string(),
+        })
+    }
+}
+
 impl fmt::Display for AgentRunActionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -472,40 +502,13 @@ impl AgentRun {
 
     /// Apply backend-owned action metadata only when the complete typed tuple is present.
     pub fn apply_action_metadata_json(&mut self, metadata: Option<&str>) {
-        let Some(metadata) = metadata else {
-            return;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) else {
-            return;
-        };
-        let Some(object) = value.as_object() else {
-            return;
-        };
-        let Some(kind) = object
-            .get("ralphx_action_kind")
-            .and_then(|value| value.as_str())
-            .and_then(|value| value.parse::<AgentRunActionKind>().ok())
-        else {
-            return;
-        };
-        let Some(context_id) = object
-            .get("ralphx_action_context_id")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-        else {
-            return;
-        };
-        let Some(target_id) = object
-            .get("ralphx_action_target_id")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(action) = AgentRunAction::from_metadata_json(metadata) else {
             return;
         };
 
-        self.action_kind = Some(kind);
-        self.action_context_id = Some(context_id.to_string());
-        self.action_target_id = Some(target_id.to_string());
+        self.action_kind = Some(action.kind);
+        self.action_context_id = Some(action.context_id);
+        self.action_target_id = Some(action.target_id);
     }
 
     /// Get the duration of the run (if completed)

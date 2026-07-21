@@ -476,7 +476,10 @@ pub async fn restart_ideation_implementation_core(
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
-        .authorize_session(Some(&session_id))
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
         .await?;
 
     if session.status != IdeationSessionStatus::Accepted {
@@ -700,7 +703,10 @@ pub async fn restart_ideation_implementation_core(
     let branch_updates =
         preflight_branch_updates_for_restart(app_state, &project, &current_tasks).await?;
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
-        .authorize_session(Some(&session_id))
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
         .await?;
     stop_branch_updates_for_restart(app_state, &branch_updates).await?;
     task_cleanup
@@ -786,6 +792,7 @@ pub async fn restart_ideation_implementation_core(
             crate::application::tasks_feature_policy::authorize_tasks_session_sync(
                 conn,
                 Some(&session_id_str),
+                crate::domain::ideation::TasksFeatureAction::Progress,
             )?;
             let now_str = chrono::Utc::now().to_rfc3339();
             let archived_task_count = archive_execution_plan_tasks(

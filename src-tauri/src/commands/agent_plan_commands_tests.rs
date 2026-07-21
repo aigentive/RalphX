@@ -362,7 +362,9 @@ async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace()
         .db
         .run(|conn| {
             conn.execute(
-                "UPDATE ideation_settings SET tasks_enabled = 0 WHERE id = 1",
+                "UPDATE ideation_settings
+                 SET tasks_enabled = 0, tasks_feature_state = 'disabled'
+                 WHERE id = 1",
                 [],
             )?;
             Ok(())

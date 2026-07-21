@@ -24,6 +24,8 @@ use delegation::DelegationService;
 // ============================================================================
 
 pub mod delegation;
+#[cfg(test)]
+mod delegation_tests;
 pub mod handlers;
 pub mod helpers;
 pub mod project_scope;
@@ -182,7 +184,10 @@ pub async fn start_http_server(
         .route("/api/get_session_messages", post(get_session_messages))
         // Plan artifact tools (ralphx-ideation agent)
         // NOTE: All ideation mutation routes MUST call assert_session_mutable() after fetching the session.
-        .route("/api/create_plan_artifact", post(create_plan_artifact))
+        .route(
+            "/api/create_plan_artifact",
+            post(create_plan_artifact_with_headers),
+        )
         .route("/api/update_plan_artifact", post(update_plan_artifact))
         .route("/api/edit_plan_artifact", post(edit_plan_artifact))
         // UI-owned Plan-mode action; intentionally not exposed as an agent MCP tool.
@@ -238,7 +243,10 @@ pub async fn start_http_server(
             "/api/ideation/sessions/:id/message",
             post(send_ideation_session_message_handler),
         )
-        .route("/api/coordination/delegate/start", post(start_delegate))
+        .route(
+            "/api/coordination/delegate/start",
+            post(start_delegate_with_runtime_context),
+        )
         .route(
             "/api/coordination/delegated-session/:id/status",
             get(get_delegated_session_status),
@@ -492,6 +500,14 @@ pub async fn start_http_server(
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-context",
             get(get_agent_workspace_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-files",
+            get(list_agent_workspace_review_files),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-diff-page",
+            get(get_agent_workspace_review_diff_page),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-start-preview",

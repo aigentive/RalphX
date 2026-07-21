@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Loader2, RefreshCw, Search, Ticket, Unlink } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
@@ -21,8 +21,6 @@ import {
 import { cn } from "@/lib/utils";
 
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
-import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
-import { buildTicketSelectionContent } from "./artifact-selection/ticketSelectionContent";
 import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsLinearIssuePanelProps {
@@ -51,21 +49,6 @@ export function AgentsLinearIssuePanel({
     staleTime: 5_000,
   });
   const issue = issueQuery.data ?? null;
-  const selectionContent = useMemo(
-    () =>
-      issue
-        ? buildTicketSelectionContent({
-            key: issue.issueKey ?? issue.issueId,
-            title: issue.title,
-            status: issue.status,
-            assignees: issue.assignee ? [issue.assignee] : [],
-            reporter: issue.reporter,
-            description:
-              issue.descriptionMarkdown ?? issue.descriptionText ?? null,
-          })
-        : null,
-    [issue],
-  );
   const showSearch = !issue || isReassigning;
   const searchQuery = useQuery({
     queryKey: ["agents", "linear-issue-search", query.trim()] as const,
@@ -201,22 +184,6 @@ export function AgentsLinearIssuePanel({
           </div>
         ) : null}
       </div>
-
-      {issue && selectionContent ? (
-        <ArtifactSelectionSource
-          conversationId={conversationId}
-          source={{
-            sourceType: "ticket",
-            sourceKind: "linear",
-            sourceId: issue.issueId,
-            ...(issue.issueKey ? { sourceKey: issue.issueKey } : {}),
-            ...(issue.title ? { sourceTitle: issue.title } : {}),
-            provider: "linear",
-            sourceRevision: issue.updatedAtRemote ?? issue.updatedAt,
-          }}
-          content={selectionContent}
-        />
-      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {!conversationId ? (

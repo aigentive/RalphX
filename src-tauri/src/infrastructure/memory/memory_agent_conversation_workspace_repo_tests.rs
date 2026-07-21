@@ -10,8 +10,10 @@ use crate::domain::entities::{
     ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
     ProjectId,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::domain::repositories::AgentWorkspaceLocalCleanupClaim;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePrReviewActionMutation,
+};
 
 fn pr_review_action(
     conversation_id: ChatConversationId,
@@ -105,6 +107,332 @@ async fn latest_pending_pr_review_action_is_deterministic_and_owner_scoped() {
         .await
         .expect("read isolated owner")
         .is_none());
+}
+
+#[tokio::test]
+async fn terminal_settlement_supersedes_pending_and_submitting_actions_once() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("review-terminal-memory");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 411,
+        url: None,
+        title: None,
+        head_ref_name: "feature/review".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some("Waiting".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+        411,
+        Some("head".to_string()),
+    );
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+    let pending = repo
+        .create_or_update_pr_review_action(pr_review_action(conversation_id.clone(), 411, "head"))
+        .await
+        .unwrap();
+    let submitting = repo
+        .create_or_update_pr_review_action(pr_review_action(
+            conversation_id.clone(),
+            411,
+            "older-head",
+        ))
+        .await
+        .unwrap();
+    assert!(repo
+        .claim_pending_pr_review_action(&submitting.id)
+        .await
+        .unwrap());
+
+    let first = repo
+        .settle_pr_review_terminal(&conversation_id, 411, "closed", "Closed without merge")
+        .await
+        .unwrap();
+    assert!(first.event_inserted);
+    assert_eq!(first.superseded_action_ids.len(), 2);
+    let second = repo
+        .settle_pr_review_terminal(&conversation_id, 411, "closed", "Closed without merge")
+        .await
+        .unwrap();
+    assert!(!second.event_inserted);
+    assert_eq!(second.superseded_action_ids.len(), 2);
+    for id in [pending.id, submitting.id] {
+        assert_eq!(
+            repo.get_pr_review_action(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentWorkspacePrReviewActionStatus::Superseded
+        );
+    }
+    let workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_pr_status.as_deref(), Some("closed"));
+    assert!(workspace.pr_supervision_status.is_none());
+    let monitor = repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    );
+    assert_eq!(monitor.last_error.as_deref(), Some("Closed without merge"));
+}
+
+#[tokio::test]
+async fn lifecycle_listing_keeps_paused_review_pr_monitor_visible() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("paused-review-lifecycle");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 412,
+        url: None,
+        title: None,
+        head_ref_name: "feature/paused".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+        412,
+        Some("head".to_string()),
+    );
+    monitor.monitor_enabled = false;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+
+    assert!(repo
+        .list_active_pr_review_monitors()
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        repo.list_pr_review_lifecycle_monitors()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn guarded_pr_review_transition_settles_action_and_monitor_without_terminal_resurrection() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("guarded-review-transition-memory");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 413,
+        url: None,
+        title: None,
+        head_ref_name: "feature/guarded".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+        413,
+        Some("head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor = repo.upsert_pr_review_monitor(monitor).await.unwrap();
+
+    let action = pr_review_action(conversation_id.clone(), 413, "head");
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    let proposed = repo
+        .transition_pr_review_state_if_nonterminal(
+            monitor.clone(),
+            Some(AgentWorkspacePrReviewActionMutation::UpsertPending(
+                action.clone(),
+            )),
+        )
+        .await
+        .unwrap()
+        .expect("proposal transition should commit");
+    assert_eq!(
+        proposed.monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    );
+    assert_eq!(
+        proposed.action.as_ref().unwrap().status,
+        AgentWorkspacePrReviewActionStatus::Pending
+    );
+
+    let mut submitting_monitor = proposed.monitor;
+    submitting_monitor.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
+    let claimed = repo
+        .transition_pr_review_state_if_nonterminal(
+            submitting_monitor,
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id: proposed.action.as_ref().unwrap().id.clone(),
+                expected: AgentWorkspacePrReviewActionStatus::Pending,
+                status: AgentWorkspacePrReviewActionStatus::Submitting,
+                submitted_review_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .expect("claim transition should commit");
+    repo.settle_pr_review_terminal(&conversation_id, 413, "merged", "Merged")
+        .await
+        .unwrap();
+    let stale = repo
+        .transition_pr_review_state_if_nonterminal(
+            claimed.monitor,
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id: claimed.action.unwrap().id,
+                expected: AgentWorkspacePrReviewActionStatus::Submitting,
+                status: AgentWorkspacePrReviewActionStatus::Submitted,
+                submitted_review_id: Some("late-review".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(stale.is_none());
+    assert_eq!(
+        repo.get_pr_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    );
+    assert_eq!(
+        repo.get_pr_review_action(&action.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkspacePrReviewActionStatus::Superseded
+    );
+}
+
+#[tokio::test]
+async fn terminal_monitor_rearms_only_after_live_open_and_rejects_terminal_settings() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("terminal-rearm-memory");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 414,
+        url: None,
+        title: None,
+        head_ref_name: "feature/rearm".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+
+    assert!(repo
+        .settle_pr_review_terminal(&conversation_id, 414, "invalid", "Invalid")
+        .await
+        .is_err());
+    let settled = repo
+        .settle_pr_review_terminal(&conversation_id, 414, "merged", "Merged")
+        .await
+        .unwrap();
+    assert!(settled.superseded_action_ids.is_empty());
+    assert!(repo
+        .rearm_terminal_pr_review_monitor_after_live_open(&conversation_id, 414)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .set_pr_review_auto_approve_enabled(&conversation_id, true)
+        .await
+        .is_err());
+    assert!(repo
+        .set_pr_review_monitor_enabled(&conversation_id, true)
+        .await
+        .is_err());
+
+    repo.update_publication(
+        &conversation_id,
+        Some(414),
+        None,
+        Some("open"),
+        Some("pushed"),
+    )
+    .await
+    .unwrap();
+    let rearmed = repo
+        .rearm_terminal_pr_review_monitor_after_live_open(&conversation_id, 414)
+        .await
+        .unwrap()
+        .expect("live open observation rearms terminal monitor");
+    assert_eq!(
+        rearmed.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert!(rearmed.monitor_enabled);
+    assert!(rearmed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn guarded_action_mutations_require_live_review_pr_authority() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("guarded-actions-memory");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 415,
+        url: None,
+        title: None,
+        head_ref_name: "feature/guarded-actions".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head".to_string()),
+    });
+    repo.create_or_update(workspace).await.unwrap();
+
+    let action = pr_review_action(conversation_id.clone(), 415, "head");
+    let saved = repo
+        .create_or_update_pr_review_action_if_nonterminal(action.clone())
+        .await
+        .unwrap();
+    assert!(!repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 999)
+        .await
+        .unwrap());
+    assert!(repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 415)
+        .await
+        .unwrap());
+
+    repo.settle_pr_review_terminal(&conversation_id, 415, "closed", "Closed")
+        .await
+        .unwrap();
+    assert!(repo
+        .create_or_update_pr_review_action_if_nonterminal(pr_review_action(
+            conversation_id.clone(),
+            415,
+            "new-head",
+        ))
+        .await
+        .is_err());
+    assert!(!repo
+        .claim_pending_pr_review_action_if_nonterminal(&saved.id, &conversation_id, 415)
+        .await
+        .unwrap());
 }
 
 fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {

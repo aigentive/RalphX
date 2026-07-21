@@ -304,10 +304,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
 
     async fn get_latest_action(
         &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
         action_kind: crate::domain::entities::AgentRunActionKind,
         action_context_id: &str,
         action_target_id: &str,
     ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
         let action_kind = action_kind.to_string();
         let action_context_id = action_context_id.to_string();
         let action_target_id = action_target_id.to_string();
@@ -323,9 +325,53 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
                      FROM agent_runs
-                     WHERE action_kind = ?1 AND action_context_id = ?2 AND action_target_id = ?3
+                     WHERE conversation_id = ?1 AND action_kind = ?2
+                       AND action_context_id = ?3 AND action_target_id = ?4
                      ORDER BY started_at DESC LIMIT 1",
-                    rusqlite::params![action_kind, action_context_id, action_target_id],
+                    rusqlite::params![
+                        conversation_id,
+                        action_kind,
+                        action_context_id,
+                        action_target_id
+                    ],
+                    row_to_agent_run,
+                )
+            })
+            .await
+    }
+
+    async fn get_active_action(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+        action_kind: crate::domain::entities::AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let action_kind = action_kind.to_string();
+        let action_context_id = action_context_id.to_string();
+        let action_target_id = action_target_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            approval_policy, sandbox_mode, run_chain_id, parent_run_id,
+                            action_kind, action_context_id, action_target_id,
+                            persona_id, persona_slug, persona_version, persona_content_hash,
+                            persona_injected, persona_skipped_reason
+                     FROM agent_runs
+                     WHERE conversation_id = ?1 AND status = 'running'
+                       AND action_kind = ?2 AND action_context_id = ?3 AND action_target_id = ?4
+                     ORDER BY started_at DESC LIMIT 1",
+                    rusqlite::params![
+                        conversation_id,
+                        action_kind,
+                        action_context_id,
+                        action_target_id
+                    ],
                     row_to_agent_run,
                 )
             })
@@ -483,6 +529,21 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                     rusqlite::params![Utc::now().to_rfc3339(), id],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_runs
+                     SET status = 'completed', completed_at = ?1, error_message = NULL
+                     WHERE id = ?2 AND status = 'running'",
+                    rusqlite::params![Utc::now().to_rfc3339(), id],
+                )?;
+                Ok(changed == 1)
             })
             .await
     }

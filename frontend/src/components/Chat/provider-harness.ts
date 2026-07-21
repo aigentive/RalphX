@@ -7,6 +7,8 @@ export interface ProviderMetadata {
   effectiveModelId?: string | null | undefined;
   logicalEffort?: string | null | undefined;
   effectiveEffort?: string | null | undefined;
+  approvalPolicy?: string | null | undefined;
+  sandboxMode?: string | null | undefined;
   inputTokens?: number | null | undefined;
   outputTokens?: number | null | undefined;
   cacheCreationTokens?: number | null | undefined;
@@ -100,7 +102,6 @@ export function describeProviderLineage(
       ? "Continuing stored provider session"
       : "Stored provider session";
   }
-
   if (harnessLabel) {
     return variant === "panel"
       ? `New attempt will use ${harnessLabel}`
@@ -143,6 +144,13 @@ export function formatProviderEvidenceTooltip(metadata: ProviderMetadata): strin
 
   if (metadata.providerSessionId) {
     details.push(`Session ref: ${formatProviderSessionSnippet(metadata.providerSessionId, 12)}`);
+  }
+
+  if (metadata.approvalPolicy) {
+    details.push(`Approval: ${metadata.approvalPolicy}`);
+  }
+  if (metadata.sandboxMode) {
+    details.push(`Sandbox: ${metadata.sandboxMode}`);
   }
 
   return details.length > 0 ? details.join(" • ") : null;

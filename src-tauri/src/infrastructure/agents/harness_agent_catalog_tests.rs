@@ -1464,6 +1464,8 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "fs_grep",
         "fs_glob",
         "get_workspace_review_context",
+        "list_workspace_review_files",
+        "get_workspace_review_diff_page",
         "write_workspace_review_artifact",
         "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",
@@ -1519,6 +1521,62 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
         "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
+    );
+}
+
+#[test]
+fn review_agent_contracts_distinguish_local_workspace_review_from_remote_pr_review() {
+    let root = project_root();
+    let workspace_definition = load_canonical_agent_definition(&root, "ralphx-workspace-reviewer")
+        .expect("expected canonical workspace reviewer definition");
+    let pr_definition = load_canonical_agent_definition(&root, "ralphx-pr-reviewer")
+        .expect("expected canonical PR reviewer definition");
+    let workspace_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-reviewer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected workspace reviewer Codex prompt");
+    let pr_prompt =
+        load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
+            .expect("expected PR reviewer Claude prompt");
+
+    assert!(
+        workspace_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("local agent workspace changes"))
+            && workspace_prompt.contains("local Workspace Review")
+            && workspace_prompt.contains("publish gate"),
+        "workspace reviewer metadata and prompt should identify the local publish-gate workflow"
+    );
+    assert!(
+        !workspace_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && !workspace_prompt.contains("propose_pr_review_action"),
+        "workspace reviewer must not expose the GitHub PR action surface"
+    );
+    assert!(
+        pr_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("remote GitHub pull request"))
+            && pr_prompt.contains("remote GitHub pull request")
+            && pr_prompt.contains("local checkout")
+            && pr_prompt.contains("user-approved GitHub review action"),
+        "PR reviewer metadata and prompt should identify the remote GitHub workflow and local inspection substrate"
+    );
+    assert!(
+        pr_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && pr_prompt.contains("propose_pr_review_action"),
+        "PR reviewer should retain the pending GitHub action proposal surface"
     );
 }
 
@@ -2161,11 +2219,25 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
 #[test]
 fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
     let root = project_root();
+    let required_review_lenses = [
+        "industry best practices",
+        "reuses existing components",
+        "UI/UX",
+        "product sense",
+        "remote base branch drift",
+        "instead of assuming no drift",
+    ];
     for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
         let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
             .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
         assert!(prompt.contains("backend-started Verify Plan"));
         assert!(prompt.contains("complete_plan_verification"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} ideation prompt must require the {required_lens:?} review lens"
+            );
+        }
         for retired in [
             "ralphx-plan-verifier",
             "create_child_session(purpose: \"verification\")",
@@ -2188,8 +2260,26 @@ fn ideation_prompts_preserve_model_native_verification_without_legacy_topology()
     .expect("missing Claude prompt for ralphx-ideation-team-lead");
     assert!(team_prompt.contains("backend-started Verify Plan"));
     assert!(team_prompt.contains("complete_plan_verification"));
+    for required_lens in required_review_lenses {
+        assert!(
+            team_prompt.contains(required_lens),
+            "team-lead prompt must require the {required_lens:?} review lens"
+        );
+    }
     assert!(!team_prompt.contains("ralphx-plan-verifier"));
     assert!(!team_prompt.contains("stop_verification"));
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt =
+            load_harness_agent_prompt_for_profile(&root, "ralphx-ideation", harness, Some("plan"))
+                .unwrap_or_else(|| panic!("missing {harness:?} Plan profile prompt"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} Plan profile prompt must require the {required_lens:?} review lens"
+            );
+        }
+    }
 }
 
 #[test]
