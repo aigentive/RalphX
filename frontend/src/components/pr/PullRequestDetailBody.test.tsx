@@ -107,7 +107,10 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
 function renderBody(
   detail: PullRequestDetail | null = null,
   shellOverrides: Partial<NonNullable<Parameters<typeof PullRequestDetailBody>[0]["shell"]>> = {},
-  bodyOverrides: { showRxConversation?: boolean } = {},
+  bodyOverrides: {
+    showRxConversation?: boolean;
+    presentation?: "default" | "agentsWorkspace";
+  } = {},
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -262,6 +265,41 @@ describe("PullRequestDetailBody", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("rx-chat-panel")).not.toBeInTheDocument(),
     );
+  });
+
+  it("removes duplicated workspace chrome only in the Agents presentation", () => {
+    renderBody(
+      loadedDetail(),
+      {},
+      {
+        presentation: "agentsWorkspace",
+        showRxConversation: false,
+      },
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Add PR detail" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Open")).not.toBeInTheDocument();
+    expect(screen.queryByText("#42")).not.toBeInTheDocument();
+    expect(screen.queryByText("head feat/pr-detail")).not.toBeInTheDocument();
+    expect(screen.queryByText("feat/pr-detail")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open pull request in GitHub" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pr-status-strip")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Description" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Review/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Checks/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Comments/ }),
+    ).toBeInTheDocument();
+    expect(usePullRequestDetail).toHaveBeenCalled();
+    for (const [, options] of vi.mocked(usePullRequestDetail).mock.calls) {
+      expect(options).not.toHaveProperty("preferCachedData");
+    }
   });
 
   it("does not claim an unknown shell-only pull request is open", () => {
