@@ -4,6 +4,10 @@ import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
+import type {
+  AgentConversationWorkspace,
+  AgentWorkspaceReviewContext,
+} from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import {
   DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
@@ -12,6 +16,7 @@ import {
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
@@ -70,6 +75,8 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
+  getWorkspacePrAnnotationsMock: vi.fn(),
+  getWorkspaceReviewHunkAnnotationsMock: vi.fn(),
   getWorkspaceReviewContextMock: vi.fn(),
   startWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
@@ -100,6 +107,10 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   preloadAgentsArtifactPaneMock: vi.fn(),
   preloadAgentTerminalExperienceMock: vi.fn(),
   artifactPaneModuleLoadedMock: vi.fn(),
+  realPublishPanelState: {
+    enabled: false,
+    reviewContext: null as unknown,
+  },
   terminalDrawerModuleLoadedMock: vi.fn(),
   terminalDrawerMountMock: vi.fn(),
   terminalDrawerUnmountMock: vi.fn(),
@@ -207,6 +218,8 @@ const {
   getWorkspaceChangesMock,
   getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
+  getWorkspacePrAnnotationsMock,
+  getWorkspaceReviewHunkAnnotationsMock,
   getWorkspaceReviewContextMock,
   startWorkspaceReviewMock,
   getWorkspaceDiffMock,
@@ -237,6 +250,7 @@ const {
   preloadAgentsArtifactPaneMock,
   preloadAgentTerminalExperienceMock,
   artifactPaneModuleLoadedMock,
+  realPublishPanelState,
   terminalDrawerModuleLoadedMock,
   terminalDrawerMountMock,
   terminalDrawerUnmountMock,
@@ -856,6 +870,10 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
+    getAgentConversationWorkspacePrAnnotations: (...args: unknown[]) =>
+      getWorkspacePrAnnotationsMock(...args),
+    getAgentConversationWorkspaceReviewHunkAnnotations: (...args: unknown[]) =>
+      getWorkspaceReviewHunkAnnotationsMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
       getWorkspaceDiffMock(...args),
     getAgentConversationWorkspaceCommits: (...args: unknown[]) =>
@@ -1041,7 +1059,10 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   },
 }));
 
-vi.mock("./AgentsArtifactPane", () => {
+vi.mock("./AgentsArtifactPane", async () => {
+  const { AgentPublishPanel } = await vi.importActual<
+    typeof import("./AgentsPublishPanel")
+  >("./AgentsPublishPanel");
   artifactPaneModuleLoadedMock();
   return {
     AgentsArtifactPane: ({
@@ -1054,11 +1075,17 @@ vi.mock("./AgentsArtifactPane", () => {
       onFocusVerificationSession,
       onOpenAutomation,
       onPublishWorkspace,
+      workspace,
+      projectBaseBranch,
+      isPublishingWorkspace,
     }: {
       conversation: AgentConversation | null;
+      workspace?: AgentConversationWorkspace | null;
       activeTab?: string;
       focusedIdeationSessionId?: string | null;
-      publishFocusRequest?: { filePath: string; mode: string } | null;
+      publishFocusRequest?: AgentPublishFocusRequest | null;
+      projectBaseBranch?: string | null;
+      isPublishingWorkspace?: boolean;
       onClose?: () => void;
       onFocusIdeationSessionForConversation?: (
         conversationId: string,
@@ -1070,7 +1097,28 @@ vi.mock("./AgentsArtifactPane", () => {
       ) => void;
       onOpenAutomation?: (automationId: string) => void;
       onPublishWorkspace?: (conversationId: string) => Promise<void>;
-    }) => (
+    }) => realPublishPanelState.enabled && activeTab === "publish" ? (
+      <div
+        data-testid="agents-artifact-pane"
+        data-active-tab={activeTab ?? ""}
+        data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+        data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
+        data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-automation-id={conversation?.automationId ?? ""}
+      >
+        <AgentPublishPanel
+          workspace={workspace ?? null}
+          conversationTitle={conversation?.title ?? null}
+          projectBaseBranch={projectBaseBranch ?? null}
+          onPublishWorkspace={onPublishWorkspace}
+          isPublishingWorkspace={isPublishingWorkspace ?? false}
+          publishFocusRequest={publishFocusRequest ?? null}
+          reviewContext={
+            realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
+          }
+        />
+      </div>
+    ) : (
       <div
         data-testid="agents-artifact-pane"
         data-active-tab={activeTab ?? ""}
@@ -1554,6 +1602,8 @@ export function setupAgentsViewTest() {
   getWorkspaceChangesMock.mockReset();
   getWorkspaceChangeSummaryMock.mockReset();
   getWorkspaceReviewMock.mockReset();
+  getWorkspacePrAnnotationsMock.mockReset();
+  getWorkspaceReviewHunkAnnotationsMock.mockReset();
   getWorkspaceReviewContextMock.mockReset();
   startWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
@@ -1584,6 +1634,8 @@ export function setupAgentsViewTest() {
   integratedChatPanelRenderMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
   artifactPaneModuleLoadedMock.mockReset();
+  realPublishPanelState.enabled = false;
+  realPublishPanelState.reviewContext = null;
   preloadAgentTerminalExperienceMock.mockReset();
   terminalDrawerModuleLoadedMock.mockReset();
   terminalDrawerMountMock.mockReset();
@@ -1692,6 +1744,20 @@ export function setupAgentsViewTest() {
     commits: [],
     baseRef: "main",
     headRef: "HEAD",
+  });
+  getWorkspacePrAnnotationsMock.mockResolvedValue({
+    prNumber: 0,
+    headSha: null,
+    annotations: [],
+    sourcesUnavailable: [],
+  });
+  getWorkspaceReviewHunkAnnotationsMock.mockResolvedValue({
+    artifactId: null,
+    artifactVersion: null,
+    targetScope: null,
+    headSha: null,
+    diffFingerprint: null,
+    annotations: [],
   });
   getWorkspaceReviewContextMock.mockResolvedValue({
     success: true,

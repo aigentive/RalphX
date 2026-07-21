@@ -5535,7 +5535,7 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
     expect(
-      screen.getByText("Review changes before publishing."),
+      screen.getByText("Loading changed files..."),
     ).toBeInTheDocument();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(getWorkspaceChangesMock).not.toHaveBeenCalled();
@@ -9169,7 +9169,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(publishButton).toHaveTextContent("Commit & Publish"),
     );
-    await screen.findByText("Review changes before publishing.");
+    await screen.findByText("Loading changed files...");
     expect(publishButton).toBeEnabled();
     expect(publishButton).not.toHaveTextContent("PR is up to date");
 
@@ -10761,7 +10761,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText("Monitoring PR")).toBeInTheDocument();
   });
 
-  it("shows synced GitHub PR annotation count for published workspaces", async () => {
+  it("does not render a redundant synced-annotation summary for published workspaces", async () => {
     getWorkspacePrAnnotationsMock.mockResolvedValue({
       prNumber: 78,
       headSha: "head-sha",
@@ -10798,16 +10798,12 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    await waitFor(
-      () =>
-        expect(
-          screen.getByTestId("agents-pr-annotations-summary"),
-        ).toHaveTextContent("1 GitHub annotation synced"),
+    await waitFor(() =>
+      expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith("conversation-1"),
       deferredHydrationTimeout,
     );
-    expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith(
-      "conversation-1",
-    );
+    expect(screen.queryByText("1 GitHub annotation synced")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-summaries")).not.toBeInTheDocument();
   });
 
   it("shows partial GitHub PR annotation unavailability for published workspaces", async () => {
@@ -10835,7 +10831,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(
       () =>
         expect(
-          screen.getByTestId("agents-pr-annotations-summary"),
+          screen.getByTestId("agents-pr-annotations-partial-warning"),
         ).toHaveTextContent("GitHub annotations partially unavailable"),
       deferredHydrationTimeout,
     );
