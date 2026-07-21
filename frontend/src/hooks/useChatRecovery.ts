@@ -131,11 +131,19 @@ export function useChatRecovery({
         if (!hasStreamingTasks && !hasToolCalls && !hasPartialText) return;
 
         if (setStreamingTasks && hasStreamingTasks) {
-          setStreamingTasks((prev) => mergeActiveStreamingTasks(prev, activeState.streaming_tasks));
+          setStreamingTasks((prev) => mergeActiveStreamingTasks(
+            prev,
+            activeState.streaming_tasks,
+            activeState.tool_calls,
+          ));
         }
         if (setStreamingToolCalls && hasToolCalls) {
           setStreamingToolCalls((prev) =>
-            mergeActiveStreamingToolCalls(prev, activeState.tool_calls)
+            mergeActiveStreamingToolCalls(
+              prev,
+              activeState.tool_calls,
+              activeState.streaming_tasks,
+            )
           );
         }
         if (setStreamingContentBlocks) {

@@ -1360,6 +1360,7 @@ export function IntegratedChatPanel({
     contextType: currentContextType,
     streamingToolCalls,
     streamingContentBlocks,
+    streamingTasks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
     setStreamingTasks,
