@@ -2,11 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentTaskListSummary, AgentTaskSummary } from "@/api/agent-tasks";
 import type {
-  AgentTaskListSummary,
-  AgentTaskSummary,
-} from "@/api/agent-tasks";
-import type { AgentConversationRuntimeIndexRow } from "@/api/chat";
+  AgentConversationRuntimeIndexRow,
+  AgentConversationWorkspace,
+} from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import type { AgentsChatFocus } from "./agentChatFocus";
@@ -57,6 +57,7 @@ interface RenderCardOptions {
   currentFocus?: AgentsChatFocus;
   taskLedgerContext?: { contextType: string; contextId: string } | null;
   isAgentGenerating?: boolean;
+  workspaceOverrides?: Partial<AgentConversationWorkspace>;
 }
 
 function renderCard({
@@ -66,6 +67,7 @@ function renderCard({
   currentFocus = { type: "workspace" },
   taskLedgerContext = null,
   isAgentGenerating = false,
+  workspaceOverrides = {},
 }: RenderCardOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -102,7 +104,11 @@ function renderCard({
             projectId="project-1"
             workspace={
               nextConversationId
-                ? conversationWorkspaceFixture({ conversationId: nextConversationId })
+                ? conversationWorkspaceFixture({
+                    conversationId: nextConversationId,
+                    ...workspaceOverrides,
+                    ...options.workspaceOverrides,
+                  })
                 : null
             }
             isFocusedChildChat={false}
@@ -247,6 +253,49 @@ describe("AgentsComposerWorkspaceChangesCard", () => {
         screen.queryByTestId("agents-composer-context-tray-body"),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it.each(["merged", "closed"] as const)(
+    "suppresses live workspace changes for a cold %s terminal workspace",
+    async (publicationPrStatus) => {
+      renderCard({
+        withChanges: true,
+        workspaceOverrides: {
+          publicationPrNumber: 42,
+          publicationPrStatus,
+          publicationPushStatus: "pushed",
+        },
+      });
+
+      expect(
+        await screen.findByTestId("agents-composer-runtimes-toggle"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("diff-filter-trigger"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Workspace changes")).not.toBeInTheDocument();
+    },
+  );
+
+  it("hides an open changes panel synchronously when the workspace becomes terminal", async () => {
+    const { rerenderCard } = renderCard({ withChanges: true });
+    fireEvent.click(await screen.findByTestId("diff-filter-trigger"));
+    expect(
+      screen.getByTestId("agents-composer-workspace-changes-list"),
+    ).toBeInTheDocument();
+
+    rerenderCard({
+      workspaceOverrides: {
+        publicationPrNumber: 42,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      },
+    });
+
+    expect(screen.queryByTestId("diff-filter-trigger")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-composer-workspace-changes-list"),
+    ).not.toBeInTheDocument();
   });
 
   it("opens an empty runtime index without rendering runtime groups", async () => {

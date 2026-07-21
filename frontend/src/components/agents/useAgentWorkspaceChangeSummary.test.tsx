@@ -30,6 +30,9 @@ const mockGetUnstagedFiles = vi.mocked(
 const mockGetCumulativeFiles = vi.mocked(
   diffApi.getAgentConversationWorkspaceCumulativeFileChanges,
 );
+const mockGetCommitFiles = vi.mocked(
+  diffApi.getAgentConversationWorkspaceCommitFileChanges,
+);
 
 function makeQueryClient() {
   return new QueryClient({
@@ -255,5 +258,64 @@ describe("useAgentWorkspaceChangeSummary", () => {
     await waitFor(() => expect(result.current.currentFiles).toEqual([cumulativeFile]));
     expect(mockGetStagedFiles).not.toHaveBeenCalled();
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+  });
+
+  it("disables every query and neutralizes cached results when the surface is disabled", () => {
+    const queryClient = makeQueryClient();
+    const cachedFile = {
+      path: "src/historical.ts",
+      status: "modified" as const,
+      additions: 8,
+      deletions: 3,
+      isGenerated: false,
+    };
+    queryClient.setQueryData(
+      ["agents", "workspace-diff", "conversation-1", "staged-files"],
+      [cachedFile],
+    );
+    queryClient.setQueryData(
+      ["agents", "workspace-diff", "conversation-1", "unstaged-files"],
+      [cachedFile],
+    );
+    queryClient.setQueryData(
+      ["agents", "workspace-diff", "conversation-1", "commit-files", "sha-1"],
+      [cachedFile],
+    );
+    queryClient.setQueryData(
+      ["agents", "workspace-diff", "conversation-1", "cumulative-files"],
+      [cachedFile],
+    );
+
+    const { result } = renderHook(
+      () => ({
+        commit: useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview([cachedFile]),
+          defaultMode: "sha-1",
+          enabled: false,
+        }),
+        cumulative: useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview([cachedFile], { supportsWorktreeModes: false }),
+          defaultMode: "cumulative",
+          enabled: false,
+        }),
+      }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    expect(mockGetStagedFiles).not.toHaveBeenCalled();
+    expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+    expect(mockGetCommitFiles).not.toHaveBeenCalled();
+    expect(mockGetCumulativeFiles).not.toHaveBeenCalled();
+    for (const state of [result.current.commit, result.current.cumulative]) {
+      expect(state.currentFiles).toEqual([]);
+      expect(state.currentFileCount).toBe(0);
+      expect(state.workspaceChangeCount).toBe(0);
+      expect(state.totalAdditions).toBe(0);
+      expect(state.totalDeletions).toBe(0);
+      expect(state.currentFilesError).toBeNull();
+      expect(state.isCurrentFilesLoading).toBe(false);
+    }
   });
 });

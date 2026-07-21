@@ -832,7 +832,7 @@ describe("AgentsPublishFileDiff", () => {
   });
 
   describe("lazy hydration — shouldHydrate prop", () => {
-    it("shows pre-hydration placeholder when shouldHydrate=false and expanded", () => {
+    it("shows an explicit loading state when shouldHydrate=false and expanded", () => {
       render(
         withProviders(
           <AgentsPublishFileDiff
@@ -848,7 +848,17 @@ describe("AgentsPublishFileDiff", () => {
           />,
         ),
       );
-      expect(screen.getByTestId("file-diff-pre-hydration")).toBeInTheDocument();
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveAttribute(
+        "aria-label",
+        "Loading file diff",
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveAttribute(
+        "aria-busy",
+        "true",
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toHaveTextContent(
+        "Loading diff",
+      );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
     });
 

@@ -2593,6 +2593,12 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_staged_file_changes: async () => [],
+  get_agent_conversation_workspace_unstaged_file_changes: async () => [],
+  get_agent_conversation_workspace_cumulative_file_changes: async () =>
+    mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_pr_annotations: async () => [],
+  get_agent_conversation_workspace_review_hunk_annotations: async () => [],
   get_agent_conversation_workspace_review: async () => ({
     changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
     commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
