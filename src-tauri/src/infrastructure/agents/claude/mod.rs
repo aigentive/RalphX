@@ -22,9 +22,8 @@ mod mcp_registration_repair_tests;
 
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use agent_config::live_flags::{
-    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
-    reset_standalone_conversations_override_for_test, set_agent_personas_override,
-    set_composer_folder_references_override, set_standalone_conversations_override,
+    reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
+    set_agent_personas_override, set_standalone_conversations_override,
 };
 pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{

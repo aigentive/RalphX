@@ -421,7 +421,6 @@ async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockste
         Some(&app_data_dir),
         Some(&folder_reference_app_data_dir),
         Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
-        true,
     )
     .await
     .expect("resolve Project builder context");
@@ -450,7 +449,6 @@ async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockste
         Some(&app_data_dir),
         Some(&folder_reference_app_data_dir),
         Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
-        true,
     )
     .await
     .expect("resolve legacy ingest builder context");
@@ -489,7 +487,6 @@ async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockste
         Some(&app_data_dir),
         Some(&folder_reference_app_data_dir),
         Some(Arc::clone(&folder_repo) as Arc<dyn ConversationFolderReferenceRepository>),
-        true,
     )
     .await
     .expect("resolve Standalone builder context");
@@ -521,7 +518,6 @@ async fn resolved_spawn_context_keeps_builder_roots_and_folder_prompt_in_lockste
         Some(&app_data_dir),
         Some(&folder_reference_app_data_dir),
         Some(folder_repo as Arc<dyn ConversationFolderReferenceRepository>),
-        true,
     )
     .await
     .expect("resolve workspace-less legacy builder");

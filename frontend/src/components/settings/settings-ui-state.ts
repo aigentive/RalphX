@@ -7,17 +7,16 @@
 
 import {
   DEFAULT_SETTINGS_SECTION,
-  resolveSettingsSectionId,
+  resolveSettingsDestination,
+  type SettingsDestination,
   type SettingsSectionId,
 } from "./settings-registry";
 
 const ACTIVE_SECTION_KEY = "ralphx-settings-active-section";
 const ACTIVE_SECTION_VERSION_KEY = "ralphx-settings-active-section-version";
 const AGENTS_STATE_KEY = "ralphx-settings-agents-state";
-const SETTINGS_ACTIVE_SECTION_VERSION = 3;
+const SETTINGS_ACTIVE_SECTION_VERSION = 4;
 const AGENTS_STATE_VERSION = 1;
-const LEGACY_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "execution";
-const PRE_HARNESS_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "repository";
 
 export type AgentsTabValue = "global" | "project";
 export type AgentsDisclosureScope = "global" | `project:${string}`;
@@ -214,19 +213,12 @@ function loadActiveSectionVersion(): number {
 export function migrateActiveSectionPreference(
   raw: string | null,
   version: number,
-): SettingsSectionId | null {
-  const saved = resolveSettingsSectionId(raw);
+): SettingsDestination | null {
+  const saved = resolveSettingsDestination(raw);
   if (version >= SETTINGS_ACTIVE_SECTION_VERSION) {
     return saved;
   }
-  if (
-    saved === null ||
-    saved === LEGACY_DEFAULT_ACTIVE_SECTION ||
-    saved === PRE_HARNESS_DEFAULT_ACTIVE_SECTION
-  ) {
-    return DEFAULT_SETTINGS_SECTION;
-  }
-  return saved;
+  return saved ?? { section: DEFAULT_SETTINGS_SECTION };
 }
 
 export function migrateSettingsUiState(): void {
@@ -240,7 +232,7 @@ export function migrateSettingsUiState(): void {
     version,
   );
   if (migrated) {
-    safeSet(ACTIVE_SECTION_KEY, migrated);
+    safeSet(ACTIVE_SECTION_KEY, migrated.section);
   } else {
     safeRemove(ACTIVE_SECTION_KEY);
   }
@@ -248,9 +240,13 @@ export function migrateSettingsUiState(): void {
 }
 
 export function loadActiveSection(): SettingsSectionId | null {
-  migrateSettingsUiState();
-  const saved = safeGet(ACTIVE_SECTION_KEY);
-  return resolveSettingsSectionId(saved);
+  return loadActiveDestination()?.section ?? null;
+}
+
+export function loadActiveDestination(): SettingsDestination | null {
+  const version = loadActiveSectionVersion();
+  const raw = safeGet(ACTIVE_SECTION_KEY);
+  return migrateActiveSectionPreference(raw, version);
 }
 
 export function saveActiveSection(section: SettingsSectionId): void {

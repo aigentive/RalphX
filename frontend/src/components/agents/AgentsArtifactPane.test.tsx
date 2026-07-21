@@ -5097,7 +5097,7 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("opens Execution settings from PR automation tooltip actions", async () => {
+  it("opens Workspace settings from PR automation tooltip actions", async () => {
     const user = userEvent.setup();
     renderPane(
       "publish",
@@ -5116,13 +5116,13 @@ describe("AgentsArtifactPane", () => {
       }),
     );
     const settingsActions = await screen.findAllByTestId(
-      "agents-tooltip-settings-execution",
+      "agents-tooltip-settings-workspace",
     );
     await user.click(settingsActions[0]);
 
     expect(useUiStore.getState().activeModal).toBe("settings");
     expect(useUiStore.getState().modalContext).toEqual({
-      section: "execution",
+      section: "workspace",
     });
   });
 

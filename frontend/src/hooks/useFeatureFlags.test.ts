@@ -157,7 +157,6 @@ describe("featureFlagsSchema", () => {
     expect(flags.agentPersonas).toBe(false);
     expect(flags.agentConversationTeam).toBe(false);
     expect(flags.agentConversationWorkflows).toBe(false);
-    expect(flags.composerFolderReferences).toBe(false);
     expect(flags.standaloneConversations).toBe(false);
     expect(flags.agentConversationAutopilot).toBe(false);
   });
@@ -193,7 +192,6 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
-      composerFolderReferences: false,
       standaloneConversations: false,
       agentConversationAutopilot: false,
     });
@@ -220,7 +218,6 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
-      composerFolderReferences: false,
       standaloneConversations: false,
       agentConversationAutopilot: false,
     });
@@ -253,7 +250,6 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
-      composerFolderReferences: false,
       standaloneConversations: false,
       agentConversationAutopilot: false,
     });
@@ -261,24 +257,6 @@ describe("useFeatureFlags", () => {
 });
 
 describe("useUpdateFeatureFlags", () => {
-  it("updates folder references independently", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({
-      activityPage: true,
-      extensibilityPage: true,
-      composerFolderReferences: true,
-    });
-
-    const { result } = renderHook(() => useUpdateFeatureFlags(), {
-      wrapper: createWrapper(),
-    });
-    result.current.mutate({ composerFolderReferences: true });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
-      input: { composerFolderReferences: true },
-    });
-  });
-
   it("updates Team independently without writing Workflows", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       activityPage: true,

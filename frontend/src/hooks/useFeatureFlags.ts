@@ -28,7 +28,6 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   agentPersonas: false,
   agentConversationTeam: false,
   agentConversationWorkflows: false,
-  composerFolderReferences: false,
   standaloneConversations: false,
   agentConversationAutopilot: false,
 };
@@ -61,13 +60,11 @@ export function useUpdateFeatureFlags() {
   return useMutation({
     mutationFn: async ({
       agentPersonas,
-      composerFolderReferences,
       agentConversationTeam,
       agentConversationWorkflows,
       agentConversationAutopilot,
     }: {
       agentPersonas?: boolean;
-      composerFolderReferences?: boolean;
       agentConversationTeam?: boolean;
       agentConversationWorkflows?: boolean;
       agentConversationAutopilot?: boolean;
@@ -75,9 +72,6 @@ export function useUpdateFeatureFlags() {
       const raw = await invoke("update_ui_feature_flags", {
         input: {
           ...(agentPersonas !== undefined && { agentPersonas }),
-          ...(composerFolderReferences !== undefined && {
-            composerFolderReferences,
-          }),
           ...(agentConversationTeam !== undefined && { agentConversationTeam }),
           ...(agentConversationWorkflows !== undefined && {
             agentConversationWorkflows,

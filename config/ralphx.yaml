@@ -32,7 +32,7 @@ file_logging: true
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
 # Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
-# Personas v2: RALPHX_UI_AGENT_PERSONAS, RALPHX_UI_COMPOSER_FOLDER_REFERENCES,
+# Personas v2: RALPHX_UI_AGENT_PERSONAS,
 # and RALPHX_UI_STANDALONE_CONVERSATIONS.
 ui:
   feature_flags:
@@ -45,8 +45,6 @@ ui:
     ticketing_dashboard: false
     # Enables experimental agent persona controls.
     agent_personas: false
-    # Enables persistent, read-only folder references in supported Agent conversations.
-    composer_folder_references: false
     # Enables projectless Agent conversations and Global persona builds.
     standalone_conversations: false
     # A20 escape hatch: skip --resume on the send after a persona switch.
