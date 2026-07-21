@@ -20,17 +20,21 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
-import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import type { ProjectSettings } from "@/types/settings";
 
 import {
   DEFAULT_SETTINGS_SECTION,
   SETTINGS_GROUPS,
-  resolveSettingsSectionId,
-  visibleSettingsSections,
+  SETTINGS_SECTIONS,
+  resolveSettingsDestination,
+  type SettingsDestination,
   type SettingsSectionId,
 } from "./settings-registry";
-import { loadActiveSection, saveActiveSection } from "./settings-ui-state";
+import {
+  loadActiveDestination,
+  migrateSettingsUiState,
+  saveActiveSection,
+} from "./settings-ui-state";
 import {
   cancelScheduledJob,
   scheduleAfterPaint,
@@ -60,25 +64,14 @@ export default function SettingsDialog({
   const modalContext = useUiStore((s) => s.modalContext);
   const closeModal = useUiStore((s) => s.closeModal);
   const isOpen = activeModal === "settings";
-  const ideationSettingsQuery = useIdeationSettings(isOpen);
-  const tasksEnabled =
-    !ideationSettingsQuery.isLoading &&
-    !ideationSettingsQuery.isError &&
-    ideationSettingsQuery.settings.tasksEnabled;
-
-  const [activeSection, setActiveSectionState] = useState<SettingsSectionId>(
-    () => loadActiveSection() ?? DEFAULT_SETTINGS_SECTION,
+  const [activeDestination, setActiveDestination] = useState<SettingsDestination>(
+    () => loadActiveDestination() ?? { section: DEFAULT_SETTINGS_SECTION },
   );
-  const visibleSections = visibleSettingsSections(tasksEnabled);
-  const effectiveActiveSection = visibleSections.some(
-    (section) => section.id === activeSection,
-  )
-    ? activeSection
-    : "ideation-workflow";
+  const activeSection = activeDestination.section;
   const shouldRenderFrame = useDeferredDialogFrame(isOpen);
   const isSectionHydrated = useDeferredHydratedSection(
     isOpen,
-    effectiveActiveSection,
+    activeSection,
   );
   const persistJobRef = useRef<ScheduledJob | null>(null);
   const closeJobRef = useRef<ScheduledJob | null>(null);
@@ -95,7 +88,7 @@ export default function SettingsDialog({
 
   const setActiveSection = useCallback(
     (section: SettingsSectionId) => {
-      setActiveSectionState(section);
+      setActiveDestination({ section });
       persistActiveSection(section);
     },
     [persistActiveSection],
@@ -137,23 +130,30 @@ export default function SettingsDialog({
   }, [isOpen]);
 
   useEffect(() => {
-    if (isOpen) {
-      const section = modalContext?.["section"];
-      const resolvedSection = resolveSettingsSectionId(section);
-      if (resolvedSection) {
-        setActiveSection(resolvedSection);
-      }
-    }
-  }, [isOpen, modalContext, setActiveSection]);
+    migrateSettingsUiState();
+  }, []);
 
   useEffect(() => {
-    if (!ideationSettingsQuery.isLoading && activeSection !== effectiveActiveSection) {
-      setActiveSection(effectiveActiveSection);
+    if (isOpen) {
+      const section = modalContext?.["section"];
+      const destination = resolveSettingsDestination(section);
+      if (destination) {
+        const requestedTab = modalContext?.["tab"];
+        const tab =
+          requestedTab === "general" ||
+          requestedTab === "review-policy" ||
+          requestedTab === "autonomy-policy" ||
+          requestedTab === "review"
+            ? requestedTab
+            : destination.tab;
+        setActiveDestination(tab ? { ...destination, tab } : destination);
+        persistActiveSection(destination.section);
+      }
     }
-  }, [activeSection, effectiveActiveSection, ideationSettingsQuery.isLoading, setActiveSection]);
+  }, [isOpen, modalContext, persistActiveSection]);
 
-  const activeSectionMeta = visibleSections.find(
-    (section) => section.id === effectiveActiveSection,
+  const activeSectionMeta = SETTINGS_SECTIONS.find(
+    (section) => section.id === activeSection,
   );
 
   const disabled = isLoadingSettings || isSavingSettings;
@@ -216,7 +216,7 @@ export default function SettingsDialog({
           {/* Left rail — hidden below lg breakpoint */}
           <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
             {SETTINGS_GROUPS.map((group) => {
-              const groupSections = visibleSections.filter(
+               const groupSections = SETTINGS_SECTIONS.filter(
                 (s) => s.groupId === group.id
               );
               return (
@@ -225,7 +225,7 @@ export default function SettingsDialog({
                     {group.label}
                   </p>
                   {groupSections.map((section) => {
-                    const isActive = section.id === effectiveActiveSection;
+                    const isActive = section.id === activeSection;
                     return (
                       <div
                         key={section.id}
@@ -258,12 +258,12 @@ export default function SettingsDialog({
           {/* Mobile section selector — visible below lg breakpoint */}
           <div className="block lg:hidden w-full px-4 py-2 border-b border-[var(--border-subtle)] shrink-0">
             <select
-              value={effectiveActiveSection}
+              value={activeSection}
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
               className="settings-input w-full focus:outline-none"
             >
               {SETTINGS_GROUPS.map((group) => {
-                const groupSections = visibleSections.filter(
+                const groupSections = SETTINGS_SECTIONS.filter(
                   (s) => s.groupId === group.id
                 );
                 return (
@@ -284,7 +284,10 @@ export default function SettingsDialog({
             <ScrollArea className="flex-1">
               <div className="settings-pane__inner">
                 <SettingsSectionContent
-                  section={effectiveActiveSection}
+                  section={activeSection}
+                  {...(activeDestination.tab
+                    ? { destinationTab: activeDestination.tab }
+                    : {})}
                   executionSettings={executionSettings}
                   disabled={disabled}
                   isHydrated={isSectionHydrated}

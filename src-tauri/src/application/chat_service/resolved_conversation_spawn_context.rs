@@ -59,7 +59,6 @@ pub async fn resolve_conversation_spawn_context(
     runtime_app_data_dir: Option<&Path>,
     folder_reference_app_data_dir: Option<&Path>,
     folder_reference_repo: Option<Arc<dyn ConversationFolderReferenceRepository>>,
-    folder_references_enabled: bool,
 ) -> crate::error::AppResult<ResolvedConversationSpawnContext> {
     let conversation_id = conversation.id.as_str();
     let folder_roots = match (folder_reference_app_data_dir, folder_reference_repo.clone()) {
@@ -74,7 +73,6 @@ pub async fn resolve_conversation_spawn_context(
                 runtime_app_data_dir,
                 app_data_dir,
                 folder_reference_repo,
-                folder_references_enabled,
             )
             .await?
         }
@@ -91,9 +89,7 @@ pub async fn resolve_conversation_spawn_context(
             .await
         }
     };
-    let folder_refs_block = if !folder_references_enabled {
-        None
-    } else if let Some(reason) =
+    let folder_refs_block = if let Some(reason) =
         folder_references_skip_reason(conversation.context_type, effective_mode)
     {
         tracing::warn!(

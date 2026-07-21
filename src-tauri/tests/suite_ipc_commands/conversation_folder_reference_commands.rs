@@ -67,14 +67,12 @@ async fn folder_reference_commands_run_through_managed_tauri_state() {
             display_name: "Command Folder".to_string(),
         },
         &state,
-        true,
     )
     .await
     .expect("add command succeeds");
-    let listed =
-        list_conversation_folder_references_for_state(conversation_id.as_str(), &state, true)
-            .await
-            .expect("list command succeeds");
+    let listed = list_conversation_folder_references_for_state(conversation_id.as_str(), &state)
+        .await
+        .expect("list command succeeds");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, created.id);
 
@@ -84,12 +82,11 @@ async fn folder_reference_commands_run_through_managed_tauri_state() {
             folder_reference_id: created.id,
         },
         &state,
-        true,
     )
     .await
     .expect("remove command succeeds");
     assert!(
-        list_conversation_folder_references_for_state(conversation_id.as_str(), &state, true)
+        list_conversation_folder_references_for_state(conversation_id.as_str(), &state)
             .await
             .expect("list after remove succeeds")
             .is_empty()
@@ -97,7 +94,7 @@ async fn folder_reference_commands_run_through_managed_tauri_state() {
 }
 
 #[tokio::test]
-async fn folder_reference_commands_gate_feature_and_context_while_allowing_builders() {
+async fn folder_reference_commands_always_allow_supported_contexts_and_reject_others() {
     let _persona_reset = PersonaFlagOverrideReset;
     set_agent_personas_override(Some(true));
     set_standalone_conversations_override(Some(true));
@@ -167,38 +164,34 @@ async fn folder_reference_commands_gate_feature_and_context_while_allowing_build
         display_name: "Folder".to_string(),
     };
     assert!(matches!(
-        add_conversation_folder_reference_for_state(input(project_id), &state, false).await,
-        Err(AppError::FeatureDisabled(_))
-    ));
-    assert!(matches!(
-        list_conversation_folder_references_for_state(project_id.as_str(), &state, false).await,
-        Err(AppError::FeatureDisabled(_))
-    ));
-    assert!(matches!(
-        remove_conversation_folder_reference_for_state(
-            RemoveConversationFolderReferenceInput {
-                conversation_id: project_id.as_str(),
-                folder_reference_id: ChatConversationId::new().as_str(),
-            },
-            &state,
-            false,
-        )
-        .await,
-        Err(AppError::FeatureDisabled(_))
-    ));
-    assert!(matches!(
-        add_conversation_folder_reference_for_state(input(ideation_id), &state, true).await,
+        add_conversation_folder_reference_for_state(input(ideation_id), &state).await,
         Err(AppError::ConversationFolderReferenceUnsupportedContext)
     ));
-    add_conversation_folder_reference_for_state(input(builder_id), &state, true)
+    add_conversation_folder_reference_for_state(input(builder_id), &state)
         .await
         .expect("Project builder add succeeds");
-    add_conversation_folder_reference_for_state(input(standalone_builder_id), &state, true)
+    add_conversation_folder_reference_for_state(input(standalone_builder_id), &state)
         .await
         .expect("Standalone builder add succeeds");
-    add_conversation_folder_reference_for_state(input(project_id), &state, true)
+    let created = add_conversation_folder_reference_for_state(input(project_id), &state)
         .await
         .expect("enabled Project non-builder add succeeds");
+    assert_eq!(
+        list_conversation_folder_references_for_state(project_id.as_str(), &state)
+            .await
+            .expect("always-on list succeeds")
+            .len(),
+        1,
+    );
+    remove_conversation_folder_reference_for_state(
+        RemoveConversationFolderReferenceInput {
+            conversation_id: project_id.as_str(),
+            folder_reference_id: created.id,
+        },
+        &state,
+    )
+    .await
+    .expect("always-on remove succeeds");
 }
 
 #[test]

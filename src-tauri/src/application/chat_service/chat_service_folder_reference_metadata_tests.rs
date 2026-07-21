@@ -30,7 +30,6 @@ async fn snapshots_only_currently_valid_live_folders_into_message_metadata() {
         &conversation_id,
         Some(repository.clone()),
         Some(&app_data_dir),
-        true,
     )
     .await;
     let value: serde_json::Value =
@@ -64,7 +63,6 @@ async fn snapshots_only_currently_valid_live_folders_into_message_metadata() {
         &conversation_id,
         Some(repository),
         Some(&app_data_dir),
-        true,
     )
     .await;
     let after_removal: serde_json::Value =
@@ -102,7 +100,6 @@ async fn excludes_unavailable_folder_without_losing_existing_metadata() {
         &conversation_id,
         Some(repository),
         Some(&app_data_dir),
-        true,
     )
     .await;
     let value: serde_json::Value =
@@ -131,7 +128,6 @@ async fn preserves_an_existing_folder_snapshot_when_live_references_change() {
         &conversation_id,
         Some(repository),
         Some(&app_data_dir),
-        true,
     )
     .await;
 

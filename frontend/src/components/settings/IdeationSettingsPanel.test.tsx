@@ -6,8 +6,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { IdeationSettingsPanel } from "./IdeationSettingsPanel";
+import {
+  IdeationSettingsContent,
+  IdeationSettingsPanel,
+} from "./IdeationSettingsPanel";
 import { ideationApi } from "@/api/ideation";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import type { IdeationSettings } from "@/types/ideation-config";
 
 // Mock the ideation API
@@ -55,6 +59,11 @@ function createWrapper() {
   );
 }
 
+function SurfaceHarness({ surface }: { surface: "tasks" | "planning" }) {
+  const controller = useIdeationSettings();
+  return <IdeationSettingsContent controller={controller} surface={surface} />;
+}
+
 describe("IdeationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,11 +79,36 @@ describe("IdeationSettingsPanel", () => {
     });
   });
 
-  it("renders section with ShieldCheck icon and Planning & Verification title", async () => {
+  it("renders the compatibility wrapper as Tasks", () => {
     render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
 
-    expect(screen.getByText("Planning & Verification")).toBeInTheDocument();
-    expect(screen.getByText("Configure acceptance and verification gates")).toBeInTheDocument();
+    expect(screen.getByText("Tasks")).toBeInTheDocument();
+    expect(screen.getByText("Configure task and acceptance gates")).toBeInTheDocument();
+  });
+
+  it("keeps automatic verification out of the Tasks surface", async () => {
+    const user = userEvent.setup();
+    render(<SurfaceHarness surface="tasks" />, { wrapper: createWrapper() });
+
+    expect(await screen.findByTestId("enable-tasks")).toBeInTheDocument();
+    expect(screen.queryByTestId("auto-verify-plans")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("external-overrides-toggle"));
+    expect(screen.getByTestId("ext-override-verification-for-accept")).toBeInTheDocument();
+    expect(screen.queryByTestId("ext-override-auto-verify-plans")).not.toBeInTheDocument();
+  });
+
+  it("isolates automatic verification on the Planning surface", async () => {
+    const user = userEvent.setup();
+    render(<SurfaceHarness surface="planning" />, { wrapper: createWrapper() });
+
+    expect(await screen.findByTestId("auto-verify-plans")).toBeInTheDocument();
+    expect(screen.queryByTestId("enable-tasks")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("require-verification-for-accept")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("external-overrides-toggle"));
+    expect(screen.getByTestId("ext-override-auto-verify-plans")).toBeInTheDocument();
+    expect(screen.queryByTestId("ext-override-verification-for-accept")).not.toBeInTheDocument();
   });
 
   it("renders independent completion and acceptance verification controls", async () => {

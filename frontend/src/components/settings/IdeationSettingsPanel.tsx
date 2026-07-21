@@ -1,5 +1,5 @@
 /**
- * IdeationSettingsPanel - Planning & Verification gate configuration
+ * Shared Tasks and Planning gate configuration
  *
  * Features:
  * - Model-native verification policy and acceptance gate controls
@@ -199,7 +199,19 @@ function OverrideSelectRow({
 // IdeationSettingsPanel Component
 // ============================================================================
 
-export function IdeationSettingsPanel() {
+export type IdeationSettingsController = ReturnType<typeof useIdeationSettings>;
+
+interface IdeationSettingsContentProps {
+  controller: IdeationSettingsController;
+  surface: "all" | "tasks" | "planning";
+  embedded?: boolean;
+}
+
+export function IdeationSettingsContent({
+  controller,
+  surface,
+  embedded = false,
+}: IdeationSettingsContentProps) {
   const {
     settings,
     updateSettings,
@@ -208,7 +220,7 @@ export function IdeationSettingsPanel() {
     isLoading,
     isUpdating,
     updateError,
-  } = useIdeationSettings();
+  } = controller;
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const autoAcceptPlans = useUiStore((s) => s.autoAcceptPlans);
   const setAutoAcceptPlans = useUiStore((s) => s.setAutoAcceptPlans);
@@ -289,13 +301,10 @@ export function IdeationSettingsPanel() {
     });
   };
 
-  return (
-    <SectionCard
-      icon={<ShieldCheck className="w-[18px] h-[18px] text-[var(--accent-primary)]" />}
-      title="Planning & Verification"
-      description="Configure acceptance and verification gates"
-    >
-      <>
+  const content = (
+    <>
+        {surface !== "planning" && (
+          <>
         <CheckboxSettingRow
           id="enable-tasks"
           label="Enable Tasks"
@@ -340,25 +349,6 @@ export function IdeationSettingsPanel() {
         />
 
         <CheckboxSettingRow
-          id="auto-verify-draft-plans"
-          label="Verify draft plans automatically"
-          description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation"
-          checked={settings.autoVerifyDraftPlans}
-          disabled={isUpdating}
-          onChange={handleAutoVerifyDraftPlansChange}
-        />
-
-        {/* Acceptance-time fallback remains independent. */}
-        <CheckboxSettingRow
-          id="auto-verify-plans"
-          label="Queue missing verification on acceptance"
-          description="When verification is required, an acceptance attempt queues a visible Verify Plan turn"
-          checked={settings.autoVerifyPlans}
-          disabled={isUpdating}
-          onChange={handleAutoVerifyPlansChange}
-        />
-
-        <CheckboxSettingRow
           id="require-verification-for-accept"
           label="Require verification before accepting"
           description="The exact current plan artifact must have verification proof before it can be accepted"
@@ -376,59 +366,66 @@ export function IdeationSettingsPanel() {
           disabled={false}
           onChange={setAutoAcceptPlans}
         />
-
-        {/* External Session Overrides — collapsible subsection */}
+          </>
+        )}
+        {surface !== "tasks" && (
+          <>
+            <CheckboxSettingRow
+              id="auto-verify-draft-plans"
+              label="Verify draft plans automatically"
+              description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation"
+              checked={settings.autoVerifyDraftPlans}
+              disabled={isUpdating}
+              onChange={handleAutoVerifyDraftPlansChange}
+            />
+            <CheckboxSettingRow
+              id="auto-verify-plans"
+              label="Queue missing verification on acceptance"
+              description="When verification is required, an acceptance attempt queues a visible Verify Plan turn"
+              checked={settings.autoVerifyPlans}
+              disabled={isUpdating}
+              onChange={handleAutoVerifyPlansChange}
+            />
+          </>
+        )}
         <div className="pt-1">
-          <button
-            type="button"
-            data-testid="external-overrides-toggle"
-            onClick={() => setShowExternalOverrides((v) => !v)}
-            className="flex items-center gap-2 w-full py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-          >
-            {showExternalOverrides ? (
-              <ChevronDown className="w-3.5 h-3.5" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5" />
-            )}
+          <button type="button" data-testid="external-overrides-toggle" onClick={() => setShowExternalOverrides((v) => !v)} className="flex items-center gap-2 w-full py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
+            {showExternalOverrides ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
             External Session Overrides
           </button>
           {showExternalOverrides && (
             <div className="space-y-1 mt-1">
-              <OverrideSelectRow
-                id="ext-override-auto-verify-plans"
-                label="Automatic verification on acceptance"
-                description="Override acceptance-triggered Verify Plan turns for external sessions"
-                value={settings.externalOverrides.autoVerifyPlans}
-                disabled={isUpdating}
-                onChange={(v) =>
-                  handleExternalOverrideChange("autoVerifyPlans", v)
-                }
-              />
-              <OverrideSelectRow
-                id="ext-override-verification-for-accept"
-                label="Verification for accept"
-                description="Override verification-before-accept gate for external sessions"
-                value={settings.externalOverrides.requireVerificationForAccept}
-                disabled={isUpdating}
-                onChange={(v) =>
-                  handleExternalOverrideChange("requireVerificationForAccept", v)
-                }
-              />
-              <OverrideSelectRow
-                id="ext-override-accept-for-finalize"
-                label="Accept before finalizing"
-                description="Override accept-before-finalize gate for external sessions"
-                value={settings.externalOverrides.requireAcceptForFinalize}
-                disabled={isUpdating}
-                onChange={(v) =>
-                  handleExternalOverrideChange("requireAcceptForFinalize", v)
-                }
-              />
+              {surface !== "tasks" && <OverrideSelectRow id="ext-override-auto-verify-plans" label="Automatic verification on acceptance" description="Override acceptance-triggered Verify Plan turns for external sessions" value={settings.externalOverrides.autoVerifyPlans} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("autoVerifyPlans", v)} />}
+              {surface !== "planning" && (
+                <>
+                  <OverrideSelectRow id="ext-override-verification-for-accept" label="Verification for accept" description="Override verification-before-accept gate for external sessions" value={settings.externalOverrides.requireVerificationForAccept} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireVerificationForAccept", v)} />
+                  <OverrideSelectRow id="ext-override-accept-for-finalize" label="Accept before finalizing" description="Override accept-before-finalize gate for external sessions" value={settings.externalOverrides.requireAcceptForFinalize} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireAcceptForFinalize", v)} />
+                </>
+              )}
             </div>
           )}
         </div>
-      </>
+    </>
+  );
+  const body = (
+    <>
+      {content}
       <ConfirmationDialog {...confirmationDialogProps} />
+    </>
+  );
+  if (embedded) return body;
+  return (
+    <SectionCard
+      icon={<ShieldCheck className="w-[18px] h-[18px] text-[var(--accent-primary)]" />}
+      title={surface === "planning" ? "Planning" : "Tasks"}
+      description={surface === "planning" ? "Configure automatic plan verification" : "Configure task and acceptance gates"}
+    >
+      {body}
     </SectionCard>
   );
+}
+
+export function IdeationSettingsPanel() {
+  const controller = useIdeationSettings();
+  return <IdeationSettingsContent controller={controller} surface="all" />;
 }
