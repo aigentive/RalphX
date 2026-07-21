@@ -105,6 +105,8 @@ pub(crate) fn classify_legacy_user_registration(
 fn matches_historical_registration(registration: &Value, app_data_dir: &Path) -> bool {
     let resolved_node = super::node_utils::find_node_binary();
     let accepted_node_commands = [Path::new("node"), resolved_node.as_path()];
+    let trusted_runtime_script = super::find_base_plugin_dir()
+        .map(|plugin_dir| plugin_dir.join("ralphx-mcp-server/build/index.js"));
     let template_script =
         app_data_dir.join("generated/claude-plugin/ralphx-mcp-server/build/index.js");
     let trace_enabled_scripts = ["release", "debug"].map(|profile| {
@@ -115,38 +117,58 @@ fn matches_historical_registration(registration: &Value, app_data_dir: &Path) ->
     });
 
     accepted_node_commands.iter().any(|node_command| {
-        historical_script_is_contained(app_data_dir, &template_script)
-            && registration
+        historical_script_is_ralphx_owned(
+            app_data_dir,
+            &template_script,
+            trusted_runtime_script.as_deref(),
+        ) && registration
+            == &serde_json::json!({
+                        "type": "stdio",
+                        "command": node_command,
+                        "args": [template_script]
+            })
+    }) || trace_enabled_scripts.into_iter().any(|script_path| {
+        historical_script_is_ralphx_owned(
+            app_data_dir,
+            &script_path,
+            trusted_runtime_script.as_deref(),
+        ) && accepted_node_commands.iter().any(|node_command| {
+            registration
                 == &serde_json::json!({
                     "type": "stdio",
                     "command": node_command,
-                    "args": [template_script]
+                    "args": [
+                        script_path,
+                        "--trace-dir",
+                        app_data_dir.join("logs/mcp-proxy"),
+                    ]
                 })
-    }) || trace_enabled_scripts.into_iter().any(|script_path| {
-        historical_script_is_contained(app_data_dir, &script_path)
-            && accepted_node_commands.iter().any(|node_command| {
-                registration
-                    == &serde_json::json!({
-                        "type": "stdio",
-                        "command": node_command,
-                        "args": [
-                            script_path,
-                            "--trace-dir",
-                            app_data_dir.join("logs/mcp-proxy"),
-                        ]
-                    })
-            })
+        })
     })
 }
 
-fn historical_script_is_contained(app_data_dir: &Path, script_path: &Path) -> bool {
+fn historical_script_is_ralphx_owned(
+    app_data_dir: &Path,
+    script_path: &Path,
+    trusted_runtime_script: Option<&Path>,
+) -> bool {
     let Ok(canonical_root) = app_data_dir.canonicalize() else {
         return false;
     };
     let Ok(canonical_script) = script_path.canonicalize() else {
         return false;
     };
-    canonical_script.starts_with(canonical_root) && canonical_script.is_file()
+    if canonical_script.starts_with(canonical_root) && canonical_script.is_file() {
+        return true;
+    }
+
+    let Some(trusted_runtime_script) = trusted_runtime_script else {
+        return false;
+    };
+    let Ok(canonical_runtime_script) = trusted_runtime_script.canonicalize() else {
+        return false;
+    };
+    canonical_script == canonical_runtime_script && canonical_script.is_file()
 }
 
 fn read_fixed_json(
