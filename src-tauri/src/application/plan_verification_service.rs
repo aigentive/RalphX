@@ -201,10 +201,15 @@ async fn resolve_conversation_target(
         });
     }
 
+    let conversation_id = state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
+        .await?
+        .map(|conversation| conversation.id);
     Ok(ConversationTarget {
         context_type: ChatContextType::Ideation,
         context_id: session.id.as_str().to_string(),
-        conversation_id: None,
+        conversation_id,
         queue_key: QueueKey::ideation(session.id.as_str()),
     })
 }
