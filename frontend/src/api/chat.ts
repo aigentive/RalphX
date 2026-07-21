@@ -3589,6 +3589,7 @@ export async function listAgentConversationWorkspacePublicationEvents(
 
 export class AgentWorkspaceHttpError extends Error {
   readonly status: number;
+  readonly detail: string | null;
 
   constructor(status: number, statusText: string, detail: string | null) {
     super(
@@ -3596,6 +3597,7 @@ export class AgentWorkspaceHttpError extends Error {
     );
     this.name = "AgentWorkspaceHttpError";
     this.status = status;
+    this.detail = detail;
   }
 }
 

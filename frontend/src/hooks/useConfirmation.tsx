@@ -19,21 +19,30 @@ export interface ConfirmOptions {
   pendingText?: string;
   cancelText?: string;
   variant?: "default" | "destructive";
+  confirmDisabled?: boolean;
   onConfirm?: () => Promise<unknown> | unknown;
   /** Runs after the dialog shell opens; return copy updates for the same dialog. */
   prepare?: () =>
-    | Promise<Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>>
-    | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>;
+    | Promise<ConfirmOptionUpdate>
+    | ConfirmOptionUpdate;
+  /** Map a preparation failure to caller-specific copy and disabled state. */
+  recoverFromPrepareError?: (
+    error: unknown,
+  ) => Promise<ConfirmOptionUpdate | null> | ConfirmOptionUpdate | null;
   /** Return updated copy after a recoverable action error to keep the dialog open for reconfirmation. */
   recoverFromError?: (
     error: unknown,
   ) =>
     | Promise<
-        Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">> | null
+        ConfirmOptionUpdate | null
       >
-    | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>
+    | ConfirmOptionUpdate
     | null;
 }
+
+type ConfirmOptionUpdate = Partial<
+  Pick<ConfirmOptions, "title" | "description" | "confirmText" | "confirmDisabled">
+>;
 
 interface ConfirmationDialogProps {
   isOpen: boolean;
@@ -83,7 +92,12 @@ function ConfirmationDialogComponent({
               onConfirm();
             }}
             variant={options.variant ?? "default"}
-            disabled={isSubmitting || isPreparing || prepareFailed}
+            disabled={
+              isSubmitting ||
+              isPreparing ||
+              prepareFailed ||
+              options.confirmDisabled === true
+            }
             className="gap-2"
           >
             {(isSubmitting || isPreparing) && (
@@ -148,19 +162,25 @@ export function useConfirmation(): UseConfirmationReturn {
           setIsPreparing(false);
           setPrepareFailed(false);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (requestId !== requestIdRef.current) return;
-          setOptions((current) =>
-            current
-              ? {
+          void Promise.resolve()
+            .then(() => opts.recoverFromPrepareError?.(error) ?? null)
+            .catch(() => null)
+            .then((recovery) => {
+              if (requestId !== requestIdRef.current) return;
+              setOptions((current) => {
+                if (!current) return current;
+                if (recovery) return { ...current, ...recovery };
+                return {
                   ...current,
                   description:
                     "Could not prepare this action. Cancel and try again.",
-                }
-              : current,
-          );
-          setIsPreparing(false);
-          setPrepareFailed(true);
+                };
+              });
+              setIsPreparing(false);
+              setPrepareFailed(!recovery);
+            });
         });
     }
     return new Promise((resolve) => {
@@ -179,7 +199,12 @@ export function useConfirmation(): UseConfirmationReturn {
   }, []);
 
   const onConfirm = useCallback(() => {
-    if (isSubmitting || isPreparing || prepareFailed) {
+    if (
+      isSubmitting ||
+      isPreparing ||
+      prepareFailed ||
+      options?.confirmDisabled === true
+    ) {
       return;
     }
 
@@ -198,7 +223,8 @@ export function useConfirmation(): UseConfirmationReturn {
         settle(true);
       })
       .catch((error: unknown) =>
-        Promise.resolve(recoverFromError?.(error))
+        Promise.resolve()
+          .then(() => recoverFromError?.(error) ?? null)
           .catch(() => null)
           .then((recovery) => {
             if (requestId !== requestIdRef.current) return;
