@@ -11,7 +11,7 @@ use crate::domain::entities::{
 };
 use crate::error::AppError;
 
-fn git(repo: &Path, args: &[&str]) -> String {
+pub(super) fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
@@ -25,7 +25,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn init_workspace() -> (tempfile::TempDir, AgentConversationWorkspace, Project) {
+pub(super) fn init_workspace() -> (tempfile::TempDir, AgentConversationWorkspace, Project) {
     let repo = tempfile::TempDir::new().expect("repo tempdir");
     git(repo.path(), &["init", "-b", "main"]);
     git(repo.path(), &["config", "user.email", "test@example.com"]);
