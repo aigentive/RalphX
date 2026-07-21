@@ -28,7 +28,7 @@ pub use agent_config::live_flags::{
 pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
-    claude_runtime_config, composer_folder_references_enabled, config_path, defer_merge_enabled,
+    claude_runtime_config, config_path, defer_merge_enabled,
     execution_defaults_config, external_mcp_config, external_mcp_config_path, file_logging_enabled,
     get_agent_config, get_agent_config_for_profile, get_allowed_tools,
     get_allowed_tools_for_profile, get_effective_settings, get_effective_settings_profile,
