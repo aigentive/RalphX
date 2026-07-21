@@ -374,11 +374,32 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
-        ensure_review_pr_monitor_for_workspace(
+        let review_pr_monitor = ensure_review_pr_monitor_for_workspace(
             self.deps.state.agent_conversation_workspace_repo.as_ref(),
             workspace.as_ref(),
         )
         .await?;
+        if let (Some(workspace), Some(monitor)) = (workspace.as_ref(), review_pr_monitor.as_ref()) {
+            use crate::application::services::pr_merge_poller::AgentWorkspacePrPollerStart;
+
+            match crate::application::services::pr_merge_poller::start_review_pr_lifecycle_polling(
+                self.deps.state,
+                workspace,
+                monitor,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            {
+                AgentWorkspacePrPollerStart::Started
+                | AgentWorkspacePrPollerStart::AlreadyRunning => {}
+                AgentWorkspacePrPollerStart::Unavailable => {
+                    return Err(
+                        "Review PR lifecycle polling is unavailable; reviewer was not started"
+                            .to_string(),
+                    );
+                }
+            }
+        }
         log_start_agent_conversation_phase(
             &context_log_id,
             Some(&conversation.id),

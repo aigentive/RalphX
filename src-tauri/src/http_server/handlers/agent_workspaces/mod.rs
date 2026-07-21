@@ -26,7 +26,7 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::{
-    resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
+    AgentConversationWorkspaceBaseSelection,
 };
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
@@ -71,6 +71,7 @@ use crate::domain::entities::{
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
 };
+use crate::domain::repositories::AgentWorkspacePrReviewActionMutation;
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };

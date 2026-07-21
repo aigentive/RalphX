@@ -21,6 +21,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
+    AgentWorkspacePrTerminalSettlement,
 };
 use crate::error::{AppError, AppResult};
 
@@ -889,6 +891,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
     ) -> AppResult<AgentWorkspacePrReviewMonitor> {
         let mut monitors = self.pr_review_monitors.write().await;
         if let Some(existing) = monitors.get(&monitor.conversation_id) {
+            if existing.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+                return Ok(existing.clone());
+            }
             if monitor.updated_at < existing.updated_at {
                 return Ok(existing.clone());
             }
@@ -939,6 +944,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let monitor = monitors
             .get_mut(conversation_id)
             .expect("PR review monitor must exist before updating Auto Approve");
+        if monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+            return Err(AppError::Conflict(
+                "Review PR settings cannot change after terminal authority".to_string(),
+            ));
+        }
         monitor.auto_approve_enabled = enabled;
         monitor.updated_at = Utc::now();
         Ok(monitor.clone())
@@ -953,6 +963,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let monitor = monitors
             .get_mut(conversation_id)
             .expect("PR review monitor must exist before updating monitoring");
+        if monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+            return Err(AppError::Conflict(
+                "Review PR settings cannot change after terminal authority".to_string(),
+            ));
+        }
         monitor.monitor_enabled = enabled;
         monitor.status = if enabled {
             AgentWorkspacePrReviewMonitorStatus::Watching
@@ -1018,6 +1033,303 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(monitors)
+    }
+
+    async fn list_pr_review_lifecycle_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        let workspaces = self.workspaces.read().await;
+        let mut monitors = self
+            .pr_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| {
+                monitor.status != AgentWorkspacePrReviewMonitorStatus::Terminal
+                    && workspaces
+                        .get(&monitor.conversation_id)
+                        .is_some_and(|workspace| {
+                            workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                                && workspace.status == AgentConversationWorkspaceStatus::Active
+                                && !workspace.has_terminal_publication_pr_status()
+                        })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn list_pr_review_lifecycle_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| {
+                workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                    && workspace.status == AgentConversationWorkspaceStatus::Active
+                    && workspace
+                        .source_pull_request
+                        .as_ref()
+                        .map(|pull_request| pull_request.number)
+                        .or(workspace.publication_pr_number)
+                        .is_some()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(workspaces)
+    }
+
+    async fn rearm_terminal_pr_review_monitor_after_live_open(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        let workspaces = self.workspaces.read().await;
+        let authorized = workspaces.get(conversation_id).is_some_and(|workspace| {
+            workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                && workspace.status == AgentConversationWorkspaceStatus::Active
+                && !workspace.has_terminal_publication_pr_status()
+                && workspace
+                    .source_pull_request
+                    .as_ref()
+                    .map(|pull_request| pull_request.number)
+                    .or(workspace.publication_pr_number)
+                    == Some(pr_number)
+        });
+        if !authorized {
+            return Ok(None);
+        }
+        let mut monitors = self.pr_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        if monitor.pr_number != pr_number
+            || monitor.status != AgentWorkspacePrReviewMonitorStatus::Terminal
+        {
+            return Ok(None);
+        }
+        monitor.monitor_enabled = true;
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        monitor.last_error = None;
+        monitor.updated_at = Utc::now();
+        Ok(Some(monitor.clone()))
+    }
+
+    async fn settle_pr_review_terminal(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        status: &str,
+        summary: &str,
+    ) -> AppResult<AgentWorkspacePrTerminalSettlement> {
+        if !matches!(status, "merged" | "closed") {
+            return Err(AppError::Validation(format!(
+                "Review PR terminal status must be merged or closed, got '{status}'"
+            )));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_update_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
+        let mut workspaces = self.workspaces.write().await;
+        let workspace = workspaces
+            .get_mut(conversation_id)
+            .ok_or_else(|| AppError::NotFound(format!("Workspace not found: {conversation_id}")))?;
+        let workspace_pr_number = workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number)
+            .or(workspace.publication_pr_number);
+        if workspace.mode != AgentConversationWorkspaceMode::ReviewPr
+            || workspace_pr_number != Some(pr_number)
+        {
+            return Err(AppError::Conflict(
+                "Review PR terminal authority does not match this workspace".to_string(),
+            ));
+        }
+
+        let project_id = workspace.project_id.clone();
+        let head_sha = workspace
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.head_ref_oid.clone());
+        let now = Utc::now();
+        let mut monitors = self.pr_review_monitors.write().await;
+        let monitor = monitors.entry(conversation_id.clone()).or_insert_with(|| {
+            AgentWorkspacePrReviewMonitor::new(
+                conversation_id.clone(),
+                project_id,
+                pr_number,
+                head_sha,
+            )
+        });
+        if monitor.pr_number != pr_number {
+            return Err(AppError::Conflict(
+                "Review PR terminal monitor does not match this workspace".to_string(),
+            ));
+        }
+
+        workspace.publication_pr_number = workspace.publication_pr_number.or(Some(pr_number));
+        workspace.publication_pr_status = Some(status.to_string());
+        workspace.pr_supervision_status = None;
+        workspace.pr_supervision_summary = None;
+        workspace.pr_supervision_updated_at = Some(now);
+        workspace.updated_at = now;
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+        monitor.monitor_enabled = false;
+        monitor.last_review_outcome = Some(status.to_string());
+        monitor.last_error = (status == "closed").then(|| summary.to_string());
+        monitor.updated_at = now;
+
+        let mut actions = self.pr_review_actions.write().await;
+        let mut superseded_action_ids = Vec::new();
+        for action in actions.values_mut() {
+            if action.conversation_id == *conversation_id
+                && action.pr_number == pr_number
+                && matches!(
+                    action.status,
+                    AgentWorkspacePrReviewActionStatus::Pending
+                        | AgentWorkspacePrReviewActionStatus::Submitting
+                )
+            {
+                superseded_action_ids.push(action.id.clone());
+                action.status = AgentWorkspacePrReviewActionStatus::Superseded;
+                action.resolved_at = Some(now);
+                action.updated_at = now;
+            }
+        }
+        superseded_action_ids = actions
+            .values()
+            .filter(|action| {
+                action.conversation_id == *conversation_id
+                    && action.pr_number == pr_number
+                    && action.status == AgentWorkspacePrReviewActionStatus::Superseded
+            })
+            .map(|action| action.id.clone())
+            .collect();
+        superseded_action_ids.sort();
+
+        let step = format!("pr_{status}");
+        let mut events = self.publication_events.write().await;
+        let conversation_events = events.entry(conversation_id.clone()).or_default();
+        let event_inserted = !conversation_events
+            .iter()
+            .any(|event| event.step == step && event.status == "succeeded");
+        if event_inserted {
+            conversation_events.push(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                step,
+                "succeeded",
+                summary,
+                None,
+            ));
+        }
+
+        Ok(AgentWorkspacePrTerminalSettlement {
+            superseded_action_ids,
+            event_inserted,
+        })
+    }
+
+    async fn transition_pr_review_state_if_nonterminal(
+        &self,
+        mut monitor: AgentWorkspacePrReviewMonitor,
+        action_mutation: Option<AgentWorkspacePrReviewActionMutation>,
+    ) -> AppResult<Option<AgentWorkspacePrReviewStateTransition>> {
+        let workspaces = self.workspaces.read().await;
+        let authorized = workspaces
+            .get(&monitor.conversation_id)
+            .is_some_and(|workspace| {
+                workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                    && workspace.status == AgentConversationWorkspaceStatus::Active
+                    && !workspace.has_terminal_publication_pr_status()
+                    && workspace
+                        .source_pull_request
+                        .as_ref()
+                        .map(|pull_request| pull_request.number)
+                        .or(workspace.publication_pr_number)
+                        == Some(monitor.pr_number)
+            });
+        if !authorized {
+            return Ok(None);
+        }
+
+        let mut monitors = self.pr_review_monitors.write().await;
+        let Some(existing_monitor) = monitors.get(&monitor.conversation_id).cloned() else {
+            return Ok(None);
+        };
+        if existing_monitor.pr_number != monitor.pr_number
+            || existing_monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+            || monitor.updated_at < existing_monitor.updated_at
+        {
+            return Ok(None);
+        }
+
+        let mut actions = self.pr_review_actions.write().await;
+        let action = match action_mutation {
+            Some(AgentWorkspacePrReviewActionMutation::UpsertPending(mut action)) => {
+                if action.conversation_id != monitor.conversation_id
+                    || action.pr_number != monitor.pr_number
+                    || action.status != AgentWorkspacePrReviewActionStatus::Pending
+                {
+                    return Ok(None);
+                }
+                if let Some(existing) = actions.values_mut().find(|existing| {
+                    existing.conversation_id == action.conversation_id
+                        && existing.pr_number == action.pr_number
+                        && existing.head_sha == action.head_sha
+                        && existing.status == AgentWorkspacePrReviewActionStatus::Pending
+                }) {
+                    existing.proposed_action = action.proposed_action;
+                    existing.summary = action.summary;
+                    existing.review_body = action.review_body;
+                    existing.findings_json = action.findings_json;
+                    existing.created_by_run_id = action.created_by_run_id;
+                    existing.updated_at = Utc::now();
+                    Some(existing.clone())
+                } else {
+                    action.updated_at = Utc::now();
+                    actions.insert(action.id.clone(), action.clone());
+                    Some(action)
+                }
+            }
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id,
+                expected,
+                status,
+                submitted_review_id,
+            }) => {
+                let Some(action) = actions.get_mut(&action_id) else {
+                    return Ok(None);
+                };
+                if action.conversation_id != monitor.conversation_id
+                    || action.pr_number != monitor.pr_number
+                    || action.status != expected
+                {
+                    return Ok(None);
+                }
+                action.status = status;
+                action.submitted_review_id = submitted_review_id;
+                action.updated_at = Utc::now();
+                action.resolved_at = pr_review_action_terminal_status(status).then(Utc::now);
+                Some(action.clone())
+            }
+            None => None,
+        };
+
+        monitor.created_at = existing_monitor.created_at;
+        monitor.updated_at = Utc::now();
+        monitors.insert(monitor.conversation_id.clone(), monitor.clone());
+        Ok(Some(AgentWorkspacePrReviewStateTransition {
+            monitor,
+            action,
+        }))
     }
 
     async fn upsert_workspace_review_monitor(
@@ -1302,6 +1614,48 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(action)
     }
 
+    async fn create_or_update_pr_review_action_if_nonterminal(
+        &self,
+        mut action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        let workspaces = self.workspaces.read().await;
+        let authorized = workspaces
+            .get(&action.conversation_id)
+            .is_some_and(|workspace| {
+                workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                    && !workspace.has_terminal_publication_pr_status()
+                    && workspace
+                        .source_pull_request
+                        .as_ref()
+                        .map(|pull_request| pull_request.number)
+                        .or(workspace.publication_pr_number)
+                        == Some(action.pr_number)
+            });
+        if !authorized {
+            return Err(AppError::Conflict(
+                "Review PR action cannot be proposed after terminal authority".to_string(),
+            ));
+        }
+        let mut actions = self.pr_review_actions.write().await;
+        if let Some(existing) = actions.values_mut().find(|existing| {
+            existing.conversation_id == action.conversation_id
+                && existing.pr_number == action.pr_number
+                && existing.head_sha == action.head_sha
+                && existing.status == AgentWorkspacePrReviewActionStatus::Pending
+        }) {
+            existing.proposed_action = action.proposed_action;
+            existing.summary = action.summary;
+            existing.review_body = action.review_body;
+            existing.findings_json = action.findings_json;
+            existing.created_by_run_id = action.created_by_run_id;
+            existing.updated_at = Utc::now();
+            return Ok(existing.clone());
+        }
+        action.updated_at = Utc::now();
+        actions.insert(action.id.clone(), action.clone());
+        Ok(action)
+    }
+
     async fn get_pr_review_action(
         &self,
         action_id: &str,
@@ -1396,6 +1750,62 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
         action.status = AgentWorkspacePrReviewActionStatus::Submitting;
         action.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn claim_pending_pr_review_action_if_nonterminal(
+        &self,
+        action_id: &str,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+    ) -> AppResult<bool> {
+        let workspaces = self.workspaces.read().await;
+        let authorized = workspaces.get(conversation_id).is_some_and(|workspace| {
+            workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+                && !workspace.has_terminal_publication_pr_status()
+                && workspace
+                    .source_pull_request
+                    .as_ref()
+                    .map(|pull_request| pull_request.number)
+                    .or(workspace.publication_pr_number)
+                    == Some(pr_number)
+        });
+        if !authorized {
+            return Ok(false);
+        }
+        let mut actions = self.pr_review_actions.write().await;
+        let Some(action) = actions.get_mut(action_id) else {
+            return Ok(false);
+        };
+        if action.conversation_id != *conversation_id
+            || action.pr_number != pr_number
+            || action.status != AgentWorkspacePrReviewActionStatus::Pending
+        {
+            return Ok(false);
+        }
+        action.status = AgentWorkspacePrReviewActionStatus::Submitting;
+        action.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn compare_and_set_pr_review_action_status(
+        &self,
+        action_id: &str,
+        expected: AgentWorkspacePrReviewActionStatus,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<&str>,
+    ) -> AppResult<bool> {
+        let mut actions = self.pr_review_actions.write().await;
+        let Some(action) = actions.get_mut(action_id) else {
+            return Ok(false);
+        };
+        if action.status != expected {
+            return Ok(false);
+        }
+        action.status = status;
+        action.submitted_review_id = submitted_review_id.map(str::to_string);
+        action.updated_at = Utc::now();
+        action.resolved_at = pr_review_action_terminal_status(status).then(Utc::now);
         Ok(true)
     }
 

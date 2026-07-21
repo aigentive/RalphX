@@ -1523,6 +1523,62 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
 }
 
 #[test]
+fn review_agent_contracts_distinguish_local_workspace_review_from_remote_pr_review() {
+    let root = project_root();
+    let workspace_definition = load_canonical_agent_definition(&root, "ralphx-workspace-reviewer")
+        .expect("expected canonical workspace reviewer definition");
+    let pr_definition = load_canonical_agent_definition(&root, "ralphx-pr-reviewer")
+        .expect("expected canonical PR reviewer definition");
+    let workspace_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-reviewer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected workspace reviewer Codex prompt");
+    let pr_prompt =
+        load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
+            .expect("expected PR reviewer Claude prompt");
+
+    assert!(
+        workspace_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("local agent workspace changes"))
+            && workspace_prompt.contains("local Workspace Review")
+            && workspace_prompt.contains("publish gate"),
+        "workspace reviewer metadata and prompt should identify the local publish-gate workflow"
+    );
+    assert!(
+        !workspace_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && !workspace_prompt.contains("propose_pr_review_action"),
+        "workspace reviewer must not expose the GitHub PR action surface"
+    );
+    assert!(
+        pr_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("remote GitHub pull request"))
+            && pr_prompt.contains("remote GitHub pull request")
+            && pr_prompt.contains("local checkout")
+            && pr_prompt.contains("user-approved GitHub review action"),
+        "PR reviewer metadata and prompt should identify the remote GitHub workflow and local inspection substrate"
+    );
+    assert!(
+        pr_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && pr_prompt.contains("propose_pr_review_action"),
+        "PR reviewer should retain the pending GitHub action proposal surface"
+    );
+}
+
+#[test]
 fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-plan-complexity")
