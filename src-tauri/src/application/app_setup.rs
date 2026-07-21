@@ -130,7 +130,7 @@ fn spawn_tasks_disabled_startup_reconciliation(
             Ok(false) => {
                 let service = state
                     .build_tasks_feature_toggle_service(execution_state, Some(app_handle.clone()));
-                let failures = service.drain_unentitled_active_tasks().await;
+                let failures = service.drain_active_tasks().await;
                 if !failures.is_empty() {
                     tracing::error!(
                         task_ids = ?failures,
