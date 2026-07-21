@@ -552,6 +552,55 @@ describe("BasicTaskDetail", () => {
       expect(mockApiTasksMove).not.toHaveBeenCalled();
     });
 
+    it("moves cancelled tasks to ready without a legacy agent variant", async () => {
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "cancelled" });
+
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("restart-button"));
+
+      await waitFor(() => {
+        expect(mockApiTasksMove).toHaveBeenCalledWith(task.id, "ready", undefined);
+      });
+      expect(mockApiTasksRestart).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["force-resume-button", "merging"],
+      ["go-to-ready-button", "ready"],
+    ])(
+      "uses the current move contract for the %s validation choice",
+      async (buttonTestId, expectedStatus) => {
+        const user = userEvent.setup();
+        const metadata = JSON.stringify({
+          stop_metadata: JSON.stringify({
+            stopped_from_status: "merging",
+            stopped_at: "2026-07-21T00:00:00Z",
+            stop_reason: "User requested",
+          }),
+        });
+        const task = createTestTask({ internalStatus: "stopped", metadata });
+
+        render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+        await user.type(screen.getByTestId("restart-note-textarea"), "Review new changes");
+        await user.click(screen.getByTestId("restart-button"));
+        expect(screen.getByTestId("resume-validation-dialog")).toBeInTheDocument();
+
+        await user.click(screen.getByTestId(buttonTestId));
+
+        await waitFor(() => {
+          expect(mockApiTasksMove).toHaveBeenCalledWith(
+            task.id,
+            expectedStatus,
+            "Review new changes"
+          );
+        });
+        expect(mockApiTasksRestart).not.toHaveBeenCalled();
+      }
+    );
+
     it("resumes execution after restart when the project is globally stopped", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });

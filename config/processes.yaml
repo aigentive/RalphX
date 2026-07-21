@@ -1,5 +1,5 @@
 # Provider-neutral canonical process registry.
-# `process_mapping` selects the default agent and supported non-team variants.
+# `process_mapping` selects the default agent and supported process variants.
 
 process_mapping:
   ideation:

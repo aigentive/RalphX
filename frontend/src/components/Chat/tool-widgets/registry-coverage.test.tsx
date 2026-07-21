@@ -170,6 +170,20 @@ describe("tool widget registry coverage", () => {
       expectedText: "Create Task",
     },
     {
+      label: "task update widget",
+      toolCall: makeToolCall("taskupdate", {
+        arguments: { taskId: "42", status: "in_progress", subject: "Audit registry" },
+      }),
+      expectedText: "Update Task #42",
+    },
+    {
+      label: "task list widget",
+      toolCall: makeToolCall("tasklist", {
+        result: "#1: Audit widgets (status: pending)",
+      }),
+      expectedText: "Task List",
+    },
+    {
       label: "agent task widget",
       toolCall: makeToolCall("mcp__ralphx_internal__list_agent_tasks", {
         result: {

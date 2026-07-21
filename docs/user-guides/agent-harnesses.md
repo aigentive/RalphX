@@ -116,7 +116,6 @@ You may see harness-related behavior in several places:
 Use Claude when you need:
 
 - the broadest current feature coverage
-- team mode
 - established plugin-driven workflows
 
 Use Codex when you want:
@@ -124,6 +123,9 @@ Use Codex when you want:
 - Codex-native ideation, execution, review, or merge on a specific lane
 - Codex sandbox/approval semantics for that lane
 - incremental adoption without moving the whole product to one runtime
+
+RX-native Team is provider-neutral. Its availability follows the capabilities of the
+selected workflow and harness rather than requiring Claude's legacy team mode.
 
 ---
 

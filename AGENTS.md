@@ -13,7 +13,7 @@ Primary project docs:
 - `.claude/rules/openai-gpt-5-prompting.md` for target-model prompt-guide routing across supported GPT-5 families
 - `docs/ai-docs/openai/README.md` for GPT-5.4, GPT-5.5, and GPT-5.6 family guides plus official-source links
 - `.claude/rules/ideation-verification-architecture.md` for the ideation verification feature map: parent-vs-child ownership, runtime flow, UI surfaces, debugging, and tests
-- `.claude/rules/delegation-topology.md` for canonical non-team delegation allowlists, auto-injected delegation guidance, and MCP visibility/enforcement rules
+- `.claude/rules/delegation-topology.md` for canonical delegation allowlists, auto-injected delegation guidance, and MCP visibility/enforcement rules
 - `.claude/rules/runtime-root-vs-target-project.md` for the contract between RalphX-owned runtime/plugin/log roots and the user’s active target project checkout
 - `.claude/rules/production-cli-resolution.md` for Finder/Homebrew-safe CLI binary resolution in installed app runtime paths
 - `.claude/rules/codeql-path-safety.md` for CodeQL-safe filesystem sink validation when paths are influenced by env vars, settings, HTTP/MCP payloads, DB state, agent metadata, or repo contents

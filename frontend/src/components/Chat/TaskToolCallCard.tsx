@@ -109,7 +109,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
       })
     : null;
 
-  // Card title: Agent with name → show name (team mode); otherwise description or fallback
+  // Card title: named delegated call → show name; otherwise description or fallback
   const cardTitle = isDelegateCall
     ? delegation.agentName || delegation.title || "Delegated specialist"
     : isAgentCall && taskArgs.name
