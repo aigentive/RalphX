@@ -8,7 +8,7 @@ use crate::domain::entities::{
 use crate::error::{AppError, AppResult};
 
 use super::agent_workspace_review::{
-    ensure_workspace_review_supported_mode, resolve_review_target,
+    load_current_workspace_review_eligible, lock_workspace_review_lifecycle, resolve_review_target,
 };
 use super::AppState;
 
@@ -17,7 +17,9 @@ pub async fn approve_agent_workspace_review_anyway(
     workspace: &AgentConversationWorkspace,
     snapshot: &AgentWorkspaceReviewApprovalSnapshot,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
-    ensure_workspace_review_supported_mode(workspace)?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
 
     if workspace_publish_is_active(workspace.publication_push_status.as_deref()) {
         return Err(AppError::Conflict(

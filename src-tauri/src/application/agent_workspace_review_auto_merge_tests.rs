@@ -1926,6 +1926,71 @@ async fn cancelling_supervision_guard_keeps_auto_merge_disabled() {
 }
 
 #[tokio::test]
+async fn plan_mode_reconciliation_cancels_guard_without_restoring_auto_merge() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("plan-review-guard-cleanup");
+    let project_id = ProjectId::from_string("plan-review-guard-project".to_string());
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/test/plan-review-guard".to_string(),
+        "/tmp/plan-review-guard".to_string(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("PLAN workspace should persist");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "stale-review-fingerprint".to_string(),
+        head_sha: Some("stale-head".to_string()),
+        last_error: None,
+    });
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("guard should persist");
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("PLAN reconciliation should perform cleanup"),
+        1
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+}
+
+#[tokio::test]
 async fn cancelling_a_restoring_guard_disables_remote_before_clearing_it() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let mut state = AppState::new_test();

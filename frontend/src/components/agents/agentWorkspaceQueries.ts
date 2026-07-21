@@ -233,8 +233,14 @@ type WorkspaceReviewContextLike =
   | StartAgentWorkspaceReviewFixerResult
   | StartAgentWorkspaceReviewResult;
 
-const WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
-  new Set(["edit", "ideation", "plan", "review_pr"]);
+const LOCAL_WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
+  new Set(["edit", "ideation"]);
+
+export function isLocalWorkspaceReviewModeEligible(
+  mode: AgentConversationWorkspaceMode | null | undefined,
+): boolean {
+  return mode ? LOCAL_WORKSPACE_REVIEW_OWNER_MODES.has(mode) : false;
+}
 
 export interface WorkspaceReviewOwnerConversationInput {
   activeConversationContextType: string | null | undefined;
@@ -255,14 +261,13 @@ export function resolveWorkspaceReviewOwnerConversationId({
     return null;
   }
 
-  const hasReviewableWorkspaceMode = activeConversationMode
-    ? WORKSPACE_REVIEW_OWNER_MODES.has(activeConversationMode)
-    : false;
-  if (
-    hasReviewableWorkspaceMode &&
-    activeWorkspaceConversationId === activeConversationId
-  ) {
-    return activeConversationId;
+  const selectedConversationOwnsWorkspace =
+    activeWorkspaceConversationId === activeConversationId;
+  const hasReviewableWorkspaceMode = isLocalWorkspaceReviewModeEligible(
+    activeConversationMode,
+  );
+  if (selectedConversationOwnsWorkspace) {
+    return hasReviewableWorkspaceMode ? activeConversationId : null;
   }
 
   if (activeConversationParentId) {

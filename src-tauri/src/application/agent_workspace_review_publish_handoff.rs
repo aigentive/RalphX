@@ -8,7 +8,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
 
-use super::agent_workspace_review::AgentWorkspaceReviewTarget;
+use super::agent_workspace_review::{
+    workspace_review_mode_is_eligible, AgentWorkspaceReviewTarget,
+};
 
 const PR_AUTOFIX_WORKSPACE_REVIEW_STEP: &str = "pr_autofix_workspace_review";
 const PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP: &str = "pr_autofix_workspace_review_passed";
@@ -162,6 +164,9 @@ pub(crate) fn pr_fix_publish_can_resume_after_workspace_review(
     current_target: Option<&AgentWorkspaceReviewTarget>,
     publication_events: &[AgentConversationWorkspacePublicationEvent],
 ) -> bool {
+    if !workspace_review_mode_is_eligible(workspace.mode) {
+        return false;
+    }
     let Some(current_target) = current_target else {
         return false;
     };
@@ -203,7 +208,7 @@ pub(crate) fn pr_supervision_block_is_workspace_review_gate(
 pub(crate) async fn resume_pr_fix_publish_after_passed_workspace_review<P, F>(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &crate::domain::entities::ChatConversationId,
-    workspace: &AgentConversationWorkspace,
+    _workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
     current_target: Option<&AgentWorkspaceReviewTarget>,
     publish_workspace: P,
@@ -212,11 +217,20 @@ where
     P: FnOnce(crate::domain::entities::ChatConversationId) -> F,
     F: Future<Output = Result<Option<bool>, String>>,
 {
+    let Some(current_workspace) = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(PrFixReviewPublishResumeOutcome::Skipped);
+    };
+    if !workspace_review_mode_is_eligible(current_workspace.mode) {
+        return Ok(PrFixReviewPublishResumeOutcome::Skipped);
+    }
     let publication_events = workspace_repo
         .list_publication_events(conversation_id)
         .await?;
     if !pr_fix_publish_can_resume_after_workspace_review(
-        workspace,
+        &current_workspace,
         monitor,
         current_target,
         &publication_events,
@@ -233,7 +247,7 @@ where
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
-            workspace.pr_auto_merge_current,
+            current_workspace.pr_auto_merge_current,
             Some("publishing"),
             Some(publishing_message.as_str()),
         )
@@ -282,7 +296,7 @@ where
             workspace_repo
                 .update_pr_auto_merge_state(
                     conversation_id,
-                    workspace.pr_auto_merge_current,
+                    current_workspace.pr_auto_merge_current,
                     Some("blocked"),
                     Some(failure_message.as_str()),
                 )
