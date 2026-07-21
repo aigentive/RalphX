@@ -1676,6 +1676,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260718182035_add_tasks_enabled_setting::migrate,
     },
     Migration {
+        version: 20260720102513,
+        name: "add_tasks_feature_state",
+        migrate: v20260720102513_add_tasks_feature_state::migrate,
+    },
+    Migration {
         version: 20260720131416,
         name: "review_pr_disable_pr_automation",
         migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
@@ -1684,11 +1689,6 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260720140000,
         name: "remove_legacy_claude_team",
         migrate: v20260720140000_remove_legacy_claude_team::migrate,
-    },
-    Migration {
-        version: 20260720102513,
-        name: "add_tasks_feature_state",
-        migrate: v20260720102513_add_tasks_feature_state::migrate,
     },
     Migration {
         version: 20260720200633,
