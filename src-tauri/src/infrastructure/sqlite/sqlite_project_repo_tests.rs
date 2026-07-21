@@ -1,5 +1,9 @@
 use super::*;
-use crate::domain::entities::{GitMode, MergeValidationMode};
+use crate::domain::entities::{
+    ChatConversation, GitMode, MergeValidationMode, Persona, PersonaId, PersonaStatus,
+};
+use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
+use crate::infrastructure::sqlite::{SqliteChatConversationRepository, SqlitePersonaRepository};
 use crate::testing::SqliteTestDb;
 
 fn setup_test_db() -> SqliteTestDb {
@@ -8,6 +12,29 @@ fn setup_test_db() -> SqliteTestDb {
 
 fn create_test_project(name: &str, path: &str) -> Project {
     Project::new(name.to_string(), path.to_string())
+}
+
+fn scoped_persona(id: &str, project_id: &ProjectId, status: PersonaStatus) -> Persona {
+    let now = Utc::now();
+    Persona {
+        id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: Some(project_id.clone()),
+        slug: id.to_string(),
+        name: id.to_string(),
+        description: "deletion sweep fixture".to_string(),
+        content: "persona body".to_string(),
+        status,
+        version: 1,
+        content_hash: format!("hash-{id}"),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    }
 }
 
 // ==================== CRUD TESTS ====================
@@ -254,4 +281,90 @@ async fn test_get_by_working_directory_finds_correct_project() {
 
     assert!(found.is_some());
     assert_eq!(found.unwrap().id, project2.id);
+}
+
+#[tokio::test]
+async fn delete_with_dependent_sweep_archives_personas_deletes_drafts_and_clears_bindings() {
+    let db = setup_test_db();
+    let shared = db.shared_conn();
+    let repo = SqliteProjectRepository::from_shared(Arc::clone(&shared));
+    let persona_repo = SqlitePersonaRepository::from_shared(Arc::clone(&shared));
+    let conversation_repo = SqliteChatConversationRepository::from_shared(shared);
+    let deleted_project = create_test_project("Deleted", "/deleted");
+    let other_project = create_test_project("Other", "/other");
+    repo.create(deleted_project.clone()).await.unwrap();
+    repo.create(other_project.clone()).await.unwrap();
+    let draft = scoped_persona("deleted-draft", &deleted_project.id, PersonaStatus::Draft);
+    let active = scoped_persona("deleted-active", &deleted_project.id, PersonaStatus::Active);
+    let other = scoped_persona("other-active", &other_project.id, PersonaStatus::Active);
+    persona_repo.create(draft.clone()).await.unwrap();
+    persona_repo.create(active.clone()).await.unwrap();
+    persona_repo.create(other.clone()).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "INSERT INTO artifacts (
+                 id, type, name, content_type, content_text, bucket_id, created_by,
+                 version, metadata_json
+             ) VALUES
+                 ('deleted-draft-v1', 'persona', 'Draft', 'inline', 'v1',
+                  'persona-library', 'agent', 1, '{}'),
+                 ('deleted-draft-v2', 'persona', 'Draft', 'inline', 'v2',
+                  'persona-library', 'agent', 2, '{}');
+             UPDATE artifacts SET previous_version_id = 'deleted-draft-v1'
+             WHERE id = 'deleted-draft-v2';
+             UPDATE personas SET artifact_id = 'deleted-draft-v2'
+             WHERE id = 'deleted-draft';",
+        )
+        .unwrap();
+    });
+    let mut conversation = ChatConversation::new_project(deleted_project.id.clone());
+    conversation.persona_id = Some(active.id.to_string());
+    conversation.builder_draft_id = Some(draft.id.to_string());
+    conversation.builder_result_persona_id = Some(active.id.to_string());
+    let conversation = conversation_repo.create(conversation).await.unwrap();
+
+    repo.delete_with_dependent_sweep(&deleted_project.id)
+        .await
+        .unwrap();
+
+    assert!(persona_repo.get_by_id(&draft.id).await.unwrap().is_none());
+    assert_eq!(
+        persona_repo
+            .get_by_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        PersonaStatus::Archived
+    );
+    assert_eq!(
+        persona_repo
+            .get_by_id(&other.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        PersonaStatus::Active
+    );
+    let conversation = conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(conversation.persona_id.is_none());
+    assert!(conversation.builder_draft_id.is_none());
+    assert!(conversation.builder_result_persona_id.is_none());
+    db.with_connection(|conn| {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts
+                 WHERE id IN ('deleted-draft-v1', 'deleted-draft-v2')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "project sweep must delete draft artifact chains");
+    });
+    assert!(repo.get_by_id(&deleted_project.id).await.unwrap().is_none());
+    assert!(repo.get_by_id(&other_project.id).await.unwrap().is_some());
 }

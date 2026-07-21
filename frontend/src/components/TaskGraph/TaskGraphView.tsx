@@ -88,6 +88,7 @@ export interface TaskGraphViewProps {
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  readOnly?: boolean;
 }
 
 // ============================================================================
@@ -280,6 +281,7 @@ interface TaskGraphViewInnerProps {
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  readOnly?: boolean;
 }
 
 function TaskGraphViewInner({
@@ -289,6 +291,7 @@ function TaskGraphViewInner({
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  readOnly = false,
 }: TaskGraphViewInnerProps) {
   // Graph filter state (declared early so showArchived is available for useTaskGraph)
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_GRAPH_FILTERS);
@@ -1194,7 +1197,7 @@ function TaskGraphViewInner({
     handleToggleAllTiers,
     projectId,
     handleViewDetails,
-    handleCancelAllInGroup,
+    readOnly ? undefined : handleCancelAllInGroup,
     planBranchContextMap
   );
 
@@ -1289,7 +1292,7 @@ function TaskGraphViewInner({
   // eslint-disable-next-line react-hooks/preserve-manual-memoization -- depends on plan-group shape plus injected action handlers for stable task menu wiring
   const taskGroupInfoMap = useMemo(() => {
     const map = new Map<string, GroupInfo>();
-    if (!filteredGraphData?.planGroups) return map;
+    if (readOnly || !filteredGraphData?.planGroups) return map;
 
     for (const pg of filteredGraphData.planGroups) {
       const isUncategorized = pg.planArtifactId === UNGROUPED_PLAN_ID;
@@ -1313,7 +1316,7 @@ function TaskGraphViewInner({
       }
     }
     return map;
-  }, [filteredGraphData?.planGroups, projectId, handleCancelAllInGroup, handlePauseAllInGroup, handleResumeAllInGroup, handleArchiveAllInGroup]);
+  }, [filteredGraphData?.planGroups, projectId, handleCancelAllInGroup, handlePauseAllInGroup, handleResumeAllInGroup, handleArchiveAllInGroup, readOnly]);
 
   const prevNodesRef = useRef<Node[]>([]);
   const prevEdgesRef = useRef<Edge[]>([]);
@@ -1354,8 +1357,8 @@ function TaskGraphViewInner({
           nodeMode: nodeModeLookup.get(node.id) ?? "standard",
           isHighlighted: node.id === highlightedTaskId,
           isFocused: node.id === focusedNodeId,
-          handlers: nodeHandlers,
-          ...(gi !== undefined && { groupInfo: gi }),
+          ...(readOnly ? {} : { handlers: nodeHandlers }),
+          ...(!readOnly && gi !== undefined && { groupInfo: gi }),
         },
         selected: graphSelection?.kind === "task" && graphSelection.id === node.id,
       };
@@ -1399,7 +1402,7 @@ function TaskGraphViewInner({
     }
     prevNodesRef.current = next;
     return next;
-  }, [layoutNodes, groupNodes, graphSelection, highlightedTaskId, focusedNodeId, nodeHandlers, taskGroupInfoMap, nodeModeLookup]);
+  }, [layoutNodes, groupNodes, graphSelection, highlightedTaskId, focusedNodeId, nodeHandlers, readOnly, taskGroupInfoMap, nodeModeLookup]);
 
   const edges = useMemo<Edge[]>(() => {
     const prev = prevEdgesRef.current;
@@ -1751,6 +1754,7 @@ export function TaskGraphView({
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  readOnly = false,
 }: TaskGraphViewProps) {
   return (
     <ReactFlowProvider>
@@ -1759,6 +1763,7 @@ export function TaskGraphView({
         ideationSessionId={ideationSessionId ?? null}
         hidePlanSelector={hidePlanSelector}
         footer={footer}
+        readOnly={readOnly}
         {...(onTaskSelect ? { onTaskSelect } : {})}
         {...(onOpenPlanQuickSwitcher
           ? { onOpenPlanQuickSwitcher }

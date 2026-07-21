@@ -339,6 +339,20 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       ? "Collapse terminal"
       : "Expand terminal";
   const terminalPreloadHandler = terminalArchivedReason ? undefined : onPreloadTerminal;
+  const builtInTerminalAction = useMemo(
+    () => ({
+      open: terminalOpen,
+      unavailableReason: terminalUnavailableReason,
+      onToggle: onToggleTerminal,
+      onPreload: terminalPreloadHandler,
+    }),
+    [
+      onToggleTerminal,
+      terminalOpen,
+      terminalPreloadHandler,
+      terminalUnavailableReason,
+    ],
+  );
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -437,9 +451,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     if (!linkedTicket) {
       return;
     }
-    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // Open the linked issue in the provider-specific right-hand artifact tab
     // rather than navigating away to the ticketing dashboard.
-    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+    onSelectArtifact(linkedTicket.ticketRef.provider);
   }, [linkedTicket, onSelectArtifact]);
 
   return (
@@ -598,6 +612,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             targets={workspaceOpenTargets}
             openingTargetId={openingWorkspaceTargetId}
             onOpenTarget={onOpenWorkspaceTarget}
+            builtInTerminal={builtInTerminalAction}
           />
         )}
 

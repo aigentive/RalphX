@@ -72,6 +72,8 @@ export function AgentPlanStartPanel({
         version: selectedPlan.artifactVersion,
         name: selectedPlan.title ?? "Plan",
         created_at: selectedPlan.updatedAt,
+        created_by: "system",
+        metadata: null,
       },
     ];
   }, [selectedPlan, versionHistoryQuery.data]);

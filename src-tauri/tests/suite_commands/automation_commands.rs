@@ -2,9 +2,9 @@ use chrono::Utc;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::automation_commands::{
     cancel_automation_run, create_automation_draft, delete_automation, get_automation,
-    list_automations, pause_automation, resume_automation, skip_automation_judge, stop_automation,
-    trigger_automation_run_now, update_automation_settings, AutomationIdInput,
-    AutomationRunScopedInput, CreateAutomationDraftInput, ListAutomationsInput,
+    list_automations, pause_automation, restart_automation, resume_automation,
+    skip_automation_judge, stop_automation, trigger_automation_run_now, update_automation_settings,
+    AutomationIdInput, AutomationRunScopedInput, CreateAutomationDraftInput, ListAutomationsInput,
     PauseAutomationInput, UpdateAutomationSettingsInput,
 };
 use ralphx_lib::domain::entities::{
@@ -90,6 +90,7 @@ fn active_automation(id: &str) -> Automation {
         first_run_prompt: Some("Run 1 prompt".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -184,6 +185,12 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
         CreateAutomationDraftInput {
             project_id: " project-1 ".to_string(),
             name: Some("Nightly automation".to_string()),
+            authoring_mode: None,
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
         },
         app.state::<AppState>(),
     )
@@ -231,7 +238,9 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
     assert_eq!(updated.pr_merge_mode, "automatic");
     assert!(updated.plan_deep_verification);
 
-    let active = active_automation("automation-controls");
+    let mut active = active_automation("automation-controls");
+    active.goal_items_json =
+        Some(r#"[{"id":"phase-1","title":"Run 1","status":"pending"}]"#.to_string());
     app.state::<AppState>()
         .automation_repo
         .create(active.clone())
@@ -269,6 +278,25 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
     .await
     .expect("stop should succeed");
     assert_eq!(stopped.status, "stopped");
+
+    let restarted = restart_automation(
+        AutomationIdInput {
+            id: active.id.as_str().to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("restart should create a fresh pending run");
+    assert!(restarted.scheduled);
+
+    stop_automation(
+        AutomationIdInput {
+            id: active.id.as_str().to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("restarted automation should stop again");
 
     delete_automation(
         AutomationIdInput {

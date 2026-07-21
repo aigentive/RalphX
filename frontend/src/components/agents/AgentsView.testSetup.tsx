@@ -131,6 +131,7 @@ const defaultProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available codex detected.",
       error: null,
       missingCoreExecFeatures: [],
+      ultraSupportedModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
       supportsFastMode: true,
       fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
       updatedAt: providerUpdatedAt,
@@ -152,6 +153,7 @@ const defaultProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available claude detected.",
       error: null,
       missingCoreExecFeatures: [],
+      ultraSupportedModels: [],
       supportsFastMode: false,
       fastModeSupportedModels: [],
       updatedAt: providerUpdatedAt,
@@ -837,6 +839,12 @@ vi.mock("@/api/ideation", () => ({
       archive: vi.fn(),
       reopen: vi.fn(),
     },
+    settings: {
+      get: vi.fn(),
+      update: vi.fn(),
+      getDisableImpact: vi.fn(),
+      setTasksEnabled: vi.fn(),
+    },
   },
 }));
 
@@ -1455,6 +1463,7 @@ export function resetAgentSessionState(
     selectedProjectId: null,
     selectedConversationId: null,
     startConversationFailure: null,
+    defaultStartMode: "edit",
     lastSelectedConversationByProjectId: {},
     expandedProjectIds: { "project-1": true },
     showAllProjects: true,
@@ -2040,7 +2049,15 @@ export function setupAgentsViewTest() {
     latestChildSessionId: null,
   });
   mockHarnessProviders();
-  archiveConversationMock.mockResolvedValue(undefined);
+  archiveConversationMock.mockResolvedValue({
+    conversation: conversation(),
+    cleanup: {
+      runtimeShutdownSucceeded: true,
+      cleanupClaim: "claimed",
+      localCleanup: "cleaned",
+      message: null,
+    },
+  });
   restoreConversationMock.mockResolvedValue(undefined);
   getAgentRunningStatesMock.mockResolvedValue({});
   getAgentConversationRuntimeIndexMock.mockResolvedValue({

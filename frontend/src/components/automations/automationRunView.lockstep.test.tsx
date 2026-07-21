@@ -186,7 +186,7 @@ describe("automation run view lockstep", () => {
         isOpen: true,
         composerReadOnly: true,
         rowLabel: "Current PR",
-        stageLabel: "Waiting for judge",
+        stageLabel: "Terminal judge pending",
       },
     },
     {
@@ -206,7 +206,7 @@ describe("automation run view lockstep", () => {
         isOpen: true,
         composerReadOnly: false,
         rowLabel: "Current PR",
-        stageLabel: "Paused: judge failed",
+        stageLabel: "Terminal judge failed",
       },
     },
     {
@@ -216,7 +216,7 @@ describe("automation run view lockstep", () => {
         isOpen: true,
         composerReadOnly: false,
         rowLabel: "Current PR",
-        stageLabel: "Paused: judge failed",
+        stageLabel: "Terminal judge failed",
       },
     },
     {

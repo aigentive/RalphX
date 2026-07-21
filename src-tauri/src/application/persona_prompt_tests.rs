@@ -8,6 +8,9 @@ fn persona_with(slug: &str, name: &str, content: &str) -> Persona {
     let now = Utc::now();
     Persona {
         id: PersonaId::from("persona-1"),
+        artifact_id: None,
+
+        project_id: None,
         slug: slug.to_string(),
         name: name.to_string(),
         description: "Test persona".to_string(),
@@ -16,6 +19,8 @@ fn persona_with(slug: &str, name: &str, content: &str) -> Persona {
         version: 7,
         content_hash: "content-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,

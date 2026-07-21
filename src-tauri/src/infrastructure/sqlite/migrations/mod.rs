@@ -407,42 +407,127 @@ mod v20260701174810_workspace_review_hunk_annotations;
 mod v20260701174810_workspace_review_hunk_annotations_tests;
 mod v20260703143000_task_validation_runs;
 mod v20260704193000_automations_p1;
+#[cfg(test)]
+mod v20260704193000_automations_p1_tests;
 mod v20260706113000_agent_conversation_issue_identity;
+#[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
 mod v20260707113000_automation_agent_completed_signal;
+#[cfg(test)]
+mod v20260707113000_automation_agent_completed_signal_tests;
 mod v20260707120000_automations_spec_artifact_id;
+#[cfg(test)]
+mod v20260707120000_automations_spec_artifact_id_tests;
 mod v20260708120000_automation_run_plan_gate;
+#[cfg(test)]
+mod v20260708120000_automation_run_plan_gate_tests;
 mod v20260708130511_workspace_review_autofix_setting;
+#[cfg(test)]
+mod v20260708130511_workspace_review_autofix_setting_tests;
 mod v20260708131548_chat_conversation_coordination_mode;
+#[cfg(test)]
+mod v20260708131548_chat_conversation_coordination_mode_tests;
 mod v20260710000000_task_branch_base;
+#[cfg(test)]
+mod v20260710000000_task_branch_base_tests;
 mod v20260710003315_execution_plan_halt_mode;
+#[cfg(test)]
+mod v20260710003315_execution_plan_halt_mode_tests;
 mod v20260710134609_notifications_table;
+#[cfg(test)]
+mod v20260710134609_notifications_table_tests;
 mod v20260710201548_notification_settings;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
 mod v20260711151804_personas;
+#[cfg(test)]
+mod v20260711151804_personas_tests;
 mod v20260712090000_validation_run_content_fingerprints;
 mod v20260712153932_agent_workspace_pr_review_auto_approve;
 #[cfg(test)]
 mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
 mod v20260712155425_ui_feature_flag_overrides;
+#[cfg(test)]
+mod v20260712155425_ui_feature_flag_overrides_tests;
 mod v20260712162657_persona_builder_agent_mode;
+#[cfg(test)]
+mod v20260712162657_persona_builder_agent_mode_tests;
 mod v20260712190416_branch_update_authority;
 #[cfg(test)]
 mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
+#[cfg(test)]
+mod v20260713063349_persona_run_attribution_tests;
 mod v20260713131052_disable_auto_followup_by_default;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
+mod v20260714184430_workspace_review_auto_merge_guard;
 #[cfg(test)]
-mod v20260710134609_notifications_table_tests;
+mod v20260714184430_workspace_review_auto_merge_guard_tests;
+mod v20260715013854_model_native_plan_verification;
 #[cfg(test)]
-mod v20260710201548_notification_settings_tests;
+mod v20260715013854_model_native_plan_verification_tests;
+mod v20260715170000_automation_authoring_state;
 #[cfg(test)]
-mod v20260711151804_personas_tests;
+mod v20260715170000_automation_authoring_state_tests;
+mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
-mod v20260712155425_ui_feature_flag_overrides_tests;
+mod v20260715172058_persona_update_draft_provenance_tests;
+mod v20260715181627_agent_conversation_capabilities;
 #[cfg(test)]
-mod v20260712162657_persona_builder_agent_mode_tests;
+mod v20260715181627_agent_conversation_capabilities_tests;
+mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
-mod v20260713063349_persona_run_attribution_tests;
+mod v20260715183000_automation_ideation_signal_tests;
+mod v20260715194617_scripted_agent_workflows;
+#[cfg(test)]
+mod v20260715194617_scripted_agent_workflows_tests;
+mod v20260716154318_manual_role_defaults;
+#[cfg(test)]
+mod v20260716154318_manual_role_defaults_tests;
+mod v20260716170840_persona_project_scope;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
+mod v20260716202015_workspace_review_bypass_and_bound_agent;
+#[cfg(test)]
+mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716204027_conversation_folder_references;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
+mod v20260716210000_supervised_native_task_pipeline;
+#[cfg(test)]
+mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260717152713_persona_builder_result_binding;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+mod v20260717152714_persona_artifact_history;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
+mod v20260717235338_github_cli_token_environment_setting;
+#[cfg(test)]
+mod v20260717235338_github_cli_token_environment_setting_tests;
+mod v20260718014631_mcp_policy_overrides;
+#[cfg(test)]
+mod v20260718014631_mcp_policy_overrides_tests;
+mod v20260718162852_clear_detected_validation_commands;
+#[cfg(test)]
+mod v20260718162852_clear_detected_validation_commands_tests;
+mod v20260718182035_add_tasks_enabled_setting;
+#[cfg(test)]
+mod v20260718182035_add_tasks_enabled_setting_tests;
+mod v20260720102513_add_tasks_feature_state;
+#[cfg(test)]
+mod v20260720102513_add_tasks_feature_state_tests;
+mod v20260720131416_review_pr_disable_pr_automation;
+#[cfg(test)]
+mod v20260720131416_review_pr_disable_pr_automation_tests;
+mod v20260720200633_auto_verify_draft_plans;
+#[cfg(test)]
+mod v20260720200633_auto_verify_draft_plans_tests;
+#[cfg(test)]
+pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
+    v20260715194617_scripted_agent_workflows::migrate(conn)
+}
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -504,24 +589,6 @@ mod v62_api_key_admin_permissions_tests;
 #[cfg(test)]
 mod v63_auto_verify_generation_tests;
 #[cfg(test)]
-mod v20260704193000_automations_p1_tests;
-#[cfg(test)]
-mod v20260706113000_agent_conversation_issue_identity_tests;
-#[cfg(test)]
-mod v20260707113000_automation_agent_completed_signal_tests;
-#[cfg(test)]
-mod v20260707120000_automations_spec_artifact_id_tests;
-#[cfg(test)]
-mod v20260708120000_automation_run_plan_gate_tests;
-#[cfg(test)]
-mod v20260708130511_workspace_review_autofix_setting_tests;
-#[cfg(test)]
-mod v20260708131548_chat_conversation_coordination_mode_tests;
-#[cfg(test)]
-mod v20260710000000_task_branch_base_tests;
-#[cfg(test)]
-mod v20260710003315_execution_plan_halt_mode_tests;
-#[cfg(test)]
 mod v65_unique_working_directory_tests;
 #[cfg(test)]
 mod v66_cross_project_import_tests;
@@ -551,7 +618,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260713131052;
+pub const SCHEMA_VERSION: i64 = 20260720200633;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1530,6 +1597,111 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260713131052,
         name: "disable_auto_followup_by_default",
         migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260714184430,
+        name: "workspace_review_auto_merge_guard",
+        migrate: v20260714184430_workspace_review_auto_merge_guard::migrate,
+    },
+    Migration {
+        version: 20260715013854,
+        name: "model_native_plan_verification",
+        migrate: v20260715013854_model_native_plan_verification::migrate,
+    },
+    Migration {
+        version: 20260715170000,
+        name: "automation_authoring_state",
+        migrate: v20260715170000_automation_authoring_state::migrate,
+    },
+    Migration {
+        version: 20260715172058,
+        name: "persona_update_draft_provenance",
+        migrate: v20260715172058_persona_update_draft_provenance::migrate,
+    },
+    Migration {
+        version: 20260715181627,
+        name: "agent_conversation_capabilities",
+        migrate: v20260715181627_agent_conversation_capabilities::migrate,
+    },
+    Migration {
+        version: 20260715183000,
+        name: "automation_ideation_signal",
+        migrate: v20260715183000_automation_ideation_signal::migrate,
+    },
+    Migration {
+        version: 20260715194617,
+        name: "scripted_agent_workflows",
+        migrate: v20260715194617_scripted_agent_workflows::migrate,
+    },
+    Migration {
+        version: 20260716154318,
+        name: "manual_role_defaults",
+        migrate: v20260716154318_manual_role_defaults::migrate,
+    },
+    Migration {
+        version: 20260716170840,
+        name: "persona_project_scope",
+        migrate: v20260716170840_persona_project_scope::migrate,
+    },
+    Migration {
+        version: 20260716202015,
+        name: "workspace_review_bypass_and_bound_agent",
+        migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
+    },
+    Migration {
+        version: 20260716204027,
+        name: "conversation_folder_references",
+        migrate: v20260716204027_conversation_folder_references::migrate,
+    },
+    Migration {
+        version: 20260716210000,
+        name: "supervised_native_task_pipeline",
+        migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260717152713,
+        name: "persona_builder_result_binding",
+        migrate: v20260717152713_persona_builder_result_binding::migrate,
+    },
+    Migration {
+        version: 20260717152714,
+        name: "persona_artifact_history",
+        migrate: v20260717152714_persona_artifact_history::migrate,
+    },
+    Migration {
+        version: 20260717235338,
+        name: "github_cli_token_environment_setting",
+        migrate: v20260717235338_github_cli_token_environment_setting::migrate,
+    },
+    Migration {
+        version: 20260718014631,
+        name: "mcp_policy_overrides",
+        migrate: v20260718014631_mcp_policy_overrides::migrate,
+    },
+    Migration {
+        version: 20260718162852,
+        name: "clear_detected_validation_commands",
+        migrate: v20260718162852_clear_detected_validation_commands::migrate,
+    },
+    Migration {
+        version: 20260718182035,
+        name: "add_tasks_enabled_setting",
+        migrate: v20260718182035_add_tasks_enabled_setting::migrate,
+    },
+    Migration {
+        version: 20260720102513,
+        name: "add_tasks_feature_state",
+        migrate: v20260720102513_add_tasks_feature_state::migrate,
+    },
+    Migration {
+        version: 20260720131416,
+        name: "review_pr_disable_pr_automation",
+        migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
+    },
+    Migration {
+        version: 20260720200633,
+        name: "auto_verify_draft_plans",
+        migrate: v20260720200633_auto_verify_draft_plans::migrate,
     },
 ];
 

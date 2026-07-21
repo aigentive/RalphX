@@ -113,6 +113,7 @@ impl fmt::Display for ProcessId {
 pub enum ArtifactType {
     // Documents
     Prd,
+    Persona,
     ResearchDocument,
     DesignDoc,
     Specification,
@@ -147,6 +148,7 @@ impl ArtifactType {
     pub fn all() -> &'static [ArtifactType] {
         &[
             ArtifactType::Prd,
+            ArtifactType::Persona,
             ArtifactType::ResearchDocument,
             ArtifactType::DesignDoc,
             ArtifactType::Specification,
@@ -176,6 +178,7 @@ impl ArtifactType {
     pub fn as_str(&self) -> &'static str {
         match self {
             ArtifactType::Prd => "prd",
+            ArtifactType::Persona => "persona",
             ArtifactType::ResearchDocument => "research_document",
             ArtifactType::DesignDoc => "design_doc",
             ArtifactType::Specification => "specification",
@@ -228,6 +231,7 @@ impl FromStr for ArtifactType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "prd" => Ok(ArtifactType::Prd),
+            "persona" => Ok(ArtifactType::Persona),
             "research_document" => Ok(ArtifactType::ResearchDocument),
             "design_doc" => Ok(ArtifactType::DesignDoc),
             "specification" => Ok(ArtifactType::Specification),
@@ -316,6 +320,9 @@ pub struct ArtifactMetadata {
     /// Optional team-specific metadata (for artifacts from agent teams)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_metadata: Option<TeamArtifactMetadata>,
+    /// Optional artifact-kind-specific metadata persisted in `metadata_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_metadata: Option<serde_json::Value>,
 }
 
 fn default_version() -> u32 {
@@ -332,6 +339,7 @@ impl ArtifactMetadata {
             process_id: None,
             version: 1,
             team_metadata: None,
+            custom_metadata: None,
         }
     }
 
@@ -356,6 +364,12 @@ impl ArtifactMetadata {
     /// Sets team-specific metadata
     pub fn with_team_metadata(mut self, team_metadata: TeamArtifactMetadata) -> Self {
         self.team_metadata = Some(team_metadata);
+        self
+    }
+
+    /// Sets artifact-kind-specific metadata persisted in `metadata_json`.
+    pub fn with_custom_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.custom_metadata = Some(metadata);
         self
     }
 }

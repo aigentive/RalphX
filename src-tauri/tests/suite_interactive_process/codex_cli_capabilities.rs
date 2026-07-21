@@ -115,6 +115,7 @@ fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
         skip_git_repo_check: true,
         json_output: true,
         search: true,
+        ultra_mode: false,
     };
 
     let args = build_codex_exec_args(&capabilities, &config).expect("args should build");
@@ -478,6 +479,7 @@ fn build_codex_cli_diagnostics_response_handles_successful_probe() {
         supports_mcp_subcommand: true,
         supports_fast_mode_feature: false,
         fast_mode_supported_models: Vec::new(),
+        ultra_supported_models: Vec::new(),
         supported_model_aliases: vec!["gpt-5.5".to_string()],
         supported_efforts: vec![
             "low".to_string(),

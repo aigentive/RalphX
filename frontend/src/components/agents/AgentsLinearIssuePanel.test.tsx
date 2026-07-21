@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { linearApi, type AgentConversationLinearIssue } from "@/api/linear";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useArtifactSelectionStore } from "@/stores/artifactSelectionStore";
 
 import { AgentsLinearIssuePanel } from "./AgentsLinearIssuePanel";
 
@@ -95,6 +96,39 @@ describe("AgentsLinearIssuePanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     searchIssuesMock.mockResolvedValue([]);
+    useArtifactSelectionStore.getState().clearAllSelections();
+  });
+
+  it("selects a frozen Linear source line for the active conversation", async () => {
+    getIssueMock.mockResolvedValue(issue());
+
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Select ticket lines" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Line 1: # LIN-123: Fix Linear tab",
+      }),
+    );
+
+    expect(
+      useArtifactSelectionStore.getState().selections["conversation-1"],
+    ).toEqual(
+      expect.objectContaining({
+        sourceType: "ticket",
+        sourceKind: "linear",
+        sourceId: "issue-1",
+        sourceKey: "LIN-123",
+        sourceTitle: "Fix Linear tab",
+        provider: "linear",
+        sourceRevision: "2026-06-18T08:00:00Z",
+        startLine: 1,
+        endLine: 1,
+        content: "# LIN-123: Fix Linear tab",
+      }),
+    );
   });
 
   it("refreshes newly assigned not-loaded Linear issues without a manual click", async () => {

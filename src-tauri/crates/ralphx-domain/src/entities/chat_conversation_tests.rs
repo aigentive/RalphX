@@ -21,6 +21,7 @@ fn test_context_type_serialization() {
     assert_eq!(ChatContextType::Ideation.to_string(), "ideation");
     assert_eq!(ChatContextType::Task.to_string(), "task");
     assert_eq!(ChatContextType::Project.to_string(), "project");
+    assert_eq!(ChatContextType::Standalone.to_string(), "standalone");
     assert_eq!(ChatContextType::TaskExecution.to_string(), "task_execution");
     assert_eq!(ChatContextType::Review.to_string(), "review");
     assert_eq!(ChatContextType::BranchUpdate.to_string(), "branch_update");
@@ -39,6 +40,10 @@ fn test_context_type_parsing() {
     assert_eq!(
         "project".parse::<ChatContextType>().unwrap(),
         ChatContextType::Project
+    );
+    assert_eq!(
+        "standalone".parse::<ChatContextType>().unwrap(),
+        ChatContextType::Standalone
     );
     assert_eq!(
         "task_execution".parse::<ChatContextType>().unwrap(),
@@ -62,6 +67,69 @@ fn test_new_branch_update_conversation() {
     assert_eq!(conversation.context_type, ChatContextType::BranchUpdate);
     assert_eq!(conversation.context_id, "branch-update-task");
     assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
+}
+
+#[test]
+fn test_new_standalone_conversation_is_self_keyed() {
+    let conversation = ChatConversation::new_standalone();
+    assert_eq!(conversation.context_type, ChatContextType::Standalone);
+    assert_eq!(conversation.context_id, conversation.id.as_str());
+    assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
+    assert!(conversation.is_valid_standalone_self_key());
+}
+
+#[test]
+fn test_new_standalone_conversations_have_distinct_ids() {
+    let first = ChatConversation::new_standalone();
+    let second = ChatConversation::new_standalone();
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.context_id, second.context_id);
+}
+
+#[test]
+fn persona_builder_identity_requires_supported_context_and_mode() {
+    for context_type in [ChatContextType::Project, ChatContextType::Standalone] {
+        assert!(ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        ));
+        assert!(!ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::Chat),
+        ));
+    }
+
+    for context_type in [
+        ChatContextType::Ideation,
+        ChatContextType::Delegation,
+        ChatContextType::Task,
+        ChatContextType::TaskExecution,
+        ChatContextType::Review,
+        ChatContextType::Merge,
+        ChatContextType::BranchUpdate,
+    ] {
+        assert!(!ChatConversation::is_persona_builder_identity(
+            context_type,
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        ));
+    }
+}
+
+#[test]
+fn test_is_valid_standalone_self_key_rejects_mismatched_context_id() {
+    let mut conversation = ChatConversation::new_standalone();
+    conversation.context_id = "not-my-own-id".to_string();
+    assert!(!conversation.is_valid_standalone_self_key());
+}
+
+#[test]
+fn test_is_valid_standalone_self_key_rejects_non_standalone_context_type() {
+    let conversation = ChatConversation::new_project(ProjectId::from_string("proj-1".to_string()));
+    // Even in the (impossible in production) case where context_id happened to
+    // equal the conversation id, the context_type gate must still reject it.
+    let mut conversation = conversation;
+    conversation.context_id = conversation.id.as_str();
+    assert!(!conversation.is_valid_standalone_self_key());
 }
 
 #[test]

@@ -7,7 +7,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::AppResult;
-use crate::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+use crate::infrastructure::agents::claude::agent_names::{
+    AGENT_CHAT_PROJECT, AGENT_PERSONA_EXTRACTOR, AGENT_TASK_MANAGER,
+};
 use crate::infrastructure::memory::MemoryPlanBranchRepository;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,6 +19,18 @@ fn agent_name_maps_resolve_persona_builder_to_extractor() {
     assert_eq!(
         agent_name_for_workspace_mode(AgentConversationWorkspaceMode::PersonaBuilder),
         AGENT_PERSONA_EXTRACTOR
+    );
+}
+
+#[test]
+fn supervised_modes_route_to_their_canonical_agents() {
+    assert_eq!(
+        agent_name_for_workspace_mode(AgentConversationWorkspaceMode::Tasks),
+        AGENT_TASK_MANAGER,
+    );
+    assert_eq!(
+        agent_name_for_workspace_mode(AgentConversationWorkspaceMode::Autopilot),
+        AGENT_CHAT_PROJECT,
     );
 }
 
@@ -1172,6 +1186,75 @@ async fn prepare_agent_conversation_workspace_applies_pr_automation_defaults() {
 
     assert!(workspace.pr_autofix_enabled);
     assert!(workspace.pr_auto_merge_desired);
+}
+
+#[tokio::test]
+async fn prepare_review_pr_workspace_suppresses_pr_automation_defaults_but_plan_retains_them() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let review_branch = "feature/review-pr-defaults";
+    git(&repo_path, &["checkout", "-b", review_branch]);
+    git(&repo_path, &["checkout", "main"]);
+
+    let mut project = Project::new(
+        "Review PR Defaults".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let defaults = AgentConversationWorkspacePrAutomationDefaults {
+        autofix_enabled: true,
+        auto_merge_desired: true,
+    };
+
+    let review_workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+        &project,
+        &ChatConversationId::from_string("conversation-review-defaults"),
+        AgentConversationWorkspaceMode::ReviewPr,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            branch_mode: None,
+            base_ref: Some(review_branch.to_string()),
+            display_name: Some("PR #77: Defaults".to_string()),
+            source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                number: 77,
+                url: Some("https://example.test/pull/77".to_string()),
+                title: Some("Defaults".to_string()),
+                head_ref_name: review_branch.to_string(),
+                base_ref_name: Some("main".to_string()),
+                head_ref_oid: Some("review-head".to_string()),
+            }),
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+        defaults,
+        false,
+    )
+    .await
+    .expect("Review PR workspace should be prepared");
+
+    let plan_workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+        &project,
+        &ChatConversationId::from_string("conversation-plan-defaults"),
+        AgentConversationWorkspaceMode::Plan,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: None,
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+        defaults,
+        false,
+    )
+    .await
+    .expect("Plan workspace should be prepared");
+
+    assert!(!review_workspace.pr_autofix_enabled);
+    assert!(!review_workspace.pr_auto_merge_desired);
+    assert!(plan_workspace.pr_autofix_enabled);
+    assert!(plan_workspace.pr_auto_merge_desired);
 }
 
 #[tokio::test]

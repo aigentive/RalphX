@@ -140,6 +140,51 @@ describe("automationsApi", () => {
     });
   });
 
+  it("passes a linked selected base when creating an automation draft", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      automation: automationResponse(),
+      setup_conversation_id: "conversation-setup-1",
+    });
+
+    await automationsApi.createDraft({
+      projectId: "project-1",
+      name: "Branch-aware automation",
+      base: {
+        kind: "local_branch",
+        branchMode: "linked",
+        ref: "feature/linked-automation",
+        displayName: "feature/linked-automation",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
+      },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("create_automation_draft", {
+      input: {
+        projectId: "project-1",
+        name: "Branch-aware automation",
+        baseRefKind: "local_branch",
+        baseBranchMode: "linked",
+        baseRef: "feature/linked-automation",
+        baseDisplayName: "feature/linked-automation",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Linked automation base",
+          headRefName: "feature/linked-automation",
+          baseRefName: "release",
+          headRefOid: "abc123",
+        },
+      },
+    });
+  });
+
   it("sends camelCase Tauri command inputs for updates and pause reasons", async () => {
     vi.mocked(invoke).mockResolvedValue(automationResponse({ status: "paused" }));
 
@@ -224,6 +269,36 @@ describe("automationsApi", () => {
     });
   });
 
+  it("uses dedicated fresh-run restart and judge retry commands", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ scheduled: true, reason: null })
+      .mockResolvedValueOnce({ scheduled: true, reason: null })
+      .mockResolvedValueOnce({ scheduled: false, reason: "plan judge already running" });
+
+    await expect(automationsApi.restart("automation-1")).resolves.toEqual({
+      scheduled: true,
+      reason: null,
+    });
+    await expect(automationsApi.retryJudge("automation-1")).resolves.toEqual({
+      scheduled: true,
+      reason: null,
+    });
+    await expect(automationsApi.retryPlanJudge("automation-1")).resolves.toEqual({
+      scheduled: false,
+      reason: "plan judge already running",
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "restart_automation", {
+      input: { id: "automation-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "retry_automation_judge", {
+      input: { id: "automation-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "retry_automation_plan_judge", {
+      input: { id: "automation-1" },
+    });
+  });
+
   it("transforms automation detail runs", async () => {
     vi.mocked(invoke).mockResolvedValue({
       automation: automationResponse({
@@ -245,6 +320,24 @@ describe("automationsApi", () => {
         }),
       ],
       usage: usageResponse(),
+      pipeline: {
+        deliverable: "task_graph",
+        status: "executing",
+        ideation_session_id: "session-1",
+        plan_artifact_id: "plan-artifact-1",
+        proposal_count: 2,
+        task_total: 2,
+        task_merged: 1,
+        task_terminal: 1,
+        tasks: [
+          {
+            id: "task-2",
+            title: "Build UI",
+            status: "ready",
+            blocked_by: ["task-1"],
+          },
+        ],
+      },
     });
 
     await expect(automationsApi.get("automation-1")).resolves.toEqual(
@@ -281,6 +374,24 @@ describe("automationsApi", () => {
           cacheReadTokens: 9,
           estimatedUsd: 0.04,
         }),
+        pipeline: {
+          deliverable: "task_graph",
+          status: "executing",
+          ideationSessionId: "session-1",
+          planArtifactId: "plan-artifact-1",
+          proposalCount: 2,
+          taskTotal: 2,
+          taskMerged: 1,
+          taskTerminal: 1,
+          tasks: [
+            {
+              id: "task-2",
+              title: "Build UI",
+              status: "ready",
+              blockedBy: ["task-1"],
+            },
+          ],
+        },
       }),
     );
   });

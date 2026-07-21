@@ -41,7 +41,7 @@ invoke("create_api_key", { input: { name, projectIds, permissions } })
 invoke("create_api_key", { input: { name, project_ids, permissions } })
 ```
 
-**Reference:** `frontend/src/CLAUDE.md` rule 14 — Tauri invoke: camelCase fields.
+**Reference:** root `CLAUDE.md` Key Principles rule 14 and `frontend/src/CLAUDE.md` → Rules → API Layer Patterns (Tauri invoke args use camelCase).
 
 ## Direct Flat Params (No Struct)
 
@@ -57,14 +57,3 @@ Commands that take only `app_state` / `db` (no user input) use `invoke("cmd")` w
 // ✅ No args needed
 invoke<unknown[]>("list_api_keys")
 ```
-
-## Audit Results (2026-03-11)
-
-Full audit of 106 `invoke()` calls across 31 files in `src/hooks/`, `src/api/`, `src/lib/api/`, `src/components/`:
-
-| Finding | Result |
-|---------|--------|
-| Struct-param wrapping bugs | **0 found** — all commands with struct params correctly use `{ paramName: { ... } }` |
-| camelCase compliance | ✅ All invoke args use camelCase field names |
-| Commands audited | 47 distinct Tauri commands verified against Rust signatures |
-| Files with invoke() calls | 31 (hooks, api, lib/api, components detail views) |

@@ -167,21 +167,6 @@ export const IDEATION_TOOLS: Tool[] = [
     },
   },
   {
-    name: "reject_task_proposal",
-    description:
-      "Reject a task proposal without archiving it. Use when the user rejects a proposal but its dependency context should remain available for review and learning.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        proposal_id: {
-          type: "string",
-          description: "The proposal ID to reject",
-        },
-      },
-      required: ["proposal_id"],
-    },
-  },
-  {
     name: "update_session_title",
     description:
       "Update the title of an ideation session or an agent conversation. Used by ralphx-utility-session-namer to persist auto-generated titles. Provide exactly one of session_id or conversation_id.",
@@ -300,28 +285,6 @@ export const IDEATION_TOOLS: Tool[] = [
       type: "object",
       properties: {},
       required: [],
-    },
-  },
-
-  // ========================================================================
-  // VERIFICATION CONFIRMATION STATUS (ralphx-ideation and ralphx-ideation-team-lead only)
-  // ========================================================================
-  {
-    name: "get_verification_confirmation_status",
-    description:
-      "Check whether the user has confirmed, rejected, or is still pending confirmation for plan verification. " +
-      "Call this after `create_plan_artifact` to detect whether the user has acted on the verification confirmation dialog. " +
-      "Response includes status: \"pending\" (user hasn't responded yet), \"accepted\" (user confirmed — verification will start), " +
-      "\"rejected\" (user dismissed — session stays Unverified), or \"not_applicable\" (external session or no pending confirmation exists).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session_id: {
-          type: "string",
-          description: "The ideation session ID to check verification confirmation status for",
-        },
-      },
-      required: ["session_id"],
     },
   },
 
@@ -509,8 +472,8 @@ export const IDEATION_TOOLS: Tool[] = [
         },
         purpose: {
           type: "string",
-          enum: ["general", "verification"],
-          description: "Purpose of the child session. 'general' for regular follow-on sessions (default), 'verification' for plan verification sessions that run in the background.",
+          enum: ["general"],
+          description: "Purpose of the child session. Only general follow-on sessions are supported.",
         },
         is_external_trigger: {
           type: "boolean",

@@ -5,14 +5,14 @@ import type { ProjectSettings } from "@/types/settings";
 import type { SettingsSectionId } from "./settings-registry";
 
 const LazyExecutionSection = lazy(() => import("./sections/ExecutionSection"));
+const LazyAgentsSettingsSection = lazy(() =>
+  import("./AgentsSettingsSection").then((module) => ({
+    default: module.AgentsSettingsSection,
+  })),
+);
 const LazyHarnessProvidersSection = lazy(() =>
   import("./HarnessProvidersSection").then((module) => ({
     default: module.HarnessProvidersSection,
-  })),
-);
-const LazyExecutionHarnessSection = lazy(() =>
-  import("./IdeationHarnessSection").then((module) => ({
-    default: module.ExecutionHarnessSection,
   })),
 );
 const LazyGlobalExecutionSection = lazy(() =>
@@ -47,11 +47,6 @@ const LazyIdeationSettingsPanel = lazy(() =>
     default: module.IdeationSettingsPanel,
   })),
 );
-const LazyIdeationHarnessSection = lazy(() =>
-  import("./IdeationHarnessSection").then((module) => ({
-    default: module.IdeationHarnessSection,
-  })),
-);
 const LazyApiKeysSection = lazy(() =>
   import("./ApiKeysSection").then((module) => ({
     default: module.ApiKeysSection,
@@ -82,9 +77,9 @@ const LazyGranolaIntegrationSettingsPanel = lazy(() =>
     default: module.GranolaIntegrationSettingsPanel,
   })),
 );
-const LazyExternalMcpSettingsPanel = lazy(() =>
-  import("./ExternalMcpSettingsPanel").then((module) => ({
-    default: module.ExternalMcpSettingsPanel,
+const LazyMcpSettingsSection = lazy(() =>
+  import("./McpSettingsSection").then((module) => ({
+    default: module.McpSettingsSection,
   })),
 );
 const LazyAppPreferencesSection = lazy(() =>
@@ -105,6 +100,11 @@ const LazyNotificationSettingsPanel = lazy(() =>
 const LazyPersonasSection = lazy(() =>
   import("./PersonasSection").then((module) => ({
     default: module.PersonasSection,
+  })),
+);
+const LazyCapabilitiesSection = lazy(() =>
+  import("./CapabilitiesSection").then((module) => ({
+    default: module.CapabilitiesSection,
   })),
 );
 
@@ -157,24 +157,24 @@ export function SettingsSectionContent({
           />
         ) : null)}
       {section === "providers" && <LazyHarnessProvidersSection />}
-      {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
+      {section === "agents" && <LazyAgentsSettingsSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "personas" && <LazyPersonasSection />}
+      {section === "capabilities" && <LazyCapabilitiesSection />}
       {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "autonomy" && <LazyAutonomyPolicySection />}
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
-      {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
       {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
       {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
-      {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
+      {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "app-preferences" && <LazyAppPreferencesSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
       {section === "notifications" && <LazyNotificationSettingsPanel />}

@@ -27,6 +27,11 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: false,
+  agentConversationTeam: false,
+  agentConversationWorkflows: false,
+  composerFolderReferences: false,
+  standaloneConversations: false,
+  agentConversationAutopilot: false,
 };
 
 export function useFeatureFlags() {
@@ -55,9 +60,33 @@ export function useUpdateFeatureFlags() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ agentPersonas }: { agentPersonas: boolean }) => {
+    mutationFn: async ({
+      agentPersonas,
+      composerFolderReferences,
+      agentConversationTeam,
+      agentConversationWorkflows,
+      agentConversationAutopilot,
+    }: {
+      agentPersonas?: boolean;
+      composerFolderReferences?: boolean;
+      agentConversationTeam?: boolean;
+      agentConversationWorkflows?: boolean;
+      agentConversationAutopilot?: boolean;
+    }) => {
       const raw = await invoke("update_ui_feature_flags", {
-        input: { agentPersonas },
+        input: {
+          ...(agentPersonas !== undefined && { agentPersonas }),
+          ...(composerFolderReferences !== undefined && {
+            composerFolderReferences,
+          }),
+          ...(agentConversationTeam !== undefined && { agentConversationTeam }),
+          ...(agentConversationWorkflows !== undefined && {
+            agentConversationWorkflows,
+          }),
+          ...(agentConversationAutopilot !== undefined && {
+            agentConversationAutopilot,
+          }),
+        },
       });
       return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
     },

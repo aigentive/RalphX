@@ -15,7 +15,7 @@ use nix::unistd::Pid;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing;
@@ -68,6 +68,16 @@ enum HealthCheckResult {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalMcpReadinessState {
+    Disabled,
+    Starting,
+    Ready,
+    Degraded,
+    Failed,
+}
+
 pub(crate) fn stderr_indicates_address_in_use(lines: &[String]) -> bool {
     lines.iter().any(|line| {
         line.contains("EADDRINUSE") || line.to_ascii_lowercase().contains("address already in use")
@@ -106,6 +116,19 @@ impl ExternalMcpHandle {
     pub fn get(&self) -> Option<&Arc<ExternalMcpSupervisor>> {
         self.inner.get()
     }
+
+    pub fn readiness(&self) -> ExternalMcpReadinessState {
+        self.get()
+            .map(|supervisor| supervisor.readiness())
+            .unwrap_or(ExternalMcpReadinessState::Disabled)
+    }
+
+    pub async fn await_ready(&self, timeout: Duration) -> Result<(), String> {
+        let supervisor = self
+            .get()
+            .ok_or_else(|| "External MCP transport is disabled".to_string())?;
+        supervisor.await_ready(timeout).await
+    }
 }
 
 impl Default for ExternalMcpHandle {
@@ -123,10 +146,12 @@ pub struct ExternalMcpSupervisor {
     config: ExternalMcpConfig,
     app_handle: AppHandle,
     app_data_dir: PathBuf,
+    readiness_tx: watch::Sender<ExternalMcpReadinessState>,
 }
 
 impl ExternalMcpSupervisor {
     pub fn new(config: ExternalMcpConfig, app_handle: AppHandle, app_data_dir: PathBuf) -> Self {
+        let (readiness_tx, _) = watch::channel(ExternalMcpReadinessState::Starting);
         Self {
             child: Arc::new(Mutex::new(None)),
             io_handles: Mutex::new(Vec::new()),
@@ -134,6 +159,7 @@ impl ExternalMcpSupervisor {
             config,
             app_handle,
             app_data_dir,
+            readiness_tx,
         }
     }
 
@@ -144,6 +170,7 @@ impl ExternalMcpSupervisor {
         node_path: PathBuf,
         entry_path: PathBuf,
     ) -> Result<(), String> {
+        self.set_readiness(ExternalMcpReadinessState::Starting);
         if is_test_environment() {
             tracing::info!("Skipping external MCP supervisor start (test environment)");
             return Ok(());
@@ -187,7 +214,39 @@ impl ExternalMcpSupervisor {
         drop(handles);
 
         self.remove_pid_file();
+        self.set_readiness(ExternalMcpReadinessState::Disabled);
         self.emit_event("stopped", None);
+    }
+
+    pub fn readiness(&self) -> ExternalMcpReadinessState {
+        *self.readiness_tx.borrow()
+    }
+
+    pub async fn await_ready(&self, timeout: Duration) -> Result<(), String> {
+        let mut readiness = self.readiness_tx.subscribe();
+        tokio::time::timeout(timeout, async {
+            loop {
+                match *readiness.borrow() {
+                    ExternalMcpReadinessState::Ready => return Ok(()),
+                    ExternalMcpReadinessState::Degraded => {
+                        return Err("External MCP transport is degraded".to_string())
+                    }
+                    ExternalMcpReadinessState::Failed => {
+                        return Err("External MCP transport failed to start".to_string())
+                    }
+                    ExternalMcpReadinessState::Disabled => {
+                        return Err("External MCP transport is disabled".to_string())
+                    }
+                    ExternalMcpReadinessState::Starting => {}
+                }
+                readiness
+                    .changed()
+                    .await
+                    .map_err(|_| "External MCP readiness monitor stopped".to_string())?;
+            }
+        })
+        .await
+        .map_err(|_| "Timed out waiting for external MCP transport readiness".to_string())?
     }
 
     // ── Internal — supervisor lifecycle ──────────────────────────────────
@@ -236,6 +295,7 @@ impl ExternalMcpSupervisor {
                 tracing::error!("Failed to spawn external MCP process: {}", e);
                 *attempts += 1;
                 if *attempts >= self.config.max_restart_attempts {
+                    self.set_readiness(ExternalMcpReadinessState::Failed);
                     self.emit_event("failed", Some(format!("Failed to spawn: {}", e)));
                     self.cancel.cancel();
                     return;
@@ -244,6 +304,7 @@ impl ExternalMcpSupervisor {
                     "restarting",
                     Some(format!("Spawn failed, attempt {}", attempts)),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Starting);
                 tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
                 return;
             }
@@ -280,6 +341,7 @@ impl ExternalMcpSupervisor {
             HealthCheckResult::Ready => {
                 tracing::info!("External MCP server is ready on port {}", self.config.port);
                 self.emit_event("started", None);
+                self.set_readiness(ExternalMcpReadinessState::Ready);
                 *attempts = 0; // reset counter on successful start
             }
             HealthCheckResult::Degraded => {
@@ -288,6 +350,7 @@ impl ExternalMcpSupervisor {
                     "degraded",
                     Some("Server responding but not fully ready".to_string()),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Degraded);
                 *attempts = 0;
             }
             HealthCheckResult::Failed => {
@@ -300,6 +363,7 @@ impl ExternalMcpSupervisor {
                 tracing::warn!("External MCP health check failed");
                 *attempts += 1;
                 if *attempts >= self.config.max_restart_attempts {
+                    self.set_readiness(ExternalMcpReadinessState::Failed);
                     self.emit_event(
                         "failed",
                         Some("Health check failed after max attempts".to_string()),
@@ -311,6 +375,7 @@ impl ExternalMcpSupervisor {
                     "restarting",
                     Some(format!("Health check failed, attempt {}", attempts)),
                 );
+                self.set_readiness(ExternalMcpReadinessState::Starting);
                 self.kill_current().await;
                 tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
                 return;
@@ -400,6 +465,7 @@ impl ExternalMcpSupervisor {
                 self.config.port
             )),
         );
+        self.set_readiness(ExternalMcpReadinessState::Failed);
         self.kill_current().await;
         self.cancel.cancel();
     }
@@ -423,6 +489,7 @@ impl ExternalMcpSupervisor {
 
         *attempts += 1;
         if *attempts >= self.config.max_restart_attempts {
+            self.set_readiness(ExternalMcpReadinessState::Failed);
             self.emit_event("failed", Some("Max restart attempts reached".to_string()));
             self.cancel.cancel();
             return;
@@ -432,6 +499,7 @@ impl ExternalMcpSupervisor {
             "restarting",
             Some(format!("Restarting, attempt {}", attempts)),
         );
+        self.set_readiness(ExternalMcpReadinessState::Starting);
         tokio::time::sleep(Duration::from_millis(self.config.restart_delay_ms)).await;
     }
 
@@ -452,6 +520,8 @@ impl ExternalMcpSupervisor {
         if let Some(token) = &self.config.auth_token {
             cmd.env("EXTERNAL_MCP_AUTH_TOKEN", token);
         }
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+            .apply_to_tokio_command(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -585,6 +655,10 @@ impl ExternalMcpSupervisor {
         if let Err(e) = self.app_handle.emit("external-mcp:status", event) {
             tracing::warn!("Failed to emit external MCP event: {}", e);
         }
+    }
+
+    fn set_readiness(&self, state: ExternalMcpReadinessState) {
+        self.readiness_tx.send_replace(state);
     }
 
     // ── PID file ──────────────────────────────────────────────────────────

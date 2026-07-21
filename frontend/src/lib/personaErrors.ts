@@ -11,3 +11,14 @@ export function isPersonaFeatureDisabledError(error: unknown): boolean {
     error.startsWith(PERSONA_FEATURE_DISABLED_PREFIX)
   );
 }
+
+export function formatPersonaErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (isPersonaUnavailableError(message)) {
+    return "This persona is no longer available.";
+  }
+  if (isPersonaFeatureDisabledError(message)) {
+    return "Personas are disabled.";
+  }
+  return message || "Unable to save persona.";
+}

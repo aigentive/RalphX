@@ -49,7 +49,7 @@ that manages multi-agent software development pipelines.
 - v1_analyze_dependencies — dependency graph for proposals
 - v1_get_plan — plan artifact content (markdown)
 - v1_trigger_plan_verification — start adversarial plan review
-- v1_get_plan_verification — check verification convergence status
+- v1_get_plan_verification — check Verify Plan action status and exact-artifact proof
 - v1_accept_plan_and_schedule — saga: apply proposals → create tasks → execute
 
 ### Tasks (2 tools)
@@ -103,7 +103,7 @@ trigger → poll until terminal state.
 | Operation | Trigger | Poll | Terminal States |
 |-----------|---------|------|-----------------|
 | Ideation session | v1_start_ideation | v1_get_ideation_status | idle, completed |
-| Plan verification | v1_trigger_plan_verification | v1_get_plan_verification | converged, failed |
+| Plan verification | v1_trigger_plan_verification | v1_get_plan_verification | verified, failed, cancelled |
 | Task execution | v1_accept_plan_and_schedule | v1_batch_task_status | completed, failed, cancelled |
 | Event stream | v1_subscribe_events | v1_get_recent_events (cursor) | — (continuous) |
 

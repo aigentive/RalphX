@@ -1,38 +1,33 @@
-use std::sync::Arc;
-
-use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde::Deserialize;
 use tauri::State;
 
+use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
 use crate::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
     AgentConversationWorkspaceSetupMode,
 };
+pub(crate) use crate::application::automation::actions::{
+    retry_automation_judge_for_state, retry_automation_plan_judge_for_state,
+    trigger_automation_run_now_for_state,
+};
 use crate::application::automation::api::{
     automation_detail_response_for_state, automation_run_response_for_state,
-    automation_service_for_state, automation_transition_service_for_state,
-    AutomationDetailResponse, AutomationResponse, AutomationRunResponse,
-    AutomationScheduleResponse, CreateAutomationDraftResponse,
+    automation_service_for_state, AutomationDetailResponse, AutomationResponse,
+    AutomationRunResponse, AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
+use crate::application::automation::decomposition_verifier::AutomationAuthoringMode;
 use crate::application::automation::delete::delete_automation_with_archive;
-use crate::application::automation::scheduler::{
-    automation_judge_lease_expires_at, spawn_automation_judge_task, AutomationSchedulerConfig,
-    HarnessAutomationJudgeInvoker,
-};
 use crate::application::automation::service::{
-    AutomationRunNowAction, AutomationScheduleOutcome, AutomationService,
-    CreateAutomationDraftInput as ServiceCreateDraftInput,
+    AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
-use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
-    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
-    ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
+    AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId, ChatConversation,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
-use crate::infrastructure::agents::claude::automations_config;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +42,18 @@ pub struct CreateAutomationDraftInput {
     pub project_id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub authoring_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref_kind: Option<String>,
+    #[serde(default)]
+    pub base_branch_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_display_name: Option<String>,
+    #[serde(default)]
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +145,14 @@ pub(crate) async fn create_automation_draft_for_state(
     state: &AppState,
 ) -> Result<CreateAutomationDraftResponse, String> {
     let project_id = parse_project_id(&input.project_id)?;
+    let authoring_mode = input
+        .authoring_mode
+        .as_deref()
+        .map(|value| {
+            AutomationAuthoringMode::parse(value)
+                .ok_or_else(|| format!("invalid automation authoring mode: {value}"))
+        })
+        .transpose()?;
     if input
         .name
         .as_deref()
@@ -145,6 +160,26 @@ pub(crate) async fn create_automation_draft_for_state(
     {
         return Err("automation name cannot be empty".to_string());
     }
+    let base_ref_kind = input
+        .base_ref_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<IdeationAnalysisBaseRefKind>)
+        .transpose()?;
+    let base_branch_mode = input
+        .base_branch_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
+        .transpose()?;
+    let base_ref = trim_optional(input.base_ref);
+    let base_display_name = trim_optional(input.base_display_name);
+    let base_source_pull_request = input
+        .base_source_pull_request
+        .map(|pull_request| pull_request.normalize(base_ref_kind, base_ref.as_deref()))
+        .transpose()?;
     let project = state
         .project_repo
         .get_by_id(&project_id)
@@ -174,11 +209,11 @@ pub(crate) async fn create_automation_draft_for_state(
         &setup_conversation_id,
         AgentConversationWorkspaceMode::Automation,
         AgentConversationWorkspaceBaseSelection {
-            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-            branch_mode: Some(AgentConversationWorkspaceBranchMode::Isolated),
-            base_ref: None,
-            display_name: None,
-            source_pull_request: None,
+            kind: base_ref_kind.or(Some(IdeationAnalysisBaseRefKind::ProjectDefault)),
+            branch_mode: base_branch_mode.or(Some(AgentConversationWorkspaceBranchMode::Isolated)),
+            base_ref,
+            display_name: base_display_name,
+            source_pull_request: base_source_pull_request,
         },
         AgentConversationWorkspaceSetupMode::Deferred,
         AgentConversationWorkspacePrAutomationDefaults::default(),
@@ -217,6 +252,7 @@ pub(crate) async fn create_automation_draft_for_state(
             base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch.to_string()),
             base_ref: Some(setup_branch.clone()),
             base_display_name: Some(format!("Automation branch ({setup_branch})")),
+            authoring_mode,
         })
         .await;
 
@@ -309,6 +345,19 @@ pub async fn stop_automation(
 }
 
 #[tauri::command]
+pub async fn restart_automation(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationScheduleResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    automation_service(&state)
+        .restart(&id)
+        .await
+        .map(AutomationScheduleResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn trigger_automation_run_now(
     input: AutomationIdInput,
     state: State<'_, AppState>,
@@ -320,63 +369,28 @@ pub async fn trigger_automation_run_now(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) async fn trigger_automation_run_now_for_state(
-    id: &AutomationId,
-    state: &AppState,
-) -> crate::error::AppResult<AutomationScheduleOutcome> {
-    let service = automation_service(state);
-    match service.trigger_run_now_action(id).await? {
-        AutomationRunNowAction::Outcome(outcome) => Ok(outcome),
-        AutomationRunNowAction::StartJudge {
-            automation,
-            runs,
-            run,
-        } => {
-            let automation = *automation;
-            let run = *run;
-            let config = AutomationSchedulerConfig::from_runtime(automations_config());
-            let judge_lease_expires_at = automation_judge_lease_expires_at(config.judge_timeout);
-            let transition_service = automation_transition_service(state);
-            let changed = transition_service
-                .transition_judge_state(
-                    &run.id,
-                    run.judge_state,
-                    AutomationJudgeState::InProgress,
-                    AutomationJudgeTransitionGuard::Dispatch,
-                    None,
-                    None,
-                    Some(judge_lease_expires_at),
-                    None,
-                )
-                .await?;
-            if !changed {
-                tracing::warn!(
-                    automation_id = %id,
-                    run_id = %run.id,
-                    from_judge_state = run.judge_state.as_str(),
-                    "Discarded Run Now judge start because judge state changed"
-                );
-                return Ok(AutomationScheduleOutcome {
-                    scheduled: false,
-                    reason: Some("run in flight".to_string()),
-                });
-            }
-            spawn_automation_judge_task(
-                service,
-                transition_service,
-                Arc::new(HarnessAutomationJudgeInvoker::new(state.clone())),
-                config,
-                automation,
-                runs,
-                run,
-                judge_lease_expires_at,
-            );
-            Ok(AutomationScheduleOutcome {
-                scheduled: true,
-                reason: None,
-            })
-        }
-    }
+#[tauri::command]
+pub async fn retry_automation_judge(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationScheduleResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    retry_automation_judge_for_state(&id, &state)
+        .await
+        .map(AutomationScheduleResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn retry_automation_plan_judge(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationScheduleResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    retry_automation_plan_judge_for_state(&id, &state)
+        .await
+        .map(AutomationScheduleResponse::from)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -422,10 +436,6 @@ pub async fn delete_automation(
 
 pub(crate) fn automation_service(state: &AppState) -> AutomationService {
     automation_service_for_state(state)
-}
-
-fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
-    automation_transition_service_for_state(state)
 }
 
 pub(crate) fn parse_automation_id(value: &str) -> Result<AutomationId, String> {

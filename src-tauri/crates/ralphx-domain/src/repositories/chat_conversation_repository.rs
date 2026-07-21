@@ -37,6 +37,15 @@ pub trait ChatConversationRepository: Send + Sync {
     /// Get conversation by ID
     async fn get_by_id(&self, id: &ChatConversationId) -> AppResult<Option<ChatConversation>>;
 
+    /// Find the newest active conversation bound to a persona builder draft.
+    async fn get_by_builder_draft_id(
+        &self,
+        builder_draft_id: &str,
+    ) -> AppResult<Option<ChatConversation>> {
+        let _ = builder_draft_id;
+        Ok(None)
+    }
+
     /// Get all conversations for a specific context
     async fn get_by_context(
         &self,
@@ -92,6 +101,29 @@ pub trait ChatConversationRepository: Send + Sync {
         limit: u32,
     ) -> AppResult<Vec<ChatConversation>>;
 
+    /// List all conversations for a self-keyed context type (one with no
+    /// shared external context_id to filter by, e.g. `Standalone`, where each
+    /// conversation's `context_id` is its own id) ordered most-recent-first,
+    /// optionally including archived rows.
+    ///
+    /// Unlike `list_recent_resumable_by_context_type`, this is NOT limited to
+    /// conversations with a resumable provider session — sidebar/enumeration
+    /// callers need to show every conversation, including ones that were just
+    /// created and haven't sent a first message yet.
+    ///
+    /// Default no-op for context types that don't need self-keyed enumeration
+    /// (only `Standalone` uses this as of Phase 4a.3); implementations should
+    /// override it for any context type they want this enumeration for.
+    async fn list_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        include_archived: bool,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let _ = (context_type, include_archived, limit);
+        Ok(Vec::new())
+    }
+
     /// Update the provider session reference for a conversation.
     async fn update_provider_session_ref(
         &self,
@@ -117,6 +149,13 @@ pub trait ChatConversationRepository: Send + Sync {
         mode: Option<AgentConversationWorkspaceMode>,
     ) -> AppResult<()>;
 
+    /// Persist or clear the canonical specialist identity for a parented child.
+    async fn update_bound_agent_name(
+        &self,
+        id: &ChatConversationId,
+        bound_agent_name: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Set or clear the persona bound to a conversation.
     async fn update_persona_binding(
         &self,
@@ -124,11 +163,27 @@ pub trait ChatConversationRepository: Send + Sync {
         persona_id: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Set or clear the persona draft owned by a builder conversation.
+    async fn update_builder_draft_binding(
+        &self,
+        id: &ChatConversationId,
+        builder_draft_id: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Update the conversation-level team coordination mode.
     async fn update_coordination_mode(
         &self,
         id: &ChatConversationId,
         mode: CoordinationMode,
+    ) -> AppResult<()>;
+
+    /// Atomically replace the conversation bindings owned by a role default.
+    async fn update_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
     ) -> AppResult<()>;
 
     /// Compatibility helper for legacy Claude-specific callers.

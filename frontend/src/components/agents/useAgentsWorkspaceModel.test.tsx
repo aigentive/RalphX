@@ -79,7 +79,7 @@ describe("useAgentsWorkspaceModel", () => {
     getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(null);
   });
 
-  it("uses workspace review utility model while inheriting the workspace provider", () => {
+  it("uses the backend-resolved Reviewer role runtime before the child runtime loads", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -93,14 +93,19 @@ describe("useAgentsWorkspaceModel", () => {
           optimisticWorkspacesByConversationId: {},
           runtimeByConversationId: {},
           selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "ultra",
+          },
         }),
       { wrapper: wrapper() },
     );
 
     expect(result.current.normalizedActiveRuntime).toEqual({
       provider: "codex",
-      modelId: "gpt-5.4-mini",
-      effort: "medium",
+      modelId: "gpt-5.6-terra",
+      effort: "max",
     });
   });
 
@@ -124,6 +129,11 @@ describe("useAgentsWorkspaceModel", () => {
             },
           },
           selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "ultra",
+          },
         }),
       { wrapper: wrapper() },
     );
@@ -135,7 +145,40 @@ describe("useAgentsWorkspaceModel", () => {
     });
   });
 
-  it("preserves selected Codex GPT-5.6 workspace runtime before alias-aware send checks", () => {
+  it("uses persisted child run metadata ahead of the next-launch Reviewer default", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          focusedWorkspaceReviewConversation: projectConversation({
+            id: "review-conversation-1",
+            parentConversationId: "conversation-1",
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "high",
+          }),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "max",
+          },
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "high",
+    });
+  });
+
+  it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -154,6 +197,7 @@ describe("useAgentsWorkspaceModel", () => {
             },
           },
           selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
         }),
       { wrapper: wrapper() },
     );
@@ -161,7 +205,7 @@ describe("useAgentsWorkspaceModel", () => {
     expect(result.current.normalizedActiveRuntime).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-terra",
-      effort: "ultra",
+      effort: "max",
     });
   });
 });

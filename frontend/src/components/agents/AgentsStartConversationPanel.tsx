@@ -6,6 +6,7 @@ import { isPersonaUnavailableError } from "@/lib/personaErrors";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
 import { AgentsStartComposer } from "./AgentsStartComposer";
+import { parseMcpSetupPreflightFailure } from "./agentStartErrors";
 
 type StartComposerProps = ComponentProps<typeof AgentsStartComposer>;
 type StartConversationInput = Parameters<StartComposerProps["onSubmit"]>[0];
@@ -15,7 +16,6 @@ interface AgentsStartConversationPanelProps {
   defaultRuntime: StartComposerProps["defaultRuntime"];
   isLoadingProjects: StartComposerProps["isLoadingProjects"];
   modelRegistry: StartComposerProps["modelRegistry"];
-  onCreateProject: StartComposerProps["onCreateProject"];
   onRuntimePreferenceChange?: StartComposerProps["onRuntimePreferenceChange"];
   onStartAgentConversation: (input: StartConversationInput) => Promise<void>;
   projects: StartComposerProps["projects"];
@@ -26,7 +26,6 @@ export function AgentsStartConversationPanel({
   defaultRuntime,
   isLoadingProjects,
   modelRegistry,
-  onCreateProject,
   onRuntimePreferenceChange,
   onStartAgentConversation,
   projects,
@@ -46,7 +45,6 @@ export function AgentsStartConversationPanel({
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}
         modelRegistry={modelRegistry}
-        onCreateProject={onCreateProject}
         {...(onRuntimePreferenceChange ? { onRuntimePreferenceChange } : {})}
         onSubmit={async (input) => {
           try {
@@ -57,7 +55,10 @@ export function AgentsStartConversationPanel({
               err instanceof Error
                 ? err.message
                 : "Failed to start agent conversation";
-            if (!isPersonaUnavailableError(message)) {
+            if (
+              !isPersonaUnavailableError(message) &&
+              !parseMcpSetupPreflightFailure(err)
+            ) {
               toast.error(message);
             }
             throw err;

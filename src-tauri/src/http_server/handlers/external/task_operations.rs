@@ -2,8 +2,9 @@ use super::*;
 use crate::application::{
     merge_pipeline_visibility::ArchivedParentMergeVisibility,
     task_diff_base::read_task_diff_stats_from_resolved_base,
-    task_restart::prepare_terminal_task_for_ready_restart,
+    task_restart::build_terminal_ready_restart_plan,
 };
+use crate::error::AppError;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +33,7 @@ pub async fn external_task_transition_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<TaskTransitionRequest>,
-) -> Result<Json<TaskTransitionResponse>, StatusCode> {
+) -> Result<Json<TaskTransitionResponse>, HttpError> {
     let task_id = TaskId::from_string(req.task_id.clone());
 
     // Load task and enforce scope
@@ -49,6 +50,17 @@ pub async fn external_task_transition_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    let feature_action = match &req.action {
+        TransitionAction::Pause | TransitionAction::Cancel => {
+            crate::domain::ideation::TasksFeatureAction::Quiesce
+        }
+        TransitionAction::Retry => crate::domain::ideation::TasksFeatureAction::Progress,
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(task.ideation_session_id.as_ref(), feature_action)
+        .await
+        .map_err(tasks_feature_http_error)?;
+
     let is_retry_restart =
         matches!(&req.action, TransitionAction::Retry) && task.internal_status.is_terminal();
 
@@ -60,41 +72,25 @@ pub async fn external_task_transition_http(
             if task.internal_status.is_terminal() {
                 InternalStatus::Ready
             } else {
-                return Err(StatusCode::BAD_REQUEST);
+                return Err(StatusCode::BAD_REQUEST.into());
             }
         }
     };
 
-    if is_retry_restart && target_status == InternalStatus::Ready {
-        match prepare_terminal_task_for_ready_restart(
-            &state.app_state.task_repo,
-            &state.app_state.task_step_repo,
-            &task,
-            None,
-        )
-        .await
-        {
-            Ok(preparation) => {
-                if task.internal_status == InternalStatus::Failed
-                    && preparation.cleared_failed_steps > 0
-                {
-                    tracing::info!(
-                        task_id = task_id.as_str(),
-                        cleared = preparation.cleared_failed_steps,
-                        "External retry cleared failed steps while preserving completed progress"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(
+    let terminal_restart_plan = if is_retry_restart && target_status == InternalStatus::Ready {
+        build_terminal_ready_restart_plan(&state.app_state.task_step_repo, &task, None)
+            .await
+            .map_err(|error| {
+                error!(
                     task_id = task_id.as_str(),
-                    error = %e,
-                    "External retry failed to prepare terminal task restart"
+                    error = %error,
+                    "External retry failed to build terminal restart plan"
                 );
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    }
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        None
+    };
 
     let mut transition_service_builder = state
         .app_state
@@ -110,19 +106,35 @@ pub async fn external_task_transition_http(
     let transition_service = transition_service_builder
         .with_external_events_repo(std::sync::Arc::clone(&state.app_state.external_events_repo));
 
-    let updated_task = transition_service
-        .transition_task(&task_id, target_status)
-        .await
-        .map_err(|e| {
-            error!("Failed to transition task {}: {}", task_id.as_str(), e);
-            StatusCode::UNPROCESSABLE_ENTITY
-        })?;
+    let updated_task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, None)
+            .await
+    } else {
+        transition_service
+            .transition_task(&task_id, target_status)
+            .await
+    }
+    .map_err(|error| {
+        error!("Failed to transition task {}: {}", task_id.as_str(), error);
+        tasks_feature_http_error(error)
+    })?;
 
     Ok(Json(TaskTransitionResponse {
         success: true,
         task_id: updated_task.id.to_string(),
         new_status: updated_task.internal_status.to_string(),
     }))
+}
+
+fn tasks_feature_http_error(error: AppError) -> HttpError {
+    match error {
+        AppError::FeatureDisabled(message) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(message),
+        },
+        _ => HttpError::from(StatusCode::UNPROCESSABLE_ENTITY),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -519,7 +531,7 @@ pub async fn review_action_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<ReviewActionRequest>,
-) -> Result<Json<ReviewActionResponse>, StatusCode> {
+) -> Result<Json<ReviewActionResponse>, HttpError> {
     let task_id = crate::domain::entities::TaskId::from_string(req.task_id.clone());
 
     let task = state
@@ -552,7 +564,7 @@ pub async fn review_action_http(
             current_status = task.internal_status.as_str(),
             "Rejected external review action due to invalid task status"
         );
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        return Err(StatusCode::UNPROCESSABLE_ENTITY.into());
     }
 
     let target_status = match &req.action {
@@ -584,13 +596,13 @@ pub async fn review_action_http(
     let updated_task = transition_service
         .transition_task(&task_id, target_status)
         .await
-        .map_err(|e| {
+        .map_err(|error| {
             error!(
                 "Failed to transition task {} for review action: {}",
                 task_id.as_str(),
-                e
+                error
             );
-            StatusCode::UNPROCESSABLE_ENTITY
+            tasks_feature_http_error(error)
         })?;
 
     Ok(Json(ReviewActionResponse {
@@ -617,7 +629,7 @@ pub async fn create_task_note_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<CreateTaskNoteRequest>,
-) -> Result<Json<TaskNoteResponse>, StatusCode> {
+) -> Result<Json<TaskNoteResponse>, HttpError> {
     let task_id = crate::domain::entities::TaskId::from_string(req.task_id);
 
     let mut task = state
@@ -633,6 +645,14 @@ pub async fn create_task_note_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state.app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(tasks_feature_http_error)?;
+
     let note_text = format!("\n\n---\n**Note:** {}", req.note);
     task.description = Some(match task.description {
         Some(existing) => format!("{}{}", existing, note_text),
@@ -641,7 +661,7 @@ pub async fn create_task_note_http(
 
     state.app_state.task_repo.update(&task).await.map_err(|e| {
         error!("Failed to update task {}: {}", task_id.as_str(), e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        tasks_feature_http_error(e)
     })?;
 
     Ok(Json(TaskNoteResponse {

@@ -124,12 +124,14 @@ impl CodexCliClient {
                 context_type: None,
                 context_id: config.env.get("RALPHX_TASK_ID").cloned(),
                 conversation_id: config.env.get("RALPHX_CONVERSATION_ID").cloned(),
+                coordination_mode: None,
                 agent_run_id: config.env.get("RALPHX_AGENT_RUN_ID").cloned(),
                 task_id: config.env.get("RALPHX_TASK_ID").cloned(),
                 task_state: config.env.get("RALPHX_TASK_STATE").cloned(),
                 project_id: Some(project_id.clone()),
                 working_directory: Some(config.working_directory.clone()),
                 filesystem_read_roots: Vec::new(),
+                enforce_filesystem_roots: false,
                 lead_session_id: None,
                 parent_conversation_id: None,
             })
@@ -151,6 +153,7 @@ impl CodexCliClient {
         CodexExecCliConfig {
             model: config.model.clone(),
             reasoning_effort: config.logical_effort,
+            ultra_mode: false,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             service_tier: config.service_tier.clone(),
@@ -181,7 +184,7 @@ impl AgenticClient for CodexCliClient {
             )));
         }
 
-        let config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
+        let mut config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
             (config.plugin_dir.as_ref(), config.agent.as_deref())
         {
             build_codex_mcp_overrides(plugin_dir, agent_name, false, None)
@@ -189,6 +192,7 @@ impl AgenticClient for CodexCliClient {
         } else {
             Vec::new()
         };
+        config_overrides.extend(config.mcp_launch_policy.codex_config_overrides());
 
         let prompt = self.build_prompt(&config);
         let exec_config = self.build_exec_config(&config, config_overrides);

@@ -11,12 +11,19 @@ pub mod sqlite_agent_conversation_issue_repo;
 pub mod sqlite_agent_conversation_jira_issue_repo;
 pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
+#[cfg(test)]
+mod sqlite_agent_conversation_workspace_repo_tests;
 pub mod sqlite_agent_lane_settings_repo;
+pub mod sqlite_manual_role_default_repo;
+pub mod sqlite_mcp_policy_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
 pub mod sqlite_agent_run_repo;
 pub mod sqlite_agent_task_repo;
+pub mod sqlite_agent_workflow_repo;
+#[cfg(test)]
+mod sqlite_agent_workflow_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_api_key_repo;
@@ -35,6 +42,9 @@ pub mod sqlite_chat_attachment_repo;
 #[cfg(test)]
 mod sqlite_chat_attachment_repo_tests;
 pub mod sqlite_chat_conversation_repo;
+pub mod sqlite_conversation_folder_reference_repo;
+#[cfg(test)]
+mod sqlite_conversation_folder_reference_repo_tests;
 #[cfg(test)]
 mod sqlite_chat_conversation_repo_tests;
 pub mod sqlite_persona_repo;
@@ -57,6 +67,8 @@ pub mod sqlite_execution_plan_repo;
 mod sqlite_execution_plan_repo_tests;
 pub mod sqlite_execution_settings_repo;
 pub mod sqlite_external_events_repo;
+#[cfg(test)]
+mod sqlite_external_events_repo_tests;
 pub mod sqlite_external_issue_link_repo;
 pub mod sqlite_granola_integration_settings_repo;
 #[cfg(test)]
@@ -112,6 +124,8 @@ pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
 pub mod sqlite_ui_feature_flag_overrides_repo;
+#[cfg(test)]
+mod sqlite_ui_feature_flag_overrides_repo_tests;
 pub mod sqlite_team_message_repo;
 #[cfg(test)]
 mod sqlite_team_message_repo_tests;
@@ -142,11 +156,17 @@ pub use sqlite_agent_conversation_jira_issue_repo::SqliteAgentConversationJiraIs
 pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLinearIssueRepository;
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
+pub use sqlite_manual_role_default_repo::SqliteManualRoleDefaultRepository;
+pub use sqlite_mcp_policy_repo::SqliteMcpPolicyRepository;
+
+#[cfg(test)]
+mod sqlite_mcp_policy_repo_tests;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
 pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
 pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
+pub use sqlite_agent_workflow_repo::SqliteAgentWorkflowRepository;
 pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;
@@ -156,6 +176,7 @@ pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSe
 pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
 pub use sqlite_branch_update_repo::SqliteBranchUpdateRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
+pub use sqlite_conversation_folder_reference_repo::SqliteConversationFolderReferenceRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
 pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;

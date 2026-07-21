@@ -22,6 +22,7 @@ describe("persona builder MCP tools", () => {
         expect(isPersonaToolName("save_persona_draft")).toBe(true);
         expect(isPersonaToolName("get_persona_draft")).toBe(true);
         expect(isPersonaToolName("update_automation")).toBe(false);
+        expect(PERSONA_BUILDER_TOOLS[0]?.description).toContain("A prose or Markdown-only response does not create a Persona");
     });
     it("posts the Rust request shape and caller conversation header when saving", async () => {
         const { callTauri, callTauriGet, postCalls } = captureCalls();

@@ -16,9 +16,7 @@ pub use proposals::*;
 pub use runtime::*;
 pub use verification::*;
 pub(crate) use verification::{
-    is_blank_orphaned_active_generation, load_verification_child_state,
-    repair_blank_orphaned_verification_generation, stop_and_archive_children,
-    stop_verification_children, ChildFilter,
+    stop_and_archive_children, stop_verification_children, ChildFilter,
 };
 
 type JsonError = (StatusCode, Json<serde_json::Value>);

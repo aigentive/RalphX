@@ -18,7 +18,7 @@ import {
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { AppTopBar, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
-import { FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
+import { FinalizeConfirmationDialog } from "@/components/Ideation";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
@@ -85,6 +85,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
+import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest";
 import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
 const queryClient = getQueryClient();
@@ -123,6 +124,10 @@ function getTestPage(): React.ReactElement | null {
       fourColumns: <ScreenshotGalleryTestPage columns={4} />,
     };
     return scenarios[scenario] ?? scenarios.default ?? null;
+  }
+
+  if (testPage === "chat-activity") {
+    return <ChatActivityVisualTestPage />;
   }
 
   return null;
@@ -897,6 +902,7 @@ function AppContent() {
       projectId: currentProjectId,
       content: "",
       mode: "automation",
+      automationAuthoringMode: "trusted_auto_finalize",
     });
     clearAgentSelection();
     setFocusedAgentProject(currentProjectId);
@@ -1092,7 +1098,6 @@ function AppContent() {
             currentView={currentView}
             attentionCount={attentionCount}
             unreadNotificationCount={unreadNotificationCount.data ?? 0}
-            hasUnreadNotificationHistory={hasUnreadNotificationHistory}
             attentionCountStale={attentionItems.isError}
             notificationsPanelOpen={notificationsPanelOpen}
             onToggleNotificationsPanel={toggleNotificationsPanel}
@@ -1304,9 +1309,6 @@ function AppContent() {
 
       {/* Finalize Confirmation Dialog - Agent-initiated plan acceptance gate */}
       <FinalizeConfirmationDialog />
-
-      {/* Verification Confirm Dialog - Agent/user-initiated verification gate with specialist selection */}
-      <VerificationConfirmDialog />
 
       {/* Toast notifications */}
       <Toaster position="bottom-left" offset={toastOffset} />

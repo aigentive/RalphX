@@ -21,6 +21,7 @@ export const CONTEXT_TYPE_VALUES = [
   "ideation",
   "task",
   "project",
+  "standalone",
   "task_execution",
   "review",
   "merge",
@@ -61,6 +62,8 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "chat",
   "edit",
   "plan",
+  "tasks",
+  "autopilot",
   "ideation",
   "review_pr",
   "automation",
@@ -75,6 +78,8 @@ export const COORDINATION_MODE_VALUES = [
   "solo",
   "legacy_claude_team",
   "rx_native_team",
+  "rx_native_workflow",
+  "codex_native_ultra",
 ] as const;
 export const CoordinationModeSchema = z.enum(COORDINATION_MODE_VALUES);
 export type CoordinationMode = z.infer<typeof CoordinationModeSchema>;
@@ -101,7 +106,10 @@ export const ChatConversationSchema = z.object({
   effectiveEffort: z.string().nullable().optional(),
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  boundAgentName: z.string().nullable().optional(),
   personaId: z.string().nullable().optional(),
+  builderDraftId: z.string().nullable().optional(),
+  builderResultPersonaId: z.string().nullable().optional(),
   lastRunPersonaRunId: z.string().nullable().optional(),
   lastRunPersonaId: z.string().nullable().optional(),
   lastRunPersonaSlug: z.string().nullable().optional(),

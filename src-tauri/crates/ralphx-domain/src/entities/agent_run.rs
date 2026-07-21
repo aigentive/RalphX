@@ -81,6 +81,61 @@ pub enum AgentRunStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunActionKind {
+    VerifyPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunAction {
+    pub kind: AgentRunActionKind,
+    pub context_id: String,
+    pub target_id: String,
+}
+
+impl AgentRunAction {
+    /// Parse only a complete backend-owned action tuple.
+    pub fn from_metadata_json(metadata: Option<&str>) -> Option<Self> {
+        let value = serde_json::from_str::<serde_json::Value>(metadata?).ok()?;
+        let object = value.as_object()?;
+        let kind = object
+            .get("ralphx_action_kind")?
+            .as_str()?
+            .parse::<AgentRunActionKind>()
+            .ok()?;
+        let context_id = object.get("ralphx_action_context_id")?.as_str()?.trim();
+        let target_id = object.get("ralphx_action_target_id")?.as_str()?.trim();
+        if context_id.is_empty() || target_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind,
+            context_id: context_id.to_string(),
+            target_id: target_id.to_string(),
+        })
+    }
+}
+
+impl fmt::Display for AgentRunActionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VerifyPlan => write!(f, "verify_plan"),
+        }
+    }
+}
+
+impl std::str::FromStr for AgentRunActionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "verify_plan" => Ok(Self::VerifyPlan),
+            _ => Err(format!("Invalid agent run action kind: {value}")),
+        }
+    }
+}
+
 impl fmt::Display for AgentRunStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -254,6 +309,15 @@ pub struct AgentRun {
     /// The agent_run ID that triggered this continuation (None for initial runs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Optional generic action discriminator for backend-requested conversation turns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_kind: Option<AgentRunActionKind>,
+    /// Backend-owned context id for the action (planning session for `verify_plan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_context_id: Option<String>,
+    /// Immutable target id captured when the action was requested (plan artifact for `verify_plan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_target_id: Option<String>,
     /// Persona identity resolved for this run, without persona body content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persona_id: Option<String>,
@@ -303,6 +367,9 @@ impl AgentRun {
             sandbox_mode: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
+            action_kind: None,
+            action_context_id: None,
+            action_target_id: None,
             persona_id: None,
             persona_slug: None,
             persona_version: None,
@@ -343,6 +410,9 @@ impl AgentRun {
             sandbox_mode: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),
+            action_kind: None,
+            action_context_id: None,
+            action_target_id: None,
             persona_id: None,
             persona_slug: None,
             persona_version: None,
@@ -428,6 +498,17 @@ impl AgentRun {
         self.persona_content_hash = Some(attribution.persona_content_hash);
         self.persona_injected = Some(attribution.injected);
         self.persona_skipped_reason = attribution.skipped_reason;
+    }
+
+    /// Apply backend-owned action metadata only when the complete typed tuple is present.
+    pub fn apply_action_metadata_json(&mut self, metadata: Option<&str>) {
+        let Some(action) = AgentRunAction::from_metadata_json(metadata) else {
+            return;
+        };
+
+        self.action_kind = Some(action.kind);
+        self.action_context_id = Some(action.context_id);
+        self.action_target_id = Some(action.target_id);
     }
 
     /// Get the duration of the run (if completed)

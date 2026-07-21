@@ -105,19 +105,19 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     expect(breadcrumb).toHaveTextContent("Ticketing");
   });
 
-  it("uses the notification attention count with the existing badge testid", () => {
-    renderTopBar({ attentionCount: 12 });
+  it("uses the combined attention and unread-history count with the existing badge testid", () => {
+    renderTopBar({ attentionCount: 12, unreadNotificationCount: 3 });
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
-    expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /notifications.*15/i })).toBeInTheDocument();
     expect(document.getElementById("notifications-toggle")).toBe(screen.getByTestId("reviews-toggle"));
   });
 
-  it("syncs the dock badge from unread history independently of unresolved attention", () => {
+  it("syncs the dock badge from the same combined count without duplicate writes", () => {
     vi.mocked(notificationsApi.setDockBadgeCount).mockReturnValue(new Promise<null>(() => {}));
     const { rerender } = renderTopBar({ attentionCount: 17, unreadNotificationCount: 4 });
 
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
-    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(4);
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(21);
 
     rerender(
       <QueryClientProvider client={new QueryClient()}>
@@ -143,20 +143,15 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
         />
       </QueryClientProvider>,
     );
-    expect(notificationsApi.setDockBadgeCount).toHaveBeenLastCalledWith(0);
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenLastCalledWith(17);
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
   });
 
-  it("shows the unread-history dot only when the attention count is zero", () => {
-    const { rerender } = renderTopBar({ hasUnreadNotificationHistory: true });
-    expect(screen.getByTestId("notifications-unread-dot")).toBeInTheDocument();
+  it("renders unread history in the numeric badge instead of a secondary dot", () => {
+    renderTopBar({ attentionCount: 0, unreadNotificationCount: 3 });
 
-    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={0} hasUnreadNotificationHistory={false} notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
     expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
-
-    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={1} hasUnreadNotificationHistory notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
-    expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
-    expect(screen.getByTestId("reviews-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("3");
   });
 
   it("shows the project selector on the ticketing view when enabled", () => {

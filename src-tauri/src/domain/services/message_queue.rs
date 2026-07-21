@@ -8,6 +8,7 @@
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{ChatAttachmentId, ChatContextType, PersonaDirective, TaskId};
+use crate::domain::services::ComposerSelectionSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -66,6 +67,32 @@ pub struct ComposerArtifactReference {
     pub version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+}
+
+/// A bounded plain-text excerpt selected from an artifact pane source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerExcerptReference {
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub excerpt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<String>,
 }
 
 /// Key for the message queue - combines context type and ID
@@ -147,6 +174,12 @@ pub struct QueuedMessage {
     /// Optional artifact references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional immutable artifact/ticket excerpt used for this queued turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    /// Optional selected excerpts used for runtime-only prompt context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     /// Optional chat attachments selected by the composer for this queued turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<ChatAttachmentId>,
@@ -172,6 +205,8 @@ impl QueuedMessage {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -196,6 +231,8 @@ impl QueuedMessage {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -312,6 +349,8 @@ impl MessageQueue {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
+            Vec::new(),
             Vec::new(),
         )
     }
@@ -328,6 +367,8 @@ impl MessageQueue {
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
         composer_artifact_references: Vec<ComposerArtifactReference>,
+        composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+        composer_excerpt_references: Vec<ComposerExcerptReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         self.queue_with_runtime_overrides_and_project_references(
@@ -346,6 +387,8 @@ impl MessageQueue {
             composer_project_references,
             composer_integration_references,
             composer_artifact_references,
+            composer_selection_snapshot,
+            composer_excerpt_references,
             attachment_ids,
         )
     }
@@ -369,6 +412,8 @@ impl MessageQueue {
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
         composer_artifact_references: Vec<ComposerArtifactReference>,
+        composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+        composer_excerpt_references: Vec<ComposerExcerptReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
@@ -385,6 +430,8 @@ impl MessageQueue {
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;
         message.composer_artifact_references = composer_artifact_references;
+        message.composer_selection_snapshot = composer_selection_snapshot;
+        message.composer_excerpt_references = composer_excerpt_references;
         message.attachment_ids = attachment_ids;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());
@@ -578,15 +625,8 @@ impl MessageQueue {
     ///
     /// Used by the queue depth cap check and status response enrichment.
     pub fn count_for_context(&self, context_type: &str, context_id: &str) -> usize {
-        let ctx_type = match context_type {
-            "ideation" => ChatContextType::Ideation,
-            "delegation" => ChatContextType::Delegation,
-            "task_execution" => ChatContextType::TaskExecution,
-            "task" => ChatContextType::Task,
-            "project" => ChatContextType::Project,
-            "review" => ChatContextType::Review,
-            "merge" => ChatContextType::Merge,
-            _ => return 0,
+        let Ok(ctx_type) = context_type.parse::<ChatContextType>() else {
+            return 0;
         };
         let key = QueueKey::new(ctx_type, context_id);
         let queues = self.queues.lock().unwrap();

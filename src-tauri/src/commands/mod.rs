@@ -30,6 +30,7 @@ pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
 pub mod conversation_stats_commands;
+pub mod conversation_folder_reference_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -48,6 +49,10 @@ pub mod ideation_commands;
 pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod methodology_commands;
+pub mod manual_role_default_commands;
+pub mod mcp_policy_commands;
+#[cfg(test)]
+mod mcp_policy_commands_tests;
 pub mod metrics_commands;
 pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;
@@ -58,11 +63,12 @@ pub mod notification_commands;
 #[cfg(test)]
 mod notification_commands_tests;
 pub mod permission_commands;
-pub mod persona_builder_commands;
 pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
+#[cfg(test)]
+mod project_commands_tests;
 pub mod provider_cli_management_commands;
 pub mod qa_commands;
 pub mod question_commands;
@@ -70,6 +76,9 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
+pub mod repository_settings_commands;
+#[cfg(test)]
+mod repository_settings_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
@@ -110,9 +119,9 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_plan_commands::{
-    copy_agent_conversation_plan, import_agent_conversation_plan,
-    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
-    ImportAgentConversationPlanInput,
+    activate_agent_task_pipeline, copy_agent_conversation_plan, import_agent_conversation_plan,
+    start_agent_task_pipeline, ActivateAgentTaskPipelineInput, AgentConversationPlanSeedResponse,
+    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -152,13 +161,9 @@ pub use crate::application::automation::api::{
 };
 pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
-    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
+    restart_automation, retry_automation_judge, retry_automation_plan_judge, stop_automation,
+    update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
-};
-pub use persona_builder_commands::{
-    create_persona_builder_conversation, get_persona_builder_ingest_status,
-    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
-    PersonaBuilderIngestStatusResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
@@ -221,7 +226,6 @@ pub use ideation_commands::{
     get_agent_lane_settings, get_blocked_tasks, get_ideation_harness_availability,
     get_ideation_session, get_ideation_session_with_data, get_project_messages,
     get_proposal_dependencies, get_proposal_dependents, get_recent_session_messages,
-    reject_task_proposal,
     get_session_messages, get_task_blockers, get_task_messages, get_task_proposal,
     is_orchestrator_available, list_ideation_sessions, list_session_proposals,
     remove_proposal_dependency, reorder_proposals, restart_ideation_implementation,
@@ -253,6 +257,15 @@ pub use methodology_commands::{
     MethodologyActivationResponse, MethodologyPhaseResponse, MethodologyResponse,
     MethodologyTemplateResponse, WorkflowSchemaResponse,
 };
+pub use manual_role_default_commands::{
+    clear_manual_role_default, get_agent_conversation_role_default,
+    get_manual_role_defaults, get_start_composer_role_default,
+    reset_agent_conversation_role_default, update_manual_role_default,
+    ManualRoleCatalogResponse, ManualRoleDefaultInput,
+};
+
+#[cfg(test)]
+mod manual_role_default_commands_tests;
 pub use metrics_commands::{
     compute_insights_stats, compute_project_stats, get_column_metrics, get_insights_pr_insights,
     get_insights_stats, get_insights_trends, get_metrics_config, get_project_pr_insights,
@@ -392,6 +405,10 @@ pub use workspace_open_commands::{
 // Plan commands (Active plan management)
 pub use plan_commands::{
     clear_active_plan, get_active_plan, list_plan_selector_candidates, set_active_plan,
+};
+pub use repository_settings_commands::{
+    get_repository_settings, update_repository_settings, RepositorySettingsResponse,
+    UpdateRepositorySettingsInput,
 };
 // Git commands (Phase 66 - Per-task branch isolation)
 pub use git_commands::{

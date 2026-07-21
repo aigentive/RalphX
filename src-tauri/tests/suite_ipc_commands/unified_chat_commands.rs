@@ -18,16 +18,18 @@ use ralphx_lib::application::{
     AppState, InteractiveProcessKey, MockChatService, PrPollerRegistry, SendResult,
 };
 use ralphx_lib::commands::unified_chat_commands::{
-    agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
-    mark_agent_workspace_publish_failure, parse_context_type,
+    agent_workspace_post_repair_action_from_events, create_agent_conversation,
+    get_agent_running_states_for_service, mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_with_provider_session_reset,
-    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
-    ModeSwitchInitiator, QueuedMessageResponse, SendAgentMessageResponse,
-    SwitchAgentConversationModeInput, SwitchAgentConversationPersonaInput,
+    update_agent_conversation_coordination_mode, validate_persona_builder_team_intent_for_send,
+    AgentConversationResponse, AgentRunStatusResponse, AgentWorkspacePostRepairAction,
+    AgentWorkspaceRepairRuntimeOverrides, CreateAgentConversationInput, ModeSwitchInitiator,
+    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    SwitchAgentConversationPersonaInput, UpdateAgentConversationCoordinationModeInput,
     AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -36,9 +38,10 @@ use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, AutomationId,
-    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, Persona,
-    PersonaId, PersonaStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
+    ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionId, Persona, PersonaId, PersonaStatus, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -157,6 +160,32 @@ fn test_response_serialization() {
     assert!(json.contains("agent_run_id"));
     assert!(json.contains("is_new_conversation"));
     assert!(json.contains("queued_as_pending"));
+}
+
+#[test]
+fn agent_conversation_response_serializes_builder_result_persona_id_present() {
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    conversation.builder_result_persona_id = Some("persona-approved".to_string());
+
+    let json = serde_json::to_value(AgentConversationResponse::from(conversation))
+        .expect("conversation response should serialize");
+
+    assert_eq!(json["builder_draft_id"], serde_json::Value::Null);
+    assert_eq!(json["builder_result_persona_id"], "persona-approved");
+}
+
+#[test]
+fn agent_conversation_response_serializes_builder_result_persona_id_absent_as_null() {
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+
+    let json = serde_json::to_value(AgentConversationResponse::from(conversation))
+        .expect("conversation response should serialize");
+
+    assert!(json.get("builder_result_persona_id").is_some());
+    assert_eq!(json["builder_draft_id"], serde_json::Value::Null);
+    assert_eq!(json["builder_result_persona_id"], serde_json::Value::Null);
 }
 
 fn test_agent_workspace() -> AgentConversationWorkspace {
@@ -278,6 +307,9 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: format!("{id}-slug"),
         name: format!("{id} name"),
         description: "persona switch fixture".to_string(),
@@ -286,6 +318,8 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
         version: 1,
         content_hash: format!("{id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
@@ -295,6 +329,35 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
         .create(persona.clone())
         .await
         .expect("persona persisted");
+    persona
+}
+
+async fn seed_scoped_persona_for_switch(
+    state: &AppState,
+    id: &str,
+    project_id: &ProjectId,
+) -> Persona {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: Some(project_id.clone()),
+        slug: format!("{id}-slug"),
+        name: format!("{id} name"),
+        description: "scoped persona switch fixture".to_string(),
+        content: "Use the scoped project voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state.persona_repo.create(persona.clone()).await.unwrap();
     persona
 }
 
@@ -399,6 +462,7 @@ async fn persona_switch_stopping_running_agent_stops_run_and_preserves_provider_
             interactive_key.clone(),
             child.stdin.take().expect("interactive stdin should exist"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some(provider_session.provider_session_id.clone()),
                 persona_id: None,
@@ -624,6 +688,52 @@ async fn persona_switch_rejects_missing_or_archived_persona() {
         service.get_stop_agent_calls().await.is_empty(),
         "invalid persona input must not stop an agent"
     );
+}
+
+#[tokio::test]
+async fn persona_switch_rejects_cross_project_persona_without_clearing_existing_binding() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_project_id =
+        ProjectId::from_string("project-persona-switch-scope-a".to_string());
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("18181818-1818-4818-8818-181818181818"),
+        conversation_project_id,
+    )
+    .await;
+    let original =
+        seed_persona_for_switch(&state, "persona-switch-global", PersonaStatus::Active).await;
+    let scoped = seed_scoped_persona_for_switch(
+        &state,
+        "persona-switch-scope-b",
+        &ProjectId::from_string("project-persona-switch-scope-b".to_string()),
+    )
+    .await;
+    state
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(original.id.as_str()))
+        .await
+        .unwrap();
+    let service = MockChatService::new();
+
+    let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, Some(&scoped.id)),
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("cross-project persona must not bind");
+
+    assert!(error.starts_with("[Persona unavailable:"));
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.persona_id.as_deref(), Some(original.id.as_str()));
+    assert!(service.get_stop_agent_calls().await.is_empty());
 }
 
 #[tokio::test]
@@ -896,6 +1006,189 @@ async fn switch_mode_rejects_persona_builder_target() {
         error.contains("PersonaBuilder"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn create_agent_conversation_persona_builder_is_flag_gated_and_persists_mode() {
+    use ralphx_lib::infrastructure::agents::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    let input = || CreateAgentConversationInput {
+        context_type: ChatContextType::Project.to_string(),
+        context_id: Some("project-builder-create".to_string()),
+        title: Some("Builder seed".to_string()),
+        mode: Some("persona_builder".to_string()),
+        team_intent: None,
+    };
+
+    set_agent_personas_override(Some(false));
+    let disabled = create_agent_conversation(input(), app.state())
+        .await
+        .expect_err("builder create must reject while agent_personas is disabled");
+    assert!(disabled.contains("agent_personas"));
+
+    set_agent_personas_override(Some(true));
+    let created = create_agent_conversation(input(), app.state())
+        .await
+        .expect("builder create should use the standard pipeline when enabled");
+    assert_eq!(created.agent_mode.as_deref(), Some("persona_builder"));
+    let state = app.state::<AppState>();
+    let app_data_dir = state.app_paths.app_data_dir();
+    let workspace =
+        ralphx_lib::application::standalone_workspace::resolve_workspace(app_data_dir, &created.id)
+            .expect("builder pre-send creation must materialize its private workspace");
+    assert!(workspace.join("manifest.json").is_file());
+    reset_agent_personas_override_for_test();
+}
+
+#[tokio::test]
+async fn create_agent_conversation_project_persona_builder_rejects_team_intent() {
+    use ralphx_lib::infrastructure::agents::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    set_agent_personas_override(Some(true));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Project.to_string(),
+            context_id: Some("project-builder-team-create".to_string()),
+            title: None,
+            mode: Some("persona_builder".to_string()),
+            team_intent: Some(ralphx_lib::domain::entities::TeamIntent::rx_native(None)),
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("Project builder create must reject Team intent");
+    assert!(error.contains("Team mode"));
+    reset_agent_personas_override_for_test();
+}
+
+#[tokio::test]
+async fn create_agent_conversation_rejects_persona_builder_outside_project_or_standalone() {
+    use ralphx_lib::infrastructure::agents::{
+        reset_agent_personas_override_for_test, set_agent_personas_override,
+    };
+    set_agent_personas_override(Some(true));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    for context_type in [ChatContextType::Task, ChatContextType::Ideation] {
+        let context_id = format!("invalid-builder-{context_type}");
+        let error = create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: context_type.to_string(),
+                context_id: Some(context_id.clone()),
+                title: None,
+                mode: Some("persona_builder".to_string()),
+                team_intent: None,
+            },
+            app.state(),
+        )
+        .await
+        .expect_err("PersonaBuilder must reject unsupported contexts before persistence");
+
+        assert!(
+            error.contains("Project or Standalone"),
+            "unexpected error: {error}"
+        );
+        assert!(app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_context(context_type, &context_id)
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty());
+    }
+
+    reset_agent_personas_override_for_test();
+}
+
+#[test]
+fn send_agent_message_rejects_team_flip_for_project_persona_builder() {
+    let project_id = ProjectId::from_string("project-builder-send-team".to_string());
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let error = validate_persona_builder_team_intent_for_send(
+        ChatContextType::Project,
+        Some(&conversation),
+        CoordinationMode::RxNativeTeam,
+    )
+    .expect_err("send-time Team flip must reject for Project builder conversations");
+    assert!(
+        error.contains("persona builder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
+    let state = AppState::new_test();
+    state.agent_capability_gate.replace(
+        ralphx_lib::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+            autopilot: false,
+        },
+    );
+    let project_id = ProjectId::from_string("project-coordination-builder-guard".to_string());
+    let mut builder = ChatConversation::new_project(project_id.clone());
+    builder.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let builder = state
+        .chat_conversation_repo
+        .create(builder)
+        .await
+        .expect("builder conversation should persist");
+    let chat = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id))
+        .await
+        .expect("chat conversation should persist");
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: builder.id.as_str(),
+            coordination_mode: "rx_native_team".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("builder coordination must remain solo");
+    assert!(error.contains("persona builder"));
+    let stored_builder = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&builder.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_builder.coordination_mode, CoordinationMode::Solo);
+
+    let response = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: chat.id.as_str(),
+            coordination_mode: "rx_native_team".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("Project chat coordination should still update");
+    assert_eq!(response.coordination_mode, "rx_native_team");
 }
 
 #[tokio::test]
@@ -1631,6 +1924,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
@@ -1773,6 +2067,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
@@ -1782,10 +2077,10 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
 
     assert!(branch_exists(&repo_path, unmerged_plan_branch));
     assert!(branch_exists(&repo_path, missing_target_branch));
-    assert!(closed_path.exists());
-    assert!(branch_exists(&repo_path, &closed_branch));
-    assert!(dirty_path.exists());
-    assert!(branch_exists(&repo_path, &dirty_branch));
+    assert!(!closed_path.exists());
+    assert!(!branch_exists(&repo_path, &closed_branch));
+    assert!(!dirty_path.exists());
+    assert!(!branch_exists(&repo_path, &dirty_branch));
 }
 
 #[tokio::test]
@@ -1882,7 +2177,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
 }
 
 #[tokio::test]
-async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
+async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
     let worktree_parent = temp.path().join("worktrees");
@@ -1948,14 +2243,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
 
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            if !workspace_path.exists() {
+            if !workspace_path.exists() && !branch_exists(&repo_path, &workspace_branch) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("poller should clean closed PR worktree");
+    .expect("poller should clean closed PR artifacts");
 
     let updated = state
         .agent_conversation_workspace_repo
@@ -1964,7 +2259,6 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         .expect("workspace lookup should succeed")
         .expect("workspace should remain persisted");
     assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
-    assert!(branch_exists(&repo_path, &workspace_branch));
     assert_eq!(github.check_calls(), 1);
 }
 
@@ -2112,7 +2406,7 @@ async fn workspace_publish_fixable_failure_is_routed_by_backend() {
 }
 
 #[tokio::test]
-async fn workspace_publish_repair_inherits_workspace_runtime_but_starts_fresh_session() {
+async fn workspace_publish_repair_defers_to_role_runtime_but_starts_fresh_session() {
     let state = AppState::new_test();
     let service = MockChatService::new();
     let workspace = test_agent_workspace();
@@ -2151,12 +2445,9 @@ async fn workspace_publish_repair_inherits_workspace_runtime_but_starts_fresh_se
 
     let options = service.get_sent_options().await;
     assert_eq!(options.len(), 1);
-    assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
-    assert_eq!(options[0].model_override.as_deref(), Some("gpt-5.4"));
-    assert_eq!(
-        options[0].logical_effort_override,
-        Some(LogicalEffort::High)
-    );
+    assert_eq!(options[0].harness_override, None);
+    assert_eq!(options[0].model_override, None);
+    assert_eq!(options[0].logical_effort_override, None);
     assert!(options[0].force_new_provider_session);
     assert!(options[0].preserve_conversation_provider_session_ref);
 }
@@ -3209,20 +3500,24 @@ mod ipc_contract {
 
     #[test]
     fn create_agent_conversation_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"review","contextId":"task-review-123"}"#;
+        let json =
+            r#"{"contextType":"review","contextId":"task-review-123","mode":"persona_builder"}"#;
         let input: CreateAgentConversationInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "review");
-        assert_eq!(input.context_id, "task-review-123");
+        assert_eq!(input.context_id.as_deref(), Some("task-review-123"));
+        assert_eq!(input.mode.as_deref(), Some("persona_builder"));
     }
 
     #[test]
-    fn create_agent_conversation_input_rejects_missing_fields() {
+    fn create_agent_conversation_input_missing_context_id_deserializes_as_none() {
+        // context_id is optional at the wire level as of Phase 4a.3 (standalone
+        // creation self-keys and never supplies one); command-body validation,
+        // not deserialization, now rejects a missing context_id for non-standalone
+        // context types.
         let json = r#"{"contextType":"ideation"}"#;
-        let result: Result<CreateAgentConversationInput, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "missing contextId must cause deserialization failure"
-        );
+        let input: CreateAgentConversationInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.context_type, "ideation");
+        assert!(input.context_id.is_none());
     }
 
     #[test]
@@ -3235,15 +3530,28 @@ mod ipc_contract {
 
     #[test]
     fn start_agent_conversation_input_accepts_chat_mode_without_base() {
-        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
+        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh","sourcePersonaId":"persona-source"}"#;
         let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.project_id, "project-1");
+        assert_eq!(input.project_id.as_deref(), Some("project-1"));
         assert_eq!(input.mode.as_deref(), Some("chat"));
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
+        assert_eq!(input.source_persona_id.as_deref(), Some("persona-source"));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
         assert!(input.composer_project_references.is_empty());
+    }
+
+    #[test]
+    fn start_agent_conversation_input_omitted_project_id_deserializes_as_none() {
+        // A standalone start never sends projectId at all (not even null) — the
+        // field must be genuinely optional at the wire level, not just
+        // Option-typed, or the frontend's standalone start request would fail
+        // deserialization entirely before ever reaching the flag/mode gates.
+        let json = r#"{"content":"Quick question","mode":"chat"}"#;
+        let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
+        assert!(input.project_id.is_none());
+        assert_eq!(input.mode.as_deref(), Some("chat"));
     }
 
     #[tokio::test]
@@ -3276,9 +3584,10 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Inspect the repo without editing".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3295,6 +3604,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -3369,9 +3679,10 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Review this PR".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3395,6 +3706,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -3530,9 +3842,10 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Prepare an editable workspace".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3549,6 +3862,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -3688,9 +4002,10 @@ mod ipc_contract {
         for mode in ["chat", "edit", "plan", "ideation"] {
             let response = start_agent_conversation(
                 StartAgentConversationInput {
-                    project_id: fix.project_id.as_str().to_string(),
+                    project_id: Some(fix.project_id.as_str().to_string()),
                     content: format!("Use the selected plan in {mode} mode"),
                     persona_id: None,
+                    source_persona_id: None,
                     conversation_id: None,
                     parent_conversation_id: None,
                     title: None,
@@ -3707,6 +4022,7 @@ mod ipc_contract {
                     composer_project_references: Vec::new(),
                     composer_integration_references: Vec::new(),
                     composer_artifact_references: vec![plan_reference(&fix)],
+                    composer_selection_snapshot: None,
                     team_intent: None,
                 },
                 state.clone(),
@@ -3838,9 +4154,10 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: fix.project_id.as_str().to_string(),
+                project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Review the selected PR".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3857,6 +4174,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: vec![plan_reference(&fix)],
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             state.clone(),
@@ -3912,9 +4230,10 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: fix.project_id.as_str().to_string(),
+                project_id: Some(fix.project_id.as_str().to_string()),
                 content: "Use both selected plans".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3931,6 +4250,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: references,
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             state,
@@ -4014,9 +4334,10 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Continue on the linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: Some(conversation.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -4033,6 +4354,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -4115,9 +4437,10 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Start on linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -4134,6 +4457,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -4210,9 +4534,10 @@ mod ipc_contract {
 
         let error = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Start on checked-out linked branch".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: Some(draft.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -4229,6 +4554,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),
@@ -4304,9 +4630,10 @@ mod ipc_contract {
 
         let response = start_agent_conversation(
             StartAgentConversationInput {
-                project_id: project_id.as_str().to_string(),
+                project_id: Some(project_id.as_str().to_string()),
                 content: "Plan a small refactor".to_string(),
                 persona_id: None,
+                source_persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -4323,6 +4650,7 @@ mod ipc_contract {
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
                 composer_artifact_references: Vec::new(),
+                composer_selection_snapshot: None,
                 team_intent: None,
             },
             app.state::<AppState>(),

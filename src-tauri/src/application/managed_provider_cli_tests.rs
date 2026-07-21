@@ -103,7 +103,6 @@ fn custom_codex_wrapper_path_takes_launch_precedence() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
 }
@@ -378,6 +377,7 @@ fn managed_probe_error_falls_back_to_purpose_and_provider() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        ultra_supported_models: Vec::new(),
         supports_fast_mode: false,
         fast_mode_supported_models: Vec::new(),
         error: None,
@@ -524,7 +524,6 @@ fn rx_managed_codex_runtime_probe_reports_available_modern_cli() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
     assert_eq!(probe.error, None);

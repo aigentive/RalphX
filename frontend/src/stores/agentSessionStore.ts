@@ -11,12 +11,14 @@ import {
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
+  CapabilityIntent,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
   TeamIntent,
 } from "@/api/chat";
 import type {
+  AutomationAuthoringMode,
   AutomationJudgeState,
   AutomationRunStatus,
 } from "@/api/automations";
@@ -27,6 +29,7 @@ export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/ag
 export type AgentArtifactTab =
   | "review"
   | "automation"
+  | "persona"
   | "issues"
   | "plan"
   | "verification"
@@ -35,11 +38,36 @@ export type AgentArtifactTab =
   | "pr"
   | "jira"
   | "linear"
+  | "clickup"
   | "granola"
   | "publish";
+export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
+  "issues",
+  "plan",
+  "verification",
+  "tasks",
+  "automation",
+  "persona",
+  "pr",
+  "jira",
+  "linear",
+  "clickup",
+  "granola",
+  "review",
+  "publish",
+];
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
 export type AgentSidebarGroupBy = "project" | "publication" | "automation";
+export const AGENT_DEFAULT_START_MODES = [
+  "plan",
+  "edit",
+  "review_pr",
+  "chat",
+  "automation",
+] as const satisfies readonly AgentConversationWorkspaceMode[];
+export type AgentDefaultStartMode = (typeof AGENT_DEFAULT_START_MODES)[number];
+export const DEFAULT_AGENT_START_MODE: AgentDefaultStartMode = "edit";
 export type AgentSidebarPublicationState =
   | "active"
   | "draft"
@@ -52,6 +80,7 @@ export interface AgentArtifactState {
   isOpen: boolean;
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
+  hiddenTabs: AgentArtifactTab[];
 }
 
 export interface AgentTaskArtifactFocusRequest {
@@ -73,6 +102,13 @@ export interface AgentAutomationRunFocusRequest {
   requestId: number;
 }
 
+export interface VisibleAgentScope {
+  workspaceConversationId: string;
+  visibleConversationId?: string;
+  automationRunId?: string;
+  automationConversationId?: string;
+}
+
 export type AgentAutomationRunFocusRequestInput = Omit<
   AgentAutomationRunFocusRequest,
   "requestId"
@@ -85,22 +121,30 @@ export interface AgentBranchBaseCacheEntry {
 }
 
 export interface AgentStartConversationDraft {
-  projectId: string;
-  content: string;
+  projectId: string | null;
+  content?: string;
   mode: AgentConversationWorkspaceMode;
+  projectLocked?: boolean;
+  sourcePersonaId?: string;
+  sourcePersonaName?: string;
+  automationAuthoringMode?: AutomationAuthoringMode;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
 export interface AgentStartConversationRetryInput {
-  projectId: string;
+  projectId: string | null;
   content: string;
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
+  useRoleDefault?: boolean;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
+  personaId?: string | null;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
@@ -112,18 +156,34 @@ export interface AgentRuntimeProviderContext {
   supportedModelAliases?: string[] | null;
 }
 
-export interface AgentStartConversationFailure {
-  kind: "linked_setup";
-  message: string;
-  retryInput: AgentStartConversationRetryInput;
-}
+export type AgentStartConversationFailure =
+  | {
+      kind: "linked_setup";
+      message: string;
+      retryInput: AgentStartConversationRetryInput;
+    }
+  | {
+      kind: "mcp_setup";
+      provider: "claude" | "codex";
+      serverId: string;
+      scope: string | null;
+      conflictKind:
+        | "ambiguous_reserved_id"
+        | "legacy_registration"
+        | "legacy_repair_failed";
+      repairStatus: "repairable" | "repaired" | "failed" | "manual_only";
+      retryInput: AgentStartConversationRetryInput;
+    };
 
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
+  /** Exact Agent surface currently rendered; intentionally excluded from persistence. */
+  visibleAgentScope: VisibleAgentScope | null;
   startConversationDraft: AgentStartConversationDraft | null;
   startConversationFailure: AgentStartConversationFailure | null;
+  defaultStartMode: AgentDefaultStartMode;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -150,11 +210,13 @@ interface AgentSessionState {
 
 interface AgentSessionActions {
   setFocusedProject: (projectId: string | null) => void;
-  selectConversation: (projectId: string, conversationId: string) => void;
+  selectConversation: (projectId: string | null, conversationId: string) => void;
   clearSelection: () => void;
+  setVisibleAgentScope: (scope: VisibleAgentScope | null) => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
   setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
+  setDefaultStartMode: (mode: AgentDefaultStartMode) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -172,6 +234,13 @@ interface AgentSessionActions {
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
+  hideArtifactTab: (
+    conversationId: string,
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
+  showArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
+  revealArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   focusTaskArtifact: (conversationId: string, taskId: string) => void;
   requestAutomationRunFocus: (
@@ -184,10 +253,16 @@ interface AgentSessionActions {
   ) => void;
   setRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
+    runtime: AgentRuntimeSelection
+  ) => void;
+  setRoleDefaultRuntimeForConversation: (
+    conversationId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
+  clearLastRuntimeForProject: (projectId: string) => void;
   setBranchBaseCacheForProject: (
     projectId: string,
     options: BranchBaseOption[],
@@ -200,6 +275,7 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   isOpen: false,
   activeTab: "plan",
   taskMode: "graph",
+  hiddenTabs: [],
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
@@ -210,7 +286,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 7;
+const AGENT_SESSION_STORE_VERSION = 9;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -221,14 +297,61 @@ export function normalizeAgentArtifactTab(
 }
 
 function normalizeAgentArtifactState(
-  artifactState: Omit<AgentArtifactState, "activeTab"> & {
+  artifactState: Omit<AgentArtifactState, "activeTab" | "hiddenTabs"> & {
     activeTab: LegacyAgentArtifactTab;
+    hiddenTabs?: unknown;
   },
 ): AgentArtifactState {
   return {
     ...artifactState,
     activeTab: normalizeAgentArtifactTab(artifactState.activeTab),
+    hiddenTabs: normalizeHiddenArtifactTabs(artifactState.hiddenTabs),
   };
+}
+
+function isAgentArtifactTab(value: unknown): value is AgentArtifactTab {
+  return typeof value === "string" && AGENT_ARTIFACT_TABS.includes(value as AgentArtifactTab);
+}
+
+function normalizeHiddenArtifactTabs(value: unknown): AgentArtifactTab[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(new Set(value.filter(isAgentArtifactTab)));
+}
+
+export function getShownArtifactTabs(
+  availableTabs: readonly AgentArtifactTab[],
+  hiddenTabs: readonly AgentArtifactTab[],
+): AgentArtifactTab[] {
+  const hidden = new Set(hiddenTabs);
+  return availableTabs.filter((tab) => !hidden.has(tab));
+}
+
+export function getArtifactTabFallback(
+  availableTabs: readonly AgentArtifactTab[],
+  hiddenTabs: readonly AgentArtifactTab[],
+  hiddenTab: AgentArtifactTab,
+): AgentArtifactTab | undefined {
+  const shownTabs = getShownArtifactTabs(availableTabs, hiddenTabs);
+  const hiddenIndex = availableTabs.indexOf(hiddenTab);
+  return (
+    availableTabs
+      .slice(0, Math.max(hiddenIndex, 0))
+      .reverse()
+      .find((candidate) => shownTabs.includes(candidate)) ?? shownTabs[0]
+  );
+}
+
+export function getSeededArtifactTab(
+  activeTab: AgentArtifactTab,
+  requestedTab: AgentArtifactTab,
+  hiddenTabs: readonly AgentArtifactTab[],
+): AgentArtifactTab {
+  if (!hiddenTabs.includes(requestedTab)) {
+    return requestedTab;
+  }
+  return activeTab;
 }
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
@@ -244,6 +367,12 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
   );
 }
 
+export function isAgentDefaultStartMode(
+  value: unknown,
+): value is AgentDefaultStartMode {
+  return AGENT_DEFAULT_START_MODES.includes(value as AgentDefaultStartMode);
+}
+
 function migrateArtifactStateRecord(value: unknown): unknown {
   if (!value || typeof value !== "object") {
     return value;
@@ -255,9 +384,14 @@ function migrateArtifactStateRecord(value: unknown): unknown {
         return [conversationId, artifactState];
       }
       const state = artifactState as Record<string, unknown>;
-      return state.activeTab === "proposal"
-        ? [conversationId, { ...state, activeTab: "plan" }]
-        : [conversationId, artifactState];
+      return [
+        conversationId,
+        {
+          ...state,
+          activeTab: state.activeTab === "proposal" ? "plan" : state.activeTab,
+          hiddenTabs: normalizeHiddenArtifactTabs(state.hiddenTabs),
+        },
+      ];
     }),
   );
 }
@@ -307,10 +441,18 @@ export function migrateAgentSessionStore(
     nextState.lastModelEffortByProvider = {};
   }
 
-  if (version < 7) {
+  if (version < 8) {
     nextState.artifactByConversationId = migrateArtifactStateRecord(
       nextState.artifactByConversationId,
     );
+  }
+
+  if (version < 9) {
+    nextState.defaultStartMode = isAgentDefaultStartMode(
+      nextState.defaultStartMode,
+    )
+      ? nextState.defaultStartMode
+      : DEFAULT_AGENT_START_MODE;
   }
 
   return nextState;
@@ -336,8 +478,16 @@ function cloneStartConversationDraft(
 ): AgentStartConversationDraft {
   return {
     projectId: draft.projectId,
-    content: draft.content,
+    content: draft.content ?? "",
     mode: draft.mode,
+    ...(draft.projectLocked !== undefined
+      ? { projectLocked: draft.projectLocked }
+      : {}),
+    ...(draft.sourcePersonaId ? { sourcePersonaId: draft.sourcePersonaId } : {}),
+    ...(draft.sourcePersonaName ? { sourcePersonaName: draft.sourcePersonaName } : {}),
+    ...(draft.automationAuthoringMode
+      ? { automationAuthoringMode: draft.automationAuthoringMode }
+      : {}),
     ...(draft.composerProjectReferences
       ? {
           composerProjectReferences: draft.composerProjectReferences.map(
@@ -368,8 +518,10 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       focusedProjectId: null,
       selectedProjectId: null,
       selectedConversationId: null,
+      visibleAgentScope: null,
       startConversationDraft: null,
       startConversationFailure: null,
+      defaultStartMode: DEFAULT_AGENT_START_MODE,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -400,15 +552,22 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.focusedProjectId = projectId;
           state.selectedProjectId = projectId;
           state.selectedConversationId = conversationId;
-          state.lastSelectedConversationByProjectId ??= {};
-          state.lastSelectedConversationByProjectId[projectId] = conversationId;
-          expandOnlyProject(state, projectId);
+          if (projectId) {
+            state.lastSelectedConversationByProjectId ??= {};
+            state.lastSelectedConversationByProjectId[projectId] = conversationId;
+            expandOnlyProject(state, projectId);
+          }
         }),
 
       clearSelection: () =>
         set((state) => {
           state.selectedProjectId = null;
           state.selectedConversationId = null;
+        }),
+
+      setVisibleAgentScope: (scope) =>
+        set((state) => {
+          state.visibleAgentScope = scope;
         }),
 
       setStartConversationDraft: (draft) =>
@@ -430,6 +589,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setStartConversationFailure: (failure) =>
         set((state) => {
           state.startConversationFailure = failure;
+        }),
+
+      setDefaultStartMode: (mode) =>
+        set((state) => {
+          state.defaultStartMode = mode;
         }),
 
       setProjectExpanded: (projectId, expanded) =>
@@ -518,12 +682,51 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           const artifactState = ensureArtifactState(state, conversationId);
           artifactState.activeTab = normalizeAgentArtifactTab(tab);
           artifactState.isOpen = true;
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
         }),
 
       setArtifactState: (conversationId, artifactState) =>
         set((state) => {
           state.artifactByConversationId[conversationId] =
             normalizeAgentArtifactState(artifactState);
+        }),
+
+      hideArtifactTab: (conversationId, tab, availableTabs) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          if (!artifactState.hiddenTabs.includes(tab)) {
+            artifactState.hiddenTabs.push(tab);
+          }
+          if (artifactState.activeTab !== tab) {
+            return;
+          }
+          const nextActiveTab = getArtifactTabFallback(
+            availableTabs,
+            artifactState.hiddenTabs,
+            tab,
+          );
+          if (nextActiveTab) {
+            artifactState.activeTab = nextActiveTab;
+          }
+        }),
+
+      showArtifactTab: (conversationId, tab) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
+        }),
+
+      revealArtifactTab: (conversationId, tab) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
+          artifactState.activeTab = tab;
         }),
 
       setTaskArtifactMode: (conversationId, mode) =>
@@ -536,6 +739,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           const artifactState = ensureArtifactState(state, conversationId);
           artifactState.activeTab = "tasks";
           artifactState.isOpen = true;
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== "tasks",
+          );
           const current =
             state.taskArtifactFocusRequestByConversationId[conversationId];
           state.taskArtifactFocusRequestByConversationId[conversationId] = {
@@ -573,7 +779,22 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
-          state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          if (projectId) {
+            state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          }
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
+        }),
+
+      setRoleDefaultRuntimeForConversation: (conversationId, projectId, runtime) =>
+        set((state) => {
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
+          state.runtimeByConversationId[conversationId] = normalizedRuntime;
+          if (projectId) {
+            delete state.lastRuntimeByProjectId[projectId];
+          }
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,
@@ -588,6 +809,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
             modelId: normalizedRuntime.modelId,
             effort: normalizedRuntime.effort,
           };
+        }),
+
+      clearLastRuntimeForProject: (projectId) =>
+        set((state) => {
+          delete state.lastRuntimeByProjectId[projectId];
         }),
 
       setBranchBaseCacheForProject: (projectId, options, selectedKey) =>
@@ -616,6 +842,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         focusedProjectId: state.focusedProjectId,
         selectedProjectId: state.selectedProjectId,
         selectedConversationId: state.selectedConversationId,
+        defaultStartMode: state.defaultStartMode,
         lastSelectedConversationByProjectId: state.lastSelectedConversationByProjectId,
         expandedProjectIds: state.expandedProjectIds,
         showAllProjects: state.showAllProjects,

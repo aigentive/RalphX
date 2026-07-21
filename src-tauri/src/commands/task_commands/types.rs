@@ -3,6 +3,12 @@
 use crate::domain::entities::Task;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskHistoryAvailabilityResponse {
+    pub has_history: bool,
+    pub task_count: u32,
+}
+
 /// Input for creating a new task
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -145,6 +145,10 @@ pub(super) fn map_app_err(e: AppError) -> HttpError {
             status: StatusCode::CONFLICT,
             message: Some(msg),
         },
+        AppError::FeatureDisabled(msg) => HttpError {
+            status: StatusCode::CONFLICT,
+            message: Some(msg),
+        },
         _ => StatusCode::INTERNAL_SERVER_ERROR.into(),
     }
 }
@@ -176,6 +180,62 @@ pub(super) fn resolve_caller_session_id(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| body_caller_session_id.map(ToOwned::to_owned))
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ArtifactMutationAuthority {
+    agent_run_id: String,
+    conversation_id: String,
+}
+
+impl ArtifactMutationAuthority {
+    fn plan_approval_authority(
+        &self,
+    ) -> Option<crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority>
+    {
+        Some(
+            crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
+                self.agent_run_id.parse().ok()?,
+                self.conversation_id.parse().ok()?,
+            ),
+        )
+    }
+}
+
+pub(super) fn resolve_artifact_mutation_authority(
+    headers: &axum::http::HeaderMap,
+) -> Option<ArtifactMutationAuthority> {
+    let agent_run_id = headers.get("x-ralphx-agent-run-id")?.to_str().ok()?.trim();
+    let conversation_id = headers
+        .get("x-ralphx-conversation-id")?
+        .to_str()
+        .ok()?
+        .trim();
+    if agent_run_id.is_empty() || conversation_id.is_empty() {
+        return None;
+    }
+    Some(ArtifactMutationAuthority {
+        agent_run_id: agent_run_id.to_string(),
+        conversation_id: conversation_id.to_string(),
+    })
+}
+
+pub(super) async fn reconcile_plan_notifications(
+    state: &HttpServerState,
+    prior_artifact_id: Option<&str>,
+    current_artifact: &Artifact,
+    sessions: &[IdeationSession],
+    mutation_authority: Option<&ArtifactMutationAuthority>,
+) {
+    let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
+    crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
+        &state.app_state,
+        prior_artifact_id,
+        current_artifact.id.as_str(),
+        sessions,
+        publish_authority.as_ref(),
+    )
+    .await;
 }
 
 #[doc(hidden)]
@@ -222,10 +282,8 @@ pub async fn check_verification_freeze(
 /// batch-updates sessions/proposals, resets verification, and returns
 /// data needed for event emission.
 ///
-/// IMPORTANT: This helper does NOT trigger auto-verification.
-/// Auto-verify is triggered ONLY by create_plan_artifact (which calls
-/// trigger_auto_verify_sync separately). Both update and edit handlers
-/// use finalize_plan_update, which handles:
+/// This helper handles only the transaction. Both update and edit handlers
+/// leave any later automatic verification to the acceptance boundary. The transaction handles:
 ///   - Create new version (version + 1, previous_version_id = old.id)
 ///   - Batch-update sessions pointing to old → new
 ///   - Batch-update proposals (preserve plan_version_at_creation)
@@ -236,11 +294,13 @@ pub async fn check_verification_freeze(
 ///   - plan:proposals_may_need_update (only if linked proposals exist)
 ///
 /// Returns a tuple containing:
-///   - (created_artifact, old_artifact_id, owning_sessions, linked_proposal_ids, verification_reset)
+///   - created artifact, old artifact id, owning sessions, linked proposal ids,
+///     and legacy-reset result.
 pub(super) fn finalize_plan_update(
     conn: &Connection,
     old_artifact: &Artifact,
     new_content: String,
+    authority: Option<&ArtifactMutationAuthority>,
 ) -> Result<(Artifact, String, Vec<IdeationSession>, Vec<String>, bool), AppError> {
     let old_id = old_artifact.id.as_str().to_string();
 
@@ -263,6 +323,30 @@ pub(super) fn finalize_plan_update(
         .map(|s| s.id.as_str().to_string())
         .collect();
     SessionRepo::batch_update_artifact_id_sync(conn, &session_ids, created.id.as_str())?;
+
+    if let Some(authority) = authority {
+        conn.query_row(
+            "UPDATE agent_runs
+             SET action_target_id = ?1
+             WHERE id = ?2
+               AND conversation_id = ?3
+               AND status = 'running'
+               AND action_kind = 'verify_plan'
+               AND action_target_id = ?4
+               AND action_context_id IN (
+                 SELECT id FROM ideation_sessions WHERE plan_artifact_id = ?1
+               )
+             RETURNING action_context_id",
+            rusqlite::params![
+                created.id.as_str(),
+                authority.agent_run_id,
+                authority.conversation_id,
+                old_id,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    }
 
     let linked_proposals = ProposalRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
     let linked_proposal_ids: Vec<String> =

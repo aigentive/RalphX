@@ -24,11 +24,11 @@ import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolC
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
 import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
 import { handleRequestTeamPlan } from "./team-plan-handler.js";
-import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
-import { createVerificationRuntime } from "./verification-runtime.js";
+import { buildArtifactMutationTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
+import { callTicketAttachmentTool, isTicketAttachmentToolName, } from "./ticket-attachment-tools.js";
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
@@ -141,21 +141,6 @@ const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
-function buildArtifactMutationTransportHeaders() {
-    if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
-        return undefined;
-    }
-    return {
-        "X-RalphX-Caller-Session-Id": RALPHX_CONTEXT_ID,
-    };
-}
-const { getPlanVerificationForTool, reportVerificationRoundForTool, completePlanVerificationForTool, runVerificationEnrichment, runVerificationRound, resolveVerificationFindingSessionId, resolveContextSessionId, } = createVerificationRuntime({
-    callTauri,
-    callTauriGet,
-    agentType: AGENT_TYPE,
-    contextType: RALPHX_CONTEXT_TYPE,
-    contextId: RALPHX_CONTEXT_ID,
-});
 /**
  * Validate that a tool call's task_id parameter matches the assigned task
  * @param toolName - Name of the tool being called
@@ -289,7 +274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Special handling for permission_request tool (always allowed, not scoped by agent type)
     if (name === "permission_request") {
         try {
-            const result = await handlePermissionRequest(args);
+            const result = await handlePermissionRequest(args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -320,7 +305,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
         try {
-            const result = await handleFilesystemToolCall(name, args);
+            const result = await handleFilesystemToolCall(name, args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -419,7 +404,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
         try {
-            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId);
+            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -540,33 +525,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const artifactMutationArgs = { ...(args ?? {}) };
             delete artifactMutationArgs.caller_session_id;
             result = await callTauri(name, artifactMutationArgs, {
-                headers: buildArtifactMutationTransportHeaders(),
+                headers: buildArtifactMutationTransportHeaders(runtimeContext),
             });
         }
         else if (name === "get_plan_verification") {
-            result = await getPlanVerificationForTool(args);
-        }
-        else if (name === "report_verification_round") {
-            result = await reportVerificationRoundForTool(args);
-        }
-        else if (name === "run_verification_enrichment") {
-            result = await runVerificationEnrichment(args);
-        }
-        else if (name === "run_verification_round") {
-            result = await runVerificationRound(args);
+            const { session_id } = args;
+            const resolvedSessionId = session_id ||
+                (RALPHX_CONTEXT_TYPE === "ideation" ? RALPHX_CONTEXT_ID : undefined);
+            if (!resolvedSessionId) {
+                throw new Error("get_plan_verification requires session_id outside an ideation context.");
+            }
+            result = await callTauriGet(`ideation/sessions/${resolvedSessionId}/verification`);
         }
         else if (name === "complete_plan_verification") {
-            result = await completePlanVerificationForTool(args);
-        }
-        else if (name === "revert_and_skip") {
-            // POST /api/ideation/sessions/:id/revert-and-skip
-            const { session_id, plan_version_to_restore } = args;
-            result = await callTauri(`ideation/sessions/${session_id}/revert-and-skip`, { plan_version_to_restore });
-        }
-        else if (name === "stop_verification") {
-            // POST /api/ideation/sessions/:id/stop-verification
-            const { session_id } = args;
-            result = await callTauri(`ideation/sessions/${session_id}/stop-verification`, {});
+            result = await callTauri("plan-verification/complete", {}, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                    "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+                },
+            });
         }
         else if (name === "get_task_steps") {
             // GET /api/task_steps/:task_id
@@ -617,6 +594,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (isAgentWorkspaceToolName(name)) {
             result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
                 parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                conversationId: RALPHX_CONVERSATION_ID,
                 agentRunId: RALPHX_AGENT_RUN_ID,
             });
         }
@@ -624,6 +602,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             result = await callAutomationSetupTool(name, callTauri, args, {
                 conversationId: RALPHX_CONVERSATION_ID,
             });
+        }
+        else if (isTicketAttachmentToolName(name)) {
+            result = await callTicketAttachmentTool(name, callTauri, args);
         }
         else if (isPersonaToolName(name)) {
             result = await callPersonaTool(name, callTauri, callTauriGet, args, {
@@ -803,6 +784,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { session_id } = args;
             result = await callTauriGet(`parent_session_context/${session_id}`);
         }
+        else if (name === "create_agent_workflow_script") {
+            if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
+                throw new Error("Agent Workflow authoring requires a project Agent conversation context");
+            }
+            result = await callTauri("agent_workflows/scripts/create", {
+                ...args,
+                conversation_id: RALPHX_CONVERSATION_ID,
+                project_id: RALPHX_CONTEXT_ID,
+            });
+        }
+        else if (name === "start_agent_workflow_run") {
+            result = await callTauri("agent_workflows/runs/start", {
+                ...args,
+                caller_agent_name: AGENT_TYPE,
+                caller_agent_profile: RALPHX_AGENT_PROFILE,
+            });
+        }
+        else if (["get_agent_workflow_run", "pause_agent_workflow_run", "resume_agent_workflow_run", "cancel_agent_workflow_run"].includes(name)) {
+            const action = name.split("_agent_workflow_run")[0];
+            result = await callTauri(`agent_workflows/runs/${action}`, {
+                ...args,
+                ...(action === "resume"
+                    ? {
+                        caller_agent_name: AGENT_TYPE,
+                        caller_agent_profile: RALPHX_AGENT_PROFILE,
+                    }
+                    : {}),
+            });
+        }
         else if (name === "delegate_start") {
             const delegateArgs = args;
             const explicitParentConversationId = typeof delegateArgs.parent_conversation_id === "string" &&
@@ -821,6 +831,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_agent_profile: RALPHX_AGENT_PROFILE,
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
+            }, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                },
             });
         }
         else if (name === "delegate_wait") {
@@ -879,19 +893,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 content,
                 artifact_type,
                 related_artifact_id,
-            });
-        }
-        else if (name === "publish_verification_finding") {
-            const { session_id, critic, round, status, coverage, summary, gaps, title_suffix, } = args;
-            result = await callTauri("team/verification_finding", {
-                session_id: await resolveVerificationFindingSessionId(session_id, "publish_verification_finding"),
-                critic,
-                round,
-                status,
-                coverage,
-                summary,
-                gaps,
-                title_suffix,
             });
         }
         else if (name === "get_team_artifacts") {
@@ -1069,19 +1070,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             result = await callTauriGet(`ideation/pending-confirmations?project_id=${encodeURIComponent(projectId)}`);
         }
-        else if (name === "get_verification_confirmation_status") {
-            // GET /api/verification/confirmation-status/{session_id}
-            const { session_id } = args;
-            result = await callTauriGet(`verification/confirmation-status/${encodeURIComponent(session_id)}`);
-        }
         else if (name === "delete_task_proposal") {
             // Alias for archive_task_proposal — no /api/delete_task_proposal route exists in backend
             const { proposal_id } = args;
             result = await callTauri("archive_task_proposal", { proposal_id });
-        }
-        else if (name === "reject_task_proposal") {
-            const { proposal_id } = args;
-            result = await callTauri("reject_task_proposal", { proposal_id });
         }
         else if (name === "append_task_to_ideation_plan") {
             result = await callTauri(name, buildAppendTaskToIdeationPlanPayload(args || {}));

@@ -236,6 +236,9 @@ async fn external_mcp_send_has_no_persona_block() {
 
     let persona = Persona {
         id: PersonaId::from("external-handler-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "external-handler-persona".to_string(),
         name: "External Handler Persona".to_string(),
         description: "must not enter external MCP sends".to_string(),
@@ -245,6 +248,8 @@ async fn external_mcp_send_has_no_persona_block() {
         version: 1,
         content_hash: "external-handler-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

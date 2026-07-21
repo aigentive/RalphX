@@ -42,6 +42,10 @@ export function transformAutomation(raw: RawAutomation): Automation {
     goalPrompt: raw.goal_prompt,
     setupConversationId: raw.setup_conversation_id,
     specArtifactId: raw.spec_artifact_id,
+    authoringMode: raw.authoring_mode,
+    decompositionVerificationStatus: raw.decomposition_verification_status,
+    decompositionVerificationVerdictJson:
+      raw.decomposition_verification_verdict_json,
     providerHarness: raw.provider_harness,
     modelId: raw.model_id,
     logicalEffort: raw.logical_effort,
@@ -119,6 +123,27 @@ function transformAutomationUsage(raw: RawAutomationUsage) {
   };
 }
 
+function transformAutomationPipeline(
+  raw: NonNullable<RawAutomationDetail["pipeline"]>,
+) {
+  return {
+    deliverable: raw.deliverable,
+    status: raw.status,
+    ideationSessionId: raw.ideation_session_id,
+    planArtifactId: raw.plan_artifact_id,
+    proposalCount: raw.proposal_count,
+    taskTotal: raw.task_total,
+    taskMerged: raw.task_merged,
+    taskTerminal: raw.task_terminal,
+    tasks: raw.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      blockedBy: task.blocked_by,
+    })),
+  };
+}
+
 export function transformAutomationDetail(
   raw: RawAutomationDetail,
 ): AutomationDetail {
@@ -126,6 +151,7 @@ export function transformAutomationDetail(
     automation: transformAutomation(raw.automation),
     runs: raw.runs.map(transformAutomationRun),
     usage: transformAutomationUsage(raw.usage),
+    pipeline: raw.pipeline ? transformAutomationPipeline(raw.pipeline) : null,
   };
 }
 

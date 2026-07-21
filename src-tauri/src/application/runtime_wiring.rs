@@ -206,6 +206,7 @@ pub fn build_http_app_state(
     let shared_app_paths = app_state.app_paths.clone();
     let shared_window_focus_state = Arc::clone(&app_state.window_focus_state);
     let shared_notification_service_cache = Arc::clone(&app_state.notification_service_cache);
+    let shared_agent_capability_gate = Arc::clone(&app_state.agent_capability_gate);
     let mut http_app_state_inner = AppState::new_production_shared_with_paths_and_events(
         app_handle,
         shared_db_conn,
@@ -227,9 +228,18 @@ pub fn build_http_app_state(
     // INVARIANT: both AppStates share native focus transitions and notification coalescing.
     http_app_state_inner.window_focus_state = shared_window_focus_state;
     http_app_state_inner.notification_service_cache = shared_notification_service_cache;
+    // INVARIANT: Tauri commands and HTTP/MCP handlers enforce the same live capability state.
+    http_app_state_inner.agent_capability_gate = shared_agent_capability_gate;
+    share_plan_verification_runtime(app_state, &mut http_app_state_inner);
     // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
     // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))
+}
+
+pub(crate) fn share_plan_verification_runtime(source: &AppState, target: &mut AppState) {
+    // INVARIANT: automatic stream finalization and manual HTTP admission serialize together.
+    target.plan_verification_locks = Arc::clone(&source.plan_verification_locks);
+    target.plan_verification_admissions = Arc::clone(&source.plan_verification_admissions);
 }
 
 pub fn register_managed_state(

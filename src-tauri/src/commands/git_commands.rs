@@ -629,6 +629,10 @@ async fn execute_merge_retry_background(
 
     let deps = RuntimeFactoryDeps {
         task_repo: Arc::clone(&task_repo),
+        task_step_repo: None,
+        validation_run_repo: None,
+        external_events_repo: None,
+        webhook_publisher: None,
         task_dependency_repo: Arc::clone(&task_dependency_repo),
         project_repo: Arc::clone(&project_repo),
         artifact_repo: Arc::clone(&artifact_repo),
@@ -649,6 +653,10 @@ async fn execute_merge_retry_background(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
+        manual_role_default_service: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::new(app_state.manual_role_default_service())),
         review_repo: app_handle_opt
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())

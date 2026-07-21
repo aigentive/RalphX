@@ -2,7 +2,7 @@
 //
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::agents::AgentHarnessKind;
@@ -94,6 +94,38 @@ pub enum SendCallerContext {
     StartupResumption,
 }
 
+const PENDING_PROMPT_ENVELOPE_PREFIX: &str = "ralphx-pending-prompt-v1:";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingPromptEnvelope {
+    message: String,
+    metadata: String,
+}
+
+pub(crate) fn encode_pending_initial_prompt(message: &str, metadata: Option<&str>) -> String {
+    let Some(metadata) = metadata else {
+        return message.to_string();
+    };
+    let envelope = PendingPromptEnvelope {
+        message: message.to_string(),
+        metadata: metadata.to_string(),
+    };
+    match serde_json::to_string(&envelope) {
+        Ok(payload) => format!("{PENDING_PROMPT_ENVELOPE_PREFIX}{payload}"),
+        Err(_) => message.to_string(),
+    }
+}
+
+pub(crate) fn decode_pending_initial_prompt(payload: &str) -> (String, Option<String>) {
+    let Some(encoded) = payload.strip_prefix(PENDING_PROMPT_ENVELOPE_PREFIX) else {
+        return (payload.to_string(), None);
+    };
+    match serde_json::from_str::<PendingPromptEnvelope>(encoded) {
+        Ok(envelope) => (envelope.message, Some(envelope.metadata)),
+        Err(_) => (payload.to_string(), None),
+    }
+}
+
 /// Result from sending a message (returns immediately while processing continues in background)
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct SendResult {
@@ -183,6 +215,8 @@ impl AgentRunStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentChunkPayload {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -263,6 +297,8 @@ pub struct AgentToolCallPayload {
     pub tool_id: Option<String>,
     pub arguments: serde_json::Value,
     pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(flatten)]
     pub preview: AgentToolCallPreviewFields,
     pub conversation_id: String,
@@ -282,6 +318,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         parent_tool_use_id: Option<String>,
         seq: u64,
     ) -> Self {
@@ -290,6 +327,7 @@ impl AgentToolCallPayload {
             tool_id: Some(tool_use_id.to_string()),
             arguments: serde_json::Value::Null,
             result: Some(result_preview.result.clone()),
+            run_id: run_id.map(str::to_string),
             preview: AgentToolCallPreviewFields::from_tool_result_preview(
                 result_preview.preview.as_ref(),
             ),
@@ -309,6 +347,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         diff_context: Option<serde_json::Value>,
         parent_tool_use_id: Option<String>,
         seq: u64,
@@ -334,6 +373,7 @@ impl AgentToolCallPayload {
             tool_id: tool_call.id.clone(),
             arguments,
             result,
+            run_id: run_id.map(str::to_string),
             preview,
             conversation_id: conversation_id.to_string(),
             context_type: context_type.to_string(),
@@ -644,6 +684,8 @@ pub struct AgentErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskStartedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool name that triggered this: "Task" or "Agent"
     pub tool_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -692,6 +734,8 @@ pub struct AgentTaskStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskCompletedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -903,8 +947,14 @@ pub struct TeamArtifactCreatedPayload {
 
 #[derive(Debug, Clone)]
 pub enum ChatServiceError {
+    InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    SpawnValidation {
+        harness: crate::domain::agents::AgentHarnessKind,
+        model: String,
+        reason: String,
+    },
     CommunicationFailed(String),
     ParseError(String),
     ContextNotFound(String),
@@ -917,8 +967,17 @@ pub enum ChatServiceError {
 impl std::fmt::Display for ChatServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::SpawnValidation {
+                harness,
+                model,
+                reason,
+            } => write!(
+                f,
+                "Invalid agent runtime (harness={harness}, model={model}): {reason}"
+            ),
             Self::CommunicationFailed(msg) => write!(f, "Communication failed: {}", msg),
             Self::ParseError(msg) => write!(f, "Parse error: {}", msg),
             Self::ContextNotFound(msg) => write!(f, "Context not found: {}", msg),

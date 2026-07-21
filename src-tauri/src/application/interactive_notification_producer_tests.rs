@@ -1,4 +1,8 @@
-use super::interactive_notification_producer::InteractiveNotificationProducer;
+use super::interactive_notification_producer::{
+    automation_plan_notification_key, permission_notification_key, plan_notification_key,
+    pr_review_notification_key, question_notification_key, team_plan_notification_key,
+    InteractiveNotificationProducer,
+};
 use super::notification_context_resolver::ResolvedNotificationTarget;
 use crate::application::PendingPermissionInfo;
 use crate::domain::entities::{
@@ -151,4 +155,23 @@ fn plan_approval_producers_build_reviewable_copy_and_stable_dedupe_keys() {
         Some("verification team plan is awaiting approval")
     );
     assert_eq!(team.dedupe_key.as_deref(), Some("team-plan:team-plan-1"));
+}
+
+#[test]
+fn workflow_notification_keys_are_shared_exact_correlation_contracts() {
+    assert_eq!(permission_notification_key("request-1"), "perm:request-1");
+    assert_eq!(question_notification_key("request-1"), "question:request-1");
+    assert_eq!(
+        plan_notification_key("session-1", "artifact-2"),
+        "plan:session-1:artifact-2"
+    );
+    assert_eq!(team_plan_notification_key("plan-1"), "team-plan:plan-1");
+    assert_eq!(
+        pr_review_notification_key("conversation-1", "action-1"),
+        "pr-review:conversation-1:awaiting_user:action-1"
+    );
+    assert_eq!(
+        automation_plan_notification_key("run-1"),
+        "run:run-1:plan_approval"
+    );
 }

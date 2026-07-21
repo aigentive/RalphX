@@ -1,3 +1,5 @@
+> **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
+
 # frontend/src/CLAUDE.md — Frontend
 
 Quality standards: @../../.claude/rules/code-quality-standards.md
@@ -5,14 +7,14 @@ Task detail views: @../../.claude/rules/task-detail-views.md
 Interaction performance: @../../.claude/rules/frontend-interaction-performance.md
 
 ## Stack
-React 19.1 | TS 5.8 | Zustand 5.0+immer | TanStack Query 5.90 | Tailwind 4.1 | Zod 4.3
-dnd-kit 6.3 | Vite 7.0 | Vitest 4.0 | Testing Library 16.3 | Tauri API 2.x
+React 19.2 | TS 6.0 | Zustand 5.0+immer | TanStack Query 5.100 | Tailwind 4.1 | Zod 4.4
+dnd-kit 6.3 | Vite 8.0 | Vitest 4.1 | Testing Library 16.3 | Tauri API 2.x
 
 ## Key Directories
 ```
 src/
 ├─ api/           # Tauri wrappers
-├─ components/    # UI (Chat/, Task/, Ideation/, ui/)
+├─ components/    # UI (Chat/, tasks/, TaskGraph/, Ideation/, ui/)
 ├─ hooks/         # TanStack Query + custom
 ├─ lib/           # tauri.ts (typedInvoke), queryClient.ts
 ├─ stores/        # Zustand+immer
@@ -95,16 +97,11 @@ NO purple gradients | NO Inter font | Warm orange #ff6b35
 
 ## Code Quality
 
-### Multi-Stream Workflow
-Quality work is now split into dedicated streams. See `../../.claude/rules/stream-*.md`:
-- **features**: PRD tasks + P0 gap fixes
-- **refactor**: P1 large file splits (>500 LOC)
-- **polish**: P2/P3 cleanup, lint, type fixes
-
-**Targets:** `any` types, naming, error handling, dead code, repeated logic, lint
+### Quality Scope
+Keep work inside the requested feature/refactor/polish scope; file limits, migration rules, and quality targets live in `../../.claude/rules/code-quality-standards.md`.
 
 ### Zero Warnings Policy (NON-NEGOTIABLE)
-Fix ALL lint warnings and test failures before completing work — including pre-existing ones. ❌ "It's pre-existing" is not an excuse. Run `npm run lint` and `npm run typecheck` and fix everything.
+Fix lint/typecheck/test failures caused by the current change; report unrelated pre-existing failures without expanding scope. Run `npm run lint` and `npm run typecheck` when the changed frontend surface requires them.
 
 ### File Size Limits
 **See:** `../../.claude/rules/code-quality-standards.md` (single source of truth)
@@ -118,11 +115,18 @@ Component does ONE of: Display UI | Manage State | Coordinate children
 When introducing a new architectural pattern, add a one-liner here. Pattern name + rule only.
 Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.md
 
+- **Reuse Before Invent (NON-NEGOTIABLE)** — new chat/agents behavior extends the existing owning surface: context derivation → chat-context-registry, send/queue/stop → `useChatActions`, streaming → `useChatEvents`, hydration → `useChatRecovery`, scrolling → `ChatScrollController`, per-conversation state → the conversation-keyed stores. ❌ Parallel stores/hooks/scroll writers for owned concerns.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
+- **Provider MCP Settings** — Harness → MCP uses refreshed enabled/available provider readiness, provider-scoped query keys, redacted catalogs, and global/project tri-state deny controls; provider definitions/auth/trust never enter frontend state.
 - **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.
 - **Persistent Operation Toasts** — long-running confirmed publish/update operations may close the dialog after intent is captured and keep one stable-id Sonner loading toast with title separate from conversation/detail/elapsed metadata until terminal success/error.
+- **Single Scroll Authority** — ALL chat scroll writes go through `ChatScrollController` (`src/components/Chat/scroll/controller.ts`, `pinned`/`free`/`returning` FSM). ❌ Independent `scrollTop`/`scrollIntoView` in chat surfaces. Only explicit user intent enters `free`; programmatic growth never re-enables follow.
+- **Conversation-Keyed Live State** — drafts, attachments, artifact-tab state, review context, and publish state are keyed by conversation id; switching conversations must not leak another conversation's state. Defaults/start-composer may use broader project/provider scopes.
+- **Review-Mode Boundary** — Workspace Review displays the local publish gate; Review PR displays linked remote GitHub head/lifecycle/action state and suppresses stale actions on terminal durable state. See `../../.claude/rules/agent-workspace-review-modes.md`.
+- **Timeline Canonical, Live Supplementary** — persisted timeline pages are the transcript authority (legacy logical history only when no page exists); keep live streamed output visible until the matching persisted message arrives, then release the live duplicate. An incomplete live tail never replaces full persisted history.
+- **Stale-Event Rejection** — chat event handlers validate payloads and reject terminations/updates keyed by BOTH conversation and active run identity, not conversation alone.
 
 ### Composition Over Props
 ```tsx

@@ -8,6 +8,7 @@ import {
 const baseAvailability: AutomationConversationTabAvailability = {
   hasPlanArtifact: true,
   hasPullRequest: true,
+  hasPublishWorkspace: true,
   hasIssues: true,
   hasVerification: true,
   hasTasks: true,
@@ -29,8 +30,16 @@ function tabIds(availability: AutomationConversationTabAvailability = baseAvaila
 }
 
 describe("getAutomationConversationTabPolicy", () => {
-  it("hides publish and integration tabs for run conversations", () => {
-    expect(tabIds()).toEqual(["automation", "plan", "pr"]);
+  it("shows publish but hides unrelated integration tabs for eligible run workspaces", () => {
+    expect(tabIds()).toEqual(["automation", "plan", "pr", "publish"]);
+  });
+
+  it("hides publish when the run has no publishable workspace", () => {
+    expect(tabIds({ ...baseAvailability, hasPublishWorkspace: false })).toEqual([
+      "automation",
+      "plan",
+      "pr",
+    ]);
   });
 
   it("keeps the plan tab visible but disabled until the run plan exists", () => {
@@ -186,5 +195,17 @@ describe("getAutomationConversationTabPolicy", () => {
     expect(policy.tabs.map((tab) => tab.id)).toContain("publish");
     expect(policy.tabs.map((tab) => tab.id)).toContain("jira");
     expect(policy.tabs.map((tab) => tab.id)).toContain("automation");
+  });
+
+  it("hides setup publishing when the setup workspace is not publishable", () => {
+    const policy = getAutomationConversationTabPolicy({
+      surface: "setup",
+      runStatus: null,
+      judgeState: null,
+      workspaceMode: "automation",
+      availability: { ...baseAvailability, hasPublishWorkspace: false },
+    });
+
+    expect(policy.tabs.map((tab) => tab.id)).not.toContain("publish");
   });
 });

@@ -61,6 +61,13 @@ describe("MessageItem - Attachment Integration", () => {
         {...baseProps}
         role="user"
         composerReferences={{
+          folderReferences: [
+            {
+              id: "folder-1",
+              folderPath: "/work/brand-kit",
+              displayName: "brand-kit",
+            },
+          ],
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           artifactReferences: [],
           integrationReferences: [
@@ -85,6 +92,9 @@ describe("MessageItem - Attachment Integration", () => {
 
     expect(screen.getByTestId("message-reference-project:src/main.ts")).toHaveTextContent(
       "File",
+    );
+    expect(screen.getByTestId("message-reference-folder:folder-1")).toHaveTextContent(
+      "brand-kit",
     );
     expect(screen.getByTestId("message-reference-integration:jira:RX-42")).toHaveTextContent(
       "Jira",
@@ -210,7 +220,8 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("Second block")).toBeInTheDocument();
   });
 
-  it("passes argument preview metadata from content block tool uses into diff widgets", () => {
+  it("passes argument preview metadata from content block tool uses into diff widgets", async () => {
+    const user = userEvent.setup();
     const contentBlocks = [
       {
         type: "tool_use" as const,
@@ -261,7 +272,10 @@ describe("MessageItem - Attachment Integration", () => {
       />
     );
 
-    expect(screen.getByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
+    await user.click(screen.getByRole("button", {
+      name: "Agent called 1 tool and edited 1 file. Expand tool details.",
+    }));
+    expect(await screen.findByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
       "export const value = 1;"
     );
   });
@@ -527,13 +541,54 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
       <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
     );
 
-    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." })).toBeInTheDocument();
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." }));
     expect(await screen.findAllByText("npm test")).not.toHaveLength(0);
     const indicators = container.querySelectorAll('[data-testid="tool-call-indicator"]');
     expect(indicators.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ["Claude", "Write", "Edit", "mcp__ralphx__delegate_start"],
+    ["Codex", "write", "edit", "ralphx::delegate_start"],
+  ])("renders the same mixed activity summary and promoted delegate for %s", async (_provider, write, edit, delegate) => {
+    const user = userEvent.setup();
+    const contentBlocks = [
+      makeContentToolUse(write, {
+        id: "create-file",
+        arguments: { file_path: "src/new.ts" },
+        diffContext: { filePath: "src/new.ts", oldFileExists: false },
+      }),
+      makeContentToolUse(edit, {
+        id: "edit-file",
+        arguments: { file_path: "src/existing.ts", old_string: "a", new_string: "b" },
+        diffContext: { filePath: "src/existing.ts", oldFileExists: true },
+      }),
+      makeContentToolUse(delegate, {
+        id: "delegate-agent",
+        arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect chat" },
+        result: { job_id: "job-1", status: "running" },
+      }),
+    ];
+
+    const { container } = renderMessageItem(
+      <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: "Agent called 3 tools, created 1 file, edited 1 file, and delegated 1 agent. Expand tool details.",
+    });
+    expect(toggle).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid="task-tool-call-card"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="diff-tool-call-view"]')).toHaveLength(0);
+
+    await user.click(toggle);
+    expect(screen.getByRole("button", {
+      name: "Agent called 3 tools, created 1 file, edited 1 file, and delegated 1 agent. Collapse tool details.",
+    })).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid="task-tool-call-card"]')).toHaveLength(1);
   });
 
   it("passes structured preview path metadata from content blocks into tool calls", () => {
@@ -616,8 +671,8 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     // Agent card renders
     expect(container.querySelector('[data-testid="task-tool-call-card"]')).toBeInTheDocument();
     // Independent generic tool is collapsed, not suppressed.
-    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
+    expect(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools. Expand tool details." }));
     expect(container.querySelector('[data-testid="tool-call-indicator"]')).toBeInTheDocument();
   });
 });

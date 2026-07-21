@@ -249,6 +249,7 @@ fn build_pr_sync_services_for_auto_complete(
                 Arc::clone(&state.agent_conversation_workspace_repo),
                 Arc::clone(&state.chat_conversation_repo),
                 Arc::clone(&state.agent_provider_settings_repo),
+                Arc::new(state.manual_role_default_service()),
                 state.agent_clients.clone(),
             )
         }),

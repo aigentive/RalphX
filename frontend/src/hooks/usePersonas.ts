@@ -1,34 +1,40 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
+import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import {
-  PersonaIngestManifestSchema,
-  PersonaBuilderIngestStatusSchema,
   PersonaResponseSchema,
   transformPersona,
   type Persona,
-  type PersonaBuilderIngestStatus,
-  type PersonaIngestManifest,
 } from "@/types/persona";
 
 export const personaKeys = {
   all: ["personas"] as const,
-  list: () => [...personaKeys.all, "list"] as const,
+  list: (scope?: PersonaScope) =>
+    scope
+      ? ([...personaKeys.all, "list", scope] as const)
+      : ([...personaKeys.all, "list"] as const),
   detail: (id: string) => [...personaKeys.all, "detail", id] as const,
-  ingestManifest: (conversationId: string) =>
-    [...personaKeys.all, "ingest-manifest", conversationId] as const,
-  ingestStatus: (conversationId: string) =>
-    [...personaKeys.all, "ingest-status", conversationId] as const,
 };
 
 export type CreatePersonaDraftInput = {
   slug: string;
+  projectId?: string | null;
   content?: string;
   description?: string;
   body?: string;
   sourceSessionId?: string;
 };
+export type PersonaScope =
+  | { type: "all" }
+  | { type: "globalOnly" }
+  | { type: "globalAndProject"; projectId: string };
 
 export type UpdatePersonaInput = {
   id: string;
@@ -36,9 +42,14 @@ export type UpdatePersonaInput = {
   description?: string;
   body?: string;
 };
-export type IngestPersonaContextInput = {
-  conversationId: string;
-  pickedPath: string;
+export type UpdatePersonaDraftInput = {
+  id: string;
+  content: string;
+  expectedContentHash: string;
+};
+export type ApprovePersonaAsNewInput = {
+  id: string;
+  newSlug?: string;
 };
 export type SwitchConversationPersonaInput = {
   conversationId: string;
@@ -49,8 +60,10 @@ function parsePersona(raw: unknown): Persona {
   return transformPersona(PersonaResponseSchema.parse(raw));
 }
 
-export async function fetchPersonas(): Promise<Persona[]> {
-  const raw = await invoke<unknown>("list_personas", { input: {} });
+export async function fetchPersonas(scope?: PersonaScope): Promise<Persona[]> {
+  const raw = await invoke<unknown>("list_personas", {
+    input: { ...(scope !== undefined && { scope }) },
+  });
   return z.array(PersonaResponseSchema).parse(raw).map(transformPersona);
 }
 
@@ -65,6 +78,7 @@ export async function createPersonaDraft(
   const raw = await invoke<unknown>("create_persona_draft", {
     input: {
       slug: input.slug,
+      ...(input.projectId !== undefined && { projectId: input.projectId }),
       ...(input.content !== undefined && { content: input.content }),
       ...(input.description !== undefined && { description: input.description }),
       ...(input.body !== undefined && { body: input.body }),
@@ -81,8 +95,27 @@ export async function updatePersona(input: UpdatePersonaInput): Promise<Persona>
   return parsePersona(raw);
 }
 
+export async function updatePersonaDraft(
+  input: UpdatePersonaDraftInput,
+): Promise<Persona> {
+  const raw = await invoke<unknown>("update_persona_draft", { input });
+  return parsePersona(raw);
+}
+
 export async function approvePersona(id: string): Promise<Persona> {
   const raw = await invoke<unknown>("approve_persona", { input: { id } });
+  return parsePersona(raw);
+}
+
+export async function approvePersonaAsNew(
+  input: ApprovePersonaAsNewInput,
+): Promise<Persona> {
+  const raw = await invoke<unknown>("approve_persona_as_new", {
+    input: {
+      id: input.id,
+      ...(input.newSlug !== undefined && { newSlug: input.newSlug }),
+    },
+  });
   return parsePersona(raw);
 }
 
@@ -95,32 +128,16 @@ export async function deletePersonaDraft(id: string): Promise<void> {
   await invoke<void>("delete_persona_draft", { input: { id } });
 }
 
-export async function ingestPersonaContext(
-  input: IngestPersonaContextInput,
-): Promise<PersonaIngestManifest> {
-  const raw = await invoke<unknown>("ingest_persona_context", { input });
-  return PersonaIngestManifestSchema.parse(raw);
-}
-
-export async function fetchPersonaBuilderIngestStatus(
-  conversationId: string,
-): Promise<PersonaBuilderIngestStatus> {
-  const raw = await invoke<unknown>("get_persona_builder_ingest_status", {
-    input: { conversationId },
-  });
-  return PersonaBuilderIngestStatusSchema.parse(raw);
-}
-
 export async function switchConversationPersona(
   input: SwitchConversationPersonaInput,
 ): Promise<void> {
   await invoke<unknown>("switch_agent_conversation_persona", { input });
 }
 
-export function usePersonas() {
+export function usePersonas(scope?: PersonaScope) {
   return useQuery<Persona[], Error>({
-    queryKey: personaKeys.list(),
-    queryFn: fetchPersonas,
+    queryKey: personaKeys.list(scope),
+    queryFn: () => fetchPersonas(scope),
   });
 }
 
@@ -132,19 +149,22 @@ export function usePersona(id: string) {
   });
 }
 
-export function usePersonaBuilderIngestStatus(conversationId: string | null) {
-  return useQuery<PersonaBuilderIngestStatus, Error>({
-    queryKey: personaKeys.ingestStatus(conversationId ?? ""),
-    queryFn: () => fetchPersonaBuilderIngestStatus(conversationId ?? ""),
-    enabled: Boolean(conversationId),
-  });
-}
-
 function usePersonaListInvalidation() {
   const queryClient = useQueryClient();
   return () => {
     void queryClient.invalidateQueries({ queryKey: personaKeys.list() });
   };
+}
+
+function publishPersonaUpdate(
+  queryClient: QueryClient,
+  persona: Persona,
+) {
+  queryClient.setQueryData(personaKeys.detail(persona.id), persona);
+  if (!persona.artifactId) return;
+  void queryClient.invalidateQueries({
+    queryKey: personaArtifactKeys.detail(persona.artifactId),
+  });
 }
 
 export function useCreatePersonaDraft() {
@@ -156,18 +176,52 @@ export function useCreatePersonaDraft() {
 }
 
 export function useUpdatePersona() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, UpdatePersonaInput>({
     mutationFn: updatePersona,
-    onSuccess: invalidateList,
+    onSuccess: (persona) => {
+      invalidateList();
+      publishPersonaUpdate(queryClient, persona);
+    },
+  });
+}
+
+export function useUpdatePersonaDraft() {
+  const queryClient = useQueryClient();
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, UpdatePersonaDraftInput>({
+    mutationFn: updatePersonaDraft,
+    onSuccess: (persona) => {
+      invalidateList();
+      publishPersonaUpdate(queryClient, persona);
+    },
   });
 }
 
 export function useApprovePersona() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, string>({
     mutationFn: approvePersona,
-    onSuccess: invalidateList,
+    onSuccess: (persona) => {
+      publishPersonaUpdate(queryClient, persona);
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+    },
+  });
+}
+
+export function useApprovePersonaAsNew() {
+  const queryClient = useQueryClient();
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, ApprovePersonaAsNewInput>({
+    mutationFn: approvePersonaAsNew,
+    onSuccess: (persona) => {
+      publishPersonaUpdate(queryClient, persona);
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+    },
   });
 }
 
@@ -184,25 +238,6 @@ export function useDeletePersonaDraft() {
   return useMutation<void, Error, string>({
     mutationFn: deletePersonaDraft,
     onSuccess: invalidateList,
-  });
-}
-
-export function useIngestPersonaContext() {
-  const queryClient = useQueryClient();
-  return useMutation<PersonaIngestManifest, Error, IngestPersonaContextInput>({
-    mutationFn: ingestPersonaContext,
-    onSuccess: (manifest, input) => {
-      queryClient.setQueryData(personaKeys.ingestManifest(input.conversationId), manifest);
-      if (manifest.copied.length > 0) {
-        queryClient.setQueryData<PersonaBuilderIngestStatus>(
-          personaKeys.ingestStatus(input.conversationId),
-          { live: true },
-        );
-      }
-      void queryClient.invalidateQueries({
-        queryKey: personaKeys.ingestStatus(input.conversationId),
-      });
-    },
   });
 }
 

@@ -27,13 +27,12 @@ interface AgentsConversationMainRegionProps {
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
-  onActiveTeamEnabledChange: ActiveConversationPanelProps["onActiveTeamEnabledChange"];
+  onActiveCapabilityChange: ActiveConversationPanelProps["onActiveCapabilityChange"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
-  onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
   onFocusIdeationSessionForConversation: ActiveConversationPanelProps[
     "onFocusIdeationSessionForConversation"
@@ -54,6 +53,7 @@ interface AgentsConversationMainRegionProps {
   onRuntimePreferenceChange: StartConversationPanelProps["onRuntimePreferenceChange"];
   onSelectArtifact: ActiveConversationPanelProps["onSelectArtifact"];
   onStartAgentConversation: StartConversationPanelProps["onStartAgentConversation"];
+  onStartPersonaBuilder: ActiveConversationPanelProps["onStartPersonaBuilder"];
   onToggleArtifacts: ActiveConversationPanelProps["onToggleArtifacts"];
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
@@ -64,7 +64,7 @@ interface AgentsConversationMainRegionProps {
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
-  updatingTeamConversationId: ActiveConversationPanelProps["updatingTeamConversationId"];
+  updatingCapabilityConversationId: ActiveConversationPanelProps["updatingCapabilityConversationId"];
   terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
@@ -90,13 +90,12 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
-  onActiveTeamEnabledChange,
+  onActiveCapabilityChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
   onAgentUserMessageSent,
   onConversationModeSwitched,
-  onCreateProject,
   onFocusIdeationSession,
   onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
@@ -115,6 +114,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onRuntimePreferenceChange,
   onSelectArtifact,
   onStartAgentConversation,
+  onStartPersonaBuilder,
   onToggleArtifacts,
   onSelectChatFocus,
   projects,
@@ -125,11 +125,11 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
-  updatingTeamConversationId,
+  updatingCapabilityConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
-  if (activeProjectId && selectedConversationId && activeConversation) {
+  if (selectedConversationId && activeConversation) {
     return (
       <AgentsActiveConversationPanel
         activeConversation={activeConversation}
@@ -148,7 +148,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
-        onActiveTeamEnabledChange={onActiveTeamEnabledChange}
+        onActiveCapabilityChange={onActiveCapabilityChange}
         onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onActiveProviderChange={onActiveProviderChange}
@@ -174,6 +174,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onSelectArtifact={onSelectArtifact}
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
+        onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
         promotePublishShortcut={promotePublishShortcut}
         publishingConversationId={publishingConversationId}
@@ -181,7 +182,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
-        updatingTeamConversationId={updatingTeamConversationId}
+        updatingCapabilityConversationId={updatingCapabilityConversationId}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />
@@ -195,7 +196,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
       modelRegistry={modelRegistry}
-      onCreateProject={onCreateProject}
       onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
     />

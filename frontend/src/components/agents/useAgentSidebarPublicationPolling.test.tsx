@@ -5,7 +5,10 @@ import { createTestQueryClient, createWrapper } from "@/test/store-utils";
 
 import { conversationFixture } from "./agentsTestFixtures";
 import type { AgentConversation } from "./agentConversations";
-import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
+import {
+  useAgentSidebarPublicationPolling,
+  workspacePublicationFingerprint,
+} from "./useAgentSidebarPublicationPolling";
 
 const { getBulkWorkspacePublicationStatesMock } = vi.hoisted(() => ({
   getBulkWorkspacePublicationStatesMock: vi.fn(),
@@ -46,8 +49,8 @@ describe("useAgentSidebarPublicationPolling", () => {
           [conversation("conv-merged"), conversation("conv-active")],
           true,
           new Map([
-            ["conv-merged", "draft"],
-            ["conv-active", "active"],
+            ["conv-merged", workspacePublicationFingerprint("draft", null)],
+            ["conv-active", workspacePublicationFingerprint("active", null)],
           ]),
         ),
       { wrapper: createWrapper(queryClient) },
@@ -69,7 +72,45 @@ describe("useAgentSidebarPublicationPolling", () => {
       queryKey: ["agents", "conversation-workspace-publication-events", "conv-merged"],
     });
     expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ["agents", "workspace-review-context", "conv-merged"],
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: ["agents", "conversation-workspace", "conv-active"],
+    });
+  });
+
+  it("invalidates sidebar and Review PR caches when only the publication label changes", async () => {
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getBulkWorkspacePublicationStatesMock.mockResolvedValueOnce({
+      "conv-label": {
+        publication_state: "active",
+        publication_label: "merged",
+      },
+    });
+
+    renderHook(
+      () =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-label")],
+          true,
+          new Map([
+            [
+              "conv-label",
+              workspacePublicationFingerprint("active", "blocked"),
+            ],
+          ]),
+        ),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "sidebar-conversations"],
+      }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["agents", "workspace-pr-review", "conv-label"],
     });
   });
 });

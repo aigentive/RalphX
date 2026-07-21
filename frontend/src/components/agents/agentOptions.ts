@@ -6,6 +6,7 @@ import type {
 import {
   agentEffortOptionsForModel,
   agentModelOptionsForProvider,
+  agentModelSupportsCodexUltra,
   defaultEffortForModel,
   defaultModelForProvider,
   normalizeAgentRuntimeForPersistence,
@@ -33,7 +34,11 @@ export const AGENT_PROVIDER_OPTIONS: Array<{ id: AgentProvider; label: string }>
 export const DEFAULT_AGENT_RUNTIME: AgentRuntimeSelection =
   normalizeAgentRuntimeSelection(null);
 
-export { defaultEffortForModel, defaultModelForProvider };
+export {
+  agentModelSupportsCodexUltra,
+  defaultEffortForModel,
+  defaultModelForProvider,
+};
 
 export function normalizeRuntimeSelection(
   runtime: unknown,

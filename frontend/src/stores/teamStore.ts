@@ -87,6 +87,7 @@ interface TeamActions {
   getTeammates: (contextKey: string) => TeammateState[];
   setPendingPlan: (contextKey: string, plan: PendingTeamPlan) => void;
   clearPendingPlan: (contextKey: string) => void;
+  clearPendingPlanIfMatches: (contextKey: string, planId: string) => void;
   hydrateFromHistory: (contextKey: string, history: TeamHistoryResponse) => void;
   bumpArtifactVersion: (sessionId: string) => void;
 }
@@ -248,6 +249,13 @@ export const useTeamStore = create<TeamState & TeamActions>()(
     clearPendingPlan: (contextKey) =>
       set((state) => {
         delete state.pendingPlans[contextKey];
+      }),
+
+    clearPendingPlanIfMatches: (contextKey, planId) =>
+      set((state) => {
+        if (state.pendingPlans[contextKey]?.planId === planId) {
+          delete state.pendingPlans[contextKey];
+        }
       }),
 
     hydrateFromHistory: (contextKey, history) =>

@@ -151,6 +151,35 @@ describe("notification command mocks", () => {
   });
 });
 
+describe("task command mocks", () => {
+  afterEach(() => {
+    resetStore();
+  });
+
+  it("reports durable history only for the requested ideation session", async () => {
+    const store = getStore();
+    const task = store.tasks.get("task-mock-1");
+    if (!task) throw new Error("Expected task fixture");
+    store.tasks.set(task.id, {
+      ...task,
+      ideationSessionId: "session-with-history",
+    });
+
+    await expect(
+      invoke("get_session_task_history_availability", {
+        projectId: "project-mock-1",
+        ideationSessionId: "session-with-history",
+      }),
+    ).resolves.toEqual({ has_history: true, task_count: 1 });
+    await expect(
+      invoke("get_session_task_history_availability", {
+        projectId: "project-mock-1",
+        ideationSessionId: "session-without-history",
+      }),
+    ).resolves.toEqual({ has_history: false, task_count: 0 });
+  });
+});
+
 describe("review settings command mocks", () => {
   afterEach(async () => {
     await invoke("update_review_settings", {
@@ -170,6 +199,57 @@ describe("review settings command mocks", () => {
       input: { autoCreateFollowupAgentConversation: true },
     });
     expect(updated.auto_create_followup_agent_conversation).toBe(true);
+  });
+});
+
+describe("manual role default command mocks", () => {
+  it("mirrors the complete backend catalog and project inheritance sources", async () => {
+    const globalCatalog = await invoke<{
+      roles: Array<{
+        role: string;
+        description: string;
+        configured: Record<string, unknown> | null;
+        effective: Record<string, unknown> | null;
+        source: string;
+      }>;
+    }>("get_manual_role_defaults", { projectId: null });
+    expect(globalCatalog.roles).toHaveLength(29);
+    expect(globalCatalog.roles.every((role) => role.description.trim().length > 0)).toBe(true);
+
+    const inheritedCatalog = await invoke<typeof globalCatalog>(
+      "get_manual_role_defaults",
+      { projectId: "mock-agents-project" },
+    );
+    const inheritedEdit = inheritedCatalog.roles.find(
+      (role) => role.role === "workspace_edit",
+    );
+    expect(inheritedEdit).toMatchObject({
+      configured: null,
+      effective: globalCatalog.roles.find((role) => role.role === "workspace_edit")?.configured,
+      source: "global_ui",
+    });
+
+    await invoke("update_manual_role_default", {
+      input: {
+        projectId: "mock-agents-project",
+        role: "workspace_edit",
+        value: { marker: "project override" },
+      },
+    });
+    const projectCatalog = await invoke<typeof globalCatalog>(
+      "get_manual_role_defaults",
+      { projectId: "mock-agents-project" },
+    );
+    expect(projectCatalog.roles.find((role) => role.role === "workspace_edit"))
+      .toMatchObject({
+        configured: { marker: "project override" },
+        effective: { marker: "project override" },
+        source: "project_ui",
+      });
+
+    await invoke("clear_manual_role_default", {
+      input: { projectId: "mock-agents-project", role: "workspace_edit" },
+    });
   });
 });
 

@@ -11,6 +11,7 @@ import { immer } from "zustand/middleware/immer";
 import type { ChatMessage } from "@/types/ideation";
 import type { ChatContext } from "@/types/chat";
 import type { ModelDisplay } from "@/types/chat-conversation";
+import type { ComposerSelectionSnapshot } from "@/api/chat";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 
 // ============================================================================
@@ -47,6 +48,8 @@ export interface QueuedMessage {
   isEditing: boolean;
   /** Chat attachment IDs selected when the message was queued */
   attachmentIds: string[];
+  /** Frozen artifact/ticket excerpt carried by the queued turn. */
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
 }
 
 export interface ChatComposerAttachment {
@@ -62,9 +65,16 @@ export interface ChatComposerAttachment {
   previewUrl?: string;
 }
 
+export interface ChatComposerFolder {
+  id: string;
+  folderPath: string;
+  displayName: string;
+}
+
 export interface ChatComposerDraft {
   content: string;
   attachments: ChatComposerAttachment[];
+  folders: ChatComposerFolder[];
   updatedAt: string;
 }
 
@@ -105,6 +115,8 @@ interface ChatState {
   effectiveModel: Record<string, ModelDisplay>;
   /** Unsent composer drafts keyed by conversation/start-composer target. Transient only. */
   composerDraftsByKey: Record<string, ChatComposerDraft>;
+  /** User-owned delegate expansion keyed by conversation then stable tool/job id. */
+  delegateExpansionByConversation: Record<string, Record<string, true>>;
 }
 
 // ============================================================================
@@ -143,7 +155,8 @@ interface ChatActions {
     contextKey: string,
     content: string,
     clientId?: string,
-    attachmentIds?: string[]
+    attachmentIds?: string[],
+    composerSelectionSnapshot?: ComposerSelectionSnapshot,
   ) => void;
   /** Replace a context queue with backend-owned queued messages */
   setQueuedMessages: (contextKey: string, messages: QueuedMessage[]) => void;
@@ -182,8 +195,16 @@ interface ChatActions {
     draftKey: string,
     attachments: ChatComposerAttachment[],
   ) => void;
+  /** Remember unsent composer folder references for a target. */
+  setComposerDraftFolders: (draftKey: string, folders: ChatComposerFolder[]) => void;
   /** Clear the full unsent composer draft for a target. */
   clearComposerDraft: (draftKey: string) => void;
+  /** Preserve delegate expansion across live/persisted projection replacement. */
+  setDelegateExpanded: (
+    conversationId: string,
+    delegateKey: string,
+    expanded: boolean,
+  ) => void;
 }
 
 function queuedMessageListsEqual(
@@ -199,6 +220,8 @@ function queuedMessageListsEqual(
       message.content === other.content &&
       message.createdAt === other.createdAt &&
       message.isEditing === other.isEditing &&
+      JSON.stringify(message.composerSelectionSnapshot) ===
+        JSON.stringify(other.composerSelectionSnapshot) &&
       message.attachmentIds.length === other.attachmentIds.length &&
       message.attachmentIds.every(
         (attachmentId, attachmentIndex) =>
@@ -211,9 +234,9 @@ function queuedMessageListsEqual(
 function writeComposerDraft(
   state: ChatState,
   draftKey: string,
-  draft: Pick<ChatComposerDraft, "content" | "attachments">,
+  draft: Pick<ChatComposerDraft, "content" | "attachments" | "folders">,
 ) {
-  if (draft.content.length === 0 && draft.attachments.length === 0) {
+  if (draft.content.length === 0 && draft.attachments.length === 0 && draft.folders.length === 0) {
     delete state.composerDraftsByKey[draftKey];
     return;
   }
@@ -221,6 +244,7 @@ function writeComposerDraft(
   state.composerDraftsByKey[draftKey] = {
     content: draft.content,
     attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+    folders: draft.folders.map((folder) => ({ ...folder })),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -248,6 +272,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     toolCallCompletionTimestamps: {},
     effectiveModel: {},
     composerDraftsByKey: {},
+    delegateExpansionByConversation: {},
 
     // Actions
     setContext: (context) =>
@@ -281,6 +306,10 @@ export const useChatStore = create<ChatState & ChatActions>()(
     setActiveConversation: (storeKey, conversationId) =>
       set((state) => {
         if (state.activeConversationIds[storeKey] === conversationId) return;
+        const previousConversationId = state.activeConversationIds[storeKey];
+        if (previousConversationId) {
+          delete state.delegateExpansionByConversation[previousConversationId];
+        }
         state.activeConversationIds[storeKey] = conversationId;
       }),
 
@@ -388,7 +417,13 @@ export const useChatStore = create<ChatState & ChatActions>()(
         });
       }),
 
-    queueMessage: (contextKey, content, clientId, attachmentIds) =>
+    queueMessage: (
+      contextKey,
+      content,
+      clientId,
+      attachmentIds,
+      composerSelectionSnapshot,
+    ) =>
       set((state) => {
         const id = clientId ?? `queued-${Date.now()}-${Math.random()}`;
         if (!state.queuedMessages[contextKey]) {
@@ -407,6 +442,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
           ) {
             existingMessage.attachmentIds = [...attachmentIds];
           }
+          if (
+            !existingMessage.composerSelectionSnapshot &&
+            composerSelectionSnapshot
+          ) {
+            existingMessage.composerSelectionSnapshot = composerSelectionSnapshot;
+          }
           return;
         }
         const queuedMessage: QueuedMessage = {
@@ -415,6 +456,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           createdAt: new Date().toISOString(),
           isEditing: false,
           attachmentIds: [...(attachmentIds ?? [])],
+          ...(composerSelectionSnapshot ? { composerSelectionSnapshot } : {}),
         };
         state.queuedMessages[contextKey].push(queuedMessage);
       }),
@@ -562,6 +604,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content,
           attachments: current?.attachments ?? [],
+          folders: current?.folders ?? [],
         });
       }),
 
@@ -571,12 +614,38 @@ export const useChatStore = create<ChatState & ChatActions>()(
         writeComposerDraft(state, draftKey, {
           content: current?.content ?? "",
           attachments,
+          folders: current?.folders ?? [],
+        });
+      }),
+
+    setComposerDraftFolders: (draftKey, folders) =>
+      set((state) => {
+        const current = state.composerDraftsByKey[draftKey];
+        writeComposerDraft(state, draftKey, {
+          content: current?.content ?? "",
+          attachments: current?.attachments ?? [],
+          folders,
         });
       }),
 
     clearComposerDraft: (draftKey) =>
       set((state) => {
         delete state.composerDraftsByKey[draftKey];
+      }),
+
+    setDelegateExpanded: (conversationId, delegateKey, expanded) =>
+      set((state) => {
+        if (expanded) {
+          state.delegateExpansionByConversation[conversationId] ??= {};
+          state.delegateExpansionByConversation[conversationId][delegateKey] = true;
+          return;
+        }
+        const conversationExpansion = state.delegateExpansionByConversation[conversationId];
+        if (!conversationExpansion) return;
+        delete conversationExpansion[delegateKey];
+        if (Object.keys(conversationExpansion).length === 0) {
+          delete state.delegateExpansionByConversation[conversationId];
+        }
       }),
 
     processQueue: async (contextKey) => {
@@ -610,6 +679,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
  * Delegates to the chat-context-registry's buildStoreKey for consistent key formatting.
  */
 export function getContextKey(context: ChatContext): string {
+  if (context.contextTypeOverride && context.contextIdOverride) {
+    return buildStoreKey(context.contextTypeOverride, context.contextIdOverride);
+  }
   if (context.view === "ideation" && context.ideationSessionId) {
     return buildStoreKey("ideation", context.ideationSessionId);
   }

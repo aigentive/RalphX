@@ -31,13 +31,13 @@ use crate::domain::repositories::{
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryArchiveRepository,
     MemoryEntryRepository, MemoryEventRepository, OrphanWorktreeCleanupMarkerRepository,
     PlanBranchRepository, ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskOutcomeRepository,
-    TaskRepository, TaskStepRepository,
+    TaskDependencyRepository, TaskOutcomeRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::error::AppError;
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +150,21 @@ where
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
     let previous_session_cutoff = startup_previous_session_cutoff();
 
+    let phase_started_at = startup_phase_started("legacy_claude_mcp_reconciliation");
+    if deps
+        .app_state
+        .mcp_policy_service()
+        .reconcile_legacy_claude_registration_best_effort()
+        .await
+        .is_err()
+    {
+        warn!(
+            failure_code = "legacy_mcp_reconciliation_failed",
+            "Legacy Claude MCP reconciliation did not complete; launch preflight remains authoritative"
+        );
+    }
+    startup_phase_completed("legacy_claude_mcp_reconciliation", phase_started_at);
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,
@@ -221,6 +236,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
+    let phase_started_at = startup_phase_started("deferred_plan_approval_reconciliation");
+    if let Err(error) = crate::application::plan_approval_notification_service::reconcile_deferred_plan_approvals_on_startup(&app_state).await {
+        tracing::warn!(error = %error, "Deferred plan approval reconciliation did not complete");
+    }
+    startup_phase_completed("deferred_plan_approval_reconciliation", phase_started_at);
+
+    // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
+    // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
     match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
         Arc::clone(&app_state.branch_update_repo),
@@ -253,6 +276,21 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
     startup_phase_completed("git_mutation_authority_recovery", phase_started_at);
+
+    let tasks_settings = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
+        app_state
+            .build_tasks_feature_toggle_service(
+                Arc::clone(&execution_state),
+                Some(app_handle.clone()),
+            )
+            .set_tasks_enabled(false)
+            .await?;
+    }
 
     let phase_started_at = startup_phase_started("branch_update_run_binding_recovery");
     match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(
@@ -382,6 +420,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 Arc::clone(&agent_conversation_workspace_repo),
                 Arc::clone(&conversation_repo),
                 Arc::clone(&agent_provider_settings_repo),
+                Arc::new(app_state.manual_role_default_service()),
                 agent_clients.clone(),
             );
         crate::application::pr_startup_recovery::recover_missing_draft_prs(
@@ -491,6 +530,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     tracing::info!("Scheduling terminal agent workspace local cleanup...");
     {
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let cleanup_plan_branch_repo = Arc::clone(&plan_branch_repo);
         let project_repo = Arc::clone(&project_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -499,6 +539,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
                 crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                     agent_conversation_workspace_repo,
+                    cleanup_plan_branch_repo,
                     project_repo,
                     github_service,
                     blocked_git_project_ids,
@@ -537,22 +578,19 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
-                crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
-                    project_repo,
-                    agent_conversation_workspace_repo,
-                    orphan_worktree_cleanup_marker_repo,
-                    blocked_git_project_ids,
-                    running_agent_registry,
-                )
-                .await;
-            })
+            crate::application::orphan_worktree_cleanup::run_periodic_orphan_agent_worktree_cleanup(
+                project_repo,
+                agent_conversation_workspace_repo,
+                orphan_worktree_cleanup_marker_repo,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
             .await;
         });
     }
 
     let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
@@ -560,6 +598,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&agent_run_repo),
         Arc::clone(&task_outcome_repo),
         Arc::clone(&recovery_chat_service),
+        Some(app_state.notification_service()),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
@@ -583,6 +622,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                plan_branch_repo: Arc::clone(&plan_branch_repo),
                 task_outcome_repo: Arc::clone(&task_outcome_repo),
                 app_handle: Some(app_handle.clone()),
             };
@@ -628,7 +668,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     );
 
     let phase_started_at = startup_phase_started("startup_job_runner");
-    let startup_ideation_recovery_claims = runner.run().await;
+    let _startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
 
     let phase_started_at = startup_phase_started("branch_update_post_process_recovery");
@@ -725,6 +765,31 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
     startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
+
+    let phase_started_at =
+        startup_phase_started("workspace_review_auto_merge_guard_reconciliation");
+    match crate::application::agent_workspace_review_auto_merge::
+        reconcile_workspace_review_auto_merge_guards(&app_state)
+        .await
+    {
+        Ok(count) if count > 0 => {
+            info!(
+                count,
+                "Startup reconciled workspace Review auto-merge guards"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "Startup workspace Review auto-merge guard reconciliation failed closed"
+            );
+        }
+    }
+    startup_phase_completed(
+        "workspace_review_auto_merge_guard_reconciliation",
+        phase_started_at,
+    );
 
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
@@ -886,61 +951,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             app_handle.clone(),
         );
         startup_phase_completed("automation_scheduler_spawn", phase_started_at);
-    }
-
-    if mode == StartupPipelineMode::Full {
-        use crate::application::harness_runtime_registry::default_verification_reconciliation_config;
-        use crate::application::reconciliation::recovery_queue::{
-            create_recovery_queue, RecoveryQueueConfig,
-        };
-        use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationService;
-
-        let recovery_config = RecoveryQueueConfig::default();
-        let recovery_queue_chat_deps = recovery_chat_service_deps.clone();
-        let phase_started_at = startup_phase_started("verification_recovery_chat_service_build");
-        let recovery_chat_service = build_startup_recovery_chat_service(
-            app_handle.clone(),
-            Arc::clone(&execution_state),
-            recovery_queue_chat_deps,
-        );
-        startup_phase_completed("verification_recovery_chat_service_build", phase_started_at);
-        let phase_started_at = startup_phase_started("verification_recovery_queue_build");
-        let (recovery_queue, recovery_processor) = create_recovery_queue(
-            Arc::clone(&running_agent_registry),
-            Arc::clone(&interactive_process_registry),
-            Arc::clone(&ideation_session_repo),
-            recovery_chat_service,
-            Some(app_handle.clone()),
-            recovery_config,
-        );
-        let recovery_queue = Arc::new(recovery_queue);
-        startup_phase_completed("verification_recovery_queue_build", phase_started_at);
-        let phase_started_at = startup_phase_started("verification_recovery_queue_spawn");
-        startup_background::spawn_recovery_queue_processor(recovery_processor);
-        startup_phase_completed("verification_recovery_queue_spawn", phase_started_at);
-
-        let verification_config = default_verification_reconciliation_config();
-        let svc = Arc::new(
-            VerificationReconciliationService::new(
-                Arc::clone(&ideation_session_repo),
-                verification_config,
-            )
-            .with_app_handle(app_handle.clone())
-            .with_recovery_queue(Arc::clone(&recovery_queue))
-            .with_running_agent_registry(Arc::clone(&running_agent_registry)),
-        );
-        let startup_ideation_recovery_claims = startup_ideation_recovery_claims.clone();
-        spawn_startup_background_phase(
-            "verification_startup_scan",
-            STARTUP_BACKGROUND_DB_GRACE,
-            async move {
-                startup_background::startup_scan_verification_reconciliation(
-                    svc,
-                    &startup_ideation_recovery_claims,
-                )
-                .await;
-            },
-        );
     }
 
     if active_git_startup_blocked {

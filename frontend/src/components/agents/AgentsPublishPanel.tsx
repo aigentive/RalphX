@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  ExternalLink,
   GitPullRequestArrow,
   GitBranch,
   Info,
@@ -20,7 +19,6 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 
 import { diffApi } from "@/api/diff";
@@ -75,7 +73,6 @@ import {
 } from "./AgentsPublishWorkspaceDialog";
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
-import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
@@ -91,7 +88,6 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
-  AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
@@ -105,6 +101,7 @@ import {
   markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
+import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -197,6 +194,49 @@ function pipelineStatusFromPublicationEvent(
     return null;
   }
   return event.step === "published" ? "pushed" : event.step;
+}
+
+function workspaceReviewAutoMergeGuardSummary(
+  reviewContext: AgentWorkspaceReviewContext | null | undefined,
+): { label: string; detail: string; status: "active" | "error" | "pending" } | null {
+  const monitor = reviewContext?.monitor;
+  switch (monitor?.autoMergeGuardStatus) {
+    case "pausing":
+      return {
+        label: "Auto-merge pausing",
+        detail: "GitHub auto-merge is being paused before Workspace Review starts.",
+        status: "pending",
+      };
+    case "paused_for_review":
+      return {
+        label: "Auto-merge paused",
+        detail: "GitHub auto-merge is paused while Workspace Review is active.",
+        status: "active",
+      };
+    case "awaiting_publish":
+      return {
+        label: "Auto-merge awaiting publish",
+        detail:
+          "GitHub auto-merge will resume after these reviewed changes are published.",
+        status: "active",
+      };
+    case "restoring":
+      return {
+        label: "Auto-merge restoring",
+        detail: "GitHub auto-merge is being restored after Workspace Review.",
+        status: "pending",
+      };
+    case "restore_failed":
+      return {
+        label: "Auto-merge restore failed",
+        detail:
+          monitor.autoMergeGuardLastError ??
+          "GitHub auto-merge is still paused and restoration will retry.",
+        status: "error",
+      };
+    default:
+      return null;
+  }
 }
 
 export function AgentPublishPanel({
@@ -310,19 +350,13 @@ export function AgentPublishPanel({
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
   const canInspectBaseFreshness =
     canInspectAgentWorkspaceBaseFreshness(workspace);
-  const freshnessQuery = useQuery({
-    queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
-    queryFn: () =>
-      chatApi.getAgentConversationWorkspaceFreshness(conversationId!, {
-        scope: "full",
-      }),
+  const freshnessQuery = useAgentWorkspaceFullFreshness(conversationId, {
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
       canInspectBaseFreshness &&
       !terminalPublicationStatus,
-    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const freshness = freshnessQuery.data;
   const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
@@ -603,19 +637,11 @@ export function AgentPublishPanel({
 
   const branch = workspace.branchName;
   const base = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
-  const prLabel = workspace.publicationPrNumber
-    ? `PR #${workspace.publicationPrNumber}`
-    : workspace.publicationPrUrl
-      ? "Published PR"
-      : "No PR yet";
   const publishTargetPullRequestLabel = workspace.publicationPrNumber
     ? `PR #${workspace.publicationPrNumber}`
     : workspace.publicationPrUrl
       ? "the linked pull request"
       : null;
-  const prUrlLabel = workspace.publicationPrUrl
-    ? formatPullRequestUrlLabel(workspace.publicationPrUrl)
-    : null;
   const baseRetargeted = baseStatus === "retargeted";
   const isBranchUpdateNeeded =
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
@@ -692,6 +718,8 @@ export function AgentPublishPanel({
   const workspaceReviewRequired =
     reviewSettingsQuery.data?.require_workspace_review ?? true;
   const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
+  const autoMergeGuardSummary =
+    workspaceReviewAutoMergeGuardSummary(reviewContext);
   const reviewBlocksPublish =
     workspaceReviewRequired &&
     (reviewGateStatus === "required" ||
@@ -772,6 +800,7 @@ export function AgentPublishPanel({
   const canConfigureAutoPublish = canConfigurePrSupervision;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
+    if (autoMergeGuardSummary) return autoMergeGuardSummary.label;
     if (isAutoPublishSaving) return "Saving Auto Publish";
     if (isPrSupervisionSaving) return "Saving PR supervision";
     if (!hasPublishedPr && autoPublishEnabled) return "Auto Publish armed";
@@ -783,6 +812,18 @@ export function AgentPublishPanel({
     if (prAutofixEnabled || prAutoMergeDesired) return "Monitoring PR";
     return null;
   })();
+  const AutoMergeGuardIcon =
+    autoMergeGuardSummary?.status === "pending" ? Loader2 : AlertTriangle;
+  const autoMergeGuardColor =
+    autoMergeGuardSummary?.status === "error"
+      ? "var(--status-error)"
+      : autoMergeGuardSummary?.status === "pending"
+        ? "var(--accent-primary)"
+        : "var(--status-warning)";
+  const autoMergeGuardBorderColor =
+    autoMergeGuardSummary?.status === "error"
+      ? "var(--status-error-border)"
+      : "var(--status-warning-border)";
   const updatePrSupervisionPreferences = (next: {
     autoFixEnabled: boolean;
     autoMergeDesired: boolean;
@@ -1295,6 +1336,28 @@ export function AgentPublishPanel({
               <span>{prConflictSummary}</span>
             </div>
           )}
+          {shouldShowPublishNotices && autoMergeGuardSummary && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: autoMergeGuardBorderColor,
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-publish-review-auto-merge-guard"
+            >
+              <AutoMergeGuardIcon
+                aria-hidden="true"
+                className={`mt-0.5 h-3.5 w-3.5 shrink-0${
+                  autoMergeGuardSummary.status === "pending" ? " animate-spin" : ""
+                }`}
+                style={{ color: autoMergeGuardColor }}
+              />
+              <span>{autoMergeGuardSummary.detail}</span>
+            </div>
+          )}
           {shouldShowPublishNotices && isBranchUpdateNeeded && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
@@ -1356,120 +1419,63 @@ export function AgentPublishPanel({
             </div>
           )}
         </section>
-        <section
-          className="rounded-lg border px-3 py-2"
-          style={{
-            backgroundColor: "var(--bg-surface)",
-            borderColor: "var(--border-subtle)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-          }}
-          data-testid="agents-publish-metadata-strip"
-        >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-              <GitBranch className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-              <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{branch}</span>
-              <span style={{ color: "var(--text-muted)" }} aria-hidden="true">&rarr;</span>
-              <span className="truncate" style={{ color: "var(--text-muted)" }}>{base}</span>
-            </span>
-
-            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
-
-            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-              <GitPullRequestArrow className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-              {workspace.publicationPrUrl ? (
-                <button
-                  type="button"
-                  className="inline-flex min-w-0 items-center gap-1 truncate bg-transparent p-0 text-left font-medium transition-colors hover:text-[var(--accent-primary)]"
-                  style={{ color: "var(--text-primary)" }}
-                  onClick={() => void openUrl(workspace.publicationPrUrl!)}
-                  data-testid="agents-open-pr-url"
-                  aria-label={`Open ${prUrlLabel ?? "pull request"}`}
-                >
-                  {prLabel}
-                  <ExternalLink className="h-2.5 w-2.5 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-                </button>
-              ) : (
-                <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{prLabel}</span>
-              )}
-            </span>
-
-            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
-
-            <span
-              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
-              data-testid="agents-publish-status-pill"
-              style={{
-                borderColor: "var(--overlay-weak)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {workspace.mode === "edit"
-                ? "Edit"
-                : isPipelineOwnedWorkspace
-                  ? "Plan"
-                  : workspace.mode}
-            </span>
-
-            <span
-              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
-              data-testid="agents-publish-push-status-pill"
-              style={{
-                borderColor: "var(--overlay-weak)",
-                color: "var(--text-muted)",
-              }}
-            >
-              {terminalPublicationLabel ??
-                (isRepairPending
-                  ? "Repair pending"
-                  : hasPrConflict
-                    ? "Conflicting"
-                    : isBranchUpdateNeeded
-                      ? "Behind base"
-                      : workspace.publicationPushStatus ?? workspace.status)}
-            </span>
-          </div>
-
-          {prAnnotationSummary && (
-            <div
-              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
-              data-testid="agents-pr-annotations-summary"
-              style={{
-                backgroundColor: "var(--bg-subtle)",
-                borderColor:
-                  prAnnotations.length > 0
-                    ? "var(--status-warning-border)"
-                    : "var(--border-subtle)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {prAnnotationSummary}
-            </div>
-          )}
-          {workspaceReviewHunkAnnotationSummary && (
-            <div
-              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
-              data-testid="agents-workspace-review-hunk-annotations-summary"
-              style={{
-                backgroundColor: "var(--bg-subtle)",
-                borderColor: "var(--status-info-border)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {workspaceReviewHunkAnnotationSummary}
-            </div>
-          )}
-          {shouldShowPublishPipeline && (
-            <PublishPipelineSteps
-              autoMergeCurrent={prAutoMergeCurrent}
-              autoMergeDesired={prAutoMergeDesired}
-              prSupervisionStatus={prSupervisionStatus}
-              status={pipelineStatus}
-              isPublishing={effectivePublishing}
-            />
-          )}
-        </section>
+        {(prAnnotationSummary ||
+          workspaceReviewHunkAnnotationSummary ||
+          shouldShowPublishPipeline) && (
+          <section
+            className="space-y-2 rounded-lg px-3 py-2"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+            data-testid="agents-publish-summaries"
+          >
+            {prAnnotationSummary && (
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+                data-testid="agents-pr-annotations-summary"
+                style={{
+                  backgroundColor: "var(--bg-subtle)",
+                  borderColor:
+                    prAnnotations.length > 0
+                      ? "var(--status-warning-border)"
+                      : "var(--border-subtle)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {prAnnotationSummary}
+              </div>
+            )}
+            {workspaceReviewHunkAnnotationSummary && (
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+                data-testid="agents-workspace-review-hunk-annotations-summary"
+                style={{
+                  backgroundColor: "var(--bg-subtle)",
+                  borderColor: "var(--status-info-border)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {workspaceReviewHunkAnnotationSummary}
+              </div>
+            )}
+            {shouldShowPublishPipeline && (
+              <PublishPipelineSteps
+                autoMergeCurrent={prAutoMergeCurrent}
+                autoMergeDesired={prAutoMergeDesired}
+                prSupervisionStatus={prSupervisionStatus}
+                status={pipelineStatus}
+                isPublishing={effectivePublishing}
+              />
+            )}
+          </section>
+        )}
 
         <GitAuthRepairPanel
           projectId={workspace.projectId}

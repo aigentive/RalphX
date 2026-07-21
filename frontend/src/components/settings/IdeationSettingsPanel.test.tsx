@@ -16,6 +16,8 @@ vi.mock("@/api/ideation", () => ({
     settings: {
       get: vi.fn(),
       update: vi.fn(),
+      getDisableImpact: vi.fn(),
+      setTasksEnabled: vi.fn(),
     },
   },
 }));
@@ -27,12 +29,15 @@ vi.mock("@/stores/uiStore", () => ({
 }));
 
 const defaultSettings: IdeationSettings = {
+  tasksEnabled: false,
+  autoVerifyDraftPlans: true,
+  tasksFeatureState: "disabled",
+  autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
-  requireVerificationForProposals: false,
   externalOverrides: {
+    autoVerifyPlans: null,
     requireVerificationForAccept: null,
-    requireVerificationForProposals: null,
     requireAcceptForFinalize: null,
   },
 };
@@ -54,6 +59,15 @@ describe("IdeationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(ideationApi.settings.get).mockResolvedValue(defaultSettings);
+    vi.mocked(ideationApi.settings.getDisableImpact).mockResolvedValue({
+      activeStandaloneTasks: 2,
+      activeAttachedAgentWorkspaces: 1,
+      pausedOrBlockedTasks: 3,
+      activeBranchUpdateOperations: 1,
+      affectedTaskIds: ["task-1", "task-2"],
+      affectedConversationIds: ["conversation-1"],
+      affectedProjectIds: ["project-1"],
+    });
   });
 
   it("renders section with ShieldCheck icon and Planning & Verification title", async () => {
@@ -63,13 +77,59 @@ describe("IdeationSettingsPanel", () => {
     expect(screen.getByText("Configure acceptance and verification gates")).toBeInTheDocument();
   });
 
-  it("renders the three gate checkboxes", async () => {
+  it("renders independent completion and acceptance verification controls", async () => {
     render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId("require-accept-for-finalize")).toBeInTheDocument();
       expect(screen.getByTestId("require-verification-for-accept")).toBeInTheDocument();
-      expect(screen.getByTestId("require-verification-for-proposals")).toBeInTheDocument();
+      expect(screen.getByTestId("auto-verify-plans")).toBeInTheDocument();
+      expect(screen.getByTestId("auto-verify-draft-plans")).toBeChecked();
+      expect(screen.getByText("Verify draft plans automatically")).toBeInTheDocument();
+      expect(screen.getByText("Queue missing verification on acceptance")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("persists completion-triggered verification without changing the acceptance fallback", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.update).mockResolvedValue({
+      ...defaultSettings,
+      autoVerifyDraftPlans: false,
+    });
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    await user.click(await screen.findByTestId("auto-verify-draft-plans"));
+
+    await waitFor(() => {
+      expect(ideationApi.settings.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoVerifyDraftPlans: false,
+          autoVerifyPlans: false,
+        }),
+      );
+    });
+  });
+
+  it("renders Tasks disabled by default and persists an enable request", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.setTasksEnabled).mockResolvedValue({
+      ...defaultSettings,
+      tasksEnabled: true,
+      tasksFeatureState: "enabled",
+    });
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    const checkbox = await screen.findByTestId("enable-tasks");
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+
+    await waitFor(() => {
+      expect(ideationApi.settings.setTasksEnabled).toHaveBeenCalledWith(true);
     });
   });
 
@@ -79,6 +139,31 @@ describe("IdeationSettingsPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("auto-accept-plans")).toBeInTheDocument();
       expect(screen.getByText("Skip finalization confirmation")).toBeInTheDocument();
+    });
+  });
+
+  it("preflights disable impact before pausing task-managed work", async () => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.get).mockResolvedValue({
+      ...defaultSettings,
+      tasksEnabled: true,
+      tasksFeatureState: "enabled",
+    });
+    vi.mocked(ideationApi.settings.setTasksEnabled).mockResolvedValue(defaultSettings);
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    await user.click(await screen.findByTestId("enable-tasks"));
+
+    expect(await screen.findByText(/2 active standalone tasks/)).toBeInTheDocument();
+    expect(screen.getByText(/1 attached Agent workspace/)).toBeInTheDocument();
+    expect(ideationApi.settings.setTasksEnabled).not.toHaveBeenCalled();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Pause task-managed work and turn Tasks off",
+      }),
+    );
+    await waitFor(() => {
+      expect(ideationApi.settings.setTasksEnabled).toHaveBeenCalledWith(false);
     });
   });
 
@@ -146,7 +231,7 @@ describe("IdeationSettingsPanel", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("ext-override-verification-for-accept")).toBeInTheDocument();
-      expect(screen.getByTestId("ext-override-verification-for-proposals")).toBeInTheDocument();
+      expect(screen.getByTestId("ext-override-auto-verify-plans")).toBeInTheDocument();
       expect(screen.getByTestId("ext-override-accept-for-finalize")).toBeInTheDocument();
     });
   });

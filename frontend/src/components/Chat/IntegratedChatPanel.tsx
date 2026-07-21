@@ -31,6 +31,7 @@ import {
   selectQueuedMessages,
   selectAgentActivityLabel,
   selectAgentStatus,
+  selectActiveAgentRunId,
   selectIsAgentRunning,
   selectIsSending,
   selectToolCallStartTimes,
@@ -46,12 +47,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatApi,
   type ComposerArtifactReference,
+  type ComposerExcerptReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
+  type CapabilityIntent,
   type SendAgentMessageResult,
   type TeamIntent,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
+import type { MessageFolderReference } from "./MessageReferences.parse";
 import { api } from "@/lib/tauri";
 import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
@@ -124,8 +128,6 @@ import { useTeamEvents } from "@/hooks/useTeamEvents";
 import { useTeamActions } from "@/hooks/useTeamActions";
 import { TeamContextBar } from "./TeamContextBar";
 import { TeamPlanApproval } from "./TeamPlanApproval";
-import { StreamingToolIndicator } from "./StreamingToolIndicator";
-import { isDiffToolCall } from "./DiffToolCallView.utils";
 import { TeamFilterTabs, type TeamFilterValue } from "./TeamFilterTabs";
 import { useTeamHistory } from "@/hooks/useTeamHistory";
 import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
@@ -152,9 +154,12 @@ type PersonaRetryAttempt = {
   message: string;
   options:
     | {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
+        capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       }
     | undefined;
@@ -188,7 +193,10 @@ function automationProposalApplyOptionIndex(
 
 interface IntegratedChatPanelProps {
   /** Project ID for context */
-  projectId: string;
+  projectId: string | null;
+  /** Explicit non-project conversation context owned by the host. */
+  contextTypeOverride?: ContextType | undefined;
+  contextIdOverride?: string | undefined;
   /** Optional ideation session ID - when set, uses ideation context */
   ideationSessionId?: string;
   /** Custom empty state component */
@@ -252,6 +260,8 @@ interface IntegratedChatPanelProps {
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+  /** Opens a project-locked Persona Builder from the current project conversation. */
+  onBuildPersona?: () => void;
   renderComposer?: (
     props: IntegratedChatComposerRenderProps,
   ) => React.ReactNode;
@@ -271,9 +281,12 @@ export interface IntegratedChatComposerRenderProps {
   onSend: (
     message: string,
     options?: {
+      folderReferences?: MessageFolderReference[];
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
       artifactReferences?: ComposerArtifactReference[];
+      excerptReferences?: ComposerExcerptReference[];
+      capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
     },
   ) => Promise<void>;
@@ -303,6 +316,8 @@ export interface IntegratedChatComposerRenderProps {
 
 export function IntegratedChatPanel({
   projectId,
+  contextTypeOverride,
+  contextIdOverride,
   ideationSessionId,
   emptyState,
   showHelperTextAlways = false,
@@ -326,6 +341,7 @@ export function IntegratedChatPanel({
   agentProcessContextIdOverride,
   sendOptions,
   onChildSessionNavigate,
+  onBuildPersona,
   renderComposer,
   onUserMessageSent,
   onQuestionAnswered,
@@ -368,8 +384,8 @@ export function IntegratedChatPanel({
     : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data
-  const { data: tasks = EMPTY_TASKS } = useTasks(projectId, {
-    enabled: Boolean(selectedTaskId),
+  const { data: tasks = EMPTY_TASKS } = useTasks(projectId ?? "", {
+    enabled: Boolean(projectId && selectedTaskId),
   });
 
   // Read from Zustand store (event-updated, sync) — same pattern as TaskDetailOverlay
@@ -472,6 +488,8 @@ export function IntegratedChatPanel({
     // overrideAgentRunId is available but we use taskHistoryState.timestamp for scroll positioning
   } = useChatPanelContext({
     projectId,
+    contextTypeOverride,
+    contextIdOverride,
     ideationSessionId,
     selectedTaskId: selectedTaskId ?? undefined,
     isExecutionMode,
@@ -730,6 +748,11 @@ export function IntegratedChatPanel({
     [storeContextKey],
   );
   const agentStatus = useChatStore(agentStatusSelector);
+  const activeAgentRunIdSelector = useMemo(
+    () => selectActiveAgentRunId(storeContextKey),
+    [storeContextKey],
+  );
+  const activeAgentRunId = useChatStore(activeAgentRunIdSelector);
   const agentActivityLabelSelector = useMemo(
     () => selectAgentActivityLabel(storeContextKey),
     [storeContextKey],
@@ -1238,9 +1261,12 @@ export function IntegratedChatPanel({
     async (
       message: string,
       options?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
+        capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       },
     ) => {
@@ -1327,6 +1353,9 @@ export function IntegratedChatPanel({
 
   useChatEvents({
     activeConversationId: effectiveConversationId,
+    activeAgentRunId:
+      activeAgentRunId ??
+      (agentRunQuery.data?.status === "running" ? agentRunQuery.data.id : null),
     contextId: currentContextId,
     contextType: currentContextType,
     streamingToolCalls,
@@ -1553,6 +1582,7 @@ export function IntegratedChatPanel({
         conversationId={effectiveConversationId}
         personaId={activeConversationMeta?.personaId}
         isAgentRunning={isAgentRunning}
+        {...(onBuildPersona ? { onBuildPersona } : {})}
         lastRunPersonaId={
           personaAttributedRun?.personaId ??
           activeConversationMeta?.lastRunPersonaId ??
@@ -1709,7 +1739,7 @@ export function IntegratedChatPanel({
                               ? "task"
                               : "project"
                   }
-                  contextId={ideationSessionId || selectedTaskId || projectId}
+                  contextId={currentContextId}
                   conversations={conversations.data ?? []}
                   activeConversationId={activeConversationId}
                   onSelectConversation={handleSelectConversation}
@@ -1881,38 +1911,6 @@ export function IntegratedChatPanel({
               data-testid="chat-below-transcript-chrome"
               className="shrink-0"
             >
-              {/* StreamingToolIndicator — outside scroll container so it's always visible.
-              Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
-              and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
-              {(isSending || agentStatus === "generating") &&
-                (() => {
-                  // IDs of tool calls already rendered inline from streamingContentBlocks
-                  const inlineToolIds = new Set(
-                    streamingContentBlocks
-                      ?.filter((b) => b.type === "tool_use")
-                      .map((b) =>
-                        b.type === "tool_use" ? b.toolCall.id : "",
-                      ) ?? [],
-                  );
-                  const otherToolCalls = streamingToolCalls.filter(
-                    (tc) =>
-                      !inlineToolIds.has(tc.id) &&
-                      tc.name.toLowerCase() !== "task" &&
-                      (!isDiffToolCall(tc.name) || tc.arguments == null),
-                  );
-                  return otherToolCalls.length > 0 ? (
-                    <div className="shrink-0 px-3 pb-2">
-                      <div className={conversationContentShellClassName}>
-                        <StreamingToolIndicator
-                          toolCalls={otherToolCalls}
-                          isActive={true}
-                          toolCallStartTimes={toolCallStartTimes}
-                        />
-                      </div>
-                    </div>
-                  ) : null;
-                })()}
-
               {/* Team Plan Approval (shown when lead requests plan approval) */}
               {showTeamUi && pendingPlan && (
                 <div className="px-3">

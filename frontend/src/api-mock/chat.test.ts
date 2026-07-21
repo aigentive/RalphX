@@ -231,7 +231,8 @@ describe("mockArchiveConversation", () => {
       closePullRequest: false,
     });
 
-    expect(archived.archivedAt).not.toBeNull();
+    expect(archived.conversation.archivedAt).not.toBeNull();
+    expect(archived.cleanup.localCleanup).toBe("cleaned");
   });
 });
 
@@ -331,6 +332,47 @@ describe("mock Team coordination mode", () => {
     });
   });
 
+  it.each([
+    {
+      providerHarness: "claude",
+      modelId: "sonnet",
+      logicalEffort: "medium",
+    },
+    {
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+    },
+  ] as const)(
+    "persists the selected $providerHarness runtime on continuation",
+    async ({ providerHarness, modelId, logicalEffort }) => {
+      const conversationId = `runtime-send-${providerHarness}`;
+      seedMockConversation(conversation(conversationId, "Runtime send"), []);
+
+      await mockChatApi.sendAgentMessage(
+        "project",
+        "project-1",
+        "Continue",
+        undefined,
+        undefined,
+        {
+          conversationId,
+          providerHarness,
+          modelId,
+          logicalEffort,
+        },
+      );
+
+      await expect(mockGetConversationSummary(conversationId)).resolves.toMatchObject({
+        providerHarness,
+        logicalModel: modelId,
+        effectiveModelId: modelId,
+        logicalEffort,
+        effectiveEffort: logicalEffort,
+      });
+    },
+  );
+
   it("updates and reports missing Team coordination conversations", async () => {
     seedMockConversation(conversation("team-toggle", "Team toggle"), []);
 
@@ -348,6 +390,52 @@ describe("mock Team coordination mode", () => {
       })
     ).rejects.toThrow("No mock conversation seeded for missing-team-toggle");
   });
+});
+
+describe("mockStartAgentConversation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it.each([
+    {
+      providerHarness: "claude",
+      modelId: "sonnet",
+      logicalEffort: "medium",
+    },
+    {
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+    },
+  ] as const)(
+    "persists the selected $providerHarness runtime on a standalone conversation",
+    async ({ providerHarness, modelId, logicalEffort }) => {
+      const result = await mockChatApi.startAgentConversation({
+        content: "Explore privately",
+        mode: "chat",
+        providerHarness,
+        modelId,
+        logicalEffort,
+      });
+
+      expect(result.conversation).toMatchObject({
+        contextType: "standalone",
+        providerHarness,
+        logicalModel: modelId,
+        effectiveModelId: modelId,
+        logicalEffort,
+        effectiveEffort: logicalEffort,
+      });
+      await expect(
+        mockGetConversationSummary(result.conversation.id),
+      ).resolves.toMatchObject({
+        providerHarness,
+        logicalModel: modelId,
+        logicalEffort,
+      });
+    },
+  );
 });
 
 describe("mockGetConversationTimelinePage", () => {

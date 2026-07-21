@@ -18,10 +18,11 @@ use crate::domain::entities::{
     NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranchStatus, Project,
     ProjectId,
 };
+use crate::domain::services::github_service::GithubConnectionState;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::infrastructure::git_auth::{
-    apply_git_subprocess_env, check_gh_auth_status, git_remote_url_kind_label, git_subprocess_env,
-    inspect_origin_auth_config, suggested_github_ssh_origin,
+    apply_git_subprocess_env, check_gh_auth_token_available, git_remote_url_kind_label,
+    inspect_origin_auth_config, probe_github_connection_status, suggested_github_ssh_origin,
 };
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -30,9 +31,9 @@ pub(crate) const GH_AUTH_LOGIN_PROMPT_EVENT: &str = "gh-auth:login_prompt";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GhAuthLoginPrompt {
-    code: Option<String>,
-    url: Option<String>,
+pub(crate) struct GhAuthLoginPrompt {
+    pub(crate) code: Option<String>,
+    pub(crate) url: Option<String>,
 }
 
 /// Deserializes a JSON field as `None` when absent, `Some(None)` when `null`, and `Some(Some(v))` when present.
@@ -452,7 +453,7 @@ pub async fn delete_project(id: String, state: State<'_, AppState>) -> Result<()
     let project_id = ProjectId::from_string(id);
     state
         .project_repo
-        .delete(&project_id)
+        .delete_with_dependent_sweep(&project_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -680,7 +681,7 @@ pub async fn spawn_project_analyzer(
     app_handle: Option<tauri::AppHandle>,
 ) {
     use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
-    use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+    use crate::domain::agents::{AgentConfig, AgentRole, RoutingRole, DEFAULT_AGENT_HARNESS};
     use crate::infrastructure::agents::claude::agent_names;
 
     let prompt = format!(
@@ -712,8 +713,16 @@ pub async fn spawn_project_analyzer(
         }
     };
 
+    let working_directory = PathBuf::from(working_directory);
     let runtime = match state
-        .resolve_project_analyzer_runtime_for_project(Some(project_id))
+        .resolve_manual_role_background_agent_runtime(
+            Some(project_id),
+            Some(working_directory.as_path()),
+            RoutingRole::UtilityProjectAnalyzer,
+            agent_names::AGENT_PROJECT_ANALYZER,
+            "project analyzer",
+            None,
+        )
         .await
     {
         Ok(runtime) => runtime,
@@ -727,7 +736,6 @@ pub async fn spawn_project_analyzer(
             return;
         }
     };
-    let working_directory = PathBuf::from(working_directory);
     let bootstrap = resolve_harness_agent_bootstrap(
         runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
         agent_names::AGENT_PROJECT_ANALYZER,
@@ -755,6 +763,7 @@ pub async fn spawn_project_analyzer(
         max_tokens: None,
         timeout_secs: Some(120),
         env,
+        mcp_launch_policy: Default::default(),
     };
 
     tokio::spawn(async move {
@@ -879,7 +888,10 @@ async fn get_project_working_directory(
     Ok(working_dir)
 }
 
-async fn run_git_config_command(working_dir: &Path, args: &[&str]) -> Result<(), String> {
+pub(crate) async fn run_git_config_command(
+    working_dir: &Path,
+    args: &[&str],
+) -> Result<(), String> {
     let working_dir = validate_absolute_non_root_path(working_dir, "project working directory")
         .map_err(|e| e.to_string())?;
     let mut command = tokio::process::Command::new(resolve_git_cli_path());
@@ -915,16 +927,17 @@ async fn run_gh_command(args: &[&str]) -> Result<(), String> {
 }
 
 async fn run_gh_command_with_timeout(args: &[&str], deadline: Duration) -> Result<(), String> {
-    let child =
-        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
-            .args(args)
-            .envs(git_subprocess_env())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+    let mut command =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn gh: {}", e))?;
 
     let output = tokio::time::timeout(deadline, child.wait_with_output())
         .await
@@ -943,7 +956,7 @@ async fn run_gh_command_with_timeout(args: &[&str], deadline: Duration) -> Resul
     })
 }
 
-fn gh_web_login_args() -> [&'static str; 8] {
+pub(crate) fn gh_web_login_args() -> [&'static str; 8] {
     [
         "auth",
         "login",
@@ -961,16 +974,17 @@ async fn run_gh_web_login_command(
     deadline: Duration,
     notification_service: Arc<NotificationService>,
 ) -> Result<(), String> {
-    let mut child =
-        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
-            .args(gh_web_login_args())
-            .envs(git_subprocess_env())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+    let mut command =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let mut child = command
+        .args(gh_web_login_args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn gh: {}", e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1054,7 +1068,7 @@ where
     lines
 }
 
-fn parse_gh_auth_login_prompt(line: &str) -> Option<GhAuthLoginPrompt> {
+pub(crate) fn parse_gh_auth_login_prompt(line: &str) -> Option<GhAuthLoginPrompt> {
     let code = line
         .split_once("one-time code:")
         .and_then(|(_, value)| value.split_whitespace().next())
@@ -1149,11 +1163,23 @@ pub async fn switch_git_origin_to_ssh(
 /// Configure Git to use the already-authenticated GitHub CLI for HTTPS credentials.
 #[tauri::command]
 pub async fn setup_gh_git_auth() -> Result<bool, String> {
-    if !check_gh_auth_status().await {
-        return Err(
-            "GitHub CLI is not signed in for RalphX. Use the GitHub sign-in action first."
-                .to_string(),
-        );
+    let status = probe_github_connection_status().await;
+    match status.state {
+        GithubConnectionState::Authenticated | GithubConnectionState::ProviderUnavailable => {}
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => {
+            return Err(
+                "GitHub CLI credentials need repair. Use the GitHub sign-in action first."
+                    .to_string(),
+            );
+        }
+        GithubConnectionState::CliUnavailable => {
+            return Err("GitHub CLI is not available to configure Git credentials.".to_string());
+        }
+        GithubConnectionState::ProbeFailed => {
+            return Err(
+                "Could not verify GitHub CLI credentials. Recheck access first.".to_string(),
+            );
+        }
     }
     run_gh_command(&["auth", "setup-git"]).await?;
     Ok(true)
@@ -1165,19 +1191,48 @@ pub async fn login_gh_with_browser(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
-    if check_gh_auth_status().await {
-        return Ok(true);
+    let initial_status = probe_github_connection_status().await;
+    match browser_login_required(initial_status.state)? {
+        false => return Ok(true),
+        true => {}
     }
 
     run_gh_web_login_command(app, Duration::from_secs(300), state.notification_service()).await?;
 
-    if check_gh_auth_status().await {
-        Ok(true)
-    } else {
-        Err(
-            "GitHub CLI sign-in completed, but RalphX still cannot see authenticated gh credentials."
+    let final_status = probe_github_connection_status().await;
+    match final_status.state {
+        GithubConnectionState::Authenticated | GithubConnectionState::ProviderUnavailable => {
+            Ok(true)
+        }
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => Err(
+            "GitHub CLI sign-in completed, but RalphX still cannot see usable gh credentials."
                 .to_string(),
-        )
+        ),
+        GithubConnectionState::CliUnavailable => {
+            Err("GitHub CLI became unavailable after sign-in.".to_string())
+        }
+        GithubConnectionState::ProbeFailed => Err(
+            "GitHub CLI sign-in completed, but RalphX could not verify the saved credential."
+                .to_string(),
+        ),
+    }
+}
+
+#[doc(hidden)]
+pub(crate) fn browser_login_required(state: GithubConnectionState) -> Result<bool, String> {
+    match state {
+        GithubConnectionState::Authenticated | GithubConnectionState::ProviderUnavailable => {
+            Ok(false)
+        }
+        GithubConnectionState::Unauthenticated | GithubConnectionState::CredentialRejected => {
+            Ok(true)
+        }
+        GithubConnectionState::CliUnavailable => Err(
+            "GitHub CLI is not available. Install or configure gh before signing in.".to_string(),
+        ),
+        GithubConnectionState::ProbeFailed => {
+            Err("Could not verify GitHub access. Recheck before starting sign-in.".to_string())
+        }
     }
 }
 
@@ -1209,14 +1264,14 @@ pub async fn resume_deferred_git_startup(
 
 /// Check whether the `gh` CLI is authenticated.
 ///
-/// Runs `gh auth status` and returns `true` if exit code is 0 (authenticated).
-/// Returns `false` if `gh` is not installed, not authenticated, or times out.
+/// Returns whether a local GitHub CLI credential is present without requiring a
+/// live GitHub response.
 ///
 /// # Errors
 /// This command never returns `Err` — failures become `false`.
 #[tauri::command]
 pub async fn check_gh_auth() -> Result<bool, String> {
-    Ok(check_gh_auth_status().await)
+    Ok(check_gh_auth_token_available().await)
 }
 
 /// Update the `github_pr_enabled` setting for a project.
@@ -1471,365 +1526,4 @@ fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
     }
 
     svc.into_arc()
-}
-
-#[cfg(test)]
-mod git_auth_command_tests {
-    use super::*;
-    use crate::domain::services::{GithubServiceTrait, PrSearchResult};
-    use crate::infrastructure::git_auth::GitRemoteAuthConfig;
-    use crate::tests::mock_github_service::MockGithubService;
-    use tauri::test::{mock_builder, mock_context, noop_assets};
-    use tauri::Manager;
-
-    #[tokio::test]
-    async fn search_github_pull_requests_trims_query_clamps_limit_and_maps_results() {
-        let github = Arc::new(MockGithubService::new());
-        github.will_return_pull_request_search(vec![PrSearchResult {
-            number: 42,
-            title: "Add PR picker".to_string(),
-            url: "https://github.com/owner/repo/pull/42".to_string(),
-            head_ref_name: "feature/pr-picker".to_string(),
-            head_ref_oid: Some("abc123".to_string()),
-            base_ref_name: "main".to_string(),
-            is_draft: true,
-            updated_at: Some("2026-05-21T10:00:00Z".to_string()),
-            author_login: Some("dev".to_string()),
-            assignee_logins: vec!["ops".to_string()],
-            review_decision: Some("APPROVED".to_string()),
-            latest_review_author_logins: vec!["reviewer".to_string()],
-            review_request_logins: Vec::new(),
-            is_cross_repository: false,
-        }]);
-
-        let mut state = AppState::new_test();
-        state.github_service = Some(github.clone() as Arc<dyn GithubServiceTrait>);
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let mut project = Project::new(
-            "PR Search".to_string(),
-            temp.path().to_string_lossy().to_string(),
-        );
-        project.id = ProjectId::from_string("project-pr-search".to_string());
-        state.project_repo.create(project).await.unwrap();
-        let app = mock_builder()
-            .manage(state)
-            .build(mock_context(noop_assets()))
-            .expect("mock app should build");
-
-        let results = search_github_pull_requests(
-            SearchGithubPullRequestsInput {
-                project_id: "project-pr-search".to_string(),
-                query: Some("  picker  ".to_string()),
-                limit: Some(99),
-            },
-            app.state::<AppState>(),
-        )
-        .await
-        .expect("search should succeed");
-
-        let state = github.state();
-        assert_eq!(state.search_pull_requests_calls, 1);
-        assert_eq!(
-            state.last_search_pull_requests_args,
-            Some((Some("picker".to_string()), 50))
-        );
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].number, 42);
-        assert_eq!(results[0].head_ref_name, "feature/pr-picker");
-        assert_eq!(results[0].head_ref_oid.as_deref(), Some("abc123"));
-        assert_eq!(results[0].base_ref_name, "main");
-        assert!(results[0].is_draft);
-        assert_eq!(results[0].author_login.as_deref(), Some("dev"));
-        assert_eq!(results[0].assignee_logins, vec!["ops"]);
-        assert_eq!(results[0].review_decision.as_deref(), Some("APPROVED"));
-        assert_eq!(results[0].latest_review_author_logins, vec!["reviewer"]);
-        assert!(results[0].review_request_logins.is_empty());
-        assert!(!results[0].is_cross_repository);
-    }
-
-    #[test]
-    fn diagnostics_response_marks_mixed_https_fetch_and_ssh_push() {
-        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
-            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-            push_url: Some("git@github.com:owner/repo.git".to_string()),
-            github_https_credential_helper_configured: false,
-        });
-
-        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
-        assert_eq!(response.push_kind.as_deref(), Some("SSH"));
-        assert!(response.mixed_auth_modes);
-        assert!(!response.github_https_credential_helper_configured);
-        assert!(response.can_switch_to_ssh);
-        assert_eq!(
-            response.suggested_ssh_url.as_deref(),
-            Some("git@github.com:owner/repo.git")
-        );
-    }
-
-    #[test]
-    fn diagnostics_response_has_no_repair_for_non_github_remote() {
-        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
-            fetch_url: Some("https://gitlab.com/owner/repo.git".to_string()),
-            push_url: None,
-            github_https_credential_helper_configured: false,
-        });
-
-        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
-        assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
-        assert!(!response.mixed_auth_modes);
-        assert!(!response.can_switch_to_ssh);
-        assert!(response.suggested_ssh_url.is_none());
-    }
-
-    #[test]
-    fn diagnostics_response_exposes_github_https_credential_helper_state() {
-        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
-            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
-            push_url: Some("https://github.com/owner/repo.git".to_string()),
-            github_https_credential_helper_configured: true,
-        });
-
-        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
-        assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
-        assert!(response.github_https_credential_helper_configured);
-    }
-
-    #[test]
-    fn gh_web_login_args_use_browser_flow_and_ssh_protocol() {
-        assert_eq!(
-            gh_web_login_args(),
-            [
-                "auth",
-                "login",
-                "--hostname",
-                "github.com",
-                "--git-protocol",
-                "ssh",
-                "--web",
-                "--skip-ssh-key"
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_gh_web_login_code_and_url_lines() {
-        let code = parse_gh_auth_login_prompt("! First copy your one-time code: F308-C82B")
-            .expect("code line should parse");
-        assert_eq!(code.code.as_deref(), Some("F308-C82B"));
-        assert!(code.url.is_none());
-
-        let url = parse_gh_auth_login_prompt(
-            "Open this URL to continue in your web browser: https://github.com/login/device",
-        )
-        .expect("url line should parse");
-        assert!(url.code.is_none());
-        assert_eq!(url.url.as_deref(), Some("https://github.com/login/device"));
-    }
-
-    #[tokio::test]
-    async fn git_branch_commands_use_async_git_service_paths() {
-        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let repo = temp_dir.path();
-        Command::new(resolve_git_cli_path())
-            .args(["init", "-b", "main"])
-            .current_dir(repo)
-            .output()
-            .expect("git init should run");
-        Command::new(resolve_git_cli_path())
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(repo)
-            .output()
-            .expect("git config should run");
-        Command::new(resolve_git_cli_path())
-            .args(["config", "user.name", "Test User"])
-            .current_dir(repo)
-            .output()
-            .expect("git config should run");
-        std::fs::write(repo.join("README.md"), "base\n").expect("fixture should be written");
-        Command::new(resolve_git_cli_path())
-            .args(["add", "."])
-            .current_dir(repo)
-            .output()
-            .expect("git add should run");
-        Command::new(resolve_git_cli_path())
-            .args(["commit", "-m", "base"])
-            .current_dir(repo)
-            .output()
-            .expect("git commit should run");
-        Command::new(resolve_git_cli_path())
-            .args(["branch", "feature/current"])
-            .current_dir(repo)
-            .output()
-            .expect("git branch should run");
-
-        let current = get_git_current_branch(repo.to_string_lossy().to_string())
-            .await
-            .expect("current branch should load");
-        let branches = get_git_branches(repo.to_string_lossy().to_string())
-            .await
-            .expect("branches should load");
-
-        assert_eq!(current, "main");
-        assert_eq!(branches.first().map(String::as_str), Some("main"));
-        assert!(branches.contains(&"feature/current".to_string()));
-
-        Command::new(resolve_git_cli_path())
-            .args(["checkout", "--detach", "HEAD"])
-            .current_dir(repo)
-            .output()
-            .expect("git detached checkout should run");
-        assert!(get_git_current_branch(repo.to_string_lossy().to_string())
-            .await
-            .expect_err("detached HEAD should not return a local branch")
-            .contains("Repository is not currently on a local branch"));
-    }
-
-    #[tokio::test]
-    async fn git_branch_commands_report_missing_directory() {
-        let missing = tempfile::tempdir()
-            .expect("tempdir should be created")
-            .path()
-            .join("missing");
-        let missing = missing.to_string_lossy().to_string();
-
-        assert!(get_git_current_branch(missing.clone())
-            .await
-            .expect_err("missing current branch directory should fail")
-            .contains("Directory does not exist"));
-        assert!(get_git_branches(missing)
-            .await
-            .expect_err("missing branches directory should fail")
-            .contains("Directory does not exist"));
-    }
-
-    #[tokio::test]
-    async fn get_git_remote_url_skips_missing_and_non_github_remotes() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let repo = tmp.path();
-        Command::new(resolve_git_cli_path())
-            .args(["init"])
-            .current_dir(repo)
-            .output()
-            .expect("git init should run");
-
-        let state = AppState::new_test();
-        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
-        project.id = ProjectId::from_string("project-remote-test".to_string());
-        state.project_repo.create(project).await.unwrap();
-
-        let app = mock_builder()
-            .manage(state)
-            .build(mock_context(noop_assets()))
-            .expect("mock app should build");
-
-        let result = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
-            .await
-            .expect("get_git_remote_url should succeed with missing remote");
-        assert!(result.is_none());
-
-        Command::new(resolve_git_cli_path())
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://gitlab.com/aigentive/test-repo.git",
-            ])
-            .current_dir(repo)
-            .output()
-            .expect("git remote add should run");
-
-        let gitlab = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
-            .await
-            .expect("get_git_remote_url should succeed for non-github remote");
-        assert!(gitlab.is_none());
-
-        Command::new(resolve_git_cli_path())
-            .args([
-                "remote",
-                "set-url",
-                "origin",
-                "https://github.com/aigentive/test-repo.git",
-            ])
-            .current_dir(repo)
-            .output()
-            .expect("git remote set-url should run");
-
-        let github = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
-            .await
-            .expect("get_git_remote_url should succeed for github remote");
-        assert_eq!(
-            github,
-            Some("https://github.com/aigentive/test-repo.git".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn switch_git_origin_to_ssh_rejects_non_convertible_origin() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let repo = tmp.path();
-        Command::new(resolve_git_cli_path())
-            .args(["init"])
-            .current_dir(repo)
-            .output()
-            .expect("git init should run");
-
-        Command::new(resolve_git_cli_path())
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://bitbucket.org/aigentive/test-repo.git",
-            ])
-            .current_dir(repo)
-            .output()
-            .expect("git remote add should run");
-
-        let state = AppState::new_test();
-        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
-        project.id = ProjectId::from_string("project-remote-switch".to_string());
-        state.project_repo.create(project).await.unwrap();
-
-        let app = mock_builder()
-            .manage(state)
-            .build(mock_context(noop_assets()))
-            .expect("mock app should build");
-
-        let result =
-            switch_git_origin_to_ssh("project-remote-switch".to_string(), app.state::<AppState>())
-                .await;
-
-        let error = result.expect_err("non-github remote should not be convertible");
-        assert!(
-            error.contains("Origin is not a convertible GitHub HTTPS remote"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_git_config_command_fails_if_directory_is_missing() {
-        let missing = tempfile::tempdir()
-            .expect("tempdir should be created")
-            .path()
-            .join("missing-dir");
-        let error = run_git_config_command(&missing, &["remote", "get-url", "origin"])
-            .await
-            .expect_err("command should fail when current dir is missing");
-        assert!(
-            error.contains("Failed to spawn git") || error.contains("git config command timed out"),
-            "expected spawn or timeout failure, got {error}"
-        );
-    }
-
-    #[test]
-    fn gh_auth_login_prompt_exposes_code_and_url_together() {
-        let prompt = parse_gh_auth_login_prompt(
-            "Open this URL to continue: one-time code: ABCD-EFGH\nweb browser: https://github.com/login/device",
-        )
-        .expect("prompt should parse");
-        assert_eq!(prompt.code, Some("ABCD-EFGH".to_string()));
-        assert_eq!(
-            prompt.url,
-            Some("https://github.com/login/device".to_string())
-        );
-    }
 }

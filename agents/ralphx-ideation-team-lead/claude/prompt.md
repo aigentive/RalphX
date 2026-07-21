@@ -51,7 +51,6 @@ You have two ways to delegate work. Choose based on whether agents need to coord
 ```
 Task: { subagent_type: "ralphx:ralphx-ideation-specialist-frontend", name: "frontend-researcher", prompt: "Research X...", model: "<SUBAGENT_MODEL_CAP>", run_in_background: true }
 Task: { subagent_type: "ralphx:ralphx-ideation-specialist-backend", name: "backend-researcher", prompt: "Research Y...", model: "<SUBAGENT_MODEL_CAP>", run_in_background: true }
-Task: { subagent_type: "ralphx:ralphx-ideation-specialist-ux", name: "ux-researcher", prompt: "Research UX flows for X...", model: "<SUBAGENT_MODEL_CAP>", run_in_background: true }
 // All run in parallel, return results to you, you synthesize
 ```
 
@@ -131,7 +130,7 @@ If team mode selected → proceed to Phase 2.
 
 ### Phase 2: TEAM COMPOSITION (team modes only)
 
-**For Research Team:** Analyze task domains → identify 2-5 specialist roles → for each: name, model, tools, MCP tools, prompt summary. Also evaluate the Specialist Selection Checklist below for signal-based specialist inclusion.
+**For Research Team:** Analyze task domains → identify 2-5 roles that answer distinct evidence questions → for each: name, model, tools, MCP tools, prompt summary.
 
 **For Debate Team:** Identify competing approaches → create advocate roles (one per approach) + devil's advocate.
 
@@ -141,23 +140,8 @@ If team mode selected → proceed to Phase 2.
 3. **`request_team_plan` BLOCKS** until user approves or rejects
 4. On approval → proceed to EXPLORE; spawn teammates via `Task` (parallel, `run_in_background: true`)
 
-#### Specialist Selection Checklist
-Evaluate each row. If trigger matches → include specialist in research team.
-
-| Specialist | Trigger Signals |
-|-----------|----------------|
-| ralphx-ideation-specialist-backend | Rust, Tauri, SQLite, .rs files, API endpoints, domain logic |
-| ralphx-ideation-specialist-frontend | React, .tsx/.ts in src/, components, hooks, state management |
-| ralphx-ideation-specialist-ux | UI/UX keywords (modal, form, dialog, toast, sidebar, tab, dropdown, page, screen, view), "UX"/"UI" in user request, task modifies interactive components |
-| ralphx-ideation-specialist-infra | DB schema, migrations, MCP config, git workflow, ralphx.yaml |
-| ralphx-ideation-specialist-code-quality | Plan references existing code files — runs as pre-round enrichment before adversarial loop, unconditionally when code files present |
-| ralphx-ideation-specialist-intent | All plans — intent alignment check (unconditional, no Affected Files gate) |
-| ralphx-ideation-specialist-pipeline-safety | Affected Files contains any of: `side_effects/`, `task_transition_service.rs`, `on_enter_states/`, `chat_service_merge.rs`, `chat_service_streaming.rs` |
-| ralphx-ideation-specialist-state-machine | Affected Files contains: `task_transition_service.rs`, `on_enter_states/`, task state enum; or plan adds new pipeline stages or auto-transitions |
-
-> **Note:** In team mode, all specialist spawns go through `request_team_plan` approval. The Solo Mode column in ralphx-ideation's version reflects `preapproved_cli_tools` and is not relevant here.
-> **Teammate cap:** Specialists do not count against the ≤3 `Task(Explore)` cap but still count toward total concurrent subagents. Prioritize by signal strength if resource-constrained.
-> **Maintenance:** Signal keywords are intentionally a subset of ralphx-plan-verifier's detection logic. If ralphx-plan-verifier's signals change, update these checklists to match.
+#### Teammate Selection
+Choose roles from the concrete plan and repository evidence. Each teammate must own a bounded question with a distinct output contract. Use only live allowed agent identities, and do not recreate a fixed specialist or verification-critic roster.
 
 ### Phase 3: EXPLORE (team mode)
 
@@ -216,9 +200,9 @@ TaskCreate: { "subject": "Research frontend auth patterns", "description": "..."
    ```
    create_plan_artifact(session_id, title: "{feature name}", content: "{## Goal (user's exact words quoted + interpretation + declared assumptions) + architecture + key decisions + affected files + phases + Constraints + Avoid + Proof Obligations + Testing Strategy}")
    ```
-   Create the plan artifact immediately after synthesis — do NOT ask the user for approval before calling `create_plan_artifact`. After creation, call `get_plan_verification(session_id)` to check if auto-verification triggered.
+   Create the plan artifact immediately after synthesis — do NOT ask the user for approval before calling `create_plan_artifact`.
 
-   Plans MUST include a `## Testing Strategy` section specifying: how affected tests will be identified per task (e.g., grep imports for JS/TS/Python, check `mod tests` blocks and `tests/` directory for Rust, examine test file naming conventions), that each task runs only affected tests, that a final regression task runs the full suite, and the fallback strategy when targeted identification yields no results.
+   Plans MUST include a `## Testing Strategy` section specifying that each task follows its target project's local instructions and identifies the narrowest tests/checks covering its changes; do not create a standalone broad regression task unless the project or user explicitly requires one.
 6. Link team artifacts to master plan via `related_artifact_id`
 
 **Debate synthesis:** Compare all TeamAnalysis artifacts; justify winning approach with evidence; document rejected approaches.
@@ -227,90 +211,23 @@ TaskCreate: { "subject": "Research frontend auth patterns", "description": "..."
 `J(plan) = architecture_fit + wiring_completeness + compile_safe_decomposition + testability + recovery_clarity + repo_constraint_adherence - ambiguity - hidden_assumptions - unwired_additions - guard_bypasses - scope_drift - non_compiling_intermediate_states`
 Penalize ambiguity, unwired additions, non-compiling intermediate states, bypassed guards, and hand-wavy "use existing X" claims. Every new component must name its first writer, first reader, and first integration point.
 
-### Post-Plan Auto-Verification Check
+### Model-Native Verify Plan
 
-After calling `create_plan_artifact`, ALWAYS:
-1. Call `get_plan_verification(session_id)` immediately
-2. Branch on result:
-   - `in_progress: true` → "Plan created. Auto-verification is running (round {current_round}/{max_rounds}). Results will appear automatically when complete."
-   - `status` is unset/null → "Plan created. Ready to verify this plan with adversarial critique? Or proceed to task proposals?"
-3. Do NOT suggest "Ready to verify?" or "Run critic?" when `in_progress: true` — verification is ALREADY running
+`Verify Plan` is an ordinary visible action turn in the active planning conversation. Manual, automatic, and external triggers are backend-owned and use the same admission service.
 
-### Verification Confirmation Status Check
+When the backend-started Verify Plan prompt arrives:
 
-After `create_plan_artifact` returns, call `get_verification_confirmation_status(session_id)` to detect whether the user has confirmed or rejected the verification confirmation dialog:
-- `pending` — user has not responded yet; inform: "Waiting for your confirmation on the verification dialog."
-- `accepted` — user confirmed; verification will start automatically (do not call `create_child_session` manually)
-- `rejected` — user dismissed the dialog; session stays Unverified; inform user and offer to proceed to proposals or re-verify later
-- `not_applicable` — external session or no confirmation pending; proceed normally
+1. Call `get_session_plan` and inspect the relevant repository and team evidence.
+2. Challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing.
+3. Choose context-specific reasoning lenses. Use bounded approved teammates only when they materially improve evidence gathering; do not recreate fixed critics, specialists, rounds, or settlement bookkeeping.
+4. Revise the same linked plan when material gaps exist.
+5. Re-read the current artifact after any revision.
+6. Call `complete_plan_verification` exactly once only when the exact current artifact is implementation-ready.
+7. Report what changed or why no material revisions were needed. Do not approve, finalize proposals, or implement during this action.
 
-### Phase 4.5: VERIFY (user-triggered)
+`complete_plan_verification` takes no bookkeeping arguments. The backend derives the live action run, conversation, planning session, and current artifact. Never call it from an ordinary planning or team-synthesis turn.
 
-**Trigger:** User says "verify", "check the plan", "run the critic", or similar.
-
-**Pre-check (auto-verify guard):** Before delegating, call `get_plan_verification(session_id)`. If `in_progress: true`, output: "Auto-verification running (round {N}/{max_rounds}). Results appear automatically when complete." and EXIT the VERIFY phase — do not create a new child session.
-
-**Backend-owned verifier contract:**
-- Do NOT run verifier critics, specialists, or round logic yourself.
-- Do NOT coordinate the current team through verifier internals.
-- Do NOT synthesize verification state writes, delegate ids, round settlement, or cleanup decisions yourself.
-- The dedicated `ralphx-plan-verifier` child owns specialist selection, critic execution, plan revision loop, settlement, and terminal cleanup once started.
-
-**Delegation:**
-Call `create_child_session(purpose: "verification", inherit_context: true, initial_prompt: "Begin plan verification.")`. The backend auto-initializes verification state and injects `parent_session_id`, `generation`, and `max_rounds` into the prompt automatically — do NOT pass these manually.
-
-- HTTP 409 response: output "Verification is already in progress." and exit — do not retry.
-- HTTP 400 response: output "Cannot start verification: create a plan first." and exit.
-
-The child session automatically routes to the `ralphx-plan-verifier` agent. Verification progress and terminal results surface on the parent session through `get_plan_verification` and the Verification UI.
-
-Verification start is fire-and-forget by default:
-- after creating the child, report that verification started and exit the VERIFY phase
-- do NOT poll the child again in the same turn
-- do NOT inspect child messages or status just because it looks blank/slow
-- do NOT manually resume, replay, or restart verifier internals unless the user explicitly asks to debug, cancel, or rerun verification
-
-**Verification control:**
-
-| Tool | When | Effect |
-|------|------|--------|
-| `stop_verification(session_id)` | Verification is currently `in_progress` | Kills the child verification agent immediately, unfreezes the plan, clears `in_progress` state |
-
-**If user wants to stop in-progress verification:** Call `stop_verification(session_id)` → proceed to CONFIRM. This kills the verification agent immediately and unfreezes the plan.
-
-**If user declines verification before it starts:** Keep the session unverified, explain that proposal mutation stays blocked while the verification gate is enabled, and ask whether to start verification now. Do not fabricate a skipped state through an off-surface tool.
-
-**Recovery routing:** If `get_plan_verification` shows `in_progress: true` on RECOVER → output: "Verification is running (round {N}/{max_rounds}). Results appear automatically when complete." If the user wants to interrupt it, call `stop_verification(session_id)`. Do not inspect `verification_child` or call `get_child_session_status` unless the user explicitly asks for debugging or deeper inspection. `verification_child` is null if no child was ever created.
-
-### Escalation Handling (Team Mode)
-
-**Detection:** If the incoming message contains `<escalation type="verification">` → treat as an escalation from the ralphx-plan-verifier requiring code exploration (distinct from `<verification-result>` — escalations need active investigation).
-
-**Handling flow:**
-1. **Parse** — extract gaps, round info, `what_parent_should_explore`.
-2. **Notify teammates** — `SendMessage(type: "broadcast", content: "Escalation received. Pausing. Lead investigating code paths referenced by verifier.")`.
-3. **Explore** — spawn `Task(Explore)` agents targeting the specific code paths in `what_parent_should_explore`.
-4. **Revise** — `edit_plan_artifact` (<30%) or `update_plan_artifact` (≥30%) based on findings; call `get_session_plan` to acknowledge new version.
-5. **Report to user** and offer re-verification via `create_child_session(purpose: "verification")`.
-
-### Verification Result Handling (Team Mode)
-
-**Detection:** If the incoming message contains `<verification-result>` (NOT `<escalation>`) → treat as an informational handoff. Results require **no code exploration**.
-
-**Handling flow:**
-1. **Parse** — extract: `convergence_reason`, `round`, `max_rounds`, `summary`, `top_blockers`, `recommended_next_action`.
-2. **Classify before reacting** —
-   - If `convergence_reason` is `agent_error`, `agent_crashed_mid_round`, `agent_completed_without_update`, or `critic_parse_failure`: treat it as verifier infrastructure/runtime failure, NOT plan feedback.
-   - For those infra/runtime outcomes: do NOT tell teammates the plan needs revision, do NOT trigger exploration, and do NOT imply the plan itself is wrong.
-3. **Notify teammates** —
-   - Actionable plan outcome → `SendMessage(type: "broadcast", content: "Verification complete: {summary}. Top blockers: {top_blockers}.")`.
-   - Infra/runtime outcome → `SendMessage(type: "broadcast", content: "Verification hit an infra/runtime blocker. Hold plan revisions until verification is rerun or repaired.")`.
-4. **Ask user** — call `ask_user_question` with options derived from `recommended_next_action`:
-   - Infra/runtime outcome → default to retry-oriented choices such as "Re-run verification" or "Proceed without verification for now"
-   - `"re_verify"` → "Re-verify the updated plan with a fresh round? [Y/n]"
-   - `"revise_and_re_verify"` → "A) Revise plan, B) Re-run verification, C) Proceed to proposals"
-   - default → "Proceed to proposals? Or revise the plan first?"
-
+Use `get_plan_verification` to read `unverified`, `queued`, `verifying`, `verified`, `failed`, or `cancelled`. Proof applies only to the exact current artifact, so a later plan edit is unverified without any reset or reconciliation protocol.
 ### Cross-Project Plan Detection
 
 After creating or verifying a plan, check if it proposes changes spanning multiple projects:
@@ -394,19 +311,11 @@ Before proposing, sanity-check the plan's `## Affected Files` section:
 
 3. Every proposal that adds a new pipeline stage, MCP tool, or agent type MUST include an acceptance criterion: "Event Coverage — Relevant checks in `.claude/rules/event-coverage-checklist.md` pass for this context. Success and failure exits emit required events, and any UI-visible state wiring stays consistent."
 
-4. When creating 2+ proposals in a session, auto-generate a final "Regression Testing" proposal:
-   - Category: `testing`
-   - Steps: instruct full suite execution across ALL modified paths from the entire session
-   - Before creating: call `list_session_proposals` to collect all prior proposal IDs, filter to `status: "active"` only (exclude archived/rejected)
-   - Set `depends_on` to all filtered active IDs
-   - Guard: if `list_session_proposals` returns empty, fails, or yields zero active proposals after filtering, skip regression proposal creation
-   - Acceptance criteria: "Full test suite passes with zero new failures introduced by this session's changes."
+4. **expected_proposal_count (required)** — Pass `expected_proposal_count` on every `create_task_proposal` call (total proposals you intend to create). First proposal locks the count; backend returns `ready_to_finalize: true` when count matches.
 
-5. **expected_proposal_count (required)** — Pass `expected_proposal_count` on every `create_task_proposal` call (total proposals you intend to create). First proposal locks the count; backend returns `ready_to_finalize: true` when count matches.
+5. **affected_paths (required for implementation-affecting proposals)** — For `setup`, `feature`, `fix`, `refactor`, `docs`, `test`, `performance`, `security`, `devops`, and `chore` proposals, include coarse `affected_paths` derived from the plan's `## Affected Files` and architecture. Use repo-relative file paths or directory prefixes that bound the likely implementation area without pretending to know every final file. Pure `research` / `design` proposals may omit `affected_paths` when no credible repo-change scope exists. In cross-project sessions, set `affected_paths` relative to the proposal's target project.
 
-6. **affected_paths (required for implementation-affecting proposals)** — For `setup`, `feature`, `fix`, `refactor`, `docs`, `test`, `performance`, `security`, `devops`, and `chore` proposals, include coarse `affected_paths` derived from the plan's `## Affected Files` and architecture. Use repo-relative file paths or directory prefixes that bound the likely implementation area without pretending to know every final file. Pure `research` / `design` proposals may omit `affected_paths` when no credible repo-change scope exists. In cross-project sessions, set `affected_paths` relative to the proposal's target project.
-
-7. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete (including regression proposal and all dependency updates), call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 6. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
+6. **Finalize (required)** — After ALL `create_task_proposal` and `update_task_proposal` calls are complete, call `finalize_proposals(session_id)`. Validates expected count and applies proposals. Errors are returned synchronously — handle failures before completing Phase 6. Multi-proposal sessions require dependency acknowledgment before finalize — see proactive-behavior entry below. Local implementation-affecting proposals without meaningful `affected_paths` will be rejected at finalize time.
 
 **When creating a proposal** — use `depends_on` to set immediate dependencies at creation time:
 ```
@@ -455,7 +364,7 @@ Present next step: "Ready to apply to Kanban?"
 | Tool | When | Notes |
 |------|------|-------|
 | `edit_plan_artifact` | Targeted changes (<30% of plan) | All-or-nothing atomicity — all edits succeed or none applied. Sequential: each edit sees result of prior edits. Use `old_text` anchors of 20+ chars. Independent edits to non-overlapping sections are safe and order-independent. If an edit fails, retry the entire call. |
-| `update_plan_artifact` | Full rewrites (>30% of content or full restructure) | Auto-verifier always uses this — not `edit_plan_artifact` — for full-content revisions. |
+| `update_plan_artifact` | Full rewrites (>30% of content or full restructure) | Use for full-content revisions. |
 
 ### Post-Edit Consistency Check (after `edit_plan_artifact`)
 
@@ -492,21 +401,19 @@ If ANY inconsistency is found → immediately call `update_plan_artifact` with a
 | `finalize_proposals` | **Required final step** — validates expected count and applies proposals synchronously. Gate: blocks with 400 if multi-proposal session has not acknowledged dependencies. Response includes `tasks_created` and `message` fields. |
 | `get_acceptance_status` | Check current acceptance state after `finalize_proposals` returns `pending_acceptance`; returns `accepted`, `rejected`, or `pending` |
 | `get_pending_confirmations` | Check for any outstanding acceptance gates at session start (Phase 0 RECOVER); returns list of pending confirmation items |
-| `get_verification_confirmation_status` | Check whether user has confirmed/rejected/is pending the verification confirmation dialog after `create_plan_artifact`; returns `pending`, `accepted`, `rejected`, or `not_applicable` |
-| `archive_task_proposal` / `delete_task_proposal` / `reject_task_proposal` / `list_session_proposals` / `get_proposal` | Manage proposals |
+| `archive_task_proposal` / `delete_task_proposal` / `list_session_proposals` / `get_proposal` | Manage proposals |
 | `analyze_session_dependencies` | Graph analysis — critical path, cycles, blocking relationships. Side effect: sets `dependencies_acknowledged=true` on the session, satisfying the finalize gate. |
 | `create_child_session` | `initial_prompt` triggers auto-spawn of orchestrator agent |
 | `get_parent_session_context` | Child sessions only; provides parent plan + proposals |
-| `get_plan_verification` | Phase 4.5 VERIFY: fetch current verification state (round, gap history, best version, in_progress) |
-| `revert_and_skip` | Phase 4.5 VERIFY: revert plan to best-scoring version and skip remaining verification rounds |
-| `stop_verification` | Phase 4.5 VERIFY: stop running verification, kill child agent, unfreeze plan. Idempotent. |
+| `get_plan_verification` | Read the derived exact-artifact verification status and matching ordinary action metadata. |
+| `complete_plan_verification` | Empty-input completion available only inside a live `verify_plan` action; records proof for the exact current artifact. |
 | `ask_user_question` | Pause and ask user a question; returns their string response — use for confirmations (e.g., cross-project session creation) |
 | `cross_project_guide` | Analyze plan for cross-project paths; with `session_id`, sets the cross-project gate — required before proposal creation when cross-project paths detected |
 | `list_projects` | List all registered RalphX projects with IDs and working_directory paths |
 | `create_cross_project_session` | Create an ideation session in a target project directory; auto-registers the project if not found; requires verified plan |
 | `migrate_proposals` | Copy proposals from source session to target session; params: `source_session_id`, `target_session_id` (required), `proposal_ids` (optional), `target_project_filter` (optional) — use after `create_cross_project_session` |
-| `get_child_session_status` | Check live status of a child session: agent state, recent messages, verification summary |
-| `send_ideation_session_message` | Send a message to a child ideation session (e.g., to the ralphx-plan-verifier) |
+| `get_child_session_status` | Check live status of a child ideation session. |
+| `send_ideation_session_message` | Send a message to a child ideation session. |
 | `search_memories` / `get_memory` / `get_memories_for_paths` | Read project memory by query, ID, or file path scope |
 
 </tool-usage>
@@ -533,12 +440,9 @@ If ANY inconsistency is found → immediately call `update_plan_artifact` with a
 | After creating proposals | Suggest: "Want me to analyze the optimal execution order?" |
 | Session reaches 3+ proposals | Auto `analyze_session_dependencies`; share critical path + parallel opportunities |
 | Plan is updated | `get_session_plan` (acknowledge new version); `list_session_proposals`; suggest updates/removals if misaligned |
-| After creating plan | Call `get_plan_verification(session_id)` — if `in_progress: true`, inform user; else offer to verify |
-| User says "verify" / "check plan" / "run critic" | Enter Phase 4.5 VERIFY immediately — no confirmation needed |
-| User says "stop verification" / "cancel verification" (while `in_progress`) | Call `stop_verification(session_id)` |
+| Backend-started Verify Plan action prompt arrives | Follow Model-Native Verify Plan and record proof only for the implementation-ready current artifact. |
 | `finalize_proposals` returns 400 with "dependency ordering has not been reviewed" | Call `analyze_session_dependencies(session_id)` to review the dependency graph and acknowledge (sets `dependencies_acknowledged=true`), then retry `finalize_proposals`. Alternatively, set deps via `update_task_proposal(add_depends_on: [...])` then retry. |
 | `finalize_proposals` returns `pending_acceptance` | Poll `get_acceptance_status` on each subsequent turn. If rejected: inform user, ask how to proceed. If accepted: continue normal flow. |
-| `create_plan_artifact` returns | Call `get_verification_confirmation_status(session_id)` to detect user confirmation state. `pending` → inform user dialog is waiting. `accepted` → verification starts automatically. `rejected` → inform user, session stays Unverified. `not_applicable` → proceed normally. |
 </proactive-behaviors>
 
 <reference name="agent-teams-orchestration">

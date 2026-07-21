@@ -184,6 +184,37 @@ describe("AgentsChatHeader", () => {
     expect(onSelectArtifact).toHaveBeenCalledWith("jira");
   });
 
+  it("opens the linked ClickUp ticket in the ClickUp artifact tab", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "clickup", id: "task-1", key: "TASK-1" },
+        projectId: "project-2",
+        title: "Fix ClickUp tickets",
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-clickup", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket TASK-1" }));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("clickup");
+  });
+
   it("does not render the linked ticket button when no ticket is linked", () => {
     vi.mocked(useConversationTicket).mockReturnValue({
       data: null,
@@ -880,6 +911,8 @@ describe("AgentsChatHeader", () => {
         activeArtifactTab="plan"
         workspaceOpenTargets={[
           { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "iterm2", label: "iTerm2", kind: "terminal" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
           { id: "file-manager", label: "Finder", kind: "fileManager" },
         ]}
         onOpenWorkspaceTarget={openWorkspaceTarget}
@@ -907,6 +940,172 @@ describe("AgentsChatHeader", () => {
     expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
       "file-manager"
     );
+  });
+
+  it("opens an external terminal target and persists it as the external preference", () => {
+    const openWorkspaceTarget = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "iterm2", label: "iTerm2", kind: "terminal" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        onOpenWorkspaceTarget={openWorkspaceTarget}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Terminal" }));
+
+    expect(openWorkspaceTarget).toHaveBeenCalledWith("terminal");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Terminal"
+    );
+    expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
+      "terminal"
+    );
+  });
+
+  it("toggles Built-in Terminal without changing the external preference", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    window.localStorage.setItem(
+      "ralphx:agents:preferred-workspace-open-target",
+      "cursor",
+    );
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalOpen
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "terminal", label: "Terminal", kind: "terminal" },
+        ]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-terminal-toggle")).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal",
+    });
+    expect(screen.getByTestId("agents-built-in-terminal-open-indicator")).toBeInTheDocument();
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).toHaveBeenCalledTimes(2);
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
+      "cursor"
+    );
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Cursor"
+    );
+  });
+
+  it("keeps archived Built-in Terminal enabled without preloading from the menu", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalArchivedReason="Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace."
+        workspaceOpenTargets={[{ id: "cursor", label: "Cursor", kind: "editor" }]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal",
+    });
+    expect(builtInTerminal).not.toHaveAttribute("data-disabled");
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Built-in Terminal in the Open menu with the unavailable reason", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalUnavailableReason="Terminal is unavailable for this workspace"
+        workspaceOpenTargets={[{ id: "cursor", label: "Cursor", kind: "editor" }]}
+        onOpenWorkspaceTarget={vi.fn()}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const builtInTerminal = screen.getByRole("menuitem", {
+      name: "Built-in Terminal unavailable: Terminal is unavailable for this workspace",
+    });
+    expect(builtInTerminal).toHaveAttribute("data-disabled");
+    expect(builtInTerminal).toHaveAttribute(
+      "title",
+      "Terminal is unavailable for this workspace",
+    );
+
+    fireEvent.pointerEnter(builtInTerminal);
+    fireEvent.focus(builtInTerminal);
+    fireEvent.click(builtInTerminal);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).not.toHaveBeenCalled();
   });
 
   it("shows an opening state while launching a workspace target", () => {

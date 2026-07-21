@@ -3,8 +3,8 @@
 use super::helpers::status_to_label;
 use super::types::{
     PlanGroupInfo, StateTransitionResponse, StatusSummary, StatusTransition,
-    TaskDependencyGraphResponse, TaskGraphEdge, TaskGraphNode, TaskListResponse, TaskResponse,
-    TimelineEvent, TimelineEventType, TimelineEventsResponse,
+    TaskDependencyGraphResponse, TaskGraphEdge, TaskGraphNode, TaskHistoryAvailabilityResponse,
+    TaskListResponse, TaskResponse, TimelineEvent, TimelineEventType, TimelineEventsResponse,
 };
 use crate::application::AppState;
 use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
@@ -100,6 +100,39 @@ pub async fn list_tasks(
         total,
         has_more,
         offset,
+    })
+}
+
+/// Durable session-scoped task history availability, including archived rows.
+#[tauri::command]
+pub async fn get_session_task_history_availability(
+    project_id: String,
+    ideation_session_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskHistoryAvailabilityResponse, String> {
+    get_session_task_history_availability_for_app_state(
+        project_id,
+        ideation_session_id,
+        state.inner(),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_session_task_history_availability_for_app_state(
+    project_id: String,
+    ideation_session_id: String,
+    state: &AppState,
+) -> Result<TaskHistoryAvailabilityResponse, String> {
+    let project_id = ProjectId::from_string(project_id);
+    let task_count = state
+        .task_repo
+        .count_tasks(&project_id, true, Some(&ideation_session_id), None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(TaskHistoryAvailabilityResponse {
+        has_history: task_count > 0,
+        task_count,
     })
 }
 
@@ -426,6 +459,24 @@ pub async fn get_task_dependency_graph(
     session_id: Option<String>,
     execution_plan_id: Option<String>,
     state: State<'_, AppState>,
+) -> Result<TaskDependencyGraphResponse, String> {
+    get_task_dependency_graph_for_app_state(
+        project_id,
+        include_archived,
+        session_id,
+        execution_plan_id,
+        state.inner(),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_task_dependency_graph_for_app_state(
+    project_id: String,
+    include_archived: Option<bool>,
+    session_id: Option<String>,
+    execution_plan_id: Option<String>,
+    state: &AppState,
 ) -> Result<TaskDependencyGraphResponse, String> {
     use std::collections::{HashMap, HashSet, VecDeque};
 

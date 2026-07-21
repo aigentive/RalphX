@@ -186,6 +186,8 @@ pub struct PauseBranchUpdate {
     pub owner: GitTargetLeaseOwner,
     pub fencing_epoch: u64,
     pub history_id: String,
+    /// Optional task metadata that must be persisted atomically with the pause.
+    pub task_metadata: Option<String>,
 }
 
 #[derive(Debug, Clone)]

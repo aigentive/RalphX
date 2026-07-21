@@ -1,3 +1,5 @@
+import type { AgentConversationBaseSelection } from "./chat";
+
 export type AutomationStatus =
   | "draft"
   | "active"
@@ -28,6 +30,14 @@ export type AutomationPlanApprovalMode = "manual" | "automatic";
 
 export type AutomationPrMergeMode = "manual" | "automatic";
 
+export type AutomationAuthoringMode = "reviewed" | "trusted_auto_finalize";
+
+export type AutomationDecompositionVerificationStatus =
+  | "unverified"
+  | "verified"
+  | "needs_revision"
+  | "failed";
+
 export type AutomationPlanJudgeState =
   | "none"
   | "in_progress"
@@ -49,7 +59,10 @@ export type AutomationBaseRefKind =
 
 export type AutomationChainMode = "merged_base" | "pr_head_stacked";
 
-export type AutomationCompletionSignal = "pr_merged" | "agent_completed";
+export type AutomationCompletionSignal =
+  | "pr_merged"
+  | "agent_completed"
+  | "ideation_finalized";
 
 export interface Automation {
   id: string;
@@ -61,6 +74,9 @@ export interface Automation {
   goalPrompt: string;
   setupConversationId: string | null;
   specArtifactId: string | null;
+  authoringMode: AutomationAuthoringMode;
+  decompositionVerificationStatus: AutomationDecompositionVerificationStatus;
+  decompositionVerificationVerdictJson: string | null;
   providerHarness: string;
   modelId: string;
   logicalEffort: string | null;
@@ -133,10 +149,30 @@ export interface AutomationUsage {
   estimatedUsd: number | null;
 }
 
+export interface AutomationPipelineTask {
+  id: string;
+  title: string;
+  status: string;
+  blockedBy: string[];
+}
+
+export interface AutomationPipelineProgress {
+  deliverable: "task_graph";
+  status: "authoring" | "executing" | "completed" | "attention";
+  ideationSessionId: string;
+  planArtifactId: string | null;
+  proposalCount: number;
+  taskTotal: number;
+  taskMerged: number;
+  taskTerminal: number;
+  tasks: AutomationPipelineTask[];
+}
+
 export interface AutomationDetail {
   automation: Automation;
   runs: AutomationRun[];
   usage: AutomationUsage;
+  pipeline?: AutomationPipelineProgress | null;
 }
 
 export interface CreateAutomationDraftResponse {
@@ -156,6 +192,8 @@ export interface ListAutomationsInput {
 export interface CreateAutomationDraftInput {
   projectId: string;
   name?: string | undefined;
+  authoringMode?: AutomationAuthoringMode | undefined;
+  base?: AgentConversationBaseSelection | undefined;
 }
 
 export interface UpdateAutomationSettingsInput {

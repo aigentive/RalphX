@@ -31,8 +31,9 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
-    InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, CoordinationMode,
+    IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, ProjectId,
+    SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
@@ -324,9 +325,14 @@ fn queued_persisted_metadata(
     queued_msg: &crate::domain::services::QueuedMessage,
 ) -> Option<String> {
     let metadata = queued_msg.metadata_override.clone();
+    let excerpt_references = super::chat_service_composer_references::normalize_excerpt_references(
+        &queued_msg.composer_excerpt_references,
+    );
     if queued_msg.composer_project_references.is_empty()
         && queued_msg.composer_integration_references.is_empty()
         && queued_msg.composer_artifact_references.is_empty()
+        && queued_msg.composer_selection_snapshot.is_none()
+        && excerpt_references.is_empty()
     {
         return metadata;
     }
@@ -353,6 +359,17 @@ fn queued_persisted_metadata(
     if !queued_msg.composer_artifact_references.is_empty() {
         let references = serde_json::to_value(&queued_msg.composer_artifact_references).ok()?;
         object.insert("composer_artifact_references".to_string(), references);
+    }
+    if let Some(snapshot) = queued_msg.composer_selection_snapshot.as_ref() {
+        let snapshot = serde_json::to_value(snapshot).ok()?;
+        object.insert(
+            super::chat_service_selection_snapshot::SELECTION_SNAPSHOT_METADATA_KEY.to_string(),
+            snapshot,
+        );
+    }
+    if !excerpt_references.is_empty() {
+        let references = serde_json::to_value(&excerpt_references).ok()?;
+        object.insert("composer_excerpt_references".to_string(), references);
     }
     Some(value.to_string())
 }
@@ -404,6 +421,8 @@ fn provider_switch_send_options_for_queued_message(
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+        composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
+        composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
         team_intent,
         force_new_provider_session,
@@ -469,6 +488,10 @@ fn build_queued_agent_run(
     provider_session_id: &str,
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
+    metadata: Option<&str>,
+    runtime: &super::continuation_runtime::ContinuationRuntime,
+    queued_message: &QueuedMessage,
+    launch_security: super::conversation_launch_security::ConversationLaunchSecurityClass,
 ) -> AgentRun {
     let mut run = match (run_chain_id, parent_run_id) {
         (Some(chain_id), Some(parent_id)) => {
@@ -478,20 +501,130 @@ fn build_queued_agent_run(
     };
     run.harness = Some(harness);
     run.provider_session_id = Some(provider_session_id.to_string());
+    run.logical_model = queued_message
+        .model_override
+        .clone()
+        .or_else(|| runtime.logical_model.clone());
+    run.effective_model_id = queued_message
+        .model_override
+        .clone()
+        .or_else(|| runtime.effective_model_id.clone())
+        .or_else(|| runtime.logical_model.clone());
+    run.logical_effort = queued_message
+        .logical_effort_override
+        .or(runtime.logical_effort);
+    run.effective_effort = run
+        .logical_effort
+        .map(|effort| effort.to_legacy_claude_effort().to_string());
+    run.service_tier = queued_message
+        .service_tier_override
+        .as_deref()
+        .and_then(super::normalize_service_tier_override)
+        .or_else(|| runtime.service_tier.clone());
+    run.approval_policy = runtime.approval_policy.clone();
+    run.sandbox_mode = runtime.sandbox_mode.clone();
+    run.apply_action_metadata_json(metadata);
+    launch_security.apply_to_agent_run(&mut run);
     run
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+fn build_queued_preflight_failure_run(
+    conversation_id: ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+    run_chain_id: Option<&str>,
+    parent_run_id: Option<&str>,
+    metadata: Option<&str>,
+    queued_message: &QueuedMessage,
+) -> AgentRun {
+    let mut run = match (run_chain_id, parent_run_id) {
+        (Some(chain_id), Some(parent_id)) => {
+            AgentRun::new_continuation(conversation_id, chain_id.to_string(), parent_id.to_string())
+        }
+        _ => AgentRun::new(conversation_id),
+    };
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    run.logical_model = queued_message.model_override.clone();
+    run.effective_model_id = queued_message.model_override.clone();
+    run.logical_effort = queued_message.logical_effort_override;
+    run.effective_effort = run
+        .logical_effort
+        .map(|effort| effort.to_legacy_claude_effort().to_string());
+    run.service_tier = queued_message
+        .service_tier_override
+        .as_deref()
+        .and_then(super::normalize_service_tier_override);
+    run.apply_action_metadata_json(metadata);
+    run
+}
+
+async fn persist_failed_queued_run<R: Runtime>(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    app_handle: Option<&AppHandle<R>>,
+    run: AgentRun,
+    error: &str,
+) -> Option<String> {
+    let run_id = run.id.as_str().to_string();
+    if let Err(persist_error) = agent_run_repo.create(run).await {
+        tracing::error!(
+            queued_run_id = %run_id,
+            error = %persist_error,
+            "Failed to persist queued preflight failure run"
+        );
+        return None;
+    }
+    if let Err(persist_error) = agent_run_repo
+        .fail(&AgentRunId::from_string(run_id.clone()), error)
+        .await
+    {
+        tracing::error!(
+            queued_run_id = %run_id,
+            error = %persist_error,
+            "Failed to mark queued preflight run failed"
+        );
+    }
+    settle_terminal_queued_plan_verification(app_handle, &run_id).await;
+    Some(run_id)
+}
+
+fn emit_queued_preflight_error<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    agent_run_id: Option<String>,
+    error: String,
+) {
+    if let Some(handle) = app_handle {
+        let _ = handle.emit(
+            "agent:error",
+            AgentErrorPayload {
+                conversation_id: Some(conversation_id.as_str().to_string()),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+                agent_run_id,
+                error,
+                stderr: None,
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct QueuedAgentIdentity {
-    agent_name: Option<&'static str>,
+    agent_name: Option<String>,
     agent_profile: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct QueuedProjectAgentContext {
+struct QueuedAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    conversation: Option<ChatConversation>,
+    builder_draft: Option<Persona>,
+    builder_context_error: Option<String>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -502,38 +635,121 @@ fn queued_agent_identity_for_mode(
     };
 
     QueuedAgentIdentity {
-        agent_name: Some(super::agent_name_for_conversation_mode(mode)),
+        agent_name: Some(super::agent_name_for_conversation_mode(mode).to_string()),
         agent_profile: super::agent_profile_for_conversation_mode(mode),
     }
 }
 
-async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
+fn queued_agent_identity_for_conversation(
+    conversation: Option<&ChatConversation>,
+    mode: Option<AgentConversationWorkspaceMode>,
+) -> QueuedAgentIdentity {
+    if let Some(bound_agent_name) =
+        conversation.and_then(|conversation| conversation.bound_agent_name.as_deref())
+    {
+        return QueuedAgentIdentity {
+            agent_name: Some(bound_agent_name.to_string()),
+            agent_profile: None,
+        };
+    }
+    queued_agent_identity_for_mode(mode)
+}
+
+async fn resolve_queued_agent_context<R: Runtime + 'static>(
     app_handle: Option<&AppHandle<R>>,
     context_type: ChatContextType,
+    context_id: &str,
     conversation_id: &ChatConversationId,
-) -> QueuedProjectAgentContext {
-    if context_type != ChatContextType::Project {
-        return QueuedProjectAgentContext::default();
-    }
+) -> Result<QueuedAgentContext, String> {
     let Some(handle) = app_handle else {
-        return QueuedProjectAgentContext::default();
+        return if matches!(
+            context_type,
+            ChatContextType::Project | ChatContextType::Standalone
+        ) {
+            Err(format!(
+                "Queued {} conversation {conversation_id} cannot be validated without app state",
+                context_type
+            ))
+        } else {
+            Ok(QueuedAgentContext::default())
+        };
     };
 
     let app_state = handle.state::<AppState>();
-    let conversation_mode = match app_state
+    let mut builder_context_error = None;
+    let conversation = match app_state
         .chat_conversation_repo
         .get_by_id(conversation_id)
         .await
     {
-        Ok(conversation) => conversation.and_then(|conversation| conversation.agent_mode),
+        Ok(conversation) => conversation,
         Err(error) => {
-            tracing::warn!(
-                error = %error,
-                %conversation_id,
-                "[QUEUE] Failed to resolve queued conversation mode"
-            );
-            None
+            return Err(format!(
+                "Queued conversation lookup failed for {conversation_id}: {error}"
+            ))
         }
+    };
+    if conversation.is_none()
+        && matches!(
+            context_type,
+            ChatContextType::Project | ChatContextType::Standalone
+        )
+    {
+        return Err(format!(
+            "Queued {} conversation {conversation_id} was not found",
+            context_type
+        ));
+    }
+    let conversation_mode = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.agent_mode);
+    if let Some(conversation) = conversation.as_ref() {
+        let requested_conversation_id = conversation_id.as_str();
+        super::conversation_launch_security::validate_conversation_launch_identity(
+            conversation,
+            requested_conversation_id.as_str(),
+            context_type,
+            context_id,
+        )?;
+    }
+    if !matches!(
+        context_type,
+        ChatContextType::Project | ChatContextType::Standalone
+    ) {
+        return Ok(QueuedAgentContext {
+            identity: queued_agent_identity_for_conversation(
+                conversation.as_ref(),
+                conversation_mode,
+            ),
+            effective_mode: conversation_mode,
+            conversation,
+            ..QueuedAgentContext::default()
+        });
+    }
+    let builder_draft = if let Some(draft_id) = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.builder_draft_id.as_deref())
+    {
+        match app_state
+            .persona_repo
+            .get_by_id(&crate::domain::entities::PersonaId::from(draft_id))
+            .await
+        {
+            Ok(Some(draft)) => Some(draft),
+            Ok(None) => {
+                builder_context_error = Some(format!(
+                    "Bound PersonaBuilder draft {draft_id} was not found"
+                ));
+                None
+            }
+            Err(error) => {
+                builder_context_error =
+                    Some(format!("PersonaBuilder draft lookup failed: {error}"));
+                None
+            }
+        }
+    } else {
+        None
     };
     let workspace = match app_state
         .agent_conversation_workspace_repo
@@ -552,11 +768,14 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     };
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
-    QueuedProjectAgentContext {
-        identity: queued_agent_identity_for_mode(mode.clone()),
+    Ok(QueuedAgentContext {
+        identity: queued_agent_identity_for_conversation(conversation.as_ref(), mode.clone()),
         workspace,
         effective_mode: mode,
-    }
+        conversation,
+        builder_draft,
+        builder_context_error,
+    })
 }
 
 async fn resolve_queue_resume_persona<R: Runtime>(
@@ -601,7 +820,7 @@ async fn resolve_queue_resume_persona<R: Runtime>(
         persona_resolve_flags_for_conversation(
             feature_enabled,
             false,
-            agent_name_override_set,
+            agent_name_override_set || conversation.bound_agent_name.is_some(),
             context_type,
             &conversation,
             workspace_mode,
@@ -612,10 +831,28 @@ async fn resolve_queue_resume_persona<R: Runtime>(
     .map_err(|error| error.to_string())
 }
 
-async fn fail_queued_agent_run(
+pub(super) async fn settle_terminal_queued_plan_verification<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    run_id: &str,
+) {
+    let Some(state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) else {
+        return;
+    };
+    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+        state.inner(),
+        &AgentRunId::from_string(run_id.to_string()),
+    )
+    .await
+    {
+        tracing::warn!(error = %error, queued_run_id = run_id, "Failed to release deferred plan approval for terminal queued verification run");
+    }
+}
+
+async fn fail_queued_agent_run<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     registry_key: &RunningAgentKey,
+    app_handle: Option<&AppHandle<R>>,
     run_id: &str,
     error: &str,
 ) {
@@ -625,6 +862,7 @@ async fn fail_queued_agent_run(
     running_agent_registry
         .unregister(registry_key, run_id)
         .await;
+    settle_terminal_queued_plan_verification(app_handle, run_id).await;
 }
 
 async fn reconcile_queued_verification_child_completion<R: Runtime>(
@@ -956,6 +1194,95 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             };
 
+            let queued_agent_context = match resolve_queued_agent_context(
+                app_handle.as_ref(),
+                context_type,
+                context_id,
+                &conversation_id,
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        queued_message_id = %queued_msg.id,
+                        "[QUEUE] Queued conversation lookup blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            };
+            if let Some(conversation) = queued_agent_context.conversation.as_ref() {
+                if let Err(error) = super::validate_persona_builder_feature_for_conversation(
+                    persona_feature_enabled,
+                    conversation,
+                ) {
+                    let error = error.to_string();
+                    tracing::warn!(
+                        error,
+                        %context_type,
+                        context_id,
+                        queued_message_id = %queued_msg.id,
+                        "queue resume blocked because PersonaBuilder is disabled"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            }
+            if let Some(error) = queued_agent_context.builder_context_error.as_ref() {
+                tracing::warn!(
+                    error,
+                    %context_type,
+                    context_id,
+                    "queue resume blocked because PersonaBuilder context could not be loaded"
+                );
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        "agent:error",
+                        AgentErrorPayload {
+                            conversation_id: Some(conversation_id.as_str().to_string()),
+                            context_type: context_type.to_string(),
+                            context_id: context_id.to_string(),
+                            agent_run_id: None,
+                            error: error.clone(),
+                            stderr: None,
+                        },
+                    );
+                }
+                total_processed += 1;
+                continue;
+            }
+            let target_harness = queued_target_harness(&queued_msg, harness);
+
             // Emit queue sent event (removes from frontend optimistic UI)
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
@@ -968,13 +1295,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     },
                 );
             }
-            let queued_agent_context = resolve_queued_project_agent_context(
-                app_handle.as_ref(),
-                context_type,
-                &conversation_id,
-            )
-            .await;
-
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
                     restore_queue_front(
@@ -1001,7 +1321,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     execution_state.as_ref().map(Arc::clone),
                     Some(handle.clone()),
                 );
-                let target_harness = queued_target_harness(&queued_msg, harness);
                 let force_new_provider_session =
                     !can_reuse_fresh_provider_run(&queued_msg, fresh_provider_harness);
                 let send_result = service
@@ -1079,6 +1398,159 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             total_processed += 1;
 
+            let continuation_runtime =
+                match super::continuation_runtime::resolve_for_provider_session(
+                    agent_run_repo,
+                    &conversation_id,
+                    harness,
+                    session_id,
+                )
+                .await
+                {
+                    Ok(Some(runtime)) => runtime,
+                    Ok(None) => {
+                        let error = format!(
+                            "No completed {harness} run owns provider session {session_id}; queued continuation blocked"
+                        );
+                        tracing::error!(
+                            %conversation_id,
+                            %harness,
+                            provider_session_id = session_id,
+                            "{error}"
+                        );
+                        let failed_run = build_queued_preflight_failure_run(
+                            conversation_id.clone(),
+                            harness,
+                            session_id,
+                            run_chain_id,
+                            parent_run_id,
+                            queued_msg.metadata_override.as_deref(),
+                            &queued_msg,
+                        );
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
+                        emit_queued_preflight_error(
+                            app_handle.as_ref(),
+                            &conversation_id,
+                            context_type,
+                            context_id,
+                            failed_run_id.clone(),
+                            error,
+                        );
+                        last_run_id = failed_run_id.or(last_run_id);
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                    Err(error) => {
+                        let error = format!(
+                            "Failed to resolve runtime for queued {harness} provider session {session_id}: {error}"
+                        );
+                        tracing::error!(
+                            %conversation_id,
+                            %harness,
+                            provider_session_id = session_id,
+                            error = %error,
+                            "Failed to resolve queued continuation runtime"
+                        );
+                        let failed_run = build_queued_preflight_failure_run(
+                            conversation_id.clone(),
+                            harness,
+                            session_id,
+                            run_chain_id,
+                            parent_run_id,
+                            queued_msg.metadata_override.as_deref(),
+                            &queued_msg,
+                        );
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
+                        emit_queued_preflight_error(
+                            app_handle.as_ref(),
+                            &conversation_id,
+                            context_type,
+                            context_id,
+                            failed_run_id.clone(),
+                            error,
+                        );
+                        last_run_id = failed_run_id.or(last_run_id);
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                };
+            let (launch_context_type, launch_context_id) = queued_agent_context
+                .conversation
+                .as_ref()
+                .map(|conversation| (conversation.context_type, conversation.context_id.as_str()))
+                .unwrap_or((context_type, context_id));
+            let launch_security =
+                super::conversation_launch_security::conversation_launch_security_class(
+                    launch_context_type,
+                    queued_agent_context.effective_mode,
+                );
+            let requested_model = queued_msg
+                .model_override
+                .as_deref()
+                .or_else(|| continuation_runtime.effective_model());
+            if let Some(model) = requested_model {
+                if let Err(error) =
+                    crate::application::agent_lane_resolution::validate_model_harness_compatibility(
+                        harness, model,
+                    )
+                {
+                    let error = error.to_string();
+                    tracing::error!(
+                        %conversation_id,
+                        %harness,
+                        model,
+                        error = %error,
+                        "Queued continuation runtime validation failed"
+                    );
+                    let failed_run = build_queued_agent_run(
+                        conversation_id.clone(),
+                        harness,
+                        session_id,
+                        run_chain_id,
+                        parent_run_id,
+                        queued_msg.metadata_override.as_deref(),
+                        &continuation_runtime,
+                        &queued_msg,
+                        launch_security,
+                    );
+                    let failed_run_id = persist_failed_queued_run(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        failed_run,
+                        &error,
+                    )
+                    .await;
+                    emit_queued_preflight_error(
+                        app_handle.as_ref(),
+                        &conversation_id,
+                        context_type,
+                        context_id,
+                        failed_run_id.clone(),
+                        error,
+                    );
+                    last_run_id = failed_run_id.or(last_run_id);
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                }
+            }
             // Emit run_started for the queued message (so frontend shows activity)
             let queued_run = build_queued_agent_run(
                 conversation_id.clone(),
@@ -1086,6 +1558,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 session_id,
                 run_chain_id,
                 parent_run_id,
+                queued_msg.metadata_override.as_deref(),
+                &continuation_runtime,
+                &queued_msg,
+                launch_security,
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {
@@ -1114,7 +1590,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_run_id = %queued_run_id,
                 run_chain_id = run_chain_id.unwrap_or("none"),
                 parent_run_id = parent_run_id.unwrap_or("none"),
-                agent_name = queued_agent_context.identity.agent_name.unwrap_or("auto"),
+                agent_name = queued_agent_context.identity.agent_name.as_deref().unwrap_or("auto"),
                 agent_profile = queued_agent_context.identity.agent_profile.unwrap_or("none"),
                 "[QUEUE] Continuation run"
             );
@@ -1172,6 +1648,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error,
                         )
@@ -1180,39 +1657,50 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     }
                 }
             };
-            let attachment_context =
-                match chat_service_context::format_attachments_for_agent(&turn_attachments).await {
-                    Ok(context) => context,
-                    Err(error) => {
-                        tracing::error!(
-                            error = %error,
-                            queued_message_id = %queued_msg.id,
-                            "[QUEUE] Failed to format queued message attachments"
+            let app_data_dir = app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<AppState>())
+                .map(|state| state.app_paths.app_data_dir().to_path_buf());
+            let attachment_context = match chat_service_context::format_attachments_for_agent(
+                &turn_attachments,
+                context_type,
+                queued_agent_context.effective_mode,
+                app_data_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        queued_message_id = %queued_msg.id,
+                        "[QUEUE] Failed to format queued message attachments"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: Some(queued_run_id.clone()),
+                                error: error.clone(),
+                                stderr: None,
+                            },
                         );
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                "agent:error",
-                                AgentErrorPayload {
-                                    conversation_id: Some(conversation_id.as_str().to_string()),
-                                    context_type: context_type.to_string(),
-                                    context_id: context_id.to_string(),
-                                    agent_run_id: Some(queued_run_id.clone()),
-                                    error: error.clone(),
-                                    stderr: None,
-                                },
-                            );
-                        }
-                        fail_queued_agent_run(
-                            agent_run_repo,
-                            running_agent_registry,
-                            &queue_registry_key,
-                            &queued_run_id,
-                            &error,
-                        )
-                        .await;
-                        continue;
                     }
-                };
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        app_handle.as_ref(),
+                        &queued_run_id,
+                        &error,
+                    )
+                    .await;
+                    continue;
+                }
+            };
 
             // Persist user message at enqueue time so replayed timelines match live ordering.
             if !resume_in_place {
@@ -1369,15 +1857,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.delegated_session_repo)
             });
-            let project_repo = app_handle.as_ref().map(|handle| {
-                let app_state = handle.state::<AppState>();
-                Arc::clone(&app_state.project_repo)
-            });
-            let persona_ingest_app_data_dir = app_handle.as_ref().and_then(|handle| {
-                handle
-                    .try_state::<AppState>()
-                    .map(|app_state| app_state.app_paths.app_data_dir().to_path_buf())
-            });
             let atlassian_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
@@ -1490,92 +1969,205 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &runtime_content,
                     &queued_msg.composer_artifact_references,
                 );
+            let runtime_content =
+                match super::chat_service_selection_snapshot::append_selection_snapshot_for_prompt(
+                    &runtime_content,
+                    queued_msg.composer_selection_snapshot.as_ref(),
+                ) {
+                    Ok(runtime_content) => runtime_content,
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::warn!(
+                            error = %error_string,
+                            %context_type,
+                            context_id,
+                            "queue selection snapshot validation failed"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                };
+            let runtime_content =
+                super::chat_service_composer_references::append_excerpt_references_for_prompt(
+                    &runtime_content,
+                    &queued_msg.composer_excerpt_references,
+                );
             let runtime_content = super::plan_mode_runtime_message(
                 runtime_content,
                 queued_agent_context.workspace.as_ref(),
             );
-            let filesystem_read_roots = if let Some(project_repo) = project_repo {
-                let conversation_id_for_roots = conversation_id.as_str();
-                chat_service_context::resolve_mcp_filesystem_read_roots(
-                    project_id,
-                    project_repo,
-                    working_directory,
+            let runtime_content = super::persona_builder_runtime_message(
+                runtime_content,
+                queued_agent_context.conversation.as_ref(),
+                queued_agent_context.builder_draft.as_ref(),
+            );
+            let spawn_context = if let (Some(handle), Some(conversation)) = (
+                app_handle.as_ref(),
+                queued_agent_context.conversation.as_ref(),
+            ) {
+                let state = handle.state::<AppState>();
+                match chat_service_context::resolve_conversation_spawn_context(
+                    conversation,
                     queued_agent_context.effective_mode,
-                    Some(&conversation_id_for_roots),
-                    persona_ingest_app_data_dir.as_deref(),
+                    project_id,
+                    Arc::clone(&state.project_repo),
+                    working_directory,
+                    Some(state.app_paths.app_data_dir()),
+                    Some(state.app_paths.app_data_dir()),
+                    Some(Arc::clone(&state.conversation_folder_reference_repo)),
+                    crate::infrastructure::agents::composer_folder_references_enabled(),
                 )
                 .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            error = %error_string,
+                            "queue resume folder reference root validation blocked spawn"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                }
             } else {
-                Vec::new()
+                chat_service_context::ResolvedConversationSpawnContext::without_app_state(
+                    launch_context_type,
+                    queued_agent_context.effective_mode,
+                    working_directory,
+                )
             };
             let persona_for_attribution = resolved_persona.clone();
+            let queued_effort_override = queued_msg
+                .logical_effort_override
+                .map(|effort| effort.to_string());
+
+            let queue_agent_name = queued_agent_context
+                .identity
+                .agent_name
+                .as_deref()
+                .unwrap_or("ralphx-chat-project");
+            let readiness = chat_service_context::await_required_external_mcp(
+                app_handle.as_ref(),
+                harness,
+                plugin_dir,
+                queue_agent_name,
+                queued_agent_context.identity.agent_profile,
+            )
+            .await;
+            if let Err(error_string) = readiness {
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    app_handle.as_ref(),
+                    &queued_run_id,
+                    &error_string,
+                )
+                .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id,
+                };
+            }
 
             // Build and spawn resume command
-            let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
-                harness,
-                cli_path,
-                plugin_dir,
-                context_type,
-                context_id,
-                &runtime_content,
-                resolved_persona,
-                queued_agent_context.identity.agent_name,
-                queued_agent_context.identity.agent_profile,
-                working_directory,
-                session_id,
-                project_id,
-                &filesystem_read_roots,
-                if context_type == ChatContextType::Project {
-                    Some(conversation_id.as_str())
-                } else {
-                    None
-                },
-                team_mode,
-                Arc::clone(chat_attachment_repo),
-                Arc::clone(artifact_repo),
-                agent_lane_settings_repo,
-                ideation_effort_settings_repo,
-                ideation_model_settings_repo,
-                Arc::clone(ideation_session_repo),
-                Arc::clone(
-                    delegated_session_repo
-                        .as_ref()
-                        .expect("delegated session repo available"),
-                ),
-                Arc::clone(task_repo),
-                &[],
-                0,
-                None,
-                None,
-                false,
-                Some(attachment_context.as_str()),
-            )
-            .await
-            {
-                Ok(spawnable) => spawnable,
-                Err(err) => {
-                    let error_string = err.to_string();
-                    tracing::warn!(
-                        error = %error_string,
-                        %context_type,
-                        context_id,
-                        harness = %harness,
-                        "queue spawn blocked"
-                    );
-                    fail_queued_agent_run(
-                        agent_run_repo,
-                        running_agent_registry,
-                        &queue_registry_key,
-                        &queued_run_id,
-                        &error_string,
-                    )
-                    .await;
-                    return QueueProcessingOutcome {
-                        total_processed,
-                        last_run_id,
-                    };
-                }
-            };
+            let provider_spawnable =
+                match chat_service_context::build_resume_command_for_harness_with_continuation(
+                    harness,
+                    cli_path,
+                    plugin_dir,
+                    launch_context_type,
+                    launch_context_id,
+                    conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
+                    &conversation_id.as_str(),
+                    queued_agent_context.effective_mode,
+                    &runtime_content,
+                    resolved_persona,
+                    spawn_context.folder_refs_block.as_deref(),
+                    queued_agent_context.identity.agent_name.as_deref(),
+                    queued_agent_context.identity.agent_profile,
+                    working_directory,
+                    session_id,
+                    project_id,
+                    &spawn_context.folder_roots,
+                    if launch_context_type == ChatContextType::Project {
+                        Some(conversation_id.as_str())
+                    } else {
+                        None
+                    },
+                    team_mode,
+                    Arc::clone(chat_attachment_repo),
+                    Arc::clone(artifact_repo),
+                    agent_lane_settings_repo,
+                    ideation_effort_settings_repo,
+                    ideation_model_settings_repo,
+                    Arc::clone(ideation_session_repo),
+                    Arc::clone(
+                        delegated_session_repo
+                            .as_ref()
+                            .expect("delegated session repo available"),
+                    ),
+                    Arc::clone(task_repo),
+                    &[],
+                    0,
+                    queued_effort_override.as_deref(),
+                    queued_msg.model_override.as_deref(),
+                    Some(&continuation_runtime),
+                    queued_msg.service_tier_override.as_deref(),
+                    false,
+                    Some(attachment_context.as_str()),
+                )
+                .await
+                {
+                    Ok(spawnable) => spawnable,
+                    Err(err) => {
+                        let error_string = err.to_string();
+                        tracing::warn!(
+                            error = %error_string,
+                            %context_type,
+                            context_id,
+                            harness = %harness,
+                            "queue spawn blocked"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                };
             let persona_injected = provider_spawnable.spawnable.persona_injected();
             let persona_injection_skipped_reason = provider_spawnable
                 .spawnable
@@ -1603,6 +2195,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -1614,6 +2207,47 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             };
             let mut provider_spawnable = provider_spawnable;
+            let Some(handle) = app_handle.as_ref() else {
+                let error_string = "MCP launch policy service is unavailable";
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    app_handle.as_ref(),
+                    &queued_run_id,
+                    error_string,
+                )
+                .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id,
+                };
+            };
+            let app_state = handle.state::<AppState>();
+            let policy = match app_state
+                .mcp_policy_service()
+                .resolve_launch_policy(harness, project_id, Some(working_directory))
+                .await
+            {
+                Ok(policy) => policy,
+                Err(error) => {
+                    let error_string = format!("Failed to resolve MCP launch policy: {error}");
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        app_handle.as_ref(),
+                        &queued_run_id,
+                        &error_string,
+                    )
+                    .await;
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                }
+            };
+            provider_spawnable.apply_mcp_policy(harness, &policy);
             provider_spawnable.apply_provider_env(&provider_env);
             let spawnable = provider_spawnable.spawnable;
 
@@ -1709,6 +2343,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         None, // Queue processing doesn't persist session_id
                         split_verification_transcript,
                         true,
+                        None,
+                        None,
+                        None,
                     )
                     .await
                     {
@@ -1719,6 +2356,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let provider_session_id = outcome.session_id;
                             let queue_stderr = outcome.stderr_text;
                             let turns_finalized = outcome.turns_finalized;
+                            let turn_completion_applied = outcome.completion_applied;
                             let silent_interactive_exit = outcome.silent_interactive_exit;
                             if resume_in_place {
                                 persist_hidden_resume_in_place_marker(
@@ -1743,7 +2381,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     )
                                     .await;
                             }
-                            if has_meaningful_output(&response, tools.len(), &queue_stderr) {
+                            let meaningful_output =
+                                has_meaningful_output(&response, tools.len(), &queue_stderr);
+                            let assistant_message_persisted = if meaningful_output {
                                 super::chat_service_send_background::finalize_structured_assistant_message(
                                     chat_message_repo,
                                     &chat_timeline_repo,
@@ -1758,8 +2398,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     &blocks,
                                     split_verification_transcript,
                                 )
-                                .await;
-                            }
+                                .await
+                            } else {
+                                false
+                            };
                             let recovery_enqueue =
                                 super::chat_service_send_background::enqueue_silent_completion_recovery(
                                     message_queue.as_ref(),
@@ -1780,6 +2422,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 recovery_enqueue,
                                 super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { .. }
                             );
+                            let mut verification_pending = false;
                             match recovery_enqueue {
                                 super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Queued {
                                     attempt,
@@ -1831,19 +2474,104 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         "Agent stopped after automated silent-completion recovery attempts",
                                     )
                                     .await;
-                            } else {
+                            } else if meaningful_output && !assistant_message_persisted {
                                 let _ = agent_run_repo
-                                    .complete(&AgentRunId::from_string(queued_run_id.clone()))
+                                    .fail(
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                        "Failed to persist the final assistant message",
+                                    )
                                     .await;
-                                reconcile_queued_verification_child_completion(
-                                    context_type,
-                                    context_id,
-                                    ideation_session_repo,
-                                    chat_message_repo,
-                                    message_queue,
-                                    app_handle.as_ref(),
-                                )
-                                .await;
+                            } else {
+                                let completion_applied = if turn_completion_applied {
+                                    true
+                                } else {
+                                    agent_run_repo
+                                        .complete_if_running(&AgentRunId::from_string(
+                                            queued_run_id.clone(),
+                                        ))
+                                        .await
+                                        .unwrap_or_else(|error| {
+                                            tracing::error!(
+                                                error = %error,
+                                                queued_run_id,
+                                                "Queue: guarded run completion failed"
+                                            );
+                                            false
+                                        })
+                                };
+                                if completion_applied
+                                    && ((meaningful_output && assistant_message_persisted)
+                                        || turns_finalized > 0)
+                                {
+                                    if let Some(handle) = app_handle.as_ref() {
+                                        if let Some(state) =
+                                            handle.try_state::<crate::application::AppState>()
+                                        {
+                                            let chat_service = state
+                                                .build_chat_service_for_runtime(
+                                                    execution_state.clone(),
+                                                    Some(handle.clone()),
+                                                );
+                                            match crate::application::plan_verification_service::admit_automatic_plan_verification(
+                                                state.inner(),
+                                                &chat_service,
+                                                &conversation_id,
+                                                &AgentRunId::from_string(queued_run_id.clone()),
+                                                true,
+                                            )
+                                            .await
+                                            {
+                                                Ok(disposition) => {
+                                                    verification_pending =
+                                                        disposition.verification_pending();
+                                                }
+                                                Err(error) => {
+                                                    tracing::error!(
+                                                        error = %error,
+                                                        conversation_id = %conversation_id,
+                                                        queued_run_id,
+                                                        "Queue: automatic plan verification admission failed"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if completion_applied {
+                                    reconcile_queued_verification_child_completion(
+                                        context_type,
+                                        context_id,
+                                        ideation_session_repo,
+                                        chat_message_repo,
+                                        message_queue,
+                                        app_handle.as_ref(),
+                                    )
+                                    .await;
+                                }
+                            }
+                            if let Some(handle) = app_handle.as_ref() {
+                                if let Some(state) =
+                                    handle.try_state::<crate::application::AppState>()
+                                {
+                                    if !verification_pending {
+                                        if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
+                                            state.inner(),
+                                            &conversation_id,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to release deferred plan approval after queued admission settled");
+                                        }
+                                    }
+                                    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+                                        state.inner(),
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(error = %error, queued_run_id, "Failed to release deferred plan approval for terminal queued verification run");
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -1897,6 +2625,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         .await;
                                 }
                             }
+                            settle_terminal_queued_plan_verification(
+                                app_handle.as_ref(),
+                                &queued_run_id,
+                            )
+                            .await;
                             // Emit error event
                             if let Some(ref handle) = app_handle {
                                 let _ = handle.emit(
@@ -1937,6 +2670,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -1967,359 +2701,118 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::agents::LogicalEffort;
-    use crate::domain::entities::ChatAttachmentId;
-    use crate::domain::services::{
-        ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
-        ComposerProjectReferenceKind,
-    };
-    use crate::infrastructure::agents::claude::agent_names;
-
-    #[test]
-    fn queued_persisted_metadata_embeds_composer_references() {
-        let mut message = crate::domain::services::QueuedMessage::new("follow up".to_string());
-        message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
-        message.composer_project_references = vec![ComposerProjectReference {
-            path: "src/main.rs".to_string(),
-            kind: Some(ComposerProjectReferenceKind::File),
-        }];
-
-        let metadata = queued_persisted_metadata(&message).expect("metadata");
-        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
-
-        assert_eq!(value["source"], "queue");
-        assert_eq!(
-            value["composer_project_references"][0]["path"],
-            "src/main.rs"
-        );
-        assert_eq!(value["composer_project_references"][0]["kind"], "file");
-    }
-
-    #[test]
-    fn queued_persisted_metadata_preserves_raw_metadata_when_references_exist() {
-        let mut message = crate::domain::services::QueuedMessage::new("follow up".to_string());
-        message.metadata_override = Some("not-json".to_string());
-        message.composer_project_references = vec![ComposerProjectReference {
-            path: "README.md".to_string(),
-            kind: None,
-        }];
-
-        let metadata = queued_persisted_metadata(&message).expect("metadata");
-        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
-
-        assert_eq!(value["raw_metadata"], "not-json");
-        assert_eq!(value["composer_project_references"][0]["path"], "README.md");
-    }
-
-    #[test]
-    fn queued_message_requires_fresh_provider_session_on_harness_mismatch() {
-        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
-        message.harness_override = Some(AgentHarnessKind::Codex);
-
-        assert!(queued_message_requires_fresh_provider_session(
-            &message,
-            AgentHarnessKind::Claude
-        ));
-        assert!(!queued_message_requires_fresh_provider_session(
-            &message,
-            AgentHarnessKind::Codex
-        ));
-    }
-
-    #[test]
-    fn queued_message_requires_fresh_provider_session_on_explicit_flag() {
-        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
-        message.force_new_provider_session = true;
-
-        assert!(queued_message_requires_fresh_provider_session(
-            &message,
-            AgentHarnessKind::Claude
-        ));
-    }
-
-    #[test]
-    fn queued_created_at_override_parses_valid_timestamps_only() {
-        let mut message = crate::domain::services::QueuedMessage::new("timed".to_string());
-        message.created_at_override = Some("2026-06-12T12:00:00+02:00".to_string());
-
-        let parsed =
-            queued_created_at_override(&message).expect("valid timestamp should be parsed");
-        assert_eq!(parsed.to_rfc3339(), "2026-06-12T10:00:00+00:00");
-
-        message.created_at_override = Some("not-a-timestamp".to_string());
-        assert!(queued_created_at_override(&message).is_none());
-    }
-
-    #[test]
-    fn queued_persisted_created_at_falls_back_to_queue_entry_time() {
-        let mut message = crate::domain::services::QueuedMessage::new("timed".to_string());
-        message.created_at = "2026-06-12T12:00:00Z".to_string();
-
-        let parsed =
-            queued_persisted_created_at(&message).expect("queue timestamp should be parsed");
-
-        assert_eq!(parsed.to_rfc3339(), "2026-06-12T12:00:00+00:00");
-    }
-
-    #[test]
-    fn provider_switch_send_options_for_queued_message_preserve_payload() {
-        let conversation_id = ChatConversationId::new();
-        let attachment_id = ChatAttachmentId::new();
-        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
-        message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
-        message.created_at_override = Some("2026-06-12T12:00:00Z".to_string());
-        message.harness_override = Some(AgentHarnessKind::Codex);
-        message.agent_name_override = Some("ralphx-queued-agent".to_string());
-        message.persona_directive = crate::domain::entities::PersonaDirective::Suppress;
-        message.model_override = Some("gpt-5.5".to_string());
-        message.logical_effort_override = Some(LogicalEffort::High);
-        message.composer_project_references = vec![ComposerProjectReference {
-            path: "src/main.rs".to_string(),
-            kind: Some(ComposerProjectReferenceKind::File),
-        }];
-        message.composer_integration_references = vec![ComposerIntegrationReference {
-            provider: "atlassian".to_string(),
-            kind: "jira".to_string(),
-            id: "RX-42".to_string(),
-            key: Some("RX-42".to_string()),
-            title: Some("Fix queue replay".to_string()),
-            url: None,
-            summary_excerpt: None,
-            include_transcript: None,
-        }];
-        message.composer_artifact_references = vec![ComposerArtifactReference {
-            artifact_id: "artifact-1".to_string(),
-            kind: "plan".to_string(),
-            title: Some("Implementation Plan".to_string()),
-            session_id: Some("session-1".to_string()),
-            version: Some(1),
-            status: Some("approved".to_string()),
-        }];
-        message.attachment_ids = vec![attachment_id];
-
-        let options = provider_switch_send_options_for_queued_message(
-            &message,
-            conversation_id.clone(),
-            true,
-            Some(TeamIntent::rx_native(None)),
-        );
-
-        assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
-        assert_eq!(
-            options
-                .created_at
-                .map(|timestamp| timestamp.to_rfc3339())
-                .as_deref(),
-            Some("2026-06-12T12:00:00+00:00")
-        );
-        assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
-        assert_eq!(
-            options.agent_name_override.as_deref(),
-            Some("ralphx-queued-agent")
-        );
-        assert_eq!(
-            options.persona_directive,
-            crate::domain::entities::PersonaDirective::Suppress
-        );
-        assert_eq!(options.model_override.as_deref(), Some("gpt-5.5"));
-        assert_eq!(options.conversation_id_override, Some(conversation_id));
-        assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
-        assert_eq!(
-            options.composer_project_references,
-            message.composer_project_references
-        );
-        assert_eq!(
-            options.composer_integration_references,
-            message.composer_integration_references
-        );
-        assert_eq!(
-            options.composer_artifact_references,
-            message.composer_artifact_references
-        );
-        assert_eq!(options.attachment_ids, message.attachment_ids);
-        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
-        assert!(options.force_new_provider_session);
-    }
-
-    #[test]
-    fn provider_switch_send_options_can_reuse_fresh_provider_run() {
-        let conversation_id = ChatConversationId::new();
-        let mut message = QueuedMessage::new("second queued provider message".to_string());
-        message.harness_override = Some(AgentHarnessKind::Codex);
-        message.force_new_provider_session = true;
-
-        let options = provider_switch_send_options_for_queued_message(
-            &message,
-            conversation_id,
-            false,
-            Some(TeamIntent::rx_native(None)),
-        );
-
-        assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
-        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
-        assert!(
-            !options.force_new_provider_session,
-            "same-harness queued follow-ups should reuse the freshly started provider run"
-        );
-    }
-
-    #[test]
-    fn effective_queue_team_mode_uses_persisted_coordination_mode() {
-        assert!(effective_queue_team_mode(
-            false,
-            Some(CoordinationMode::RxNativeTeam)
-        ));
-        assert!(effective_queue_team_mode(
-            false,
-            Some(CoordinationMode::LegacyClaudeTeam)
-        ));
-        assert!(!effective_queue_team_mode(
-            false,
-            Some(CoordinationMode::Solo)
-        ));
-        assert!(effective_queue_team_mode(
-            true,
-            Some(CoordinationMode::Solo)
-        ));
-    }
-
-    #[test]
-    fn fresh_provider_run_reuse_requires_matching_queued_harness() {
-        let mut same_harness = QueuedMessage::new("same harness".to_string());
-        same_harness.harness_override = Some(AgentHarnessKind::Codex);
-        same_harness.force_new_provider_session = true;
-
-        let mut no_harness = QueuedMessage::new("explicit fresh session".to_string());
-        no_harness.force_new_provider_session = true;
-
-        let mut different_harness = QueuedMessage::new("different harness".to_string());
-        different_harness.harness_override = Some(AgentHarnessKind::Claude);
-        different_harness.force_new_provider_session = true;
-
-        assert!(can_reuse_fresh_provider_run(
-            &same_harness,
-            Some(AgentHarnessKind::Codex)
-        ));
-        assert!(!can_reuse_fresh_provider_run(
-            &no_harness,
-            Some(AgentHarnessKind::Codex)
-        ));
-        assert!(!can_reuse_fresh_provider_run(
-            &different_harness,
-            Some(AgentHarnessKind::Codex)
-        ));
-    }
-
-    #[tokio::test]
-    async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming() {
-        let app_state = AppState::new_test();
-        let message_queue = Arc::clone(&app_state.message_queue);
-        let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
-        let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
-        let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
-        let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
-        let artifact_repo = Arc::clone(&app_state.artifact_repo);
-        let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
-        let task_repo = Arc::clone(&app_state.task_repo);
-        let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
-
-        message_queue.queue_with_runtime_overrides_and_project_references(
-            ChatContextType::Ideation,
-            "session-queued-switch",
-            "queued provider switch".to_string(),
-            None,
-            None,
-            Some(AgentHarnessKind::Codex),
-            None,
-            crate::domain::entities::PersonaDirective::Inherit,
-            Some("gpt-5.5".to_string()),
-            Some(crate::domain::agents::LogicalEffort::High),
-            Some("fast".to_string()),
-            true,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-
-        let outcome = process_queued_messages::<tauri::test::MockRuntime>(
-            ChatContextType::Ideation,
-            AgentHarnessKind::Claude,
-            "session-queued-switch",
-            "session-queued-switch",
-            ChatConversationId::new(),
-            "claude-session-old",
-            false,
-            &message_queue,
-            None,
-            None,
-            &running_agent_registry,
-            &agent_run_repo,
-            &chat_message_repo,
-            None,
-            &chat_attachment_repo,
-            &artifact_repo,
-            &activity_event_repo,
-            &task_repo,
-            &ideation_session_repo,
-            std::path::Path::new("/definitely/missing/ralphx-test-cli"),
-            std::path::Path::new("."),
-            std::path::Path::new("."),
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            tokio_util::sync::CancellationToken::new(),
-            None,
-            None,
-            crate::application::chat_service::StreamingStateCache::new(),
-        )
-        .await;
-
-        assert_eq!(outcome.total_processed, 0);
-        let queued = message_queue.get_queued(ChatContextType::Ideation, "session-queued-switch");
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].harness_override, Some(AgentHarnessKind::Codex));
-        assert_eq!(queued[0].model_override.as_deref(), Some("gpt-5.5"));
-        assert_eq!(
-            queued[0].logical_effort_override,
-            Some(crate::domain::agents::LogicalEffort::High)
-        );
-        assert_eq!(queued[0].service_tier_override.as_deref(), Some("fast"));
-        assert!(queued[0].force_new_provider_session);
-    }
-
-    #[test]
-    fn hidden_resume_marker_metadata_strips_transient_flags() {
-        let metadata = hidden_resume_in_place_marker_metadata(Some(
-            r#"{"resume_in_place":true,"persist_hidden_marker":true,"reason":"verify"}"#,
-        ))
-        .expect("marker metadata");
-        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
-
-        assert_eq!(value.get("resume_in_place"), None);
-        assert_eq!(value.get("persist_hidden_marker"), None);
-        assert_eq!(value["hidden_from_ui"], true);
-        assert_eq!(value["recovery_context"], true);
-        assert_eq!(value["reason"], "verify");
-        assert!(
-            hidden_resume_in_place_marker_metadata(Some(r#"{"resume_in_place":true}"#)).is_none()
-        );
-    }
-
-    #[test]
-    fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
-        let identity = queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::Plan));
-
-        assert_eq!(
-            identity.agent_name,
-            Some(agent_names::AGENT_ORCHESTRATOR_IDEATION)
-        );
-        assert_eq!(identity.agent_profile, Some("plan"));
-    }
+#[doc(hidden)]
+pub async fn process_queued_messages_for_test<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    context_type: ChatContextType,
+    harness: AgentHarnessKind,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    session_id: &str,
+    cli_path: &Path,
+) -> (u32, Option<String>) {
+    process_queued_messages_for_test_with_persona_feature(
+        app_handle,
+        context_type,
+        harness,
+        context_id,
+        conversation_id,
+        session_id,
+        cli_path,
+        true,
+    )
+    .await
 }
+
+#[doc(hidden)]
+pub async fn process_queued_messages_for_test_with_persona_feature<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    context_type: ChatContextType,
+    harness: AgentHarnessKind,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    session_id: &str,
+    cli_path: &Path,
+    persona_feature_enabled: bool,
+) -> (u32, Option<String>) {
+    let (
+        message_queue,
+        running_agent_registry,
+        agent_run_repo,
+        chat_message_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        activity_event_repo,
+        task_repo,
+        ideation_session_repo,
+        app_data_dir,
+    ) = {
+        let state = app_handle.state::<AppState>();
+        (
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.ideation_session_repo),
+            state.app_paths.app_data_dir().to_path_buf(),
+        )
+    };
+    let streaming_state_cache = super::StreamingStateCache::new();
+    let queue_context_id = conversation_id.as_str();
+    let current_dir = std::env::current_dir().expect("resolve queue test working directory");
+    let working_directory = if context_type == ChatContextType::Standalone {
+        crate::application::standalone_workspace::resolve_workspace(
+            &app_data_dir,
+            &conversation_id.as_str(),
+        )
+        .expect("resolve standalone queue test workspace")
+    } else {
+        current_dir.clone()
+    };
+
+    let outcome = process_queued_messages(
+        context_type,
+        harness,
+        context_id,
+        &queue_context_id,
+        conversation_id,
+        session_id,
+        persona_feature_enabled,
+        &message_queue,
+        None,
+        None,
+        &running_agent_registry,
+        &agent_run_repo,
+        &chat_message_repo,
+        None,
+        &chat_attachment_repo,
+        &artifact_repo,
+        &activity_event_repo,
+        &task_repo,
+        &ideation_session_repo,
+        cli_path,
+        &current_dir,
+        &working_directory,
+        None,
+        None,
+        Some(app_handle),
+        None,
+        None,
+        false,
+        CancellationToken::new(),
+        None,
+        None,
+        streaming_state_cache,
+    )
+    .await;
+
+    (outcome.total_processed, outcome.last_run_id)
+}
+
+#[cfg(test)]
+#[path = "chat_service_queue_tests.rs"]
+mod tests;

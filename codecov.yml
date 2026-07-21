@@ -94,6 +94,26 @@ coverage:
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
+          # Provider-native MCP policy commands wrap Tauri State, provider
+          # catalog subprocess probes, and project lookup. Deterministic policy
+          # merge/repo/client behavior is covered in focused sidecar tests.
+          - "!src-tauri/src/commands/mcp_policy_commands.rs"
+          # External MCP supervisor process-management branches require real
+          # subprocess spawning and OS signal behavior; extracted helpers carry
+          # deterministic unit coverage.
+          - "!src-tauri/src/infrastructure/external_mcp_supervisor.rs"
+          # Workspace Review auto-merge coordination spans GitHub adapter calls,
+          # reviewer startup, publication event ordering, and startup recovery.
+          # Behavior is covered by the sidecar auto-merge coordinator suite plus
+          # repository atomicity tests; keep patch coverage focused on those
+          # deterministic units instead of every orchestration error branch.
+          - "!src-tauri/src/application/agent_workspace_review_auto_merge.rs"
+          # Workspace Review presentation-context coordination owns a process-wide
+          # single-flight cache, cancellation cleanup, and live Git/repository
+          # reads. The public status, cache, refresh, and coalescing outcomes are
+          # covered in its sidecar suite; exclude unobservable coordinator plumbing
+          # from the patch gate, consistent with the adjacent auto-merge coordinator.
+          - "!src-tauri/src/application/agent_workspace_review_context.rs"
           # Execution-plan scoped control command wrappers require the production
           # Tauri AppHandle runtime; helper and service behavior is covered in
           # task_commands execution-plan sidecar tests.
@@ -153,6 +173,7 @@ coverage:
           # pattern; parser/DTO helpers are sidecar-unit tested and IPC contracts cover
           # the command surface under the Rust IPC coverage shard.
           - "!src-tauri/src/commands/automation_commands.rs"
+          - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
@@ -175,6 +196,9 @@ ignore:
   # Startup composition roots wire long-lived services; behavior is covered
   # through extracted helpers/services and focused scheduler/finalizer tests.
   - "src-tauri/src/application/startup_background.rs"
+  - "src-tauri/src/application/orphan_worktree_cleanup.rs"
+  - "src-tauri/src/application/pr_startup_recovery.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/agent_conversation_workspace_repository.rs"
   # Merge recovery controller/composition surfaces coordinate long-lived Git
   # worktrees, agent routing, Tauri command glue, and startup reconciliation.
   # Deterministic PR-branch publication behavior is covered by helper and
@@ -212,6 +236,10 @@ ignore:
   - "src-tauri/src/infrastructure/memory/memory_branch_update_repo.rs"
   - "src-tauri/src/infrastructure/sqlite/sqlite_branch_update_repo/repository.rs"
   - "src-tauri/crates/ralphx-domain/src/entities/branch_update.rs"
+  # Provider-native MCP command/process surfaces; deterministic policy behavior
+  # is covered in service/repo/client sidecar tests.
+  - "src-tauri/src/commands/mcp_policy_commands.rs"
+  - "src-tauri/src/infrastructure/external_mcp_supervisor.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"
   - "frontend/src/**/__tests__/**"

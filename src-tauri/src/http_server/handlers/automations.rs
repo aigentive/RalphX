@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -7,15 +7,32 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+use crate::application::automation::actions::{
+    retry_automation_judge_for_state, retry_automation_plan_judge_for_state,
+    trigger_automation_run_now_for_state,
+};
 use crate::application::automation::api::{
-    automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
-    AutomationResponse,
+    automation_detail_response_for_state, automation_run_response_for_state,
+    automation_service_for_state, AutomationDetailResponse, AutomationResponse,
+    AutomationRunResponse, AutomationScheduleResponse,
+};
+use crate::application::automation::decomposition_verifier::{
+    AutomationDecompositionVerdict, AutomationDecompositionVerificationOutcome,
+    AutomationDecompositionVerifier, HarnessAutomationDecompositionVerifierInvoker,
 };
 use crate::domain::entities::{
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, ChatConversationId,
 };
 use crate::error::AppError;
+use crate::http_server::handlers::agent_workspaces::{
+    check_agent_workspace_publish_readiness, get_agent_workspace_publish_status,
+    publish_agent_workspace, update_agent_workspace_from_base, AgentWorkspacePublishActionResponse,
+    AgentWorkspacePublishReadinessResponse, AgentWorkspacePublishStatusResponse,
+    UpdateAgentWorkspaceFromBaseRequest,
+};
+use crate::http_server::handlers::git::JsonError;
 use crate::http_server::types::{HttpError, HttpServerState};
+use crate::infrastructure::agents::claude::automations_config;
 
 pub const CALLER_SESSION_ID_HEADER: &str = "x-ralphx-caller-session-id";
 
@@ -190,6 +207,205 @@ pub async fn finalize_automation(
     Ok(Json(AutomationResponse::from(finalized)))
 }
 
+pub async fn run_automation_now(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationScheduleResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let outcome = trigger_automation_run_now_for_state(&automation.id, &state.app_state)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationScheduleResponse::from(outcome)))
+}
+
+pub async fn pause_automation_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let paused = automation_service_for_state(&state.app_state)
+        .pause(&automation.id, "setup_agent_paused", None)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationResponse::from(paused)))
+}
+
+pub async fn resume_automation_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let resumed = automation_service_for_state(&state.app_state)
+        .resume(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationResponse::from(resumed)))
+}
+
+pub async fn cancel_latest_automation_run(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationRunResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let service = automation_service_for_state(&state.app_state);
+    let detail = service
+        .get_automation_detail(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    let latest = detail
+        .runs
+        .last()
+        .ok_or_else(|| map_app_err(AppError::Validation("automation has no runs".to_string())))?;
+    let cancelled = service
+        .cancel_run(&automation.id, &latest.id)
+        .await
+        .map_err(map_app_err)?;
+    let response = automation_run_response_for_state(cancelled, &state.app_state)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(response))
+}
+
+pub async fn cancel_automation_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let stopped = automation_service_for_state(&state.app_state)
+        .stop(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationResponse::from(stopped)))
+}
+
+pub async fn restart_automation_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationScheduleResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let outcome = automation_service_for_state(&state.app_state)
+        .restart(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationScheduleResponse::from(outcome)))
+}
+
+pub async fn retry_automation_judge_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationScheduleResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let outcome = retry_automation_judge_for_state(&automation.id, &state.app_state)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationScheduleResponse::from(outcome)))
+}
+
+pub async fn retry_automation_plan_judge_for_setup_agent(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationScheduleResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let outcome = retry_automation_plan_judge_for_state(&automation.id, &state.app_state)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationScheduleResponse::from(outcome)))
+}
+
+pub async fn skip_latest_automation_judge(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationScheduleResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let service = automation_service_for_state(&state.app_state);
+    let detail = service
+        .get_automation_detail(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    let latest = detail
+        .runs
+        .last()
+        .ok_or_else(|| map_app_err(AppError::Validation("automation has no runs".to_string())))?;
+    let outcome = service
+        .skip_judge(&automation.id, &latest.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(AutomationScheduleResponse::from(outcome)))
+}
+
+pub async fn get_automation_publish_status(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AgentWorkspacePublishStatusResponse>, JsonError> {
+    let conversation_id = resolve_bound_publish_conversation_id(&state, &headers).await?;
+    get_agent_workspace_publish_status(State(state), Path(conversation_id.to_string())).await
+}
+
+pub async fn check_automation_publish_readiness(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AgentWorkspacePublishReadinessResponse>, JsonError> {
+    let conversation_id = resolve_bound_publish_conversation_id(&state, &headers).await?;
+    check_agent_workspace_publish_readiness(State(state), Path(conversation_id.to_string())).await
+}
+
+pub async fn update_automation_from_base(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
+    let conversation_id = resolve_bound_publish_conversation_id(&state, &headers).await?;
+    update_agent_workspace_from_base(
+        State(state),
+        Path(conversation_id.to_string()),
+        Json(UpdateAgentWorkspaceFromBaseRequest {
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        }),
+    )
+    .await
+}
+
+pub async fn publish_automation_workspace(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
+    let conversation_id = resolve_bound_publish_conversation_id(&state, &headers).await?;
+    publish_agent_workspace(State(state), Path(conversation_id.to_string())).await
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct VerifyAutomationDecompositionResponse {
+    pub automation: AutomationResponse,
+    pub verdict: AutomationDecompositionVerdict,
+}
+
+pub async fn verify_automation_decomposition(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+) -> Result<Json<VerifyAutomationDecompositionResponse>, HttpError> {
+    let automation = resolve_bound_automation(&state, &headers).await?;
+    let service = automation_service_for_state(&state.app_state);
+    let verifier = AutomationDecompositionVerifier::new(
+        service,
+        Arc::new(HarnessAutomationDecompositionVerifierInvoker::new(
+            state.app_state.as_ref().clone(),
+        )),
+        Duration::from_secs(automations_config().judge_timeout_secs.max(1)),
+    );
+    let AutomationDecompositionVerificationOutcome {
+        automation,
+        verdict,
+    } = verifier
+        .verify_and_finalize(&automation.id)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(VerifyAutomationDecompositionResponse {
+        automation: AutomationResponse::from(automation),
+        verdict,
+    }))
+}
+
 fn parse_plan_approval_mode(
     value: Option<&str>,
 ) -> Result<Option<AutomationPlanApprovalMode>, AppError> {
@@ -249,6 +465,77 @@ async fn resolve_bound_automation(
         caller_conversation_id,
     )?;
     Ok(automation)
+}
+
+async fn resolve_bound_publish_conversation_id(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+) -> Result<ChatConversationId, JsonError> {
+    let automation = resolve_bound_automation(state, headers)
+        .await
+        .map_err(http_error_as_json)?;
+    if let Some(setup_conversation_id) = automation.setup_conversation_id.as_ref() {
+        if state
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(setup_conversation_id)
+            .await
+            .map_err(|error| {
+                crate::http_server::handlers::git::json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.to_string(),
+                    None,
+                )
+            })?
+            .is_some()
+        {
+            return Ok(setup_conversation_id.clone());
+        }
+    }
+
+    let detail = automation_service_for_state(&state.app_state)
+        .get_automation_detail(&automation.id)
+        .await
+        .map_err(map_app_err)
+        .map_err(http_error_as_json)?;
+    for conversation_id in detail
+        .runs
+        .iter()
+        .rev()
+        .filter_map(|run| run.conversation_id.as_ref())
+    {
+        if state
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .map_err(|error| {
+                crate::http_server::handlers::git::json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.to_string(),
+                    None,
+                )
+            })?
+            .is_some()
+        {
+            return Ok(conversation_id.clone());
+        }
+    }
+    Err(crate::http_server::handlers::git::json_error(
+        StatusCode::NOT_FOUND,
+        "Automation has no publishable workspace",
+        None,
+    ))
+}
+
+fn http_error_as_json(error: HttpError) -> JsonError {
+    let body = match error.message {
+        Some(message) => {
+            serde_json::from_str(&message).unwrap_or_else(|_| json!({ "error": message }))
+        }
+        None => json!({ "error": "Automation workspace request failed" }),
+    };
+    (error.status, Json(body))
 }
 
 fn caller_conversation_id(headers: &HeaderMap) -> Result<ChatConversationId, HttpError> {
@@ -321,3 +608,5 @@ fn map_app_err(error: AppError) -> HttpError {
 #[cfg(test)]
 #[path = "automations_tests.rs"]
 mod automations_tests;
+use std::sync::Arc;
+use std::time::Duration;

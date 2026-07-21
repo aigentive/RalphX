@@ -20,6 +20,7 @@ export interface AgentModelCatalogEntry {
   menuLabel: string;
   defaultEffort: AgentEffort;
   supportedEfforts: readonly AgentEffort[];
+  supportsCodexUltra?: boolean;
   description?: string;
   source?: AgentModelSource;
   enabled?: boolean;
@@ -37,6 +38,7 @@ export interface AgentModelRegistryModel {
   menuLabel: string;
   defaultEffort: string;
   supportedEfforts: readonly string[];
+  supportsCodexUltra?: boolean | undefined;
   source?: string | undefined;
   enabled?: boolean;
   description?: string | null | undefined;
@@ -127,7 +129,8 @@ export const CODEX_MODEL_CATALOG = [
       "gpt-5.6-sol - Flagship GPT-5.6 model for complex coding, research, and agentic work.",
     menuLabel: "gpt-5.6-sol",
     defaultEffort: "medium",
-    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    supportsCodexUltra: true,
     description:
       "Flagship GPT-5.6 model for complex coding, research, and agentic work.",
   },
@@ -137,7 +140,8 @@ export const CODEX_MODEL_CATALOG = [
       "gpt-5.6-terra - High-intelligence GPT-5.6 model for substantial coding and research tasks.",
     menuLabel: "gpt-5.6-terra",
     defaultEffort: "medium",
-    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    supportsCodexUltra: true,
     description:
       "High-intelligence GPT-5.6 model for substantial coding and research tasks.",
   },
@@ -245,6 +249,12 @@ function effortOrder(effort: AgentEffort): number {
 function normalizeSupportedEfforts(values: readonly unknown[]): AgentEffort[] {
   const efforts = values.filter(isAgentEffort);
   return [...new Set(efforts)].sort((a, b) => effortOrder(a) - effortOrder(b));
+}
+
+function normalizeOrdinarySupportedEfforts(
+  values: readonly unknown[]
+): AgentEffort[] {
+  return normalizeSupportedEfforts(values).filter((effort) => effort !== "ultra");
 }
 
 function intersectSupportedEfforts(
@@ -501,7 +511,10 @@ export function buildAgentModelRegistry(
       continue;
     }
 
-    const supportedEfforts = normalizeSupportedEfforts(model.supportedEfforts);
+    const supportsCodexUltra =
+      model.provider === "codex" &&
+      (model.supportsCodexUltra === true || model.supportedEfforts.includes("ultra"));
+    const supportedEfforts = normalizeOrdinarySupportedEfforts(model.supportedEfforts);
     const fallbackEffort = supportedEfforts[0];
     if (!fallbackEffort) {
       continue;
@@ -518,6 +531,7 @@ export function buildAgentModelRegistry(
         ? defaultEffort
         : fallbackEffort,
       supportedEfforts,
+      ...(supportsCodexUltra ? { supportsCodexUltra: true } : {}),
       ...(model.description ? { description: model.description } : {}),
       ...(isAgentModelSource(model.source) ? { source: model.source } : {}),
       enabled: true,
@@ -594,8 +608,29 @@ export function agentEffortOptionsForModel(
 
 function defaultEffortsForProvider(provider: AgentProvider): readonly AgentEffort[] {
   return provider === "codex"
-    ? ["low", "medium", "high", "xhigh", "max", "ultra"]
+    ? ["low", "medium", "high", "xhigh", "max"]
     : ["low", "medium", "high"];
+}
+
+export function agentModelSupportsCodexUltra(
+  provider: AgentProvider,
+  modelId: string,
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerUltraSupportedModels?: readonly unknown[] | null
+): boolean {
+  if (provider !== "codex") {
+    return false;
+  }
+  const model = findModelEntryForProvider(provider, modelId, registry);
+  return (
+    model?.supportsCodexUltra === true &&
+    providerUltraSupportedModels != null &&
+    providerUltraSupportedModels.some(
+      (supportedModel) =>
+        typeof supportedModel === "string" &&
+        isCodexGpt56ModelSupportedByAlias(model.id, supportedModel)
+    )
+  );
 }
 
 function effortDescriptionForProvider(

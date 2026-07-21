@@ -1,5 +1,84 @@
 use super::*;
 
+fn pending_plan(plan_id: &str, context_id: &str, created_at: DateTime<Utc>) -> PendingTeamPlan {
+    PendingTeamPlan {
+        plan_id: plan_id.to_string(),
+        context_type: "ideation".to_string(),
+        context_id: context_id.to_string(),
+        process: "Implement the plan".to_string(),
+        teammates: Vec::new(),
+        created_at,
+        team_name: "test-team".to_string(),
+        lead_session_id: None,
+    }
+}
+
+#[tokio::test]
+async fn store_pending_plan_reports_superseded_and_garbage_collected_authority() {
+    let tracker = TeamStateTracker::new();
+    tracker
+        .store_pending_plan(pending_plan("plan-old", "context-a", Utc::now()))
+        .await;
+    tracker
+        .store_pending_plan(pending_plan(
+            "plan-stale",
+            "context-b",
+            Utc::now() - chrono::Duration::minutes(31),
+        ))
+        .await;
+
+    let removed = tracker
+        .store_pending_plan(pending_plan("plan-new", "context-a", Utc::now()))
+        .await;
+
+    assert!(removed.iter().any(|entry| {
+        entry.plan.plan_id == "plan-old" && entry.reason == PendingTeamPlanRemovalReason::Superseded
+    }));
+    assert!(removed.iter().any(|entry| {
+        entry.plan.plan_id == "plan-stale"
+            && entry.reason == PendingTeamPlanRemovalReason::GarbageCollected
+    }));
+    assert!(tracker
+        .get_pending_plan_for_context("context-a")
+        .await
+        .is_some_and(|plan| plan.plan_id == "plan-new"));
+}
+
+#[tokio::test]
+async fn expire_pending_plan_removes_authority_and_channel_together() {
+    let tracker = TeamStateTracker::new();
+    tracker
+        .store_pending_plan(pending_plan("plan-timeout", "context-a", Utc::now()))
+        .await;
+    tracker.register_plan_channel("plan-timeout").await;
+
+    let expired = tracker.expire_pending_plan("plan-timeout").await;
+
+    assert!(expired.is_some_and(|plan| plan.plan_id == "plan-timeout"));
+    assert!(tracker
+        .get_pending_plan_for_context("context-a")
+        .await
+        .is_none());
+    assert!(!tracker.plan_channel_exists("plan-timeout").await);
+}
+
+#[tokio::test]
+async fn expiry_preserves_the_channel_after_approval_claims_authority() {
+    let tracker = TeamStateTracker::new();
+    tracker
+        .store_pending_plan(pending_plan("plan-claimed", "context-a", Utc::now()))
+        .await;
+    tracker.register_plan_channel("plan-claimed").await;
+    let claimed = tracker
+        .take_pending_plan("plan-claimed")
+        .await
+        .expect("approval should claim the pending plan");
+
+    assert!(tracker.expire_pending_plan("plan-claimed").await.is_none());
+    assert!(tracker.plan_channel_exists("plan-claimed").await);
+    assert_eq!(claimed.plan_id, "plan-claimed");
+}
+
 #[tokio::test]
 async fn test_create_team() {
     let tracker = TeamStateTracker::new();

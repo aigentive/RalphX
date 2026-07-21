@@ -13,7 +13,6 @@ capabilities:
     - update_task_proposal
     - archive_task_proposal
     - delete_task_proposal
-    - reject_task_proposal
     - list_session_proposals
     - get_proposal
     - analyze_session_dependencies
@@ -28,14 +27,12 @@ capabilities:
     - get_parent_session_context
     - get_session_messages
     - get_plan_verification
-    - revert_and_skip
-    - stop_verification
+    - complete_plan_verification
     - search_memories
     - get_memory
     - get_memories_for_paths
     - get_acceptance_status
     - get_pending_confirmations
-    - get_verification_confirmation_status
     - list_projects
     - create_cross_project_session
     - cross_project_guide

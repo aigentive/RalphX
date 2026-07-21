@@ -34,20 +34,28 @@ export function useAgentsAttachedIdeation({
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
       (activeConversationMode === "ideation" ||
+        activeConversationMode === "tasks" ||
         activeConversationMode === "plan" ||
-        Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
+        Boolean(
+          activeWorkspace?.taskPipelineSessionId ||
+            activeWorkspace?.linkedIdeationSessionId ||
+            activeWorkspace?.linkedPlanBranchId,
+        )));
   const attachedIdeationSessionId = useMemo(
     () =>
       shouldHydrateAttachedIdeation
         ? resolveAttachedIdeationSessionId(
             activeConversation,
             selectedConversationMessages,
-            activeWorkspace?.linkedIdeationSessionId ?? null,
+            activeWorkspace?.taskPipelineSessionId ??
+              activeWorkspace?.linkedIdeationSessionId ??
+              null,
           )
         : null,
     [
       activeConversation,
       activeWorkspace?.linkedIdeationSessionId,
+      activeWorkspace?.taskPipelineSessionId,
       selectedConversationMessages,
       shouldHydrateAttachedIdeation,
     ],
@@ -134,7 +142,12 @@ export function useAgentsAttachedIdeation({
     }
     childArchiveSyncRef.current.add(activeConversation.id);
     void chatApi.archiveConversation(activeConversation.id, { closePullRequest: false })
-      .then(() => invalidateProjectConversations(activeConversation.projectId))
+      .then(() => {
+        if (activeConversation.projectId) {
+          return invalidateProjectConversations(activeConversation.projectId);
+        }
+        return undefined;
+      })
       .catch(() => {
         childArchiveSyncRef.current.delete(activeConversation.id);
         // Status sync is best-effort; manual archive remains available.

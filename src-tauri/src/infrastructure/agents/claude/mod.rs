@@ -9,8 +9,16 @@ pub mod effort_resolver;
 mod generated_plugin;
 pub mod model_labels;
 pub mod model_resolver;
+pub(crate) mod mcp_catalog;
+pub(crate) mod mcp_registration_repair;
 pub mod node_utils;
+mod security_policy;
 mod stream_processor;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
+#[cfg(test)]
+mod mcp_registration_repair_tests;
 
 #[allow(unused_imports)]
 pub use agent_config::team_config::{
@@ -21,12 +29,14 @@ pub use agent_config::team_config::{
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
     claude_runtime_config,
-    config_path, defer_merge_enabled, execution_defaults_config, external_mcp_config,
+    composer_folder_references_enabled, config_path, defer_merge_enabled,
+    execution_defaults_config, external_mcp_config,
     external_mcp_config_path, file_logging_enabled, get_agent_config, get_agent_config_for_profile,
     get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
     get_effective_settings_profile, get_preapproved_tools, get_preapproved_tools_for_profile,
     git_runtime_config, ideation_activity_threshold_secs, limits_config, process_mapping,
-    reconciliation_config, resolve_file_logging_early, scheduler_config, stream_timeouts,
+    reconciliation_config, resolve_file_logging_early, scheduler_config,
+    standalone_conversations_enabled, stream_timeouts,
     supervisor_runtime_config, team_constraints_config, ui_feature_flags_config,
     validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
@@ -34,7 +44,9 @@ pub use agent_config::{
     StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
 pub use agent_config::live_flags::{
-    reset_agent_personas_override_for_test, set_agent_personas_override,
+    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
+    reset_standalone_conversations_override_for_test, set_agent_personas_override,
+    set_composer_folder_references_override, set_standalone_conversations_override,
 };
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
@@ -75,7 +87,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::domain::agents::{
     AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -97,8 +109,23 @@ use crate::infrastructure::agents::mcp_runtime_context::{
 };
 use crate::infrastructure::external_mcp_supervisor::ensure_tauri_mcp_bypass_token;
 
-const PRIMARY_PLUGIN_DIR_REL: &str = "plugins/app";
-const LEGACY_PLUGIN_DIR_REL: &str = "ralphx-plugin";
+pub(crate) const PRIMARY_PLUGIN_DIR_REL: &str = "plugins/app";
+pub(crate) const LEGACY_PLUGIN_DIR_REL: &str = "ralphx-plugin";
+pub(crate) use security_policy::ClaudePermissionPolicy;
+#[cfg(test)]
+pub(crate) use security_policy::CLAUDE_PROMPT_PERMISSION_MODE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudePromptDelivery {
+    NonInteractive,
+    Interactive,
+}
+
+impl ClaudePromptDelivery {
+    const fn is_interactive(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
 
 fn base_plugin_dir_override() -> &'static Mutex<Option<PathBuf>> {
     static OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -282,17 +309,8 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "ideation-advocate" => "ralphx-ideation-advocate",
         "ideation-critic" => "ralphx-ideation-critic",
         "ideation-specialist-backend" => "ralphx-ideation-specialist-backend",
-        "ideation-specialist-code-quality" => "ralphx-ideation-specialist-code-quality",
         "ideation-specialist-frontend" => "ralphx-ideation-specialist-frontend",
         "ideation-specialist-infra" => "ralphx-ideation-specialist-infra",
-        "ideation-specialist-intent" => "ralphx-ideation-specialist-intent",
-        "ideation-specialist-pipeline-safety" => "ralphx-ideation-specialist-pipeline-safety",
-        "ideation-specialist-prompt-quality" => "ralphx-ideation-specialist-prompt-quality",
-        "ideation-specialist-state-machine" => "ralphx-ideation-specialist-state-machine",
-        "ideation-specialist-ux" => "ralphx-ideation-specialist-ux",
-        "plan-verifier" => "ralphx-plan-verifier",
-        "plan-critic-completeness" => "ralphx-plan-critic-completeness",
-        "plan-critic-implementation-feasibility" => "ralphx-plan-critic-implementation-feasibility",
         "chat-task" => "ralphx-chat-task",
         "chat-project" => "ralphx-chat-project",
         "ralphx-worker-team" => "ralphx-execution-team-lead",
@@ -495,6 +513,26 @@ pub(crate) fn resolve_claude_permission_cli_options(
     }
 }
 
+fn resolve_claude_permission_cli_options_for_policy(
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
+) -> ClaudePermissionCliOptions {
+    policy.resolve_cli_options(resolve_claude_permission_cli_options(
+        agent_type,
+        agent_profile,
+    ))
+}
+
+fn preapproved_tools_for_permission_policy(
+    agent_name: &str,
+    agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
+) -> Option<String> {
+    let preapproved = get_preapproved_tools_for_profile(agent_name, agent_profile)?;
+    policy.filter_preapproved_tools(preapproved)
+}
+
 pub(crate) fn append_claude_permission_args(
     args: &mut Vec<String>,
     agent_type: Option<&str>,
@@ -519,8 +557,9 @@ fn apply_claude_permission_args(
     cmd: &mut Command,
     agent_type: Option<&str>,
     agent_profile: Option<&str>,
+    policy: ClaudePermissionPolicy,
 ) {
-    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
+    let options = resolve_claude_permission_cli_options_for_policy(agent_type, agent_profile, policy);
     cmd.args([
         "--permission-prompt-tool",
         &options.permission_prompt_tool,
@@ -617,6 +656,7 @@ fn build_base_cli_command_inner_with_runtime_context(
         model_override,
         mcp_runtime_context,
         enforce_spawn_guard,
+        ClaudePermissionPolicy::InheritConfigured,
     )
 }
 
@@ -631,11 +671,11 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
     enforce_spawn_guard: bool,
+    permission_policy: ClaudePermissionPolicy,
 ) -> Result<Command, String> {
     if enforce_spawn_guard {
         ensure_claude_spawn_allowed()?;
     }
-    sanitize_claude_user_state();
     let mut cmd = Command::new(cli_path);
 
     // Apply common environment hardening and debug flags for CLI spawns.
@@ -679,7 +719,12 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     }
 
     // Configure permission handling from config/harnesses/claude.yaml.
-    apply_claude_permission_args(&mut cmd, agent_type, agent_profile);
+    apply_claude_permission_args(
+        &mut cmd,
+        agent_type,
+        agent_profile,
+        permission_policy,
+    );
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -732,7 +777,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
 
     // If agent_type is provided, create a dynamic MCP config that passes it
     // to the MCP server via CLI args (since env vars don't propagate to MCP servers).
-    // Always enforce strict MCP isolation from user/global servers.
+    // RalphX injects its required server while preserving provider-native servers.
     // Hard error on invalid config — MCP is critical infra, fail loud.
     if let Some(agent) = agent_type {
         let temp_path = create_mcp_config_with_runtime_context_for_profile(
@@ -754,13 +799,12 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
         cmd.args([
             "--mcp-config",
             temp_path.to_str().unwrap_or(""),
-            "--strict-mcp-config",
         ]);
         tracing::debug!(
             path = %temp_path.display(),
             agent_type = agent,
             agent_profile = ?agent_profile,
-            "Dynamic MCP config written (strict)"
+            "Dynamic RalphX MCP config written alongside provider-native configuration"
         );
     }
 
@@ -841,118 +885,6 @@ fn append_runtime_profile_context(
         Some(context) => format!("{system_prompt}\n\n{context}"),
         None => system_prompt,
     }
-}
-
-/// Best-effort cleanup for `~/.claude.json` to avoid startup instability from
-/// corrupted or stale project metadata accumulated across many worktrees.
-///
-/// - If JSON is malformed, back it up and write an empty object.
-/// - If `projects` is present, remove stale MCP server overrides.
-pub fn sanitize_claude_user_state() {
-    let Some(home_dir) = dirs::home_dir() else {
-        return;
-    };
-    let path = home_dir.join(".claude.json");
-
-    // codeql[rust/path-injection]
-    if !path.exists() {
-        return;
-    }
-
-    // codeql[rust/path-injection]
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to read ~/.claude.json");
-            return;
-        }
-    };
-
-    let mut json: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Malformed ~/.claude.json; rotating and recreating");
-            let backup = home_dir.join(format!(
-                ".claude.json.corrupt-{}-{}",
-                std::process::id(),
-                uuid::Uuid::new_v4().simple()
-            ));
-            // codeql[rust/path-injection]
-            let _ = std::fs::rename(&path, &backup);
-            // codeql[rust/path-injection]
-            let _ = std::fs::write(&path, "{}");
-            return;
-        }
-    };
-
-    let Some(root) = json.as_object_mut() else {
-        return;
-    };
-    let (removed, remaining, mcp_overrides_cleared) = {
-        let Some(projects) = root.get_mut("projects").and_then(|v| v.as_object_mut()) else {
-            return;
-        };
-
-        // Remove per-project MCP overrides so agent runs don't inherit stale
-        // config from previously visited worktrees/repositories.
-        let mut cleared = 0usize;
-        for entry in projects.values_mut() {
-            let Some(project_obj) = entry.as_object_mut() else {
-                continue;
-            };
-            for key in [
-                "mcpServers",
-                "enabledMcpjsonServers",
-                "disabledMcpjsonServers",
-                "disabledMcpServers",
-                "mcpContextUris",
-            ] {
-                if project_obj.remove(key).is_some() {
-                    cleared += 1;
-                }
-            }
-        }
-
-        (0usize, projects.len(), cleared)
-    };
-
-    if removed == 0 && mcp_overrides_cleared == 0 {
-        return;
-    }
-
-    let serialized = match serde_json::to_string_pretty(&json) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to serialize sanitized ~/.claude.json");
-            return;
-        }
-    };
-
-    let temp = home_dir.join(format!(
-        ".claude.json.tmp-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
-
-    // codeql[rust/path-injection]
-    if let Err(e) = std::fs::write(&temp, serialized) {
-        warn!(path = %temp.display(), error = %e, "Failed to write temp ~/.claude.json");
-        return;
-    }
-    // codeql[rust/path-injection]
-    if let Err(e) = std::fs::rename(&temp, &path) {
-        warn!(from = %temp.display(), to = %path.display(), error = %e, "Failed to replace ~/.claude.json");
-        // codeql[rust/path-injection]
-        let _ = std::fs::remove_file(&temp);
-        return;
-    }
-
-    info!(
-        removed = removed,
-        remaining = remaining,
-        mcp_overrides_cleared = mcp_overrides_cleared,
-        "Sanitized ~/.claude.json project metadata"
-    );
 }
 
 /// Validate a generated MCP config JSON value for required fields.
@@ -1348,9 +1280,18 @@ where
 pub struct SpawnableCommand {
     cmd: Command,
     stdin_prompt: Option<String>,
+    stdin_transport: SpawnableStdinTransport,
     prompt_arg_debug_redaction: Option<PromptArgDebugRedaction>,
     persona_injected: bool,
     persona_injection_skipped_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnableStdinTransport {
+    #[cfg(test)]
+    Inherited,
+    Null,
+    Piped,
 }
 
 #[derive(Debug, Clone)]
@@ -1414,7 +1355,8 @@ impl std::fmt::Debug for SpawnableCommand {
                     prompt_arg_debug_redaction: self.prompt_arg_debug_redaction.as_ref(),
                 },
             )
-            .field("uses_stdin", &self.stdin_prompt.is_some())
+            .field("stdin_transport", &self.stdin_transport)
+            .field("has_stdin_prompt", &self.stdin_prompt.is_some())
             .field("stdin_prompt_len", &prompt_len)
             .field("stdin_prompt_redacted", &self.stdin_prompt.is_some())
             .finish()
@@ -1422,10 +1364,26 @@ impl std::fmt::Debug for SpawnableCommand {
 }
 
 impl SpawnableCommand {
+    #[cfg(test)]
     pub(crate) fn new(cmd: Command, stdin_prompt: Option<String>) -> Self {
+        Self::new_with_stdin_transport(
+            cmd,
+            stdin_prompt,
+            SpawnableStdinTransport::Inherited,
+        )
+    }
+
+    pub(crate) fn new_with_stdin_transport(
+        mut cmd: Command,
+        stdin_prompt: Option<String>,
+        stdin_transport: SpawnableStdinTransport,
+    ) -> Self {
+        crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+            .apply_to_tokio_command(&mut cmd);
         Self {
             cmd,
             stdin_prompt,
+            stdin_transport,
             prompt_arg_debug_redaction: None,
             persona_injected: false,
             persona_injection_skipped_reason: None,
@@ -1464,7 +1422,11 @@ impl SpawnableCommand {
 
     /// Set an environment variable on the underlying command.
     pub fn env(&mut self, key: &str, val: &str) -> &mut Self {
-        self.cmd.env(key, val);
+        if crate::infrastructure::subprocess_env_policy::is_github_cli_token_env_var(key) {
+            self.cmd.env_remove(key);
+        } else {
+            self.cmd.env(key, val);
+        }
         self
     }
 
@@ -1613,7 +1575,7 @@ fn add_prompt_args(
     resume_session: Option<&str>,
     interactive: bool,
     mcp_runtime_context: Option<&McpRuntimeContext>,
-    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
+    permission_policy: ClaudePermissionPolicy,
 ) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
     if let Some(session_id) = resume_session {
@@ -1646,15 +1608,13 @@ fn add_prompt_args(
             let runtime = claude_runtime_config();
             let runtime_pre_execution_learned_skills =
                 pre_execution_learned_skill_context_from_runtime(agent_name, mcp_runtime_context);
-            let pre_execution_learned_skills =
-                pre_execution_learned_skills.or(runtime_pre_execution_learned_skills.as_ref());
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
                 plugin_dir,
                 agent_name,
                 agent_profile,
                 prompt,
                 persona_block,
-                pre_execution_learned_skills,
+                runtime_pre_execution_learned_skills.as_ref(),
             );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
@@ -1738,7 +1698,9 @@ fn add_prompt_args(
         }
 
         // Pre-approve tools to bypass permission prompts (MCP + CLI permissions)
-        if let Some(preapproved) = get_preapproved_tools_for_profile(agent_name, agent_profile) {
+        if let Some(preapproved) =
+            preapproved_tools_for_permission_policy(agent_name, agent_profile, permission_policy)
+        {
             cmd.args(["--allowedTools", &preapproved]);
             tracing::debug!(agent = agent_name, preapproved = %preapproved, "Agent pre-approved tools");
         }
@@ -1855,13 +1817,20 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         resume_session,
         false,
         mcp_runtime_context,
-        None,
+        ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
+    Ok(
+        SpawnableCommand::new_with_stdin_transport(
+            cmd,
+            prompt_args.stdin_prompt,
+            SpawnableStdinTransport::Piped,
+        )
+        .with_persona_injection_outcome(
+            prompt_args.persona_injected,
+            prompt_args.persona_injection_skipped_reason,
+        ),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1879,6 +1848,116 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::NonInteractive,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Canonical profile-aware Claude command seam for backend-selected launch security.
+pub(crate) fn build_spawnable_profile_command_with_permission_policy(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy_inner(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        permission_policy,
+        prompt_delivery,
+        true,
+    )
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_spawnable_profile_command_with_permission_policy_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+) -> Result<SpawnableCommand, String> {
+    build_spawnable_profile_command_with_permission_policy_inner(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        permission_policy,
+        prompt_delivery,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_spawnable_profile_command_with_permission_policy_inner(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    permission_policy: ClaudePermissionPolicy,
+    prompt_delivery: ClaudePromptDelivery,
+    enforce_spawn_guard: bool,
+) -> Result<SpawnableCommand, String> {
     let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
         cli_path,
         plugin_dir,
@@ -1888,7 +1967,8 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         effort_override,
         model_override,
         mcp_runtime_context,
-        true,
+        enforce_spawn_guard,
+        permission_policy,
     )?;
     let prompt_args = add_prompt_args(
         &mut cmd,
@@ -1898,15 +1978,26 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         agent,
         agent_profile,
         resume_session,
-        false,
+        prompt_delivery.is_interactive(),
         mcp_runtime_context,
-        None,
+        permission_policy,
     );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
+    configure_spawn(
+        &mut cmd,
+        working_directory,
+        prompt_delivery.is_interactive() || prompt_args.stdin_prompt.is_some(),
+    );
+    Ok(
+        SpawnableCommand::new_with_stdin_transport(
+            cmd,
+            prompt_args.stdin_prompt,
+            SpawnableStdinTransport::Piped,
+        )
+        .with_persona_injection_outcome(
+            prompt_args.persona_injected,
+            prompt_args.persona_injection_skipped_reason,
+        ),
+    )
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1966,13 +2057,20 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         resume_session,
         false,
         mcp_runtime_context,
-        None,
+        ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
+    Ok(
+        SpawnableCommand::new_with_stdin_transport(
+            cmd,
+            prompt_args.stdin_prompt,
+            SpawnableStdinTransport::Piped,
+        )
+        .with_persona_injection_outcome(
+            prompt_args.persona_injected,
+            prompt_args.persona_injection_skipped_reason,
+        ),
+    )
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1991,34 +2089,22 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy_for_test(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        false,
-    )?;
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        false,
-        mcp_runtime_context,
-        None,
-    );
-    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::NonInteractive,
+    )
 }
 
 /// Build a ready-to-spawn interactive CLI command (no `-p` flag).
@@ -2098,35 +2184,22 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        true,
-    )?;
-    // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        true,
-        mcp_runtime_context,
-        None,
-    );
-    configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::Interactive,
+    )
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2201,109 +2274,22 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+    build_spawnable_profile_command_with_permission_policy_for_test(
         cli_path,
         plugin_dir,
+        prompt,
         agent,
         agent_profile,
+        persona_block,
+        resume_session,
+        working_directory,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
-        false,
-    )?;
-    let prompt_args = add_prompt_args(
-        &mut cmd,
-        plugin_dir,
-        prompt,
-        persona_block,
-        agent,
-        agent_profile,
-        resume_session,
-        true,
-        mcp_runtime_context,
-        None,
-    );
-    configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
-        prompt_args.persona_injected,
-        prompt_args.persona_injection_skipped_reason,
-    ))
-}
-
-/// Register the configured MCP server with Claude Code CLI.
-/// This ensures the MCP server is available to Claude regardless of which project directory
-/// the user is working in. The server is registered with user scope.
-pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(), String> {
-    let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
-    let mcp_server_path_str = mcp_server_path.to_string_lossy().to_string();
-
-    // Build the JSON config for the MCP server
-    // IMPORTANT: Do NOT specify an "env" field here. The env field in MCP config
-    // REPLACES the parent environment entirely (Node.js spawn behavior). We need
-    // the MCP server to INHERIT RALPHX_AGENT_TYPE from Claude CLI's environment
-    // (set by Rust when spawning). The MCP server defaults to the production
-    // backend port when TAURI_API_URL is not specified.
-    let mcp_config = serde_json::json!({
-        "type": "stdio",
-        "command": "node",
-        "args": [
-            mcp_server_path_str,
-            "--trace-dir",
-            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir().to_string_lossy()
-        ]
-    });
-
-    let config_json = serde_json::to_string(&mcp_config)
-        .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
-    let mcp_server_name = claude_runtime_config().mcp_server_name.clone();
-
-    // First, try to remove existing registration (ignore errors)
-    let mut remove_cmd = std::process::Command::new(cli_path);
-    apply_common_spawn_env_to_std(&mut remove_cmd);
-    let remove_result = remove_cmd
-        .args(["mcp", "remove", &mcp_server_name, "-s", "user"])
-        .output();
-
-    match remove_result {
-        Ok(output) => {
-            if output.status.success() {
-                info!(server = %mcp_server_name, "Removed existing MCP registration");
-            }
-            // Ignore errors - server might not exist yet
-        }
-        Err(e) => {
-            warn!("Failed to run mcp remove (might be ok): {}", e);
-        }
-    }
-
-    // Register the MCP server with user scope
-    let mut add_cmd = std::process::Command::new(cli_path);
-    apply_common_spawn_env_to_std(&mut add_cmd);
-    let add_result = add_cmd
-        .args([
-            "mcp",
-            "add-json",
-            "-s",
-            "user",
-            &mcp_server_name,
-            &config_json,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run claude mcp add-json: {}", e))?;
-
-    if !add_result.status.success() {
-        let stderr = String::from_utf8_lossy(&add_result.stderr);
-        return Err(format!("Failed to register MCP server: {}", stderr));
-    }
-
-    info!(
-        server = %mcp_server_name,
-        path = %mcp_server_path.display(),
-        "Successfully registered MCP server"
-    );
-
-    Ok(())
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::Interactive,
+    )
 }
 
 /// Find the Claude CLI path (uses same approach as ClaudeCodeClient)
@@ -2409,481 +2395,5 @@ mod create_mcp_config_tests;
 mod spawnable_command_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::utils::path_safety::{checked_exists, checked_read_to_string};
-    use std::ffi::{OsStr, OsString};
-    use std::path::{Path, PathBuf};
-
-    /// Regression: the `--permission-prompt-tool` flag for an external-transport agent
-    /// (mixed external + internal MCP) must name the internal sidecar server, matching
-    /// the `permission_request` tool injected into `--allowed-tools`. Otherwise the
-    /// Claude CLI aborts before any MCP tool (e.g. ideation start) can run.
-    #[test]
-    fn test_resolve_claude_permission_cli_options_external_agent_uses_internal_server() {
-        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"), None);
-        assert_eq!(
-            options.permission_prompt_tool,
-            "mcp__ralphx_internal__permission_request"
-        );
-
-        // The flag value must be present in the agent's pre-approved tool surface.
-        let preapproved = get_preapproved_tools("ralphx-chat-project").unwrap();
-        let tool_list: std::collections::HashSet<_> = preapproved.split(',').collect();
-        assert!(tool_list.contains(options.permission_prompt_tool.as_str()));
-    }
-
-    /// Non-external agents keep the primary-server permission-prompt tool unchanged.
-    #[test]
-    fn test_resolve_claude_permission_cli_options_worker_uses_primary_server() {
-        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"), None);
-        assert_eq!(
-            options.permission_prompt_tool,
-            "mcp__ralphx__permission_request"
-        );
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        original: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let original = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, original }
-        }
-
-        fn unset(key: &'static str) -> Self {
-            let original = std::env::var_os(key);
-            std::env::remove_var(key);
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
-    fn read_test_file(path: impl AsRef<Path>) -> String {
-        checked_read_to_string(path.as_ref(), "Claude plugin test fixture")
-            .expect("read Claude plugin test fixture")
-    }
-
-    fn test_path_exists(path: impl AsRef<Path>) -> bool {
-        checked_exists(path.as_ref(), "Claude plugin test fixture")
-            .expect("inspect Claude plugin test fixture")
-    }
-
-    fn write_executable(path: &Path, contents: &str) {
-        std::fs::write(path, contents).expect("write executable");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(path)
-                .expect("executable metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions).expect("mark executable");
-        }
-    }
-
-    fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
-        entries
-            .iter()
-            .position(|entry| entry == path.as_ref())
-            .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
-    }
-
-    /// build_spawnable_command calls ensure_claude_spawn_allowed() which returns
-    /// Err in tests — exercise the function up to that guard.
-    #[test]
-    fn test_build_spawnable_command_blocked_in_tests() {
-        let result = build_spawnable_command(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            "test prompt",
-            None,
-            None,
-            Path::new("/tmp"),
-            None,
-            None,
-        );
-        // In test env, ensure_claude_spawn_allowed() returns Err
-        assert!(result.is_err(), "should be blocked in test environment");
-        assert!(
-            result.unwrap_err().contains("disabled"),
-            "error should mention spawn disabled"
-        );
-    }
-
-    /// build_spawnable_interactive_command is also blocked in tests by the same guard.
-    #[test]
-    fn test_build_spawnable_interactive_command_blocked_in_tests() {
-        let result = build_spawnable_interactive_command(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            "my interactive prompt",
-            None,
-            None,
-            Path::new("/tmp"),
-            false,
-            None,
-            None,
-        );
-        assert!(result.is_err(), "should be blocked in test environment");
-    }
-
-    /// Verify SpawnableCommand::spawn_interactive is a method that exists and the type
-    /// compiles correctly. The actual spawn is gated behind ensure_claude_spawn_allowed.
-    #[test]
-    fn test_spawnable_command_debug_impl() {
-        fn assert_debug<T: std::fmt::Debug>() {}
-        assert_debug::<SpawnableCommand>();
-    }
-
-    #[test]
-    fn spawnable_command_debug_redacts_env_values() {
-        let mut command = Command::new("/fake/claude");
-        command.env("ANTHROPIC_AUTH_TOKEN", "secret-token");
-        let spawnable = SpawnableCommand::new(command, None);
-
-        let debug = format!("{spawnable:?}");
-
-        assert!(debug.contains("ANTHROPIC_AUTH_TOKEN"));
-        assert!(debug.contains("<redacted>"));
-        assert!(!debug.contains("secret-token"));
-    }
-
-    #[test]
-    fn common_spawn_env_sets_agent_tool_path() {
-        let mut command = Command::new("/fake/claude");
-        apply_common_spawn_env(&mut command);
-
-        let path = command
-            .as_std()
-            .get_envs()
-            .find_map(|(key, value)| {
-                (key == "PATH").then(|| value.map(|path| path.to_string_lossy().into_owned()))?
-            })
-            .expect("PATH should be explicitly set for agent subprocesses");
-
-        assert!(path.contains("/opt/homebrew/bin"));
-        assert!(path.contains("/usr/local/bin"));
-        if let Some(home) = dirs::home_dir() {
-            let cargo_bin = home.join(".cargo").join("bin");
-            let entries = std::env::split_paths(&path).collect::<Vec<_>>();
-            assert!(
-                path_index(&entries, &cargo_bin) < path_index(&entries, "/opt/homebrew/bin"),
-                "user cargo shim should stay before Homebrew in Claude spawn PATH: {path}"
-            );
-        }
-
-        let screenshot_dir = command
-            .as_std()
-            .get_envs()
-            .find_map(|(key, value)| {
-                (key == "RALPHX_AGENT_SCREENSHOT_DIR")
-                    .then(|| value.map(|path| path.to_string_lossy().into_owned()))?
-            })
-            .expect("RALPHX_AGENT_SCREENSHOT_DIR should be explicitly set");
-        assert!(screenshot_dir.contains("screenshots"));
-    }
-
-    #[test]
-    fn test_apply_common_spawn_env_preserves_user_shims_while_ensuring_node_bin() {
-        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
-            .lock()
-            .expect("env mutex");
-        let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
-        let _disable_login_shell =
-            EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
-        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
-        let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
-
-        let mut cmd = Command::new("/usr/bin/env");
-        apply_common_spawn_env(&mut cmd);
-
-        let envs = cmd
-            .as_std()
-            .get_envs()
-            .filter_map(|(key, value)| value.map(|val| (key.to_os_string(), val.to_os_string())))
-            .collect::<Vec<_>>();
-        let path_value = envs
-            .iter()
-            .find(|(key, _)| key == OsStr::new("PATH"))
-            .map(|(_, value)| value.clone())
-            .expect("PATH env");
-        let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
-
-        if let Some(home) = dirs::home_dir() {
-            let cargo_bin = home.join(".cargo").join("bin");
-            assert!(
-                path_index(&path_entries, &cargo_bin)
-                    < path_index(&path_entries, &expected_node_bin),
-                "user cargo shim should stay before inserted Node bin: {path_value:?}"
-            );
-        }
-        assert!(
-            path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin")
-        );
-    }
-
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test]
-    async fn register_mcp_server_ensures_resolved_node_for_env_shim() {
-        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
-            .lock()
-            .expect("env mutex");
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let empty_path = temp_dir.path().join("empty-path");
-        std::fs::create_dir_all(&empty_path).expect("create empty path");
-        let nvm_bin = temp_dir
-            .path()
-            .join(".nvm")
-            .join("versions")
-            .join("node")
-            .join("v22.16.0")
-            .join("bin");
-        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
-        let node_path = nvm_bin.join("node");
-        let claude_path = nvm_bin.join("claude");
-        let captured_add_json_path = temp_dir.path().join("captured-add-json.txt");
-        write_executable(
-            &node_path,
-            &format!(
-                r#"#!/bin/sh
-capture='{}'
-shift
-if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
-  exit 0
-elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
-  printf '%s' "$6" > "$capture"
-  exit 0
-else
-  printf 'unexpected args\n' >&2
-  exit 64
-fi
-"#,
-                captured_add_json_path.to_string_lossy()
-            ),
-        );
-        write_executable(&claude_path, "#!/usr/bin/env node\n");
-
-        let _home = EnvGuard::set_os("HOME", temp_dir.path());
-        let _path = EnvGuard::set_os("PATH", &empty_path);
-        let _nvm_bin = EnvGuard::unset("NVM_BIN");
-        let _volta_home = EnvGuard::unset("VOLTA_HOME");
-        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
-
-        register_mcp_server(&claude_path, temp_dir.path())
-            .await
-            .expect("Claude MCP registration should run npm shim with resolved node");
-
-        let captured_add_json =
-            std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
-        assert!(
-            captured_add_json.contains("--trace-dir"),
-            "registered MCP config should include trace-dir arg"
-        );
-        assert!(
-            captured_add_json.contains("mcp-proxy"),
-            "registered MCP config should point traces at MCP proxy log root"
-        );
-    }
-
-    /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the
-    /// same spawn guard. The env var propagation logic (RALPHX_IS_EXTERNAL_TRIGGER=1)
-    /// executes after the guard; this test confirms the function accepts the flag and
-    /// returns the expected blocked error in the test environment.
-    #[test]
-    fn test_build_base_cli_command_external_mcp_blocked_in_tests() {
-        let result = build_base_cli_command(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            None,
-            true, // is_external_mcp=true
-            None,
-            None,
-        );
-        assert!(result.is_err(), "should be blocked in test environment");
-        assert!(
-            result.unwrap_err().contains("disabled"),
-            "error should mention spawn disabled"
-        );
-    }
-
-    /// build_base_cli_command with is_external_mcp=false is also blocked in tests.
-    #[test]
-    fn test_build_base_cli_command_internal_mcp_blocked_in_tests() {
-        let result = build_base_cli_command(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            None,
-            false, // is_external_mcp=false
-            None,
-            None,
-        );
-        assert!(result.is_err(), "should be blocked in test environment");
-    }
-
-    #[test]
-    fn test_build_base_cli_command_defaults_to_most_permissive_claude_permissions() {
-        let command = build_base_cli_command_inner(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            None,
-            false,
-            None,
-            None,
-            false,
-        )
-        .expect("build base command with spawn guard disabled");
-        let args = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let permission_mode_idx = args
-            .iter()
-            .position(|arg| arg == "--permission-mode")
-            .expect("--permission-mode flag");
-
-        assert_eq!(args[permission_mode_idx + 1], "bypassPermissions");
-        assert!(
-            args.contains(&"--dangerously-skip-permissions".to_string()),
-            "Claude base command must bypass permission prompts by default"
-        );
-    }
-
-    #[test]
-    fn test_build_base_cli_command_uses_provider_permission_override() {
-        let _lock = lock_runtime_plugin_dirs_for_tests();
-        let previous = set_claude_permission_runtime_override(Some(
-            ClaudePermissionRuntimeOverride {
-                permission_mode: Some("dontAsk".to_string()),
-                dangerously_skip_permissions: false,
-                allow_dangerously_skip_permissions: true,
-            },
-        ));
-
-        let command = build_base_cli_command_inner(
-            Path::new("/fake/claude"),
-            Path::new("/fake/plugin"),
-            None,
-            false,
-            None,
-            None,
-            false,
-        )
-        .expect("build base command with spawn guard disabled");
-        let args = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let permission_mode_idx = args
-            .iter()
-            .position(|arg| arg == "--permission-mode")
-            .expect("--permission-mode flag");
-
-        assert_eq!(args[permission_mode_idx + 1], "dontAsk");
-        assert!(args.contains(&"--allow-dangerously-skip-permissions".to_string()));
-        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
-
-        set_claude_permission_runtime_override(previous);
-    }
-
-    #[test]
-    fn test_resolve_plugin_dir_uses_configured_runtime_root_not_target_project() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let runtime_root = temp_dir.path().join("runtime");
-        let runtime_plugin_dir = runtime_root.join(PRIMARY_PLUGIN_DIR_REL);
-        let generated_plugin_dir = temp_dir.path().join("generated/claude-plugin");
-        let target_project_dir = temp_dir.path().join("target-project");
-        std::fs::create_dir_all(runtime_plugin_dir.join("agents")).unwrap();
-        std::fs::create_dir_all(target_project_dir.join(PRIMARY_PLUGIN_DIR_REL)).unwrap();
-        let _guard = override_runtime_plugin_dirs_for_tests(
-            runtime_plugin_dir.clone(),
-            generated_plugin_dir.clone(),
-        );
-
-        assert_eq!(
-            resolve_base_plugin_dir(&target_project_dir),
-            runtime_plugin_dir
-        );
-        assert_eq!(
-            resolve_plugin_dir(&target_project_dir),
-            generated_plugin_dir
-        );
-    }
-
-    #[test]
-    fn test_resolve_base_plugin_dir_falls_back_to_source_runtime_root() {
-        let resolved = resolve_base_plugin_dir(Path::new("/tmp/target-project"));
-        assert!(
-            resolved.ends_with(PRIMARY_PLUGIN_DIR_REL) || resolved.ends_with(LEGACY_PLUGIN_DIR_REL),
-            "unexpected runtime plugin dir: {}",
-            resolved.display()
-        );
-    }
-
-    #[test]
-    fn test_materialize_generated_plugin_dir_generates_canonical_agents_and_preserves_runtime_assets(
-    ) {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let repo_root = temp_dir.path().join("repo");
-        let plugin_dir = repo_root.join(PRIMARY_PLUGIN_DIR_REL);
-        std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build")).unwrap();
-        std::fs::write(
-            plugin_dir.join("ralphx-mcp-server/build/index.js"),
-            "// fake",
-        )
-        .unwrap();
-        std::fs::write(
-            plugin_dir.join(".mcp.json"),
-            r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js"]}}}"#,
-        )
-        .unwrap();
-
-        std::fs::create_dir_all(repo_root.join("agents/ralphx-utility-session-namer/shared"))
-            .unwrap();
-        std::fs::write(
-            repo_root.join("agents/ralphx-utility-session-namer/agent.yaml"),
-            "name: ralphx-utility-session-namer\nrole: session_namer\n",
-        )
-        .unwrap();
-        std::fs::write(
-            repo_root.join("agents/ralphx-utility-session-namer/shared/prompt.md"),
-            "Canonical Session Namer Prompt",
-        )
-        .unwrap();
-
-        let generated_dir =
-            materialize_generated_plugin_dir(&plugin_dir).expect("generated plugin dir");
-        let generated_session_namer =
-            read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
-        assert!(
-            generated_session_namer.contains("Canonical Session Namer Prompt"),
-            "generated session namer should use canonical prompt body"
-        );
-        assert!(
-            generated_session_namer.contains("name: ralphx-utility-session-namer"),
-            "generated session namer should render Claude frontmatter"
-        );
-        assert!(
-            !test_path_exists(generated_dir.join("agents/worker.md")),
-            "generated plugin should not carry non-canonical legacy plugin prompt files"
-        );
-        assert!(
-            test_path_exists(generated_dir.join("ralphx-mcp-server/build/index.js")),
-            "generated plugin dir should keep MCP runtime assets available"
-        );
-    }
-}
+#[path = "claude_tests.rs"]
+mod tests;

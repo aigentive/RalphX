@@ -166,6 +166,23 @@ html[data-theme="dark"] main {
   --notice-warn-text: #D6C28D;
 }
 
+[data-theme="dark"] [data-sonner-toaster] {
+  --normal-text: #FFFFFF;
+}
+
+[data-theme="dark"] [data-sonner-toast][data-styled="true"] {
+  color: #FFFFFF !important;
+}
+
+[data-theme="dark"] [data-sonner-toast][data-styled="true"] [data-description] {
+  color: rgba(255,255,255,.54) !important;
+}
+
+[data-theme="dark"] [data-sonner-toast][data-styled="true"] [data-title],
+[data-theme="dark"] [data-sonner-toast][data-styled="true"] [data-content] {
+  color: #FFFFFF !important;
+}
+
 [data-theme="dark"] [data-testid="kanban-toolbar"] {
   border-bottom-color: #2E2E36 !important;
 }

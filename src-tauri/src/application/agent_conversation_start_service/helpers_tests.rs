@@ -392,6 +392,8 @@ fn requires_workspace_is_true_for_non_chat_modes() {
     use AgentConversationWorkspaceMode::*;
     assert!(agent_mode_requires_workspace(Edit));
     assert!(agent_mode_requires_workspace(Plan));
+    assert!(agent_mode_requires_workspace(Tasks));
+    assert!(agent_mode_requires_workspace(Autopilot));
     assert!(agent_mode_requires_workspace(Ideation));
     assert!(agent_mode_requires_workspace(ReviewPr));
     assert!(!agent_mode_requires_workspace(Chat));
@@ -1140,11 +1142,46 @@ fn emit_progress_does_not_panic_on_mock_app_handle() {
     // construction and emit path without asserting delivery.
     emit_start_agent_conversation_progress(
         &app,
+        "project",
         "project-1",
         &conversation_id,
         "stage-1",
         "Preparing workspace",
     );
+}
+
+#[test]
+fn emit_post_creation_progress_self_keys_standalone_context_id() {
+    use std::sync::Mutex;
+    use tauri::Listener;
+
+    let app = crate::testing::create_mock_app_handle();
+    let conversation_id = ChatConversationId::new();
+    let captured = Arc::new(Mutex::new(None));
+    let captured_clone = Arc::clone(&captured);
+    app.listen("agent:startup_progress", move |event| {
+        let payload: serde_json::Value =
+            serde_json::from_str(event.payload()).expect("startup progress payload JSON");
+        *captured_clone.lock().expect("capture lock") = Some(payload);
+    });
+
+    emit_start_agent_conversation_progress(
+        &app,
+        "standalone",
+        "standalone",
+        &conversation_id,
+        "persist_conversation",
+        "Starting agent",
+    );
+
+    let payload = captured
+        .lock()
+        .expect("capture lock")
+        .clone()
+        .expect("startup progress event");
+    assert_eq!(payload["context_type"], "standalone");
+    assert_eq!(payload["context_id"], conversation_id.as_str());
+    assert_eq!(payload["conversation_id"], conversation_id.as_str());
 }
 
 // ── ensure_plan_workspace_planning_session_link (early returns) ───────────────

@@ -196,6 +196,14 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn update_bound_agent_name(
+        &self,
+        _id: &ChatConversationId,
+        _bound_agent_name: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_persona_binding(
         &self,
         _id: &ChatConversationId,
@@ -204,10 +212,28 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn update_builder_draft_binding(
+        &self,
+        _id: &ChatConversationId,
+        _builder_draft_id: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_coordination_mode(
         &self,
         _id: &ChatConversationId,
         _mode: CoordinationMode,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_role_default_bindings(
+        &self,
+        _id: &ChatConversationId,
+        _mode: CoordinationMode,
+        _persona_id: Option<&str>,
+        _clear_provider_session: bool,
     ) -> AppResult<()> {
         Ok(())
     }

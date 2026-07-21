@@ -13,9 +13,6 @@ import { Virtuoso, type ListRange, type ScrollerProps, type VirtuosoHandle } fro
 import { MessageItem, MessageMeta } from "./MessageItem";
 import { parseComposerReferencesFromMetadata } from "./MessageReferences.parse";
 import { HookEventMessage } from "./HookEventMessage";
-import { AutoVerificationCard } from "./AutoVerificationCard";
-import { VerificationResultCard } from "./VerificationResultCard";
-import { AUTO_VERIFICATION_KEY, VERIFICATION_RESULT_KEY } from "@/types/ideation";
 import {
   ConversationTranscriptPlaceholders,
   TypingIndicator,
@@ -27,7 +24,7 @@ import type { ToolCall } from "./ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { ContentBlockItem } from "./MessageItem";
 import type { HookEvent, HookStartedEvent } from "@/types/hook-event";
-import { isDiffToolCall } from "./DiffToolCallView.utils";
+import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskSubagentCard } from "./TaskSubagentCard";
 import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
@@ -41,7 +38,6 @@ import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/
 import type { TeamMessage } from "@/stores/teamStore";
 import { TeamMessageBubble } from "./TeamMessageBubble";
 import { isProviderRole } from "@/lib/chat/provider-role";
-import { normalizeStreamingVerificationContentBlocks } from "./verification-tool-calls";
 import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import { VISUAL_BOTTOM_EPSILON_PX } from "./ChatMessageList.scroll";
@@ -57,6 +53,16 @@ import {
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
 import type { AgentRun } from "@/types/chat-conversation";
+import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import {
+  summarizeToolActivity,
+  type ToolActivitySummary,
+  type ToolActivityTask,
+} from "./tool-activity-summary";
+import {
+  foldDelegationTimelineMessages,
+  persistedTimelineToolCall,
+} from "./delegation-timeline";
 
 // ============================================================================
 // Constants
@@ -233,6 +239,8 @@ export interface ChatMessageData {
 type ToolCallGroupMarker = {
   key: string;
   count: number;
+  summary: ToolActivitySummary;
+  promoted: boolean;
   position: "toggle" | "covered";
 };
 
@@ -259,54 +267,6 @@ function parseMessageMetadata(metadata: string | null | undefined): Record<strin
   } catch {
     return null;
   }
-}
-
-function renderSystemCard(
-  metadata: Record<string, unknown> | null,
-  content: string,
-  createdAt: string,
-) {
-  if (!metadata) return null;
-
-  if (metadata[AUTO_VERIFICATION_KEY]) {
-    return <AutoVerificationCard content={content} createdAt={createdAt} />;
-  }
-
-  if (metadata[VERIFICATION_RESULT_KEY]) {
-    const blockers = Array.isArray(metadata.top_blockers)
-      ? metadata.top_blockers
-          .filter((item): item is { severity?: unknown; description?: unknown } => (
-            item != null && typeof item === "object"
-          ))
-          .map((item) => ({
-            severity: typeof item.severity === "string" ? item.severity : "unknown",
-            description: typeof item.description === "string" ? item.description : "",
-          }))
-          .filter((item) => item.description.length > 0)
-      : [];
-
-    return (
-      <VerificationResultCard
-        summary={typeof metadata.summary === "string" ? metadata.summary : content}
-        convergenceReason={typeof metadata.convergence_reason === "string" ? metadata.convergence_reason : null}
-        currentRound={typeof metadata.current_round === "number" ? metadata.current_round : null}
-        maxRounds={typeof metadata.max_rounds === "number" ? metadata.max_rounds : null}
-        recommendedNextAction={
-          typeof metadata.recommended_next_action === "string"
-            ? metadata.recommended_next_action
-            : null
-        }
-        blockers={blockers}
-        actionableForParent={metadata.actionable_for_parent === true}
-      />
-    );
-  }
-
-  return null;
-}
-
-function hasSystemCardMetadata(metadata: Record<string, unknown> | null) {
-  return Boolean(metadata?.[AUTO_VERIFICATION_KEY] || metadata?.[VERIFICATION_RESULT_KEY]);
 }
 
 function isPersistedTimelineToolCallMessage(message: ChatMessageData): boolean {
@@ -406,6 +366,7 @@ function isCollapsedToolCallGroupCoveredItem(
 ): boolean {
   return item.kind === "message"
     && item.toolCallGroup?.position === "covered"
+    && !item.toolCallGroup.promoted
     && !expandedToolGroupKeys.has(item.toolCallGroup.key);
 }
 
@@ -414,37 +375,6 @@ function isVisibleTimelineItem(
   expandedToolGroupKeys: Set<string>,
 ): boolean {
   return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
-}
-
-function ToolCallGroupToggle({
-  groupKey,
-  count,
-  isExpanded,
-  onToggle,
-}: {
-  groupKey: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: React.MouseEventHandler<HTMLButtonElement>;
-}) {
-  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
-  return (
-    <button
-      type="button"
-      data-testid="tool-call-group-toggle"
-      data-chat-tool-call-group-key={groupKey}
-      aria-expanded={isExpanded}
-      aria-label={label}
-      onClick={onToggle}
-      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {label}
-    </button>
-  );
 }
 
 function senderGroupPart(value: string | null | undefined) {
@@ -492,10 +422,6 @@ function attributedRunForId(
 
 function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | null {
   if (!isProviderRole(message.role)) {
-    return null;
-  }
-  const metadata = parseMessageMetadata(message.metadata);
-  if (hasSystemCardMetadata(metadata)) {
     return null;
   }
   return [
@@ -605,9 +531,9 @@ function ToolCallGroupToggleRow({
           showProviderMeta={senderGroupState.showSenderHeader}
           hideMeta
         >
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={marker.key}
-            count={marker.count}
+            summary={marker.summary}
             isExpanded={isExpanded}
             onToggle={onToggle}
           />
@@ -668,21 +594,44 @@ function LiveTranscriptRowItem({
       return renderStreamingToolCallBlock(row.block, row.index);
     }
 
-    const groupKey = liveToolGroupKey(row.entries);
+    const groupKey = liveToolGroupKey(row.entries, row.taskEntries);
     const isExpanded = expandedToolGroupKeys.has(groupKey);
+    const tasks = row.taskEntries
+      .map((entry) => ({ entry, task: streamingTasks?.get(entry.toolUseId) }))
+      .filter((item): item is { entry: typeof row.taskEntries[number]; task: StreamingTask } => (
+        item.task != null
+      ));
+    const activityTasks: ToolActivityTask[] = tasks.map(({ task }) => ({
+      toolUseId: task.toolUseId,
+      toolName: task.toolName,
+      ...(task.delegatedJobId ? { delegatedJobId: task.delegatedJobId } : {}),
+    }));
+    const summary = summarizeToolActivity({
+      toolCalls: row.entries.map((entry) => entry.block.toolCall),
+      tasks: activityTasks,
+    });
+    const activityEntries = [
+      ...row.entries.map((entry) => ({ kind: "tool" as const, index: entry.index, entry })),
+      ...tasks.map(({ entry, task }) => ({ kind: "task" as const, index: entry.index, task })),
+    ].sort((left, right) => left.index - right.index);
     return (
       <>
         <div className="mb-2">
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={groupKey}
-            count={row.count}
+            summary={summary}
             isExpanded={isExpanded}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)}
           />
         </div>
-        {isExpanded
-          ? row.entries.map((entry) => renderStreamingToolCallBlock(entry.block, entry.index))
-          : null}
+        {activityEntries.map((activity) => {
+          if (activity.kind === "task") {
+            return <TaskSubagentCard key={`task-${activity.task.toolUseId}`} task={activity.task} />;
+          }
+          return isExpanded
+            ? renderStreamingToolCallBlock(activity.entry.block, activity.entry.index)
+            : null;
+        })}
       </>
     );
   })();
@@ -1162,7 +1111,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       enabled: !shouldShowInitialPaintCover,
     });
     const normalizedStreamingContentBlocks = useMemo(
-      () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
+      () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
     );
     const liveTranscriptRows = useMemo(
@@ -1252,7 +1201,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       // Team filter: each tab (lead/teammate) loads its own conversation's messages via
       // useConversation, so all messages in the data set belong to that conversation.
       // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
+      const teamFilteredMessages = foldDelegationTimelineMessages(filteredMessages);
 
       const pushMessageItem = (
         msg: ChatMessageData,
@@ -1276,10 +1225,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
+          const groupedToolCalls = toolCallGroup.map(persistedTimelineToolCall);
+          const summary = summarizeToolActivity({
+            toolCalls: groupedToolCalls.filter(
+              (toolCall): toolCall is ToolCall => toolCall != null,
+            ),
+          });
           toolCallGroup.forEach((msg, groupIndex) => {
+            const toolCall = groupedToolCalls[groupIndex];
             pushMessageItem(msg, {
               key,
               count: toolCallGroup.length,
+              summary,
+              promoted: toolCall != null && isTaskToolCall(toolCall.name),
               position: groupIndex === 0 ? "toggle" : "covered",
             });
           });
@@ -1696,6 +1654,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : null;
       const isFallbackToolGroupExpanded =
         fallbackToolGroupKey != null && expandedToolGroupKeys.has(fallbackToolGroupKey);
+      const fallbackSummary = summarizeToolActivity({
+        toolCalls: visibleFallbackToolCalls.map(({ toolCall }) => toolCall),
+      });
       return (
         <>
           {shouldRenderStreamingContentGroup && (
@@ -1718,9 +1679,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               {fallbackToolGroupKey != null && (
                 <>
                   <div className="mb-2">
-                    <ToolCallGroupToggle
+                    <ToolActivityGroupToggle
                       groupKey={fallbackToolGroupKey}
-                      count={visibleFallbackToolCalls.length}
+                      summary={fallbackSummary}
                       isExpanded={isFallbackToolGroupExpanded}
                       onToggle={(event) => toggleToolCallGroup(fallbackToolGroupKey, event.currentTarget)}
                     />
@@ -1899,24 +1860,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         )
         : null;
 
-      if (groupToggleRow && !isExpandedToolCallGroup) {
+      if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
         return groupToggleRow;
       }
 
       const messageMetadata = parseMessageMetadata(msg.metadata);
-      const systemCard = renderSystemCard(
-        messageMetadata,
-        msg.content,
-        msg.createdAt,
-      );
-      if (systemCard) {
-        return (
-          <div className="px-3 w-full" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-          </div>
-        );
-      }
-
       const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
       const effectiveSenderGroupState =
         toolCallGroup?.position === "toggle" && isExpandedToolCallGroup
@@ -2119,24 +2067,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               )
               : null;
 
-            if (groupToggleRow && !isExpandedToolCallGroup) {
+            if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
               return groupToggleRow;
             }
 
             const messageMetadata = parseMessageMetadata(msg.metadata);
-            const systemCard = renderSystemCard(
-              messageMetadata,
-              msg.content,
-              msg.createdAt,
-            );
-            if (systemCard) {
-              return (
-                <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
-                  <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-                </div>
-              );
-            }
-
             const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
             const effectiveSenderGroupState =
               toolCallGroup?.position === "toggle" && isExpandedToolCallGroup

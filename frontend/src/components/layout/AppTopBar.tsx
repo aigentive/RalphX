@@ -23,7 +23,6 @@ interface AppTopBarProps {
   currentView: ViewType;
   attentionCount: number;
   unreadNotificationCount?: number;
-  hasUnreadNotificationHistory?: boolean;
   attentionCountStale?: boolean;
   notificationsPanelOpen: boolean;
   onToggleNotificationsPanel: () => void;
@@ -441,7 +440,6 @@ export function AppTopBar({
   currentView,
   attentionCount,
   unreadNotificationCount = 0,
-  hasUnreadNotificationHistory = false,
   attentionCountStale = false,
   notificationsPanelOpen,
   onToggleNotificationsPanel,
@@ -478,15 +476,18 @@ export function AppTopBar({
     activeProject?.name ?? null,
     agentConversationTitle,
   );
+  const notificationBadgeCount = attentionCount + unreadNotificationCount;
   const notificationsLabel =
-    attentionCount > 0 ? `Notifications · ${attentionCount} need attention` : "Notifications";
+    notificationBadgeCount > 0
+      ? `Notifications · ${notificationBadgeCount} total: ${attentionCount} need attention, ${unreadNotificationCount} unread`
+      : "Notifications";
 
   useEffect(() => {
-    if (lastDockBadgeCount === unreadNotificationCount) return;
+    if (lastDockBadgeCount === notificationBadgeCount) return;
 
-    lastDockBadgeCount = unreadNotificationCount;
-    void notificationsApi.setDockBadgeCount(unreadNotificationCount).catch(() => undefined);
-  }, [unreadNotificationCount]);
+    lastDockBadgeCount = notificationBadgeCount;
+    void notificationsApi.setDockBadgeCount(notificationBadgeCount).catch(() => undefined);
+  }, [notificationBadgeCount]);
 
   const shouldShowProjectSelector =
     showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
@@ -601,7 +602,7 @@ export function AppTopBar({
               onClick={onToggleNotificationsPanel}
             >
               <Inbox className="h-[15px] w-[15px]" />
-              {attentionCount > 0 && (
+              {notificationBadgeCount > 0 && (
                 <span
                   className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[10px] font-bold leading-none"
                   style={{
@@ -611,16 +612,8 @@ export function AppTopBar({
                   }}
                   data-testid="reviews-badge"
                 >
-                  {attentionCount > 9 ? "9+" : attentionCount}
+                  {notificationBadgeCount > 9 ? "9+" : notificationBadgeCount}
                 </span>
-              )}
-              {attentionCount === 0 && hasUnreadNotificationHistory && (
-                <span
-                  aria-label="Unread notification history"
-                  className="absolute right-1 top-1 h-1 w-1 rounded-full"
-                  style={{ backgroundColor: "var(--accent-primary)" }}
-                  data-testid="notifications-unread-dot"
-                />
               )}
             </button>
           </TooltipTrigger>

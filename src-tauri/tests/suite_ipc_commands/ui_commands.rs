@@ -2,9 +2,9 @@ use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ui_commands::{
     get_ui_feature_flags, update_ui_feature_flags, UpdateUiFeatureFlagsInput,
 };
-use ralphx_lib::infrastructure::agents::claude::{
+use ralphx_lib::infrastructure::agents::claude::ui_feature_flags_config;
+use ralphx_lib::infrastructure::agents::{
     agent_personas_enabled, reset_agent_personas_override_for_test, set_agent_personas_override,
-    ui_feature_flags_config,
 };
 use tauri::Manager;
 
@@ -32,6 +32,10 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
     let response = update_ui_feature_flags(
         UpdateUiFeatureFlagsInput {
             agent_personas: Some(true),
+            composer_folder_references: None,
+            agent_conversation_team: None,
+            agent_conversation_workflows: None,
+            agent_conversation_autopilot: None,
         },
         app.state(),
     )
@@ -55,8 +59,9 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
 fn persona_flag_override_get_reports_live_effective_value() {
     let _reset = PersonaFlagOverrideReset;
     set_agent_personas_override(Some(true));
+    let app = persona_flag_override_command_app();
 
-    assert!(get_ui_feature_flags().agent_personas);
+    assert!(get_ui_feature_flags(app.state()).agent_personas);
 }
 
 #[test]

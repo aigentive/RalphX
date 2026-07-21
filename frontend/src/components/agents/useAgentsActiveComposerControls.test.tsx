@@ -92,7 +92,6 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
       refetchQueries: vi.fn(),
     } as unknown as QueryClient,
     runtimeConversationId: "conversation-1",
-    runtimeDefaultPolicy: "provider_default",
     runtimeByConversationId: {},
     selectedConversationId: "conversation-1",
     setRuntimeForConversation: vi.fn(),
@@ -221,7 +220,7 @@ describe("useAgentsActiveComposerControls", () => {
     );
   });
 
-  it("normalizes review provider changes to a utility-tier model", () => {
+  it("normalizes review provider changes through the provider default catalog", () => {
     const setRuntimeForConversation = vi.fn();
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(
@@ -232,7 +231,6 @@ describe("useAgentsActiveComposerControls", () => {
             effort: "medium",
           },
           runtimeConversationId: "review-conversation-1",
-          runtimeDefaultPolicy: "workspace_review_utility",
           setRuntimeForConversation,
         }),
       ),
@@ -252,8 +250,8 @@ describe("useAgentsActiveComposerControls", () => {
       "project-1",
       {
         provider: "codex",
-        modelId: "gpt-5.4-mini",
-        effort: "medium",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
       },
     );
   });
@@ -308,6 +306,22 @@ describe("useAgentsActiveComposerControls", () => {
     expect(invalidateProjectConversations).toHaveBeenCalledWith("project-1");
     expect(invalidateQueries).toHaveBeenCalled();
     expect(result.current.updatingTeamConversationId).toBeNull();
+  });
+
+  it("passes the selected Codex model when enabling Ultra", async () => {
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(controlsArgs()),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveCapabilityChange("codex_native_ultra");
+    });
+
+    expect(updateCoordinationModeMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      coordinationMode: "codex_native_ultra",
+      modelOverride: "gpt-5.5",
+    });
   });
 
   it("does not update Team mode when the requested state already matches", async () => {

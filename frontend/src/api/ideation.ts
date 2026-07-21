@@ -84,11 +84,6 @@ export type {
 // Helpers
 // ============================================================================
 
-function nullableBoolToInt(value: boolean | null | undefined): number | null {
-  if (value === null || value === undefined) return null;
-  return value ? 1 : 0;
-}
-
 // ============================================================================
 // Typed Invoke Helper
 // ============================================================================
@@ -107,24 +102,14 @@ function toVerificationStatusResponse(
 ): VerificationStatusResponse {
   return {
     sessionId: raw.session_id,
-    status: raw.status as VerificationStatusResponse["status"],
+    status: raw.status,
     inProgress: raw.in_progress,
-    ...(raw.verification_generation !== undefined && { generation: raw.verification_generation }),
-    ...(raw.selected_generation !== undefined && { selectedGeneration: raw.selected_generation }),
-    ...(raw.current_round !== undefined && { currentRound: raw.current_round }),
-    ...(raw.max_rounds !== undefined && { maxRounds: raw.max_rounds }),
-    ...(raw.gap_score !== undefined && { gapScore: raw.gap_score }),
-    ...(raw.convergence_reason !== undefined && { convergenceReason: raw.convergence_reason }),
-    ...(raw.best_round_index !== undefined && { bestRoundIndex: raw.best_round_index }),
-    gaps: raw.current_gaps,
-    rounds: raw.rounds,
-    roundDetails: raw.round_details,
-    runHistory: raw.run_history.map((entry) => ({
-      ...entry,
-      status: entry.status as VerificationStatusResponse["status"],
-    })),
-    ...(raw.plan_version !== undefined && { planVersion: raw.plan_version }),
-    ...(raw.verification_child !== undefined && { verificationChild: raw.verification_child }),
+    planArtifactId: raw.plan_artifact_id,
+    verifiedPlanArtifactId: raw.verified_plan_artifact_id,
+    agentRunId: raw.agent_run_id,
+    startedAt: raw.started_at,
+    completedAt: raw.completed_at,
+    error: raw.error,
   };
 }
 
@@ -470,14 +455,6 @@ export const ideationApi = {
     },
 
     /**
-     * Reject a proposal without archiving it
-     * @param proposalId The proposal ID
-     */
-    reject: async (proposalId: string): Promise<void> => {
-      await invoke("reject_task_proposal", { id: proposalId });
-    },
-
-    /**
      * Reorder proposals within a session
      * @param sessionId The session ID
      * @param proposalIds Array of proposal IDs in desired order
@@ -677,15 +654,54 @@ export const ideationApi = {
             require_plan_approval: false,
             suggest_plans_for_complex: false,
             auto_link_proposals: false,
+            auto_verify_draft_plans: settings.autoVerifyDraftPlans,
+            auto_verify_plans: settings.autoVerifyPlans,
             require_accept_for_finalize: settings.requireAcceptForFinalize,
-            require_verification_for_proposals: settings.requireVerificationForProposals,
+            require_verification_for_proposals: false,
             require_verification_for_accept: settings.requireVerificationForAccept,
-            ext_require_verification_for_accept: nullableBoolToInt(settings.externalOverrides?.requireVerificationForAccept),
-            ext_require_verification_for_proposals: nullableBoolToInt(settings.externalOverrides?.requireVerificationForProposals),
-            ext_require_accept_for_finalize: nullableBoolToInt(settings.externalOverrides?.requireAcceptForFinalize),
+            external_overrides: {
+              auto_verify_plans: settings.externalOverrides?.autoVerifyPlans ?? null,
+              require_verification_for_accept: settings.externalOverrides?.requireVerificationForAccept ?? null,
+              require_verification_for_proposals: null,
+              require_accept_for_finalize: settings.externalOverrides?.requireAcceptForFinalize ?? null,
+            },
           },
         },
         IdeationSettingsResponseSchema
+      );
+      return transformIdeationSettings(raw);
+    },
+
+    getDisableImpact: async (): Promise<import("@/types/ideation-config").TasksDisableImpact> => {
+      const raw = await typedInvoke(
+        "get_tasks_disable_impact",
+        {},
+        z.object({
+          active_standalone_tasks: z.number().int().nonnegative(),
+          active_attached_agent_workspaces: z.number().int().nonnegative(),
+          paused_or_blocked_tasks: z.number().int().nonnegative(),
+          active_branch_update_operations: z.number().int().nonnegative(),
+          affected_task_ids: z.array(z.string()),
+          affected_conversation_ids: z.array(z.string()),
+          affected_project_ids: z.array(z.string()),
+        }),
+      );
+      return {
+        activeStandaloneTasks: raw.active_standalone_tasks,
+        activeAttachedAgentWorkspaces: raw.active_attached_agent_workspaces,
+        pausedOrBlockedTasks: raw.paused_or_blocked_tasks,
+        activeBranchUpdateOperations: raw.active_branch_update_operations,
+        affectedTaskIds: raw.affected_task_ids,
+        affectedConversationIds: raw.affected_conversation_ids,
+        affectedProjectIds: raw.affected_project_ids,
+      };
+    },
+
+    setTasksEnabled: async (enabled: boolean): Promise<IdeationSettings> => {
+      const raw = await typedInvoke(
+        "set_tasks_feature_enabled",
+        { enabled },
+        IdeationSettingsResponseSchema,
       );
       return transformIdeationSettings(raw);
     },
@@ -701,14 +717,10 @@ export const ideationApi = {
      * @returns Verification status response
      */
     getStatus: async (
-      sessionId: string,
-      generation?: number
+      sessionId: string
     ): Promise<VerificationStatusResponse> => {
-      const search = generation !== undefined
-        ? `?generation=${encodeURIComponent(String(generation))}`
-        : "";
       const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/verification${search}`)
+        backendApiUrl(`ideation/sessions/${sessionId}/verification`)
       );
       if (!res.ok) {
         throw new Error(`Failed to get verification status: ${res.status}`);
@@ -718,59 +730,6 @@ export const ideationApi = {
       );
     },
 
-    /**
-     * Skip verification for a session's plan (user-initiated)
-     * @param sessionId The session ID
-     * @returns Updated verification status
-     */
-    skip: async (sessionId: string): Promise<VerificationStatusResponse> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/verification`),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            session_id: sessionId,
-            status: "skipped",
-            in_progress: false,
-            convergence_reason: "user_skipped",
-          }),
-        }
-      );
-      if (!res.ok) {
-        throw new Error(`Failed to skip verification: ${res.status}`);
-      }
-      return toVerificationStatusResponse(
-        VerificationResponseSchema.parse(await res.json())
-      );
-    },
-
-    /**
-     * Atomically revert plan to a prior version and skip verification.
-     * Single-transaction endpoint — no partial failure risk (D7).
-     * @param sessionId The session ID
-     * @param planVersionToRestore The plan artifact version ID to restore content from
-     * @returns Updated verification status
-     */
-    revertAndSkip: async (
-      sessionId: string,
-      planVersionToRestore: string
-    ): Promise<VerificationStatusResponse> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/revert-and-skip`),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plan_version_to_restore: planVersionToRestore }),
-        }
-      );
-      if (!res.ok) {
-        throw new Error(`Failed to revert and skip: ${res.status}`);
-      }
-      return toVerificationStatusResponse(
-        VerificationResponseSchema.parse(await res.json())
-      );
-    },
   },
 
   /**

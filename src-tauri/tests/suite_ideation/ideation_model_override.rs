@@ -15,19 +15,18 @@ use std::sync::Arc;
 
 use ralphx_lib::application::chat_service::{build_command, build_resume_command};
 use ralphx_lib::domain::entities::{
-    ChatContextType, ChatConversation, IdeationSessionBuilder, IdeationSessionId, ProjectId,
-    SessionPurpose,
+    ChatContextType, ChatConversation, CoordinationMode, IdeationSessionBuilder, IdeationSessionId,
+    ProjectId, SessionPurpose,
 };
-use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::repositories::IdeationModelSettingsRepository;
+use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::infrastructure::agents::claude::{
     build_base_cli_command, build_base_cli_command_for_test,
     model_resolver::{resolve_ideation_model, resolve_verifier_subagent_model_with_source},
 };
 use ralphx_lib::infrastructure::memory::{
-    MemoryArtifactRepository, MemoryChatAttachmentRepository,
-    MemoryDelegatedSessionRepository, MemoryIdeationModelSettingsRepository,
-    MemoryIdeationSessionRepository, MemoryTaskRepository,
+    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
+    MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository, MemoryTaskRepository,
 };
 
 // Helper to collect OsStr args from tokio::process::Command as Strings
@@ -198,14 +197,17 @@ async fn test_verifier_vs_non_verifier_subagent_independence() {
         .unwrap();
 
     // ralphx-plan-verifier agent model (from Verifier bucket) → sonnet
-    let verifier_model = resolve_ideation_model("ralphx-plan-verifier", Some("proj-1"), &repo).await;
+    let verifier_model =
+        resolve_ideation_model("ralphx-plan-verifier", Some("proj-1"), &repo).await;
     assert_eq!(verifier_model.model, "sonnet");
     assert_eq!(verifier_model.source, "user");
 
     // ralphx-plan-verifier subagent cap (from verifier_subagent_model field) → haiku, not sonnet
     let project_row = repo.get_for_project("proj-1").await.unwrap().unwrap();
-    let (cap_model, cap_source) =
-        resolve_verifier_subagent_model_with_source(Some(&project_row.verifier_subagent_model), None);
+    let (cap_model, cap_source) = resolve_verifier_subagent_model_with_source(
+        Some(&project_row.verifier_subagent_model),
+        None,
+    );
     assert_eq!(cap_model, "haiku");
     assert_eq!(cap_source, "user");
     // Independence assertion: subagent cap ≠ verifier agent model when configured separately
@@ -215,8 +217,7 @@ async fn test_verifier_vs_non_verifier_subagent_independence() {
     );
 
     // ralphx-ideation agent model (from Primary bucket) → sonnet
-    let orchestrator_model =
-        resolve_ideation_model("ralphx-ideation", Some("proj-1"), &repo).await;
+    let orchestrator_model = resolve_ideation_model("ralphx-ideation", Some("proj-1"), &repo).await;
     assert_eq!(orchestrator_model.model, "sonnet");
     assert_eq!(orchestrator_model.source, "user");
     // orchestrator subagent cap = its own agent model (sonnet)
@@ -315,19 +316,19 @@ async fn test_non_ideation_agent_bypasses_db_model_resolution() {
     );
 }
 
-// --- PO#5: verifier subagent cap is unaffected by ideation_subagent_model ---
+// --- Model-native verification uses the active ideation agent's delegate cap ---
 
 #[tokio::test]
-async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
-    // ralphx-plan-verifier must use IdeationVerifierSubagent lane model ("opus"),
-    // NOT IdeationSubagent lane model ("haiku"), for CLAUDE_CODE_SUBAGENT_MODEL.
-    // Tested on BOTH build_command AND build_resume_command.
+async fn test_verification_turn_uses_active_ideation_subagent() {
+    // Model-native verification is an ordinary visible turn in the active Plan
+    // conversation, so it uses IdeationSubagent ("haiku") rather than the retired
+    // IdeationVerifierSubagent lane ("opus"). Test both fresh and resumed launches.
     use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
     use ralphx_lib::domain::repositories::AgentLaneSettingsRepository;
     use ralphx_lib::infrastructure::memory::MemoryAgentLaneSettingsRepository;
 
     let lane_repo = Arc::new(MemoryAgentLaneSettingsRepository::new());
-    // IdeationVerifierSubagent=opus, IdeationSubagent=haiku — must not bleed into verifier
+    // Keep the retired lane distinct so accidental verifier routing is observable.
     lane_repo
         .upsert_global(
             AgentLane::IdeationVerifierSubagent,
@@ -359,7 +360,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
     let session_id = IdeationSessionId::new();
     let conv = ChatConversation::new_ideation(session_id.clone());
 
-    // --- build_command: entity_status="verification" → ralphx-plan-verifier ---
+    // --- build_command: Verify Plan remains on the active ideation agent ---
     let build_result = build_command(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
@@ -367,7 +368,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         "verify plan",
         None,
         Path::new("/tmp"),
-        Some("verification"), // → ralphx-plan-verifier agent
+        None,
         Some("proj-1"),
         &[],
         false,
@@ -384,7 +385,11 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
     )
     .await;
 
-    assert!(build_result.is_ok(), "build_command failed: {:?}", build_result.err());
+    assert!(
+        build_result.is_ok(),
+        "build_command failed: {:?}",
+        build_result.err()
+    );
     let build_envs = build_result.unwrap().get_envs_for_test();
     let build_subagent = build_envs
         .iter()
@@ -392,18 +397,18 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         .map(|(_, v)| v.to_string_lossy().into_owned());
     assert_eq!(
         build_subagent.as_deref(),
-        Some("opus"),
-        "build_command ralphx-plan-verifier: CLAUDE_CODE_SUBAGENT_MODEL must be IdeationVerifierSubagent lane model (opus), not IdeationSubagent lane model (haiku)"
+        Some("haiku"),
+        "Verify Plan must use the active ideation agent's IdeationSubagent lane"
     );
     assert_ne!(
         build_subagent.as_deref(),
-        Some("haiku"),
-        "IdeationSubagent lane (haiku) must NOT bleed into ralphx-plan-verifier CLAUDE_CODE_SUBAGENT_MODEL"
+        Some("opus"),
+        "the retired IdeationVerifierSubagent lane must not affect Verify Plan"
     );
 
     // --- build_resume_command: same assertion ---
-    // Seed a verification IdeationSession so get_entity_status_for_resume returns "verification",
-    // which routes to ralphx-plan-verifier (and thus uses IdeationVerifierSubagent lane, not IdeationSubagent lane).
+    // A legacy verification-purpose child may still exist in persisted data. Resuming it
+    // must not resurrect the removed fixed verifier or its dedicated model lane.
     let verification_session = IdeationSessionBuilder::new()
         .id(session_id.clone())
         .project_id(ProjectId("proj-1".to_string()))
@@ -420,6 +425,9 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         Path::new("/fake/plugin"),
         ChatContextType::Ideation,
         session_id.as_str(),
+        CoordinationMode::Solo,
+        "ideation-model-override-conversation",
+        None,
         "verify plan",
         None,
         None,
@@ -441,12 +449,16 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         &[],
         0,
         None,
-        None, // model_override: agent selection comes from session_purpose, not this field
+        None, // model_override: persisted conversation context owns active-agent routing
         None, // attachment_context_override
     )
     .await;
 
-    assert!(resume_result.is_ok(), "build_resume_command failed: {:?}", resume_result.err());
+    assert!(
+        resume_result.is_ok(),
+        "build_resume_command failed: {:?}",
+        resume_result.err()
+    );
     let resume_envs = resume_result.unwrap().get_envs_for_test();
     let resume_subagent = resume_envs
         .iter()
@@ -454,13 +466,13 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         .map(|(_, v)| v.to_string_lossy().into_owned());
     assert_eq!(
         resume_subagent.as_deref(),
-        Some("opus"),
-        "build_resume_command ralphx-plan-verifier: CLAUDE_CODE_SUBAGENT_MODEL must be IdeationVerifierSubagent lane model (opus)"
+        Some("haiku"),
+        "resumed verification context must use the active ideation subagent lane"
     );
     assert_ne!(
         resume_subagent.as_deref(),
-        Some("haiku"),
-        "IdeationSubagent lane (haiku) must NOT bleed into ralphx-plan-verifier in resume command"
+        Some("opus"),
+        "resumed verification context must ignore the retired verifier lane"
     );
 }
 
@@ -492,10 +504,10 @@ async fn test_partial_upsert_preserves_ideation_subagent_cap() {
     let preserved_ideation_subagent = existing.ideation_subagent_model.to_string();
     repo.upsert_for_project(
         "proj-1",
-        "haiku",                           // updated primary_model
+        "haiku", // updated primary_model
         &existing.verifier_model.to_string(),
         &existing.verifier_subagent_model.to_string(),
-        &preserved_ideation_subagent,      // preserved — not reset to default
+        &preserved_ideation_subagent, // preserved — not reset to default
     )
     .await
     .unwrap();

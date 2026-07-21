@@ -20,12 +20,14 @@ use crate::application::external_issue_link_service::ExternalIssueLinkService;
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project,
+    AgentRun, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+};
 use crate::domain::services::github_service::PrDetail;
 use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus, SecretStore};
 use crate::infrastructure::memory::{
@@ -204,6 +206,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
             task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
         },
@@ -361,6 +364,60 @@ async fn reconciliation_marks_external_merged_pr_terminal() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "external_pr_merged");
+}
+
+#[tokio::test]
+async fn reconciliation_reports_terminal_runtime_shutdown_failure() {
+    let project = test_project();
+    let workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 143,
+        url: "https://github.com/owner/repo/pull/143".to_string(),
+        status: PrStatus::Merged {
+            merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
+        },
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        updated_at: Some("2026-05-11T22:05:00Z".to_string()),
+        author_login: None,
+    })));
+    let (mut deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("active run should persist");
+    deps.agent_run_repo = agent_run_repo.clone();
+
+    let error = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::Startup,
+    )
+    .await
+    .expect_err("missing chat runtime must block terminal reconciliation success");
+
+    assert!(error.to_string().contains("no chat runtime was available"));
+    assert!(agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup")
+        .expect("run retained")
+        .is_active());
+    let persisted = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("merged"));
+    assert!(workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
 }
 
 #[tokio::test]
@@ -665,6 +722,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };
@@ -829,6 +887,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };
@@ -875,6 +934,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };

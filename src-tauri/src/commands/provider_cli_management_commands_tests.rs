@@ -575,6 +575,7 @@ async fn provider_observations_report_missing_and_probe_errors() {
                     "xhigh".to_string(),
                 ],
                 model_supported_efforts: std::collections::BTreeMap::new(),
+                ultra_supported_models: Vec::new(),
             },
         },
         false,
@@ -676,6 +677,7 @@ async fn active_runtime_detection_matches_interactive_process_metadata() {
             key.clone(),
             stdin,
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some("thread-123".to_string()),
                 persona_id: None,

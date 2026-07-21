@@ -1,281 +1,65 @@
-# Plan Verification
-
-## Overview
-
-Plan Verification is an automated adversarial review loop that stress-tests your ideation session's plan before it is accepted. A dedicated critic agent systematically finds gaps — critical, high, medium, and low severity — and the orchestrator corrects them across multiple rounds until convergence.
-
-This feature was motivated by manual adversarial review of the plan verification feature itself: 4 rounds of manual review found 95 gaps, evolving the plan from v1 to v5. Plan Verification automates that exact process for every plan.
-
-## Verification Flow
-
-Verification runs in a **hidden child session** with a dedicated `ralphx-plan-verifier` agent. The parent session stays unblocked for ideation work while the round loop runs independently.
-
-```
-create_plan_artifact() OR trigger_verification_http()
-        │
-        ▼
-trigger_auto_verify_sync()  [atomic DB: status=reviewing, in_progress=1, generation++]
-        │
-        ▼
-create_verification_child_session()
-  ├─ session_purpose = Verification
-  ├─ title = "Auto-verification (gen N)"
-  ├─ description = "Run verification round loop. parent_session_id: ..., generation: ..., max_rounds: ..."
-  └─ routes to ralphx-plan-verifier agent (purpose-based routing)
-        │
-        ├─ orchestration_triggered=false? → reset_auto_verify_sync(parent)
-        │
-        ▼
-ralphx-plan-verifier agent (in child session):
-  • Reads plan via get_session_plan (inherited from parent)
-  • ROUND LOOP:
-      A. Zombie guard: get_plan_verification(parent_session_id) — check generation
-      B. Spawn ralphx-plan-critic-completeness + ralphx-plan-critic-implementation-feasibility (parallel Task subagents)
-      C. Critics fetch plan via get_session_plan MCP tool (no prompt bloat)
-      D. Critics return structured gaps (JSON)
-         ├─ Parse failure? → record in sliding window
-      E. Merge gaps, compute fingerprints, Jaccard similarity
-      F. report_verification_round(parent_session_id, round, generation) — persists the backend-owned round result on the PARENT session
-      G. Convergence check:
-           ┌─ 0 critical AND 0 high AND 0 medium (round ≥ 2) → "zero_blocking" ✅
-           ├─ Jaccard(round_N, round_N+1) ≥ 0.8 for 2 rounds → "jaccard_converged" ✅
-           ├─ current_round ≥ max_rounds → "max_rounds" ✅ (hard cap)
-           └─ ≥ 3 parse failures in last 5 rounds → "critic_parse_failure" ✅
-      H. Not converged → correct plan via update_plan_artifact / edit_plan_artifact → next round
-      I. Converged → complete_plan_verification(parent_session_id, status, generation)
-        │
-        ▼
-Child session archived automatically on agent exit
-Parent session: status transitions to "verified" | "needs_revision" | "skipped"
-```
-
-## Convergence Algorithm
-
-### 4-Layer Gap Fingerprint Normalization
-
-Gaps are compared across rounds using normalized fingerprints, not raw text. This tolerates LLM paraphrase divergence, category drift, and morphological variance.
-
-| Layer | What |
-|-------|------|
-| 1. Lowercase + strip punctuation | `"Auth. Missing!"` → `"auth missing"` |
-| 2. Stop-word stripping | Removes `a`, `the`, `is`, `and`, etc. **Preserves negation**: `no`, `not`, `missing`, `lacks`, `without` |
-| 3. Suffix stemming (10 rules) | `"authentication"` → `"authenticat"`, `"limiting"` → `"limit"` |
-| 4. Sort + SHA256 (first 12 chars) | `sorted.join(" ")` → hash |
-
-Category is **excluded** from the fingerprint — it is display metadata only. The critic may reclassify a gap without breaking convergence.
-
-### Convergence Conditions
-
-| Condition | Trigger | Reason |
-|-----------|---------|--------|
-| Zero blocking | `critical_count == 0 AND high_count == 0 AND medium_count == 0` (min round 2) | Primary exit |
-| Jaccard similarity | `similarity(round_N_fingerprints, round_N+1_fingerprints) ≥ 0.8` for 2 consecutive rounds | Tolerates minor paraphrasing |
-| Hard cap | `current_round ≥ max_rounds` | Safety net — always terminates |
-| Flaky critic | `≥ 3 parse failures in last 5 rounds` | Sliding window, not strict consecutive |
-
-### Best-Version Tracking
-
-Each round is scored: `critical×10 + high×3 + medium×1`. At hard-cap exit, if the original plan's score is lower than the final auto-corrected version, "Revert & Skip" is prominently suggested with the score comparison shown.
-
-## Verification Status Values
-
-| Status | Meaning | Accept Blocked? |
-|--------|---------|-----------------|
-| `unverified` | Loop not started | Yes (when `require_verification_for_accept: true`) |
-| `reviewing` | Loop active | Yes (in progress) |
-| `needs_revision` | Critic found gaps; auto-correction in progress | Yes |
-| `verified` | 0 critical gaps, convergence confirmed | No |
-| `skipped` | User explicitly skipped | No |
-
-## User Actions
-
-### Start Verification
-Available when `status == unverified`. Orchestrator spawns critic loop automatically when user triggers it.
-
-### Skip Verification
-Sets `status = skipped`. Bypasses the gate entirely. Use when you trust the plan and want to accept immediately.
-
-### Revert & Skip (Atomic)
-Available when verification found gaps and the original plan scored better. Single endpoint — one transaction:
-1. Restores original plan artifact version
-2. Sets `status = skipped`, `in_progress = false`, `convergence_reason = "user_reverted"`
+# Verify Plan
 
-No two-step race condition: partial failure is impossible.
+Verify Plan is an optional model-native review pass for a Plan-mode artifact. It runs as a visible turn in the same planning conversation, using the active model and its normal delegation capabilities.
 
-### Retry (After Crash)
-If the orchestrator crashes mid-verification, the reconciliation service resets both `verification_status → unverified` and `verification_in_progress → false` after a configurable timeout (default: 90 min). Users can then restart verification or skip.
+## Behavior
 
-## Configuration
+1. A successful ordinary Plan turn, the user, a verification-gated acceptance attempt, or external MCP triggers `Verify Plan`.
+2. RalphX queues a typed `verify_plan` turn in the active Plan conversation.
+3. The active model rereads the current plan and relevant repository context, chooses useful review lenses, and may use its normally allowed delegates.
+4. The model revises the existing linked plan when it finds actionable issues.
+5. When satisfied, that same turn calls the bounded completion operation.
+6. RalphX records proof for the exact final plan artifact.
 
-In `ralphx.yaml`:
+There is no separate verifier agent, fixed critic roster, hidden verification session, round loop, gap ledger, or Verification tab. Review reasoning and plan revisions remain visible in the planning conversation.
 
-```yaml
-ideation:
-  verification:
-    require_verification_for_accept: true    # Gate enforcement (default: true)
-    reconciliation_stale_after_secs: 5400    # 90 min — reset stuck in_progress sessions
-    reconciliation_interval_secs: 300        # 5 min — how often reconciler scans
-```
+## Settings
 
-Environment variables override yaml settings (prefix: `RALPHX_IDEATION_VERIFICATION_*`).
+| Setting | Default | Effect |
+|---|---:|---|
+| Verify draft plans automatically | On | After a successful ordinary Plan turn publishes the current draft, queues one visible Verify Plan turn. |
+| Queue missing verification on acceptance | Off | Legacy fallback: when verification is required, the first unverified acceptance attempt queues Verify Plan and remains blocked until proof is recorded. |
+| Require verification before acceptance | Off | Blocks acceptance until proof matches the current plan artifact. |
 
-## Error Variants
+External sessions may override either setting. A null override inherits the global/project value. Being an external session does not itself force verification.
 
-Typed errors (no string comparison):
+Automatic draft verification is advisory and independent from the acceptance gate. It is admitted only after the latest ordinary Plan turn has durably saved its assistant output and successfully completed its own run. Failed persistence, stale or superseded completions, non-Plan workspaces, and verifier turns do not trigger it. Duplicate admissions converge on the existing queued or running verifier.
 
-| Variant | When |
-|---------|------|
-| `NotVerified` | Session unverified, gate enabled |
-| `InProgress { round, max_rounds }` | Verification active |
-| `HasUnresolvedGaps { count }` | `needs_revision` status |
-| `SkippedCannotUpdate` | Critic tries to update already-skipped session |
-| `InvalidTransition { from, to }` | Invalid status state machine jump |
-| `RoundExceedsMax { round, max }` | Critic reports round > max_rounds |
-| `AgentCrashed { round }` | Recovery resets stuck session |
+The typed verifier always starts as a fresh process. An idle interactive Claude process is retired rather than receiving verifier instructions over stdin, while its provider session id may still be used for model continuity.
 
-## MCP Tools
+## Exact-version proof
 
-| Tool | Method | Description |
-|------|--------|-------------|
-| `run_verification_enrichment` | POST | Runs verifier-selected enrichment specialists and returns delegate snapshots plus typed findings |
-| `run_verification_round` | POST | Runs one backend-owned verification round with required critics plus optional specialists |
-| `report_verification_round` | POST | Persists the current round outcome using backend-owned merged gaps and convergence checks |
-| `complete_plan_verification` | POST | Finalizes a verification run using backend-owned current-round state |
-| `get_plan_verification` | GET | Reads current verification status, round history, and gap list |
+Verification is satisfied only when the session's current `plan_artifact_id` equals its `verified_plan_artifact_id`. If review revises the plan, completion proves the revised artifact. If the plan changes later, the prior proof is stale and no longer satisfies a required acceptance gate.
 
-Available to: `ralphx-plan-verifier` for the verifier-owned helpers; `ralphx-ideation` and `ralphx-ideation-team-lead` only start/observe/stop verification via child-session + status tools.
+Only the live matching `verify_plan` agent run can record proof. Ordinary planning turns, stale runs, wrong conversations, failed runs, and cancelled runs cannot authorize acceptance.
 
-## Tauri Events
+## Approval notification timing
 
-Event: `plan_verification:status_changed`
+When automatic draft verification is pending, RalphX stores an exact-artifact deferred marker instead of recording the durable Plan Approval notification. This suppresses the in-app toast, Attention item, notification history row, and desktop notification together. Verifier success or failure releases the current artifact exactly once; revising the plan replaces the marker, and startup reconciliation releases markers stranded after a restart only when no verifier remains queued or running.
 
-```json
-{
-  "session_id": "string",
-  "status": "unverified | reviewing | verified | needs_revision | skipped",
-  "in_progress": true,
-  "round": 2,
-  "max_rounds": 5,
-  "gap_score": 23,
-  "convergence_reason": "zero_blocking | jaccard_converged | max_rounds | critic_parse_failure | user_skipped | user_reverted"
-}
-```
+## Statuses
 
-Emitted from: POST verification handler, revert-and-skip handler, conditional reset in `update_plan_artifact`.
+| Status | Meaning |
+|---|---|
+| `unverified` | Current artifact has no matching proof. |
+| `queued` | The typed review turn is waiting to run. |
+| `verifying` | The typed review turn is running. |
+| `verified` | Proof matches the current artifact. |
+| `failed` | The authoritative review turn failed. |
+| `cancelled` | The authoritative review turn was cancelled. |
 
-## Proposal Verification Gate
+## Entry points
 
-When `require_verification_for_proposals: true` (opt-in, default: `false`), the backend blocks proposal mutations on plans that haven't passed adversarial review. This is defense-in-depth: agents cannot create proposals on unreviewed plans.
+- Plan-mode `Verify Plan` CTA.
+- Successful completion of the latest ordinary Plan turn when `auto_verify_draft_plans` is enabled.
+- Required acceptance with `auto_verify_plans` enabled.
+- Internal MCP `get_plan_verification` and zero-argument `complete_plan_verification`.
+- External MCP `v1_trigger_plan_verification` and `v1_get_plan_verification`.
 
-### Config Field
+The external trigger queues the same visible planning turn; it does not start a separate verifier runtime.
 
-```yaml
-ideation:
-  verification:
-    require_verification_for_proposals: false   # Opt-in gate (default: false)
-    require_verification_for_accept: true        # Acceptance gate (default: true)
-```
+Both Plan controls remain visible after proof is recorded and show `Verified` with success styling. Selecting that state asks for confirmation before queuing an explicit rerun; the existing exact-artifact proof remains valid unless the plan changes.
 
-Both fields are independent. `require_verification_for_proposals` only blocks proposal mutations — it does not affect plan acceptance.
+## Relationship to workspace review
 
-### Gate Behavior by Operation
-
-| Operation | Blocked statuses | Allowed statuses |
-|-----------|-----------------|-----------------|
-| Create | `Unverified`, `Reviewing`, `NeedsRevision` | `Verified`, `Skipped` |
-| Update | `Reviewing`, `NeedsRevision` | `Unverified`, `Verified`, `Skipped` |
-| Delete | `Reviewing`, `NeedsRevision` | `Unverified`, `Verified`, `Skipped` |
-| Reorder / Toggle selection | Not gated (content-preserving) | — |
-
-Update and delete allow `Unverified` by design — blocking edits before verification starts would lock users out of housekeeping.
-
-### Error Messages
-
-Error messages are relayed verbatim to external agents via the MCP server:
-
-| Status | Error Message |
-|--------|--------------|
-| `Unverified` | "Cannot create proposals: plan verification has not been run. Start verification before mutating proposals." |
-| `Reviewing` | "Cannot {operation} proposals: plan verification is in progress (round {N}/{max}). Complete the current verification round before modifying proposals." |
-| `NeedsRevision` | "Cannot {operation} proposals: plan verification found {N} unresolved gap(s). Update the plan to address gaps (update_plan_artifact), then re-run verification." |
-
-`{operation}` = `create`, `update`, or `delete`. HTTP status code: `400 BAD_REQUEST`.
-
-### Child Session Behavior
-
-Child sessions inherit their gate check from the session that owns the plan:
-
-| Child session state | Which status is checked |
-|--------------------|------------------------|
-| Has its own plan artifact (`plan_artifact_id` set) | Child's own verification status |
-| Inherited plan only (`inherited_plan_artifact_id` set) | Parent session's verification status |
-| No plan and no inherited plan | Gate skipped entirely (passthrough) |
-
-**Edge cases:**
-- **Parent deleted** (FK set to NULL after deletion): gate passes — blocking orphaned children creates dead-end sessions with no escape.
-- **Parent archived**: parent's verification status is checked normally. Archived ≠ deleted; session data is intact. If parent is `NeedsRevision`, child is blocked — but child can create its own plan to escape.
-
-### TOCTOU Protection
-
-The gate runs inside a `db.run_transaction()` closure alongside the proposal mutation. All checks — session fetch, settings read, parent session lookup, proposal insert — share a single DB lock.
-
-**Before (vulnerable):**
-```
-await get_session()  →  check status  →  await count_proposals()  →  await create()
-     ↑ lock 1              ↑ stale             ↑ lock 2                  ↑ lock 3
-```
-
-**After (safe):**
-```
-db.run_transaction(|conn| {
-    get_session_sync(conn)  →  check gate  →  count_sync(conn)  →  create_sync(conn)
-         ↑ same lock               ↑ fresh        ↑ same lock          ↑ same lock
-})
-```
-
-This prevents a concurrent verification status change from slipping between the check and the insert.
-
-### Implementation
-
-| File | Purpose |
-|------|---------|
-| `domain/services/verification_gate.rs` | `check_proposal_verification_gate()` — pure function: `(session, settings, parent_status: Option, operation: ProposalOperation) → Result` |
-| `http_server/helpers.rs` | `create_proposal_impl()`, `update_proposal_impl()`, `delete_proposal_impl()` — gate wired inside `db.run_transaction()` |
-| `infrastructure/sqlite/sqlite_ideation_settings_repo.rs` | `get_settings_sync(conn)` — reads settings inside the proposal transaction |
-
-## Acceptance Path Enforcement
-
-All 3 acceptance paths enforce the verification gate:
-
-| Path | Handler | Gate |
-|------|---------|------|
-| Tauri IPC | `apply_proposals_to_kanban` | `check_verification_gate()` before `apply_proposals_core()` |
-| Internal MCP HTTP | `POST /api/ideation/sessions/:id/apply-proposals` | Same gate |
-| External MCP HTTP | `POST /api/external/apply_proposals` | Same gate via project scope check |
-
-## Observability
-
-Structured logs at all lifecycle points:
-
-```
-INFO  session_id=... "Verification started"
-INFO  session_id=... round=2 gaps=5 critical=1 "Verification round completed"
-INFO  session_id=... reason=zero_blocking rounds=3 "Verification converged"
-WARN  session_id=... round=3 "Critic output parse failure"
-ERROR session_id=... error=... "Verification agent crashed"
-INFO  session_id=... "Reconciliation reset stuck verification"
-```
-
-## Implementation
-
-| File | Purpose |
-|------|---------|
-| `domain/entities/ideation/` + `domain/entities/mod.rs` | `VerificationStatus`, `VerificationGap`, `VerificationRunSnapshot`, `VerificationRoundSnapshot`, `VerificationError` |
-| `domain/services/gap_fingerprint.rs` | 4-layer normalization + Jaccard similarity |
-| `domain/services/verification_gate.rs` | `check_verification_gate()` — shared across all 3 acceptance paths |
-| `domain/repositories/ideation_session_repository.rs` | `update_verification_state()`, `reset_verification()`, `get_verification_status()`, `revert_plan_and_skip_with_artifact()` |
-| `http_server/handlers/ideation.rs` | `POST /verification`, `GET /verification`, `POST /revert-and-skip` |
-| `http_server/handlers/external.rs` | `POST /api/external/apply_proposals`, `POST /api/external/trigger_verification` |
-| `http_server/handlers/session_linking.rs` | `create_verification_child_session()` — creates child with `session_purpose=Verification` |
-| `application/reconciliation/verification_reconciliation.rs` | Startup + periodic stuck-session reset + orphaned child detection |
-| `agents/ralphx-plan-verifier/claude/prompt.md` | Dedicated agent owning the round loop in child session |
+Verify Plan reviews intent and implementation strategy before execution. Workspace Review evaluates the actual code after execution. The high-value delivery loop remains Plan -> Execute -> Workspace Review -> Revise -> Re-review.

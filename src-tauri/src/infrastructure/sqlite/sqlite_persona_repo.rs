@@ -5,12 +5,15 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{
+    ArtifactId, Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
+};
 use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
-const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_json, created_at, updated_at";
+pub(crate) const PERSONA_COLUMNS: &str = "id, artifact_id, project_id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
+const ACTIVE_SLUG_SCOPED_INDEX: &str = "personas_active_slug_scoped";
 
 pub struct SqlitePersonaRepository {
     db: DbConnection,
@@ -30,13 +33,13 @@ impl SqlitePersonaRepository {
     }
 }
 
-fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
+pub(crate) fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let status = row
         .get::<_, String>("status")?
         .parse::<PersonaStatus>()
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                5,
+                6,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -44,7 +47,7 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let created_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                10,
+                13,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -53,7 +56,7 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let updated_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                11,
+                14,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -62,6 +65,12 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
 
     Ok(Persona {
         id: PersonaId::from(row.get::<_, String>("id")?),
+        artifact_id: row
+            .get::<_, Option<String>>("artifact_id")?
+            .map(ArtifactId::from_string),
+        project_id: row
+            .get::<_, Option<String>>("project_id")?
+            .map(ProjectId::from_string),
         slug: row.get("slug")?,
         name: row.get("name")?,
         description: row.get("description")?,
@@ -70,22 +79,58 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
         version: row.get("version")?,
         content_hash: row.get("content_hash")?,
         source_session_id: row.get("source_session_id")?,
+        source_persona_id: row
+            .get::<_, Option<String>>("source_persona_id")?
+            .map(PersonaId::from),
+        source_content_hash: row.get("source_content_hash")?,
         source_json: row.get("source_json")?,
         created_at,
         updated_at,
     })
 }
 
-fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppError {
+pub(crate) fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppError {
     match error {
         AppError::Database(message)
             if message.contains("UNIQUE constraint failed: personas.slug")
-                || message.contains("idx_personas_slug_live") =>
+                || message.contains(ACTIVE_SLUG_SCOPED_INDEX) =>
         {
             AppError::Validation(format!("Persona slug `{slug}` is already in use"))
         }
         other => other,
     }
+}
+
+pub(crate) fn persona_create_sync(
+    conn: &rusqlite::Connection,
+    persona: Persona,
+) -> AppResult<Persona> {
+    conn.execute(
+        "INSERT INTO personas (
+            id, artifact_id, project_id, slug, name, description, content, status, version, content_hash,
+            source_session_id, source_persona_id, source_content_hash, source_json,
+            created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        rusqlite::params![
+            persona.id.as_str(),
+            persona.artifact_id.as_ref().map(ArtifactId::as_str),
+            persona.project_id.as_ref().map(ProjectId::as_str),
+            persona.slug,
+            persona.name,
+            persona.description,
+            persona.content,
+            persona.status.to_string(),
+            persona.version,
+            persona.content_hash,
+            persona.source_session_id,
+            persona.source_persona_id.as_ref().map(ToString::to_string),
+            persona.source_content_hash,
+            persona.source_json,
+            persona.created_at.to_rfc3339(),
+            persona.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(persona)
 }
 
 pub(crate) fn persona_set_status_sync(
@@ -103,44 +148,10 @@ pub(crate) fn persona_set_status_sync(
 #[async_trait]
 impl PersonaRepository for SqlitePersonaRepository {
     async fn create(&self, persona: Persona) -> AppResult<Persona> {
-        let id = persona.id.as_str().to_string();
-        let slug = persona.slug.clone();
-        let name = persona.name.clone();
-        let description = persona.description.clone();
-        let content = persona.content.clone();
-        let status = persona.status.to_string();
-        let version = persona.version;
-        let content_hash = persona.content_hash.clone();
-        let source_session_id = persona.source_session_id.clone();
-        let source_json = persona.source_json.clone();
-        let created_at = persona.created_at.to_rfc3339();
-        let updated_at = persona.updated_at.to_rfc3339();
-        let collision_slug = slug.clone();
+        let collision_slug = persona.slug.clone();
 
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO personas (
-                        id, slug, name, description, content, status, version, content_hash,
-                        source_session_id, source_json, created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                    rusqlite::params![
-                        id,
-                        slug,
-                        name,
-                        description,
-                        content,
-                        status,
-                        version,
-                        content_hash,
-                        source_session_id,
-                        source_json,
-                        created_at,
-                        updated_at,
-                    ],
-                )?;
-                Ok(persona)
-            })
+            .run(move |conn| persona_create_sync(conn, persona))
             .await
             .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
     }
@@ -171,15 +182,58 @@ impl PersonaRepository for SqlitePersonaRepository {
             .await
     }
 
-    async fn list(&self) -> AppResult<Vec<Persona>> {
+    async fn get_active_by_slug(
+        &self,
+        slug: &str,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<Option<Persona>> {
+        let slug = slug.to_string();
+        let project_id = project_id.map(ToString::to_string);
         self.db
-            .run(|conn| {
+            .query_optional(move |conn| {
+                conn.query_row(
+                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 AND project_id IS ?2 AND status = 'active' LIMIT 1"),
+                    rusqlite::params![slug, project_id],
+                    persona_from_row,
+                )
+            })
+            .await
+    }
+
+    async fn get_draft_by_source_persona_id(
+        &self,
+        source_persona_id: &PersonaId,
+    ) -> AppResult<Option<Persona>> {
+        let source_persona_id = source_persona_id.as_str().to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE source_persona_id = ?1 AND status = 'draft' ORDER BY created_at DESC, id DESC LIMIT 1"),
+                    [source_persona_id],
+                    persona_from_row,
+                )
+            })
+            .await
+    }
+
+    async fn list(&self, scope: PersonaScopeFilter) -> AppResult<Vec<Persona>> {
+        self.db
+            .run(move |conn| {
+                let (predicate, project_id) = match scope {
+                    PersonaScopeFilter::All => ("1 = 1", None),
+                    PersonaScopeFilter::GlobalOnly => ("project_id IS NULL", None),
+                    PersonaScopeFilter::GlobalAndProject(project_id) => {
+                        ("project_id IS NULL OR project_id = ?1", Some(project_id.to_string()))
+                    }
+                };
                 let mut statement = conn.prepare(&format!(
-                    "SELECT {PERSONA_COLUMNS} FROM personas ORDER BY created_at DESC"
+                    "SELECT {PERSONA_COLUMNS} FROM personas WHERE {predicate} ORDER BY created_at DESC"
                 ))?;
-                let rows = statement
-                    .query_map([], persona_from_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
+                let rows = if let Some(project_id) = project_id {
+                    statement.query_map([project_id], persona_from_row)?.collect::<Result<Vec<_>, _>>()?
+                } else {
+                    statement.query_map([], persona_from_row)?.collect::<Result<Vec<_>, _>>()?
+                };
                 Ok(rows)
             })
             .await
@@ -200,33 +254,17 @@ impl PersonaRepository for SqlitePersonaRepository {
             .await
     }
 
-    async fn update_content(
-        &self,
-        id: &PersonaId,
-        content: &str,
-        content_hash: &str,
-    ) -> AppResult<()> {
-        let id = id.as_str().to_string();
-        let content = content.to_string();
-        let content_hash = content_hash.to_string();
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE personas
-                     SET content = ?1, content_hash = ?2, version = version + 1, updated_at = ?3
-                     WHERE id = ?4",
-                    rusqlite::params![content, content_hash, Utc::now().to_rfc3339(), id],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()> {
+        let collision_slug = self
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?
+            .slug;
         let id = id.as_str().to_string();
         self.db
             .run(move |conn| persona_set_status_sync(conn, &id, status))
             .await
+            .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
     }
 
     async fn delete(&self, id: &PersonaId) -> AppResult<()> {

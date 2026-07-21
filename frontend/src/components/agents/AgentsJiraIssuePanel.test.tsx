@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi, type AgentConversationJiraIssue } from "@/api/atlassian";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useArtifactSelectionStore } from "@/stores/artifactSelectionStore";
 
 import { AgentsJiraIssuePanel } from "./AgentsJiraIssuePanel";
 
@@ -95,6 +96,39 @@ function renderPanel() {
 describe("AgentsJiraIssuePanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useArtifactSelectionStore.getState().clearAllSelections();
+  });
+
+  it("selects a frozen Jira source line for the active conversation", async () => {
+    getIssueMock.mockResolvedValue(issue());
+
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Select ticket lines" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Line 1: # RX-42: Fix Jira tab",
+      }),
+    );
+
+    expect(
+      useArtifactSelectionStore.getState().selections["conversation-1"],
+    ).toEqual(
+      expect.objectContaining({
+        sourceType: "ticket",
+        sourceKind: "jira",
+        sourceId: "10042",
+        sourceKey: "RX-42",
+        sourceTitle: "Fix Jira tab",
+        provider: "atlassian",
+        sourceRevision: "2026-06-18T08:00:00Z",
+        startLine: 1,
+        endLine: 1,
+        content: "# RX-42: Fix Jira tab",
+      }),
+    );
   });
 
   it("renders Jira markdown headings with theme color and full-width body text", async () => {

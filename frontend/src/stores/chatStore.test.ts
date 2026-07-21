@@ -56,6 +56,7 @@ describe("chatStore", () => {
       toolCallCompletionTimestamps: {},
       effectiveModel: {},
       composerDraftsByKey: {},
+      delegateExpansionByConversation: {},
     });
   });
 
@@ -181,6 +182,42 @@ describe("chatStore", () => {
       expect(useChatStore.getState().composerDraftsByKey["conversation:two"]).toMatchObject({
         content: "second",
       });
+    });
+
+    it("keeps folder-reference drafts scoped by composer key and preserves them alongside content", () => {
+      const store = useChatStore.getState();
+
+      store.setComposerDraftFolders("conversation:one", [
+        { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+      ]);
+
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "",
+        attachments: [],
+        folders: [
+          { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+        ],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "add design-notes");
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"]?.folders,
+      ).toEqual([{ id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" }]);
+
+      useChatStore.getState().setComposerDraftFolders("conversation:one", []);
+      // Content is still set, so the draft entry is not deleted — only folders clear.
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "add design-notes",
+        folders: [],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "");
+      // Content, attachments, and folders are now all empty — the draft is removed.
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
     });
   });
 
@@ -419,6 +456,23 @@ describe("chatStore", () => {
       const state = useChatStore.getState();
       expect(state.activeConversationIds["unknown:key"]).toBeUndefined();
     });
+
+    it("preserves delegate expansion within a conversation and prunes it on switch", () => {
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-old");
+      useChatStore.getState().setDelegateExpanded("conv-old", "call-delegate", true);
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"]?.[
+          "call-delegate"
+        ],
+      ).toBe(true);
+
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-new");
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"],
+      ).toBeUndefined();
+    });
   });
 
   describe("active agent run ids", () => {
@@ -655,6 +709,37 @@ describe("chatStore", () => {
         "att-1",
         "att-2",
       ]);
+    });
+
+    it("stores and merges an immutable composer selection snapshot", () => {
+      const snapshot = {
+        sourceType: "ticket" as const,
+        sourceKind: "clickup" as const,
+        sourceId: "task-1",
+        provider: "clickup" as const,
+        startLine: 4,
+        endLine: 5,
+        content: "first\nsecond",
+      };
+
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Test", "msg-with-selection");
+      useChatStore
+        .getState()
+        .queueMessage(
+          contextKey,
+          "Test",
+          "msg-with-selection",
+          undefined,
+          snapshot,
+        );
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toHaveLength(1);
+      expect(
+        useChatStore.getState().queuedMessages[contextKey]?.[0]
+          .composerSelectionSnapshot,
+      ).toEqual(snapshot);
     });
 
     it("merges attachment IDs from duplicate backend queue events", () => {

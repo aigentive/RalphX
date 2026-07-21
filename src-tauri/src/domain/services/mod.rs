@@ -8,7 +8,9 @@ pub mod api_key_service;
 pub mod artifact_flow_service;
 pub mod artifact_service;
 pub mod bucket_classifier;
+pub mod composer_selection_snapshot;
 pub mod gap_fingerprint;
+pub mod github_generated_markdown;
 pub mod github_service;
 pub mod index_rewriter;
 pub mod key_crypto;
@@ -39,7 +41,9 @@ pub use agent_workspace_outcomes::{
 pub use artifact_flow_service::{ArtifactFlowService, FlowExecutionResult, StepExecutionResult};
 pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;
+pub use composer_selection_snapshot::ComposerSelectionSnapshot;
 pub use gap_fingerprint::{gap_fingerprint, gap_score, jaccard_similarity};
+pub(crate) use github_generated_markdown::append_ralphx_generated_footer;
 pub use github_service::{
     GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrSearchResult,
     PrStatus, PrSyncState,
@@ -60,8 +64,7 @@ pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,
 };
 pub use verification_gate::{
-    check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
-    EffectiveGatePolicy, ProposalOperation,
+    check_verification_gate, resolve_effective_gate_policy, EffectiveGatePolicy,
 };
 pub use verification_state::{
     build_blank_verification_snapshot, clear_verification_snapshot,
@@ -69,8 +72,8 @@ pub use verification_state::{
 };
 // Unified message queue - keyed by (context_type, context_id)
 pub use message_queue::{
-    ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
-    ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
+    ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
+    ComposerProjectReference, ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
 pub use pr_publish_service::{

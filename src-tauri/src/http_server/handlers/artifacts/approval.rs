@@ -47,13 +47,32 @@ pub async fn approve_plan_artifact(
             "approvedAt": approved.approved_at,
         }),
     );
+    state
+        .app_state
+        .notification_service()
+        .resolve_workflow_notification(
+            &crate::application::interactive_notification_producer::plan_notification_key(
+                approved.session_id.as_str(),
+                &response_id,
+            ),
+        )
+        .await;
 
-    crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
-        std::sync::Arc::clone(&state.app_state),
-        approved.session_id.as_str().to_string(),
-        response_id,
-        response_version,
-    );
+    let tasks_enabled = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map(|settings| settings.tasks_enabled)
+        .unwrap_or(false);
+    if tasks_enabled {
+        crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
+            std::sync::Arc::clone(&state.app_state),
+            approved.session_id.as_str().to_string(),
+            response_id,
+            response_version,
+        );
+    }
 
     Ok(Json(response))
 }

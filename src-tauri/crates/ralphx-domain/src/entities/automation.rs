@@ -336,6 +336,7 @@ pub struct Automation {
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
     pub spec_artifact_id: Option<String>,
+    pub authoring_state_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -413,6 +414,7 @@ pub fn automation_is_transition_allowed(from: AutomationStatus, to: AutomationSt
             | (AutomationStatus::Active, AutomationStatus::Stopped)
             | (AutomationStatus::Paused, AutomationStatus::Active)
             | (AutomationStatus::Paused, AutomationStatus::Stopped)
+            | (AutomationStatus::Stopped, AutomationStatus::Active)
     )
 }
 

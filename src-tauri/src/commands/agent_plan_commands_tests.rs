@@ -1,16 +1,24 @@
 use super::agent_plan_commands::{
-    copy_agent_conversation_plan_for_state, import_agent_conversation_plan_for_state,
-    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput,
+    activate_agent_task_pipeline_for_state, copy_agent_conversation_plan_for_state,
+    import_agent_conversation_plan_for_state, validate_complete_task_pipeline_proposal_selection,
+    ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput,
 };
+use super::ideation_commands::{apply_supervised_proposals_core, ApplyProposalsInput};
 use crate::application::{
-    agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
+    agent_conversation_workspace::resolve_agent_conversation_workspace_path,
+    agent_task_pipeline_service::{
+        validate_start_authority_sync, validate_supervised_task_pipeline,
+    },
+    AppState,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType, ArtifactType,
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionStatus, Project,
+    IdeationSessionId, IdeationSessionStatus, Priority, Project, ProposalCategory, TaskProposal,
 };
+use crate::domain::repositories::PlanApprovalActor;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -72,7 +80,7 @@ fn file_plan(name: &str, path: &str, version: u32) -> Artifact {
 async fn setup_target_workspace(
     mode: AgentConversationWorkspaceMode,
 ) -> (AppState, Project, ChatConversation, TempDir) {
-    let state = AppState::new_sqlite_test();
+    let state = AppState::new_sqlite_for_apply_test();
     let test_root = tempfile::tempdir().expect("test root should be created");
     let project_dir = test_root.path().join("project");
     let worktree_parent = test_root.path().join("worktrees");
@@ -91,6 +99,7 @@ async fn setup_target_workspace(
         .create(conversation)
         .await
         .unwrap();
+    seed_sql_conversation_projection(&state, &conversation, mode).await;
     let workspace_path =
         resolve_agent_conversation_workspace_path(&project, &conversation.id).unwrap();
     std::fs::create_dir_all(workspace_path.parent().unwrap()).unwrap();
@@ -123,6 +132,48 @@ async fn setup_target_workspace(
         .await
         .unwrap();
     (state, project, conversation, test_root)
+}
+
+async fn seed_sql_conversation_projection(
+    state: &AppState,
+    conversation: &ChatConversation,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let conversation_id = conversation.id.as_str().to_string();
+    let context_id = conversation.context_id.clone();
+    let agent_mode = mode.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO chat_conversations (id, context_type, context_id, agent_mode)
+                 VALUES (?1, 'project', ?2, ?3)",
+                rusqlite::params![conversation_id, context_id, agent_mode],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+async fn set_sql_conversation_mode(
+    state: &AppState,
+    conversation: &ChatConversation,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let conversation_id = conversation.id.as_str().to_string();
+    let agent_mode = mode.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE chat_conversations SET agent_mode = ?2 WHERE id = ?1",
+                rusqlite::params![conversation_id, agent_mode],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 async fn seed_source_plan(
@@ -210,6 +261,812 @@ async fn import_agent_conversation_plan_switches_to_plan_and_creates_draft() {
     assert_eq!(
         session.plan_artifact_id.as_ref().map(|id| id.as_str()),
         Some(response.artifact.id.as_str()),
+    );
+}
+
+#[tokio::test]
+async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Approved plan".to_string(),
+            content: "# Approved".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+
+    let input = || ActivateAgentTaskPipelineInput {
+        conversation_id: conversation.id.as_str().to_string(),
+        session_id: seeded.session_id.clone(),
+    };
+    let activated = activate_agent_task_pipeline_for_state(input(), &state)
+        .await
+        .unwrap();
+    let replayed = activate_agent_task_pipeline_for_state(input(), &state)
+        .await
+        .unwrap();
+
+    assert_eq!(activated.mode, "tasks");
+    assert_eq!(
+        activated.task_pipeline_session_id.as_deref(),
+        Some(seeded.session_id.as_str()),
+    );
+    assert!(activated.task_pipeline_available);
+    assert_eq!(
+        replayed.task_pipeline_session_id,
+        activated.task_pipeline_session_id,
+    );
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&crate::domain::entities::IdeationSessionId::from_string(
+                seeded.session_id
+            ),)
+            .await
+            .unwrap()
+            .is_empty(),
+        "Create Proposals authority must not create Kanban tasks",
+    );
+}
+
+#[tokio::test]
+async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Disabled Tasks plan".to_string(),
+            content: "# Disabled Tasks".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    state
+        .db
+        .run(|conn| {
+            conn.execute(
+                "UPDATE ideation_settings
+                 SET tasks_enabled = 0, tasks_feature_state = 'disabled'
+                 WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Tasks OFF must reject new pipeline activation");
+    assert!(error.starts_with("ralphx:tasks_disabled"));
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Atomic activation".to_string(),
+            content: "# Atomic activation".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    state
+        .db
+        .run(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_tasks_conversation_activation
+                 BEFORE UPDATE OF agent_mode ON chat_conversations
+                 WHEN NEW.agent_mode = 'tasks'
+                 BEGIN SELECT RAISE(FAIL, 'conversation activation failed'); END;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    let stored_conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored_conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::Plan),
+        "failed activation must not leave the conversation projection in Tasks",
+    );
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn stale_conversation_projection_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Stale projection".to_string(),
+            content: "# Stale projection".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        error,
+        "Conflict: Task pipeline conversation projection changed before activation",
+    );
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn unapproved_plan_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Draft plan".to_string(),
+            content: "# Draft".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(error, "Current plan is not approved");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn stale_plan_approval_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Approved then revised plan".to_string(),
+            content: "# Version one".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let previous_id = ArtifactId::from_string(seeded.artifact.id.clone());
+    let mut revised = state
+        .artifact_repo
+        .get_by_id(&previous_id)
+        .await
+        .unwrap()
+        .unwrap();
+    revised.id = ArtifactId::new();
+    revised.content = ArtifactContent::Inline {
+        text: "# Version two".to_string(),
+    };
+    revised.metadata.version += 1;
+    state
+        .artifact_repo
+        .create_with_previous_version(revised, previous_id)
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(error, "Current plan version is not approved");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn start_tasks_requires_the_complete_current_proposal_set() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Proposal selection".to_string(),
+            content: "# Proposal selection".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id =
+        crate::domain::entities::IdeationSessionId::from_string(seeded.session_id.clone());
+    let first = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "First",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let second = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id,
+            "Second",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+
+    let subset_error = validate_complete_task_pipeline_proposal_selection(
+        &state,
+        &seeded.session_id,
+        &[first.id.as_str().to_string()],
+    )
+    .await
+    .unwrap_err();
+    assert!(subset_error.contains("complete current proposal set"));
+    validate_complete_task_pipeline_proposal_selection(
+        &state,
+        &seeded.session_id,
+        &[
+            first.id.as_str().to_string(),
+            second.id.as_str().to_string(),
+        ],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn task_pipeline_validation_rejects_empty_stale_and_non_user_authority() {
+    let empty_state = AppState::new_sqlite_for_apply_test();
+    let empty_error =
+        validate_complete_task_pipeline_proposal_selection(&empty_state, "missing-session", &[])
+            .await
+            .unwrap_err();
+    assert_eq!(empty_error, "Task pipeline has no proposals to start");
+
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Authority validation".to_string(),
+            content: "# Authority validation".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let wrong_mode = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        &seeded.session_id,
+        AgentConversationWorkspaceMode::Tasks,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(wrong_mode, "Agent workspace must be in tasks mode");
+
+    let wrong_attachment = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        "different-session",
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        wrong_attachment,
+        "Task pipeline session does not belong to this conversation"
+    );
+
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::Judge,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+
+    let non_user_approval = validate_supervised_task_pipeline(
+        &state,
+        &conversation.id.as_str(),
+        &seeded.session_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        non_user_approval,
+        "Current plan requires explicit user approval"
+    );
+}
+
+#[tokio::test]
+async fn start_authority_rejects_stale_state_and_accepts_restored_exact_state() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Transactional start authority".to_string(),
+            content: "# Transactional start authority".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let session_id = IdeationSessionId::from_string(seeded.session_id.clone());
+    let first = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "First authority proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let second = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "Second authority proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let conversation_id = conversation.id.as_str().to_string();
+    let session_id_string = seeded.session_id.clone();
+    let first_id = first.id.as_str().to_string();
+    let proposal_ids = vec![first_id.clone(), second.id.as_str().to_string()];
+
+    let stale_selection = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &[first_id],
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(stale_selection
+        .to_string()
+        .contains("Task proposals changed after review"));
+
+    let unacknowledged = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(unacknowledged
+        .to_string()
+        .contains("dependencies must be reviewed"));
+
+    state
+        .ideation_session_repo
+        .update_status(&session_id, IdeationSessionStatus::Accepted)
+        .await
+        .unwrap();
+    let inactive = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(inactive
+        .to_string()
+        .contains("no longer an active planning session"));
+
+    state
+        .ideation_session_repo
+        .update_status(&session_id, IdeationSessionStatus::Active)
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .set_dependencies_acknowledged(&seeded.session_id)
+        .await
+        .unwrap();
+    state
+        .db
+        .run({
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE plan_artifact_approvals SET approved_by = 'judge' WHERE session_id = ?1",
+                    [session_id_string],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let non_user = state
+        .db
+        .run({
+            let conversation_id = conversation_id.clone();
+            let session_id_string = session_id_string.clone();
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(non_user
+        .to_string()
+        .contains("requires explicit user approval"));
+
+    state
+        .db
+        .run({
+            let session_id_string = session_id_string.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE plan_artifact_approvals SET approved_by = 'user' WHERE session_id = ?1",
+                    [session_id_string],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    state
+        .db
+        .run({
+            let proposal_ids = proposal_ids.clone();
+            move |conn| {
+                validate_start_authority_sync(
+                    conn,
+                    &conversation_id,
+                    &session_id_string,
+                    &proposal_ids,
+                )
+            }
+        })
+        .await
+        .unwrap();
+
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(state
+        .execution_plan_repo
+        .get_by_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn supervised_apply_requires_the_owning_tasks_conversation() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Supervised apply".to_string(),
+            content: "# Supervised apply".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let session_id =
+        crate::domain::entities::IdeationSessionId::from_string(seeded.session_id.clone());
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "Owned proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let input = || ApplyProposalsInput {
+        session_id: seeded.session_id.clone(),
+        proposal_ids: vec![proposal.id.as_str().to_string()],
+        target_column: "auto".to_string(),
+        base_branch_override: None,
+    };
+
+    let error =
+        apply_supervised_proposals_core(&state, input(), "different-conversation".to_string())
+            .await
+            .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("Tasks conversation no longer owns this pipeline"));
+    assert!(state
+        .task_repo
+        .get_by_ideation_session(&session_id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let result =
+        apply_supervised_proposals_core(&state, input(), conversation.id.as_str().to_string())
+            .await
+            .unwrap();
+    assert_eq!(result.tasks_created, 1);
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session_id)
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "one proposal task and its merge task should be created",
     );
 }
 
