@@ -2922,6 +2922,32 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn get_latest_pending_pr_review_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_pr_review_actions
+                     WHERE conversation_id = ?1
+                       AND pr_number = ?2
+                       AND status = 'pending'
+                     ORDER BY updated_at DESC, created_at DESC, id DESC
+                     LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![conversation_id, pr_number])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_pr_review_action(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
     async fn list_pr_review_actions(
         &self,
         conversation_id: &ChatConversationId,

@@ -2089,6 +2089,99 @@ async fn pr_review_actions_update_existing_pending_action_for_same_head() {
 }
 
 #[tokio::test]
+async fn latest_pending_pr_review_action_is_deterministic_and_owner_scoped() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let make_action = |owner: ChatConversationId, pr_number: i64, id: &str, head: &str| {
+        let mut action = AgentWorkspacePrReviewAction::new(
+            owner,
+            pr_number,
+            head.to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            format!("Review {head}"),
+            format!("Body for {head}"),
+            None,
+            Some(format!("run-{head}")),
+        );
+        action.id = id.to_string();
+        action
+    };
+
+    let terminal = repo
+        .create_or_update_pr_review_action(make_action(
+            conversation_id.clone(),
+            267,
+            "terminal-action",
+            "terminal-head",
+        ))
+        .await
+        .unwrap();
+    repo.update_pr_review_action_status(
+        &terminal.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-terminal"),
+    )
+    .await
+    .unwrap();
+    for (id, head) in [("tie-action-a", "head-a"), ("tie-action-b", "head-b")] {
+        repo.create_or_update_pr_review_action(make_action(conversation_id.clone(), 267, id, head))
+            .await
+            .unwrap();
+    }
+
+    let other_conversation_id =
+        ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &other_conversation_id);
+    repo.create_or_update(make_workspace(other_conversation_id.clone()))
+        .await
+        .unwrap();
+    repo.create_or_update_pr_review_action(make_action(
+        other_conversation_id.clone(),
+        267,
+        "other-owner-action",
+        "other-owner-head",
+    ))
+    .await
+    .unwrap();
+    repo.create_or_update_pr_review_action(make_action(
+        conversation_id.clone(),
+        268,
+        "other-pr-action",
+        "other-pr-head",
+    ))
+    .await
+    .unwrap();
+
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_workspace_pr_review_actions
+             SET created_at = '2026-07-20T12:00:00Z',
+                 updated_at = '2026-07-20T12:00:00Z'
+             WHERE id IN ('tie-action-a', 'tie-action-b')",
+            [],
+        )
+        .unwrap();
+    });
+
+    let selected = repo
+        .get_latest_pending_pr_review_action(&conversation_id, 267)
+        .await
+        .expect("read latest pending action")
+        .expect("pending action exists");
+
+    assert_eq!(selected.id, "tie-action-b");
+    assert_ne!(selected.id, terminal.id);
+    assert!(repo
+        .get_latest_pending_pr_review_action(&other_conversation_id, 268)
+        .await
+        .expect("read isolated owner")
+        .is_none());
+}
+
+#[tokio::test]
 async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_terminal_actions() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))

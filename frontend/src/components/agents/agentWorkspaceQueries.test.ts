@@ -83,6 +83,7 @@ function reviewContext(
     prNumber: 471,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/471",
     currentHeadSha: "abcdef1234567890",
+    pendingActionHeadStatus: "current",
     health: null,
     reviewFeedback: null,
     monitor: monitor(),
