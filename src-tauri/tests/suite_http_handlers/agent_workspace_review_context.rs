@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
-use ralphx_lib::application::AppState;
+use axum::http::{HeaderMap, StatusCode};
+use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
@@ -9,7 +9,8 @@ use ralphx_lib::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
 use ralphx_lib::http_server::handlers::agent_workspaces::{
-    get_agent_workspace_review_context, AgentWorkspaceReviewContextQuery,
+    get_agent_workspace_review_context, get_agent_workspace_review_start_preview,
+    AgentWorkspaceReviewContextQuery,
 };
 use ralphx_lib::http_server::types::HttpServerState;
 use std::path::Path as StdPath;
@@ -32,11 +33,116 @@ fn git(repo: impl AsRef<StdPath>, args: &[&str]) -> String {
 
 fn test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
+    let team_tracker = TeamStateTracker::new();
+    let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+        team_tracker.clone(),
+    )));
     HttpServerState {
         app_state,
         execution_state: Arc::new(ExecutionState::new()),
+        team_tracker,
+        team_service,
         delegation_service: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn workspace_review_start_preview_blocks_unfinished_git_operation() {
+    let root = tempfile::TempDir::new().expect("fixture root");
+    let repo = root.path().join("repo");
+    let workspace_path = root.path().join("workspace");
+    std::fs::create_dir_all(&repo).expect("repo directory");
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.join("shared.txt"), "base\n").expect("base file");
+    git(&repo, &["add", "shared.txt"]);
+    git(&repo, &["commit", "-m", "base"]);
+    let base_sha = git(&repo, &["rev-parse", "HEAD"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "ralphx/test/http-unfinished-review",
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    std::fs::write(workspace_path.join("shared.txt"), "feature\n").expect("feature file");
+    git(&workspace_path, &["add", "shared.txt"]);
+    git(&workspace_path, &["commit", "-m", "feature"]);
+    std::fs::write(repo.join("shared.txt"), "main\n").expect("main file");
+    git(&repo, &["add", "shared.txt"]);
+    git(&repo, &["commit", "-m", "main"]);
+    let merge = Command::new("git")
+        .args(["merge", "main"])
+        .current_dir(&workspace_path)
+        .output()
+        .expect("merge should spawn");
+    assert!(!merge.status.success(), "merge should create a conflict");
+
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let mut project = Project::new(
+        "Blocked Review Preview".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed conversation");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        "ralphx/test/http-unfinished-review".to_string(),
+        workspace_path.to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let (status, axum::Json(body)) = get_agent_workspace_review_start_preview(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+    )
+    .await
+    .expect_err("unfinished operation must block preview");
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    let detail = body["error"].as_str().expect("error detail");
+    assert_eq!(
+        detail,
+        "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review."
+    );
+    assert!(!detail.contains("write-tree"));
+    assert!(state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("read monitor")
+        .is_none());
 }
 
 #[tokio::test]
