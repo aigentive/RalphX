@@ -9,7 +9,11 @@
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatMessageList, type ChatMessageData } from "./ChatMessageList";
+import {
+  ChatMessageList,
+  type ChatMessageData,
+} from "./ChatMessageList";
+import { foldDelegationTimelineMessages } from "./delegation-timeline";
 
 const harness = vi.hoisted(() => ({
   props: null as Record<string, unknown> | null,
@@ -940,6 +944,65 @@ describe("ChatMessageList controller integration", () => {
     fireEvent.click(toggle);
     expect(screen.getByText("Generic tool detail")).toBeInTheDocument();
     expect(screen.getAllByText("Delegated task card")).toHaveLength(1);
+  });
+
+  it("folds non-adjacent terminal delegation rows into the original start row", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "delegate-start-message",
+        role: "assistant",
+        content: "start",
+        createdAt: "2026-07-15T10:00:00Z",
+        timelineSequence: 20,
+        contentBlocks: [{
+          type: "tool_use",
+          id: "call-start",
+          name: "delegate_start",
+          arguments: { prompt: "Inspect" },
+          result: { job_id: "job-non-adjacent", status: "running" },
+        }],
+      },
+      {
+        id: "intervening-text",
+        role: "assistant",
+        content: "Continuing parent work",
+        createdAt: "2026-07-15T10:00:01Z",
+        timelineSequence: 21,
+      },
+      {
+        id: "delegate-terminal-message",
+        role: "assistant",
+        content: "terminal",
+        createdAt: "2026-07-15T10:00:02Z",
+        timelineSequence: 22,
+        contentBlocks: [{
+          type: "tool_use",
+          id: "delegation-terminal:job-non-adjacent",
+          name: "delegate_terminal",
+          arguments: { job_id: "job-non-adjacent" },
+          result: {
+            job_id: "job-non-adjacent",
+            status: "completed",
+            content: "Delegated result",
+          },
+        }],
+      },
+    ];
+
+    const folded = foldDelegationTimelineMessages(messages);
+
+    expect(folded.map((message) => message.id)).toEqual([
+      "delegate-start-message",
+      "intervening-text",
+    ]);
+    expect(folded[0]?.contentBlocks?.[0]).toMatchObject({
+      name: "delegate_start",
+      result: {
+        job_id: "job-non-adjacent",
+        status: "completed",
+        content: "Delegated result",
+      },
+    });
   });
 
   it("summarizes persisted tool-call groups from hydrated diff metadata", () => {

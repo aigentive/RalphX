@@ -16,7 +16,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactContent,
     ArtifactId, ArtifactType, ChatAttachment, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode,
-    IdeationSessionId, MessageRole, ProjectId, SessionPurpose, TaskId,
+    IdeationSessionId, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -123,9 +123,6 @@ pub async fn await_required_external_mcp<R: Runtime>(
         ))
         .await
 }
-
-pub const AGENT_WORKSPACE_AUTOMATION_SKILL_NAME: &str = "ralphx-agent-workspace-automation";
-const AGENT_WORKSPACE_AUTOMATION_SUMMARY_MAX_BYTES: usize = 600;
 
 /// Whether to inject `<session_history>` into the bootstrap prompt for this context.
 ///

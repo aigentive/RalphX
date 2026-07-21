@@ -269,10 +269,11 @@ fn hydrate_required_tool_payloads(
 
 fn should_hydrate_full_tool_payload(item: &ChatTimelineItem) -> bool {
     item.kind == ChatTimelineItemKind::ToolUse
-        && item
-            .tool_name
-            .as_deref()
-            .is_some_and(|name| is_diff_tool_name(name) || is_ask_user_question_tool_name(name))
+        && item.tool_name.as_deref().is_some_and(|name| {
+            is_diff_tool_name(name)
+                || is_ask_user_question_tool_name(name)
+                || is_delegation_tool_name(name)
+        })
 }
 
 fn is_diff_tool_name(name: &str) -> bool {
@@ -302,6 +303,27 @@ fn is_ask_user_question_tool_name(name: &str) -> bool {
         }
     }
     normalized == "ask_user_question"
+}
+
+fn is_delegation_tool_name(name: &str) -> bool {
+    let mut normalized = name.trim().to_ascii_lowercase();
+    for prefix in [
+        "mcp__ralphx__",
+        "mcp__ralphx_internal__",
+        "ralphx::",
+        "ralphx_internal::",
+        "ralphx:",
+        "ralphx_internal:",
+    ] {
+        if let Some(stripped) = normalized.strip_prefix(prefix) {
+            normalized = stripped.to_string();
+            break;
+        }
+    }
+    matches!(
+        normalized.as_str(),
+        "delegate_start" | "delegate_wait" | "delegate_cancel" | "delegate_terminal"
+    )
 }
 
 fn upsert_item(conn: &Connection, item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
