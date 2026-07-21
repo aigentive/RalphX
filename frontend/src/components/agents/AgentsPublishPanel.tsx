@@ -572,20 +572,10 @@ export function AgentPublishPanel({
     workspaceReviewHunkAnnotationsQuery.data?.annotations ?? [];
   const prAnnotationSourcesUnavailable =
     prAnnotationsQuery.data?.sourcesUnavailable ?? [];
-  const prAnnotationSummary =
-    prAnnotations.length > 0
-      ? `${prAnnotations.length} GitHub annotation${prAnnotations.length === 1 ? "" : "s"} synced`
-      : prAnnotationSourcesUnavailable.length > 0
-        ? "GitHub annotations partially unavailable"
-        : prAnnotationsQuery.isLoading && hasPublishedPr
-          ? "Checking GitHub annotations..."
-          : null;
-  const workspaceReviewHunkAnnotationSummary =
-    workspaceReviewHunkAnnotations.length > 0
-      ? `${workspaceReviewHunkAnnotations.length} workspace review note${workspaceReviewHunkAnnotations.length === 1 ? "" : "s"} synced`
-      : null;
   const isChangesLoading =
-    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
+    Boolean(conversationId) &&
+    inlineDiffsCandidate &&
+    (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
@@ -841,42 +831,128 @@ export function AgentPublishPanel({
     workspace.publicationPrNumber != null
       ? `PR #${workspace.publicationPrNumber}`
       : "This pull request";
-  const publishSummary =
-    terminalPublicationStatus === "merged"
-      ? `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`
-      : terminalPublicationStatus === "closed"
-        ? `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`
-        : isRepairPending
-          ? "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes."
-        : hasPrConflict
-          ? autoPublishEnabled
-            ? "Auto Publish is waiting for PR conflicts to be resolved. Resolve conflicts to update the branch from base."
-            : "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue."
-          : baseBlocked
-            ? "Publishing is blocked until the workspace base branch is resolved."
-            : reviewGateSummary
-              ? reviewGateSummary
-            : isPipelineOwnedWorkspace
-              ? workspace.publicationPrNumber || workspace.publicationPrUrl
-                ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
-                : "Publishing is managed by this ideation plan's task pipeline."
-              : isDescriptionFailed
-                ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
-                : hasPublishedPr && !autoPublishEnabled
-                  ? "Automatic publishing is paused. Manual Commit & Publish remains available."
-                  : !hasPublishedPr && autoPublishEnabled
-                    ? "Auto Publish will run Commit & Publish when the agent finishes."
-                    : isChangesLoading
-                      ? "Loading changed files..."
-                      : isPublishCurrent
-                        ? reviewQuery.isSuccess && changes.length > 0
-                          ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
-                          : "Workspace is published and current."
-                        : reviewQuery.isSuccess && changes.length > 0
-                          ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
-                          : reviewQuery.isSuccess
-                            ? "No changed files detected yet."
-                            : "Review changes before publishing.";
+  const publishPresentation = (() => {
+    if (terminalPublicationStatus === "merged") {
+      return {
+        title: "Pull Request Merged",
+        summary: `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`,
+      };
+    }
+    if (terminalPublicationStatus === "closed") {
+      return {
+        title: "Pull Request Closed",
+        summary: `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`,
+      };
+    }
+    if (isRepairPending) {
+      return {
+        title: "Repair in progress",
+        summary:
+          "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes.",
+      };
+    }
+    if (hasPrConflict) {
+      return {
+        title: "Pull request conflicts",
+        summary: autoPublishEnabled
+          ? "Auto Publish is waiting for PR conflicts to be resolved. Resolve conflicts to update the branch from base."
+          : "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue.",
+      };
+    }
+    if (isBranchUpdateNeeded) {
+      return {
+        title: isUpdatingFromBase ? "Updating branch" : "Update from base required",
+        summary: `Base branch ${baseActionLabel} has new commits. Publishing will continue after this branch is updated.`,
+      };
+    }
+    if (baseBlocked) {
+      return {
+        title: "Publishing blocked",
+        summary: "Publishing is blocked until the workspace base branch is resolved.",
+      };
+    }
+    if (reviewGateSummary && reviewGateStatus) {
+      const title =
+        reviewGateStatus === "reviewing"
+          ? "Workspace Review in progress"
+          : reviewGateStatus === "blocking"
+            ? "Workspace Review blocking"
+            : reviewGateStatus === "failed"
+              ? "Workspace Review failed"
+              : reviewGateStatus === "required"
+                ? "Workspace Review required"
+                : null;
+      if (title) {
+        return { title, summary: reviewGateSummary };
+      }
+    }
+    if (isManagedByTaskPipeline) {
+      return {
+        title: "Managed by task pipeline",
+        summary:
+          workspace.publicationPrNumber || workspace.publicationPrUrl
+            ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
+            : "Publishing is managed by this ideation plan's task pipeline.",
+      };
+    }
+    if (isDescriptionFailed) {
+      return {
+        title: "Publishing failed",
+        summary:
+          "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event.",
+      };
+    }
+    if (isPublishingThisWorkspace) {
+      return {
+        title: "Publishing workspace",
+        summary:
+          "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
+      };
+    }
+    if (hasPublishedPr && !autoPublishEnabled) {
+      return {
+        title: "Automatic publishing paused",
+        summary: "Automatic publishing is paused. Manual Commit & Publish remains available.",
+      };
+    }
+    if (!hasPublishedPr && autoPublishEnabled) {
+      return {
+        title: "Auto Publish enabled",
+        summary: "Auto Publish will run Commit & Publish when the agent finishes.",
+      };
+    }
+    if (isChangesLoading) {
+      return {
+        title: "Checking workspace changes",
+        summary: "Loading changed files...",
+      };
+    }
+    if (isPublishCurrent) {
+      return {
+        title: "Published to GitHub",
+        summary:
+          reviewQuery.isSuccess && changes.length > 0
+            ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
+            : "Workspace is published and current.",
+      };
+    }
+    if (reviewQuery.isSuccess && changes.length > 0) {
+      return {
+        title: "Ready to publish",
+        summary: `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`,
+      };
+    }
+    if (reviewQuery.isSuccess) {
+      return {
+        title: "No changes to publish",
+        summary: "No changed files detected yet.",
+      };
+    }
+    return {
+      title: "Review workspace changes",
+      summary: "Review changes before publishing.",
+    };
+  })();
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -1068,17 +1144,11 @@ export function AgentPublishPanel({
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              {terminalPublicationLabel && (
-                <div className="text-sm font-semibold text-[var(--text-primary)]">
-                  Pull Request {terminalPublicationLabel}
-                </div>
-              )}
-              <div
-                className={`text-xs leading-relaxed text-[var(--text-muted)]${
-                  terminalPublicationLabel ? " mt-1" : ""
-                }`}
-              >
-                {publishSummary}
+              <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                {publishPresentation.title}
+              </h2>
+              <div className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+                {publishPresentation.summary}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1265,7 +1335,7 @@ export function AgentPublishPanel({
                 </label>
                 <PublishSwitchInfoTooltip
                   label="About Autofix CI and Reviews"
-                  settingsSection="execution"
+                  settingsSection="workspace"
                 >
                   RalphX monitors this PR for failing checks and review feedback, then
                   publishes follow-up fixes from the workspace automatically.
@@ -1293,7 +1363,7 @@ export function AgentPublishPanel({
                 </label>
                 <PublishSwitchInfoTooltip
                   label="About GitHub auto-merge"
-                  settingsSection="execution"
+                  settingsSection="workspace"
                 >
                   RalphX asks GitHub to merge the PR after required checks and review
                   requirements pass.
@@ -1419,62 +1489,30 @@ export function AgentPublishPanel({
             </div>
           )}
         </section>
-        {(prAnnotationSummary ||
-          workspaceReviewHunkAnnotationSummary ||
-          shouldShowPublishPipeline) && (
-          <section
-            className="space-y-2 rounded-lg px-3 py-2"
+        {prAnnotationSourcesUnavailable.length > 0 && (
+          <div
+            className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+            data-testid="agents-pr-annotations-partial-warning"
             style={{
-              backgroundColor: "var(--bg-surface)",
-              borderColor: "var(--border-subtle)",
+              backgroundColor: "var(--bg-subtle)",
+              borderColor: "var(--status-warning-border)",
               borderStyle: "solid",
               borderWidth: "1px",
+              color: "var(--text-secondary)",
             }}
-            data-testid="agents-publish-summaries"
           >
-            {prAnnotationSummary && (
-              <div
-                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
-                data-testid="agents-pr-annotations-summary"
-                style={{
-                  backgroundColor: "var(--bg-subtle)",
-                  borderColor:
-                    prAnnotations.length > 0
-                      ? "var(--status-warning-border)"
-                      : "var(--border-subtle)",
-                  borderStyle: "solid",
-                  borderWidth: "1px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {prAnnotationSummary}
-              </div>
-            )}
-            {workspaceReviewHunkAnnotationSummary && (
-              <div
-                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
-                data-testid="agents-workspace-review-hunk-annotations-summary"
-                style={{
-                  backgroundColor: "var(--bg-subtle)",
-                  borderColor: "var(--status-info-border)",
-                  borderStyle: "solid",
-                  borderWidth: "1px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {workspaceReviewHunkAnnotationSummary}
-              </div>
-            )}
-            {shouldShowPublishPipeline && (
-              <PublishPipelineSteps
-                autoMergeCurrent={prAutoMergeCurrent}
-                autoMergeDesired={prAutoMergeDesired}
-                prSupervisionStatus={prSupervisionStatus}
-                status={pipelineStatus}
-                isPublishing={effectivePublishing}
-              />
-            )}
-          </section>
+            GitHub annotations partially unavailable
+          </div>
+        )}
+        {shouldShowPublishPipeline && (
+          <PublishPipelineSteps
+            autoMergeCurrent={prAutoMergeCurrent}
+            autoMergeDesired={prAutoMergeDesired}
+            className="mt-0"
+            prSupervisionStatus={prSupervisionStatus}
+            status={pipelineStatus}
+            isPublishing={effectivePublishing}
+          />
         )}
 
         <GitAuthRepairPanel

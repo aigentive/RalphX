@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LockKeyhole, Network, Plus, RefreshCw, ServerCog } from "lucide-react";
+import { ChevronDown, LockKeyhole, Network, Plus, RefreshCw, ServerCog } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -8,6 +8,11 @@ import type {
 } from "@/api/mcp-policy";
 import type { Harness } from "@/api/ideation-harness";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -22,7 +27,6 @@ import { useMcpPolicy } from "@/hooks/useMcpPolicy";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
-import { ExternalMcpSettingsPanel } from "./ExternalMcpSettingsPanel";
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
 import { cancelScheduledJob, scheduleAfterPaint } from "./SettingsDialog.performance";
 
@@ -96,8 +100,10 @@ function ServerPolicyCard({
   onRepair: () => Promise<void>;
 }) {
   const cardRef = useRef<HTMLElement>(null);
+  const [toolsOpen, setToolsOpen] = useState(focused);
   useEffect(() => {
     if (!focused) return;
+    setToolsOpen(true);
     cardRef.current?.focus();
     cardRef.current?.scrollIntoView({ block: "center" });
   }, [focused]);
@@ -166,37 +172,43 @@ function ServerPolicyCard({
             disabled={disabled}
             onClick={() => void onRepair()}
           >
-            Retry safe cleanup
+            Retry cleanup
           </Button>
-          <code className="text-xs text-[var(--text-muted)]">
-            claude mcp remove ralphx -s user
-          </code>
         </div>
       )}
       {server.knownTools.length > 0 && (
-        <div className="mt-4 divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
-          {!server.effectiveEnabled && (
-            <p className="py-2.5 text-xs text-[var(--text-muted)]">
-              Tool controls are unavailable while this server is disabled.
-            </p>
-          )}
-          {server.knownTools.map((tool) => (
-            <div key={tool.toolName} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
-              <div>
-                <code className="text-xs text-[var(--text-secondary)]">{tool.toolName}</code>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  Effective: {tool.effectiveState} · {tool.effectiveSource.replace(/_/g, " ")}
+        <Collapsible open={toolsOpen} onOpenChange={setToolsOpen} className="mt-4 border-t border-[var(--border-subtle)]">
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between py-2.5 text-xs font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+              aria-label={`${toolsOpen ? "Collapse" : "Expand"} ${server.serverId} tools`}
+            >
+              <span>Tools ({server.knownTools.length})</span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${toolsOpen ? "rotate-180" : ""}`} />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="max-h-64 overflow-y-auto overscroll-contain divide-y divide-[var(--border-subtle)]" tabIndex={0}>
+              {!server.effectiveEnabled && (
+                <p className="py-2.5 text-xs text-[var(--text-muted)]">
+                  Tool controls are unavailable while this server is disabled.
                 </p>
-              </div>
-              <PolicySelect
-                value={tool.configuredState}
-                disabled={disabled || server.locked || !server.effectiveEnabled}
-                label={`${server.serverId} ${tool.toolName} policy`}
-                onChange={(state) => void onToolChange(tool.toolName, state)}
-              />
+              )}
+              {server.knownTools.map((tool) => (
+                <div key={tool.toolName} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+                  <div>
+                    <code className="text-xs text-[var(--text-secondary)]">{tool.toolName}</code>
+                    <p className="text-[10px] text-[var(--text-muted)]">
+                      Effective: {tool.effectiveState} · {tool.effectiveSource.replace(/_/g, " ")}
+                    </p>
+                  </div>
+                  <PolicySelect value={tool.configuredState} disabled={disabled || server.locked || !server.effectiveEnabled} label={`${server.serverId} ${tool.toolName} policy`} onChange={(state) => void onToolChange(tool.toolName, state)} />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
     </article>
   );
@@ -206,7 +218,6 @@ export function McpSettingsSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const openModal = useUiStore((state) => state.openModal);
   const modalContext = useUiStore((state) => state.modalContext);
-  const bridgeRef = useRef<HTMLDivElement>(null);
   const [scope, setScope] = useState<Scope>("global");
   const [ready, setReady] = useState(false);
   const [provider, setProvider] = useState<Harness | null>(null);
@@ -273,11 +284,6 @@ export function McpSettingsSection() {
       void refetchProviders();
     }
   }, [policy.error, refetchProviders]);
-  useEffect(() => {
-    if (!ready || modalContext?.["section"] !== "external-mcp") return;
-    bridgeRef.current?.focus();
-    bridgeRef.current?.scrollIntoView({ block: "start" });
-  }, [modalContext, ready]);
   const servers = useMemo(
     () => policy.catalog?.servers.filter((server) => server.provider === provider) ?? [],
     [policy.catalog?.servers, provider],
@@ -448,9 +454,6 @@ export function McpSettingsSection() {
         </div>
       </SectionCard>
 
-      <div ref={bridgeRef} tabIndex={-1} aria-label="RalphX external bridge">
-        <ExternalMcpSettingsPanel />
-      </div>
     </div>
   );
 }

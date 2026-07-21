@@ -22,11 +22,7 @@ pub(super) async fn snapshot_live_folder_references_in_metadata(
     conversation_id: &ChatConversationId,
     repository: Option<Arc<dyn ConversationFolderReferenceRepository>>,
     app_data_dir: Option<&Path>,
-    enabled: bool,
 ) -> Option<String> {
-    if !enabled {
-        return metadata;
-    }
     let (Some(repository), Some(app_data_dir)) = (repository, app_data_dir) else {
         return metadata;
     };

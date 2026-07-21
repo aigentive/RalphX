@@ -8,7 +8,8 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
   { id: "agents", heading: "Agents" },
-  { id: "ideation-workflow", heading: "Planning & Verification" },
+  { id: "tasks", heading: "Tasks" },
+  { id: "planning", heading: "Planning" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "mcp", heading: "MCP" },
@@ -41,10 +42,10 @@ test.describe("Settings Dialog", () => {
     expect(zIndex).not.toBeNull();
   });
 
-  test("MCP section contains external bridge controls", async ({ page }) => {
+  test("External MCP section contains bridge controls", async ({ page }) => {
     settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("mcp");
-    await settingsPage.waitForSection("mcp", "MCP");
+    await settingsPage.openViaStore("external-mcp");
+    await settingsPage.waitForSection("external-mcp", "External MCP");
     await expect(settingsPage.externalMcpEnabledToggle).toBeVisible();
     await expect(settingsPage.externalMcpHostInput).toBeVisible();
     await expect(settingsPage.externalMcpPortInput).toBeVisible();
