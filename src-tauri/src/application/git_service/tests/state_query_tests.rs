@@ -146,6 +146,7 @@ fn state_query_unfinished_operation_reports_checked_regular_repo_state() {
     std::fs::create_dir(git_dir.join("rebase-apply")).unwrap();
 
     let unfinished = GitService::unfinished_operation_state(temp_dir.path()).unwrap();
+    assert!(unfinished.is_unfinished());
     assert!(unfinished.merge_in_progress);
     assert!(unfinished.rebase_in_progress);
 }
@@ -173,6 +174,17 @@ fn state_query_unfinished_operation_rejects_malformed_git_indirection() {
 
     let error = GitService::unfinished_operation_state(temp_dir.path())
         .expect_err("malformed linked-worktree metadata must fail closed");
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn state_query_unfinished_operation_rejects_empty_git_indirection() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join(".git"), "gitdir: \n").unwrap();
+
+    let error = GitService::unfinished_operation_state(temp_dir.path())
+        .expect_err("empty linked-worktree metadata must fail closed");
 
     assert!(matches!(error, AppError::Validation(_)));
 }
