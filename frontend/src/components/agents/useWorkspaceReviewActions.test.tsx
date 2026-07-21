@@ -486,5 +486,88 @@ describe("useWorkspaceReviewActions", () => {
       ).toBeInTheDocument();
     });
     expect(within(dialog).getByRole("button", { name: "Start review" })).toBeDisabled();
+  it("refreshes a stale blocker receipt and requires reconfirmation before retrying Fix Issues", async () => {
+    const context: AgentWorkspaceReviewContext = {
+      success: true,
+      workspace: {} as AgentWorkspaceReviewContext["workspace"],
+      events: [],
+      target: {
+        scope: "workspace_delta",
+        baseRef: "main",
+        baseSha: "base",
+        headRef: "HEAD",
+        headSha: "head",
+        diffFingerprint: "old-diff",
+        sourcePullRequestNumber: null,
+      },
+      monitor: {
+        reviewArtifactId: "artifact-old",
+        reviewArtifactVersion: 1,
+        reviewBlockingFingerprint: "old-blocker",
+        reviewBlockingSummary: "Old finding",
+      } as AgentWorkspaceReviewContext["monitor"],
+      reviewArtifactIsCurrent: true,
+      reviewArtifactIsOutdated: false,
+      canMutateReviewState: true,
+      reviewRuntimeState: "active_owned",
+      isCurrent: true,
+      isOutdated: false,
+      shouldShowTab: true,
+    };
+    const refreshedContext: AgentWorkspaceReviewContext = {
+      ...context,
+      target: { ...context.target!, diffFingerprint: "new-diff" },
+      monitor: {
+        ...context.monitor,
+        reviewArtifactId: "artifact-new",
+        reviewArtifactVersion: 2,
+        reviewBlockingFingerprint: "new-blocker",
+        reviewBlockingSummary: "New finding",
+      },
+    };
+    const conflict = new AgentWorkspaceHttpError(
+      409,
+      "Conflict",
+      "Workspace Review blocker changed",
+    );
+    vi.mocked(chatApi.getAgentWorkspaceReviewContext).mockResolvedValue(
+      refreshedContext,
+    );
+    const onStartFixer = vi
+      .fn()
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+
+    render(<FixerHarness context={context} onStartFixer={onStartFixer} />);
+    await user.click(screen.getByRole("button", { name: "Fix issues" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(await within(dialog).findByRole("button", { name: "Fix issues" }));
+
+    await waitFor(() => {
+      expect(chatApi.getAgentWorkspaceReviewContext).toHaveBeenCalledWith(
+        "conversation-1",
+        { refreshTarget: true },
+      );
+      expect(within(dialog).getByText(/New finding/)).toBeInTheDocument();
+    });
+    expect(within(dialog).getByRole("button", { name: "Fix issues" })).toBeEnabled();
+    expect(onStartFixer).toHaveBeenCalledTimes(1);
+
+    await user.click(within(dialog).getByRole("button", { name: "Fix issues" }));
+
+    await waitFor(() => {
+      expect(onStartFixer).toHaveBeenLastCalledWith({
+        confirmation: {
+          targetScope: "workspace_delta",
+          diffFingerprint: "new-diff",
+          artifactId: "artifact-new",
+          artifactVersion: 2,
+          blockingFingerprint: "new-blocker",
+        },
+        runtimeOverride: reviewerRuntime,
+      });
+    });
   });
 });

@@ -74,6 +74,34 @@ function blockedWorkspaceReviewCopy(error: unknown): string | null {
 const GENERIC_PREPARATION_ERROR =
   "Could not prepare this action. Cancel and try again.";
 
+function fixerConfirmation(
+  context: AgentWorkspaceReviewContext,
+): AgentWorkspaceReviewFixerConfirmation | null {
+  const target = context.target;
+  const monitor = context.monitor;
+  if (
+    !target ||
+    !monitor.reviewArtifactId ||
+    !monitor.reviewArtifactVersion ||
+    !monitor.reviewBlockingFingerprint
+  ) {
+    return null;
+  }
+  return {
+    targetScope: target.scope,
+    diffFingerprint: target.diffFingerprint,
+    artifactId: monitor.reviewArtifactId,
+    artifactVersion: monitor.reviewArtifactVersion,
+    blockingFingerprint: monitor.reviewBlockingFingerprint,
+  };
+}
+
+function fixerDescription(context: AgentWorkspaceReviewContext): string {
+  return context.monitor.reviewBlockingSummary
+    ? `The Repair agent will address: ${context.monitor.reviewBlockingSummary}`
+    : "The Repair agent will address the current blocking findings.";
+}
+
 export function useWorkspaceReviewActions({
   conversationId,
   projectId,
