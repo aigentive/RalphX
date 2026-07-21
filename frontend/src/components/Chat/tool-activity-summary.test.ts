@@ -108,6 +108,29 @@ describe("tool activity summaries", () => {
     expect(summary.delegatedJobKeys).toEqual(["job-1"]);
   });
 
+  it("counts provider and lifecycle aliases for one job as one logical tool", () => {
+    const summary = summarizeToolActivity({
+      tasks: [
+        {
+          toolUseId: "provider-tool",
+          toolName: "delegate_start",
+          delegatedJobId: "job-1",
+        },
+        {
+          toolUseId: "delegate-job:job-1",
+          toolName: "delegate_start",
+          delegatedJobId: "job-1",
+        },
+      ],
+    });
+
+    expect(summary.totalTools).toBe(1);
+    expect(summary.delegatedJobKeys).toEqual(["job-1"]);
+    expect(formatToolActivitySummary(summary)).toBe(
+      "Agent called 1 tool and delegated 1 agent.",
+    );
+  });
+
   it("falls back to an inclusive generic count when metadata is incomplete", () => {
     const summary = summarizeToolActivity({
       toolCalls: [call("one", "custom_tool"), call("two", "write")],

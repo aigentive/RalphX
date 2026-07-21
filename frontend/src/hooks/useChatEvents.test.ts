@@ -122,6 +122,7 @@ interface DefaultProps {
   contextType: ContextType | null;
   streamingToolCalls?: ToolCall[];
   streamingContentBlocks?: StreamingContentBlock[];
+  streamingTasks?: Map<string, StreamingTask>;
   setStreamingToolCalls: ReturnType<typeof vi.fn>;
   setStreamingContentBlocks: ReturnType<typeof vi.fn>;
   setStreamingTasks: ReturnType<typeof vi.fn>;
@@ -1914,7 +1915,7 @@ describe("useChatEvents", () => {
       const delegated = nextMap.get("toolu_delegate_live_001");
       expect(delegated).toBeDefined();
       expect(delegated!.startedAt).toBe(12345);
-      expect(delegated!.description).toBe("ralphx-execution-reviewer");
+      expect(delegated!.description).toBe("Delegated specialist");
       expect(delegated!.model).toBe("gpt-5.4");
       expect(delegated!.providerHarness).toBe("codex");
       expect(delegated!.logicalModel).toBe("gpt-5.4");
@@ -2004,7 +2005,6 @@ describe("useChatEvents", () => {
           cache_creation_tokens: 6,
           cache_read_tokens: 2,
           estimated_usd: 0.12,
-          text_output: "Delegated reviewer found a blocking issue",
           error: "Delegated reviewer failed validation",
           conversation_id: CONV_ID,
           context_id: CTX_ID,
@@ -2052,7 +2052,7 @@ describe("useChatEvents", () => {
       expect(delegated!.cacheCreationTokens).toBe(6);
       expect(delegated!.cacheReadTokens).toBe(2);
       expect(delegated!.estimatedUsd).toBe(0.12);
-      expect(delegated!.textOutput).toBe("Delegated reviewer found a blocking issue");
+      expect(delegated!.textOutput).toBe("Delegated reviewer failed validation");
       expect(delegated!.delegatedSessionId).toBe("delegated-session-456");
       expect(delegated!.delegatedConversationId).toBe("delegated-conv-456");
       expect(delegated!.delegatedAgentRunId).toBe("run-xyz");
@@ -2169,6 +2169,49 @@ describe("useChatEvents", () => {
       });
     });
 
+    it("creates one settled task and marker from a completion-only delegated event", () => {
+      const props = makeProps({ activeAgentRunId: "parent-run-current" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:task_completed", {
+          tool_use_id: "delegate-job:job-completion-only",
+          tool_name: "delegate_start",
+          subagent_type: "delegated",
+          delegated_job_id: "job-completion-only",
+          status: "completed",
+          text_output: "completion-only output",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-current",
+          seq: 9,
+        });
+      });
+
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      const blocks = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+
+      expect([...tasks.keys()]).toEqual(["delegate-job:job-completion-only"]);
+      expect(tasks.get("delegate-job:job-completion-only")).toMatchObject({
+        status: "completed",
+        delegatedJobId: "job-completion-only",
+        textOutput: "completion-only output",
+      });
+      expect(blocks).toEqual([
+        expect.objectContaining({
+          type: "task",
+          toolUseId: "delegate-job:job-completion-only",
+          seq: 9,
+        }),
+      ]);
+    });
+
     it("should create a delegated placeholder task immediately on delegate_start tool calls", () => {
       const props = makeProps();
       renderAndClear(props);
@@ -2211,6 +2254,92 @@ describe("useChatEvents", () => {
         subagentType: "delegated",
         logicalModel: "gpt-5.4",
       });
+    });
+
+    it("coalesces the observed provider placeholder and synthetic lifecycle sequence", () => {
+      const props = makeProps({
+        activeAgentRunId: "parent-run-1",
+        streamingTasks: new Map(),
+        streamingContentBlocks: [],
+      });
+      renderAndClear(props);
+      let tasks = new Map<string, StreamingTask>();
+      let blocks: StreamingContentBlock[] = [];
+      let taskCallIndex = 0;
+      let blockCallIndex = 0;
+      const replay = () => {
+        while (taskCallIndex < props.setStreamingTasks.mock.calls.length) {
+          tasks = executeUpdater(props.setStreamingTasks, tasks, taskCallIndex);
+          taskCallIndex += 1;
+        }
+        while (blockCallIndex < props.setStreamingContentBlocks.mock.calls.length) {
+          blocks = executeUpdater(props.setStreamingContentBlocks, blocks, blockCallIndex);
+          blockCallIndex += 1;
+        }
+        props.streamingTasks = tasks;
+        props.streamingContentBlocks = blocks;
+      };
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "delegate_start",
+          tool_id: "provider-tool",
+          arguments: {
+            agent_name: "ralphx-general-explorer",
+            title: "Trace stale Claude MCP collision handling",
+            prompt: "Trace the collision",
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+        });
+      });
+      replay();
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "delegate-job:job-1",
+          tool_name: "delegate_start",
+          description: "ralphx-general-explorer",
+          subagent_type: "delegated",
+          delegated_job_id: "job-1",
+          delegated_session_id: "child-session-1",
+          delegated_agent_run_id: "child-run-1",
+          provider_harness: "codex",
+          model: "gpt-5.4",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+          seq: 5,
+        });
+      });
+      replay();
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "result:provider-tool",
+          arguments: {},
+          result: { job_id: "job-1", status: "running" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          run_id: "parent-run-1",
+          seq: 6,
+        });
+      });
+      replay();
+
+      expect([...tasks.keys()]).toEqual(["provider-tool"]);
+      expect(tasks.get("provider-tool")).toMatchObject({
+        description: "Trace stale Claude MCP collision handling",
+        delegatedJobId: "job-1",
+        delegatedSessionId: "child-session-1",
+        delegatedAgentRunId: "child-run-1",
+        providerHarness: "codex",
+        model: "gpt-5.4",
+      });
+      expect(blocks.filter((block) => block.type === "task")).toEqual([
+        expect.objectContaining({ type: "task", toolUseId: "provider-tool" }),
+      ]);
     });
 
     it("should create a delegated placeholder task for namespaced delegate_start tool calls", () => {

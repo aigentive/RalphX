@@ -337,6 +337,61 @@ describe("useChatRecovery", () => {
       ]);
     });
 
+    it("hydrates provider and lifecycle aliases as one promoted delegation", async () => {
+      const setStreamingTasks = vi.fn();
+      const setStreamingToolCalls = vi.fn();
+      const setStreamingContentBlocks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [{
+          id: "provider-tool",
+          name: "delegate_start",
+          arguments: { title: "Trace stale Claude MCP collision handling" },
+          result: { job_id: "job-1", status: "running" },
+        }],
+        streaming_tasks: [{
+          tool_use_id: "delegate-job:job-1",
+          description: "ralphx-general-explorer",
+          subagent_type: "delegated",
+          status: "running",
+          delegated_job_id: "job-1",
+          provider_harness: "codex",
+          delegated_agent_run_id: "child-run-1",
+        }],
+        partial_text: "",
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        setStreamingTasks,
+        setStreamingToolCalls,
+        setStreamingContentBlocks,
+      })));
+      await act(async () => {});
+
+      const taskUpdater = setStreamingTasks.mock.calls[0][0] as (
+        prev: Map<string, import("@/types/streaming-task").StreamingTask>
+      ) => Map<string, import("@/types/streaming-task").StreamingTask>;
+      const toolUpdater = setStreamingToolCalls.mock.calls[0][0] as (
+        prev: ToolCall[]
+      ) => ToolCall[];
+      const blockUpdater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+
+      const tasks = taskUpdater(new Map());
+      expect([...tasks.keys()]).toEqual(["provider-tool"]);
+      expect(tasks.get("provider-tool")).toMatchObject({
+        description: "Trace stale Claude MCP collision handling",
+        delegatedJobId: "job-1",
+        providerHarness: "codex",
+        delegatedAgentRunId: "child-run-1",
+      });
+      expect(toolUpdater([])).toEqual([]);
+      expect(blockUpdater([])).toEqual([
+        { type: "task", toolUseId: "provider-tool" },
+      ]);
+    });
+
     it("skips active-state hydration in history mode", () => {
       const props = makeProps({
         isHistoryMode: true,
