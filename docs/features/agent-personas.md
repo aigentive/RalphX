@@ -53,4 +53,4 @@ Switching a persona stops an active agent before the new binding takes effect. A
 - Native agent paths that cannot accept prompt injection report `persona:injection_skipped` without exposing persona content.
 - Builder attachments must decode as UTF-8 text (binary files are rejected); file-type filtering in the picker is advisory.
 
-The `agent_personas`, `standalone_conversations`, and `composer_folder_references` flags gate their corresponding surfaces. Global Refine remains unavailable when standalone conversations are disabled.
+The `agent_personas` and `standalone_conversations` flags gate their corresponding surfaces. Folder references are always available in supported Project and Persona Builder conversations. Global Refine remains unavailable when standalone conversations are disabled.

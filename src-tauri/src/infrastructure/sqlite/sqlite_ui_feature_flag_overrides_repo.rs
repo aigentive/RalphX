@@ -34,20 +34,17 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
         self.db
             .run(|conn| {
                 let result = conn.query_row(
-                    "SELECT agent_personas, composer_folder_references, agent_conversation_team,
-                            agent_conversation_workflows, agent_conversation_autopilot
+                    "SELECT agent_personas, agent_conversation_team,
+                             agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {
                         let value: Option<i64> = row.get(0)?;
                         Ok(UiFeatureFlagOverrides {
                             agent_personas: value.map(|value| value != 0),
-                            composer_folder_references: row
-                                .get::<_, Option<i64>>(1)?
-                                .map(|value| value != 0),
-                            agent_conversation_team: row.get::<_, i64>(2)? != 0,
-                            agent_conversation_workflows: row.get::<_, i64>(3)? != 0,
-                            agent_conversation_autopilot: row.get::<_, i64>(4)? != 0,
+                            agent_conversation_team: row.get::<_, i64>(1)? != 0,
+                            agent_conversation_workflows: row.get::<_, i64>(2)? != 0,
+                            agent_conversation_autopilot: row.get::<_, i64>(3)? != 0,
                         })
                     },
                 );
@@ -79,22 +76,6 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
             .await
     }
 
-    async fn set_composer_folder_references(&self, value: Option<bool>) -> AppResult<()> {
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO ui_feature_flag_overrides (id, composer_folder_references) VALUES (1, NULL)",
-                    [],
-                )?;
-                conn.execute(
-                    "UPDATE ui_feature_flag_overrides SET composer_folder_references = ?1 WHERE id = 1",
-                    [value.map(|value| if value { 1 } else { 0 })],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     async fn update_agent_capabilities(
         &self,
         team: Option<bool>,
@@ -105,9 +86,9 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
             .run_transaction(move |tx| {
                 tx.execute(
                     "INSERT OR IGNORE INTO ui_feature_flag_overrides (
-                        id, agent_personas, composer_folder_references, agent_conversation_team,
+                        id, agent_personas, agent_conversation_team,
                         agent_conversation_workflows, agent_conversation_autopilot
-                     ) VALUES (1, NULL, NULL, 0, 0, 0)",
+                     ) VALUES (1, NULL, 0, 0, 0)",
                     [],
                 )?;
                 tx.execute(
@@ -123,20 +104,17 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
                     ],
                 )?;
                 tx.query_row(
-                    "SELECT agent_personas, composer_folder_references, agent_conversation_team,
-                            agent_conversation_workflows, agent_conversation_autopilot
+                    "SELECT agent_personas, agent_conversation_team,
+                             agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {
                         let agent_personas = row.get::<_, Option<i64>>(0)?.map(|value| value != 0);
                         Ok(UiFeatureFlagOverrides {
                             agent_personas,
-                            composer_folder_references: row
-                                .get::<_, Option<i64>>(1)?
-                                .map(|value| value != 0),
-                            agent_conversation_team: row.get::<_, i64>(2)? != 0,
-                            agent_conversation_workflows: row.get::<_, i64>(3)? != 0,
-                            agent_conversation_autopilot: row.get::<_, i64>(4)? != 0,
+                            agent_conversation_team: row.get::<_, i64>(1)? != 0,
+                            agent_conversation_workflows: row.get::<_, i64>(2)? != 0,
+                            agent_conversation_autopilot: row.get::<_, i64>(3)? != 0,
                         })
                     },
                 )

@@ -145,7 +145,7 @@ describe("McpSettingsSection", () => {
 
     expect(screen.getByText("No validated provider is enabled")).toBeInTheDocument();
     expect(testState.hookCalls.at(-1)).toEqual([null, null, false]);
-    expect(screen.getByText("RalphX external bridge controls")).toBeInTheDocument();
+    expect(screen.queryByText("RalphX external bridge controls")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Manage providers" }));
     expect(testState.openModal).toHaveBeenCalledWith("settings", {
       section: "providers",
@@ -237,8 +237,14 @@ describe("McpSettingsSection", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Claude MCP catalog" }));
     expect(testState.refreshProvider).toHaveBeenCalledWith("claude");
 
+    expect(screen.queryByText("Tool controls are unavailable while this server is disabled.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand notion tools" }));
     expect(screen.getByText("Tool controls are unavailable while this server is disabled.")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "notion delete_page policy" })).toBeDisabled();
+    expect(screen.getByText("delete_page").closest("div.max-h-64")).toHaveClass(
+      "overflow-y-auto",
+      "overscroll-contain",
+    );
     expect(screen.getByText("Structured catalog is unavailable; showing limited metadata.")).toBeInTheDocument();
     expect(screen.getByText("Project MCP policy: invalid tool identifier")).toBeInTheDocument();
     expect(screen.getByText(/readiness result is stale/i)).toBeInTheDocument();
@@ -289,16 +295,6 @@ describe("McpSettingsSection", () => {
     );
     expect(screen.getByText("filesystem")).toBeInTheDocument();
     expect(screen.queryByText("github")).not.toBeInTheDocument();
-  });
-
-  it("focuses the external bridge for the legacy deep link", async () => {
-    testState.modalContext = { section: "external-mcp" };
-
-    render(<McpSettingsSection />);
-
-    await waitFor(() =>
-      expect(screen.getByLabelText("RalphX external bridge")).toHaveFocus(),
-    );
   });
 
   it("deep-links to a reserved conflict and retries only proven legacy cleanup", async () => {

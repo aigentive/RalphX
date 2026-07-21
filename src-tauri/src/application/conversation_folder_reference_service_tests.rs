@@ -438,7 +438,6 @@ async fn project_folder_reference_roots_append_without_replacing_project_root() 
         Some(&fixture.app_data),
         &fixture.app_data,
         folder_repo.clone(),
-        true,
     )
     .await
     .expect("resolve project roots");
@@ -456,28 +455,11 @@ async fn project_folder_reference_roots_append_without_replacing_project_root() 
         Some(&fixture.app_data),
         &fixture.app_data,
         folder_repo.clone(),
-        true,
     )
     .await
     .expect("resolve builder roots");
     assert!(!builder_roots.contains(&fixture.folder));
     assert!(!builder_roots.contains(&second_folder));
-
-    let disabled_roots = crate::application::chat_service::chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
-        ChatContextType::Project,
-        Some(project_id.as_str()),
-        Arc::new(MemoryProjectRepository::new()),
-        &working_folder,
-        Some(AgentConversationWorkspaceMode::Edit),
-        Some(&conversation_id_string),
-        Some(&fixture.app_data),
-        &fixture.app_data,
-        folder_repo,
-        false,
-    )
-    .await
-    .expect("disabled feature preserves base behavior");
-    assert!(!disabled_roots.contains(&second_folder));
 }
 
 #[test]
