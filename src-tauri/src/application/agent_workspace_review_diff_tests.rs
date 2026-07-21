@@ -296,6 +296,165 @@ fn cursor_validation_rejects_wrong_kind_and_out_of_bounds_fields() {
 }
 
 #[test]
+fn cursor_validation_accepts_complete_diff_cursor_and_rejects_invalid_shapes() {
+    let cursor = ReviewDiffCursor {
+        version: 1,
+        kind: ReviewDiffCursorKind::Diff,
+        target_scope: "workspace_delta".to_string(),
+        target_fingerprint: "a".repeat(REVIEW_FINGERPRINT_CHARS),
+        source_fingerprint: "b".repeat(REVIEW_FINGERPRINT_CHARS),
+        offset: 4,
+        path: Some("src/lib.rs".to_string()),
+        source: Some(AgentWorkspaceReviewDiffSource::Unstaged),
+    };
+    let encoded = encode_cursor(&cursor).expect("encode complete cursor");
+    let decoded = decode_cursor(&encoded, ReviewDiffCursorKind::Diff).expect("decode cursor");
+    assert_eq!(decoded.offset, 4);
+    assert_eq!(decoded.path.as_deref(), Some("src/lib.rs"));
+
+    for invalid in [
+        ReviewDiffCursor {
+            path: None,
+            ..cursor.clone()
+        },
+        ReviewDiffCursor {
+            source: None,
+            ..cursor.clone()
+        },
+        ReviewDiffCursor {
+            target_fingerprint: "short".to_string(),
+            ..cursor.clone()
+        },
+        ReviewDiffCursor {
+            path: Some(" ".to_string()),
+            ..cursor.clone()
+        },
+    ] {
+        let encoded = encode_cursor(&invalid).expect("encode invalid cursor shape");
+        assert!(decode_cursor(&encoded, ReviewDiffCursorKind::Diff).is_err());
+    }
+
+    let file_cursor = ReviewDiffCursor {
+        kind: ReviewDiffCursorKind::Files,
+        path: Some("README.md".to_string()),
+        source: None,
+        ..cursor
+    };
+    let encoded = encode_cursor(&file_cursor).expect("encode invalid file cursor");
+    assert!(decode_cursor(&encoded, ReviewDiffCursorKind::Files).is_err());
+}
+
+#[test]
+fn cursor_limits_and_source_parser_enforce_public_input_bounds() {
+    assert_eq!(
+        bounded_limit(None, 10, 20, "test").expect("default limit"),
+        10
+    );
+    assert_eq!(
+        bounded_limit(Some(20), 10, 20, "test").expect("max limit"),
+        20
+    );
+    assert!(bounded_limit(Some(0), 10, 20, "test").is_err());
+    assert!(bounded_limit(Some(21), 10, 20, "test").is_err());
+    assert!(validate_path_bound(&"x".repeat(512)).is_ok());
+    assert!(validate_path_bound(&"x".repeat(513)).is_err());
+
+    for value in ["selected_source", "committed", "staged", "unstaged"] {
+        assert!(value.parse::<AgentWorkspaceReviewDiffSource>().is_ok());
+    }
+    assert!("unknown".parse::<AgentWorkspaceReviewDiffSource>().is_err());
+}
+
+#[tokio::test]
+async fn file_inventory_merges_committed_staged_and_unstaged_sources() {
+    let (repo, mut workspace, project) = init_workspace();
+    std::fs::write(repo.path().join("README.md"), "committed\n").expect("write committed change");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "committed change"]);
+    std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged change");
+    git(repo.path(), &["add", "README.md"]);
+    std::fs::write(repo.path().join("scratch.txt"), "unstaged\n").expect("write untracked change");
+    workspace.base_commit = Some(git(repo.path(), &["rev-parse", "HEAD^"]));
+
+    let page = list_workspace_review_files(&workspace, &project, None, None)
+        .await
+        .expect("inventory across source layers");
+    let readme = page
+        .files
+        .iter()
+        .find(|file| file.path == "README.md")
+        .expect("README should be present");
+    assert_eq!(readme.sources, vec!["committed", "staged"]);
+    assert!(page.files.iter().any(|file| {
+        file.path == "scratch.txt" && file.sources == vec!["unstaged"] && file.status == "added"
+    }));
+}
+
+#[tokio::test]
+async fn diff_page_rejects_invalid_first_page_and_cursor_offsets() {
+    let (repo, workspace, project) = init_workspace();
+    std::fs::write(repo.path().join("README.md"), "changed\n").expect("modify tracked file");
+
+    assert!(get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        None,
+        None,
+        Some("unstaged"),
+        None
+    )
+    .await
+    .is_err());
+    assert!(get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        None,
+        Some("README.md"),
+        None,
+        None
+    )
+    .await
+    .is_err());
+
+    let first = get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        None,
+        Some("README.md"),
+        Some("unstaged"),
+        Some(1),
+    )
+    .await
+    .expect("first diff page");
+    let cursor = first.next_cursor.expect("continuation cursor");
+    assert!(get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        Some(&cursor),
+        Some("README.md"),
+        None,
+        Some(1),
+    )
+    .await
+    .is_err());
+
+    let mut decoded = decode_cursor(&cursor, ReviewDiffCursorKind::Diff).expect("decode cursor");
+    decoded.offset = 99;
+    let out_of_range = encode_cursor(&decoded).expect("encode out of range cursor");
+    let error = get_workspace_review_diff_page(
+        &workspace,
+        &project,
+        Some(&out_of_range),
+        None,
+        None,
+        Some(1),
+    )
+    .await
+    .expect_err("out of range cursor must fail");
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
 fn source_scope_validation_fails_closed() {
     assert!(validate_source_for_target(
         AgentWorkspaceReviewDiffSource::SelectedSource,
