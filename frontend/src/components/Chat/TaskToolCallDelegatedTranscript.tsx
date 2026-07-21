@@ -14,7 +14,10 @@ import {
   buildTaskCardTranscriptEntryFromToolCall,
 } from "./TaskCardTranscript.utils";
 import type { ToolCall } from "./ToolCallIndicator";
-import { parseToolResultId } from "./delegation-tool-calls";
+import {
+  mergeDelegationToolCalls,
+  parseToolResultId,
+} from "./delegation-tool-calls";
 
 function liveToolCallFromPayload(payload: {
   tool_name?: string | undefined;
@@ -42,16 +45,18 @@ function liveTaskToolCallFromPayload(payload: {
   total_tokens?: number | undefined;
   total_tool_uses?: number | undefined;
   duration_ms?: number | undefined;
+  delegated_job_id?: string | undefined;
 }): ToolCall | null {
   if (!payload.tool_use_id) return null;
   const isTerminal = payload.status != null && payload.status !== "running";
   return {
     id: payload.tool_use_id,
-    name: "Task",
+    name: payload.delegated_job_id ? "delegate_start" : "Task",
     arguments: {
       description: payload.description,
       subagent_type: payload.subagent_type,
       model: payload.model,
+      ...(payload.delegated_job_id ? { job_id: payload.delegated_job_id } : {}),
     },
     ...(isTerminal
       ? {
@@ -61,6 +66,7 @@ function liveTaskToolCallFromPayload(payload: {
             total_tokens: payload.total_tokens,
             total_tool_use_count: payload.total_tool_uses,
             total_duration_ms: payload.duration_ms,
+            ...(payload.delegated_job_id ? { job_id: payload.delegated_job_id } : {}),
           },
         }
       : {}),
@@ -72,7 +78,7 @@ function mergeLiveToolCalls(toolCalls: ToolCall[]): ToolCall[] {
   for (const toolCall of toolCalls) {
     merged.set(toolCall.id, { ...merged.get(toolCall.id), ...toolCall });
   }
-  return [...merged.values()];
+  return mergeDelegationToolCalls([...merged.values()]);
 }
 
 function FallbackText({ text }: { text: string }) {
@@ -273,6 +279,7 @@ export function TaskToolCallDelegatedTranscript({
       total_tool_use_count?: number;
       duration_ms?: number;
       total_duration_ms?: number;
+      delegated_job_id?: string;
     }) => {
       if (
         payload.conversation_id !== conversationId
