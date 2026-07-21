@@ -1331,6 +1331,8 @@
             .mark_pr_review_first_action_resolved(&conversation_id)
             .await
             .unwrap();
+        // Proposal and automatic signed submission each verify the live PR head.
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
 
         let Json(response) = propose_agent_workspace_pr_review_action(
             State(state),
