@@ -98,10 +98,6 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         "Expected camelCase 'battleMode' in JSON: {json}"
     );
     assert!(
-        json.contains("\"teamMode\":"),
-        "Expected camelCase 'teamMode' in JSON: {json}"
-    );
-    assert!(
         json.contains("\"atlassianOauth\":"),
         "Expected camelCase 'atlassianOauth' in JSON: {json}"
     );
@@ -129,10 +125,6 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"battle_mode\":"),
         "Unexpected snake_case 'battle_mode' in JSON: {json}"
-    );
-    assert!(
-        !json.contains("\"team_mode\":"),
-        "Unexpected snake_case 'team_mode' in JSON: {json}"
     );
     assert!(
         !json.contains("\"atlassian_oauth\":"),

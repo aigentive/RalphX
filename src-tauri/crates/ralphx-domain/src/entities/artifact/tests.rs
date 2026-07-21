@@ -74,7 +74,7 @@ fn process_id_from_string_preserves_value() {
 #[test]
 fn artifact_type_all_includes_persona() {
     let all = ArtifactType::all();
-    assert_eq!(all.len(), 24);
+    assert_eq!(all.len(), 23);
     assert!(all.contains(&ArtifactType::Persona));
 }
 

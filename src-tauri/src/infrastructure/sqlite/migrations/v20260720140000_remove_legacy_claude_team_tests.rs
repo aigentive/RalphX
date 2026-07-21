@@ -40,7 +40,7 @@ fn migration_removes_legacy_state_and_preserves_native_team_artifacts() {
             (id, type, name, content_type, content_text, bucket_id, created_by, metadata_json)
          VALUES
             ('finding-1', 'verification_finding', 'Finding', 'text', 'retired', 'team-findings', 'team-lead', '{\"author\":\"team-lead\"}'),
-            ('summary-1', 'team_summary', 'Summary', 'text', 'kept', 'team-findings', 'team-lead', '{\"author\":\"team-lead\"}')",
+            ('summary-1', 'team_summary', 'Summary', 'text', 'kept', 'team-findings', 'team-lead', '{\"author_teammate\":\"team-lead\",\"unrelated_owner\":\"team-lead\"}')",
         [],
     )
     .unwrap();
@@ -311,7 +311,11 @@ fn migration_removes_legacy_state_and_preserves_native_team_artifacts() {
         .unwrap();
     assert_eq!(
         preserved,
-        ("system".into(), "{\"author\":\"system\"}".into(), None)
+        (
+            "system".into(),
+            "{\"author_teammate\":\"system\",\"unrelated_owner\":\"team-lead\"}".into(),
+            None
+        )
     );
     let bucket_config: String = conn
         .query_row(

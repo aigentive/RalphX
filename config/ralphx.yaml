@@ -103,10 +103,6 @@ timeouts:
     default_line_read_secs: 600 # Env: RALPHX_STREAM_DEFAULT_LINE_READ_SECS
     # chat_service_streaming.rs — max stall for worker/ideation/other agents
     default_parse_stall_secs: 180 # Env: RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS
-    # chat_service_streaming.rs — team lead wait time for teammate responses (generous: 1 hour)
-    team_line_read_secs: 3600 # Env: RALPHX_STREAM_TEAM_LINE_READ_SECS
-    # chat_service_streaming.rs — team lead stream stall limit (generous: 1 hour)
-    team_parse_stall_secs: 3600 # Env: RALPHX_STREAM_TEAM_PARSE_STALL_SECS
     # chat_service_streaming.rs — max idle time (no meaningful activity) before killing agent stream
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
     # chat_service_handlers.rs — slack for agent run start recorded before execution status history

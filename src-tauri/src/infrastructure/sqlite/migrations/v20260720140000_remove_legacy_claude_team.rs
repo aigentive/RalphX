@@ -202,16 +202,28 @@ fn migrate_inner(conn: &Connection) -> AppResult<()> {
     // Preserve active team artifacts while removing the retired synthetic lead identity.
     conn.execute(
         "UPDATE artifacts
-         SET created_by = CASE WHEN created_by = 'team-lead' THEN 'system' ELSE created_by END,
-             metadata_json = CASE
-                 WHEN metadata_json IS NOT NULL AND json_valid(metadata_json)
-                 THEN replace(metadata_json, '\"team-lead\"', '\"system\"')
-                 ELSE metadata_json
-             END
-         WHERE type IN ('team_research', 'team_analysis', 'team_summary')",
+         SET created_by = 'system'
+         WHERE type IN ('team_research', 'team_analysis', 'team_summary')
+           AND created_by = 'team-lead'",
         [],
     )
     .map_err(|error| AppError::Database(error.to_string()))?;
+    for attribution_path in [
+        "$.author",
+        "$.author_teammate",
+        "$.team_metadata.author_teammate",
+    ] {
+        conn.execute(
+            "UPDATE artifacts
+             SET metadata_json = json_set(metadata_json, ?1, 'system')
+             WHERE type IN ('team_research', 'team_analysis', 'team_summary')
+               AND metadata_json IS NOT NULL
+               AND json_valid(metadata_json)
+               AND json_extract(metadata_json, ?1) = 'team-lead'",
+            [attribution_path],
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    }
     conn.execute(
         "UPDATE artifact_buckets
          SET config_json = '{\"accepted_types\":[\"team_research\",\"team_analysis\",\"team_summary\"],\"writers\":[\"system\"],\"readers\":[\"all\"]}'

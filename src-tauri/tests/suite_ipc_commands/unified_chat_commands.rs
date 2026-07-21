@@ -3438,23 +3438,13 @@ mod ipc_contract {
 
     #[test]
     fn send_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh","target":null}"#;
+        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
         let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task_execution");
         assert_eq!(input.context_id, "task-123");
         assert_eq!(input.content, "Hello agent");
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
-        assert!(input.target.is_none());
-    }
-
-    #[test]
-    fn send_agent_message_input_with_target() {
-        let json = r#"{"contextType":"ideation","contextId":"session-456","content":"Plan this","target":"orchestrator"}"#;
-        let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.context_type, "ideation");
-        assert_eq!(input.context_id, "session-456");
-        assert_eq!(input.target, Some("orchestrator".to_string()));
     }
 
     #[test]
@@ -3472,13 +3462,12 @@ mod ipc_contract {
 
     #[test]
     fn queue_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc","target":null}"#;
+        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc"}"#;
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task");
         assert_eq!(input.context_id, "task-789");
         assert_eq!(input.content, "Queued msg");
         assert_eq!(input.client_id, Some("client-abc".to_string()));
-        assert!(input.target.is_none());
     }
 
     #[test]
@@ -3487,7 +3476,6 @@ mod ipc_contract {
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "project");
         assert!(input.client_id.is_none());
-        assert!(input.target.is_none());
     }
 
     // ── CreateAgentConversationInput ────────────────────────────────────────
