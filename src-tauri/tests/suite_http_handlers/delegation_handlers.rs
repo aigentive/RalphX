@@ -1832,7 +1832,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     let wrong_conversation_run = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(other_conversation.id.clone()))
+        .create(AgentRun::new(other_conversation.id))
         .await
         .expect("create wrong-conversation run");
     let mut wrong_headers = HeaderMap::new();
@@ -1856,7 +1856,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
         .unwrap_or_default()
         .contains("does not belong to the parent conversation"));
 
-    let mut stale_run = AgentRun::new(parent_conversation.id.clone());
+    let mut stale_run = AgentRun::new(parent_conversation.id);
     stale_run.status = AgentRunStatus::Completed;
     stale_run.completed_at = Some(Utc::now());
     let stale_run = state
@@ -1868,7 +1868,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(parent_conversation.id.clone()))
+        .create(AgentRun::new(parent_conversation.id))
         .await
         .expect("create active parent run");
     let mut stale_headers = HeaderMap::new();
@@ -1918,7 +1918,7 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
         .await
         .expect("create delegated conversation");
 
-    let mut exact_run = AgentRun::new(delegated_conversation.id.clone());
+    let mut exact_run = AgentRun::new(delegated_conversation.id);
     exact_run.status = AgentRunStatus::Completed;
     exact_run.completed_at = Some(Utc::now());
     exact_run.effective_model_id = Some("exact-model".to_string());
@@ -1929,7 +1929,7 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
         .await
         .expect("create exact delegated run");
 
-    let mut newer_run = AgentRun::new(delegated_conversation.id.clone());
+    let mut newer_run = AgentRun::new(delegated_conversation.id);
     newer_run.started_at = exact_run.started_at + chrono::Duration::seconds(1);
     newer_run.status = AgentRunStatus::Completed;
     newer_run.completed_at = Some(Utc::now());
