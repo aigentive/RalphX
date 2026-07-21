@@ -94,12 +94,26 @@ pub(crate) async fn load_current_workspace_review_eligible(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentConversationWorkspace> {
+    load_workspace_review_eligible(state, workspace, false).await
+}
+
+async fn load_workspace_review_eligible(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    allow_missing_merged_workspace: bool,
+) -> AppResult<AgentConversationWorkspace> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let current = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&workspace.conversation_id)
         .await?;
     let current = match current {
         Some(current) => current,
+        None if allow_missing_merged_workspace
+            && workspace.publication_pr_status.as_deref() == Some(MERGED_PUBLICATION_PR_STATUS) =>
+        {
+            workspace.clone()
+        }
         #[cfg(test)]
         None => workspace.clone(),
         #[cfg(not(test))]
@@ -553,7 +567,7 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
-    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = load_workspace_review_eligible(state, workspace, true).await?;
     let workspace = &workspace;
     let started = Instant::now();
     let project = state
@@ -3475,9 +3489,13 @@ pub(crate) fn ensure_workspace_review_supported_mode(
     if workspace_review_mode_is_eligible(workspace.mode) {
         return Ok(());
     }
+    let mode = match workspace.mode {
+        AgentConversationWorkspaceMode::ReviewPr => "Review PR".to_string(),
+        mode => mode.to_string(),
+    };
     Err(AppError::Validation(format!(
         "Workspace Review is unavailable in {} mode",
-        workspace.mode
+        mode
     )))
 }
 

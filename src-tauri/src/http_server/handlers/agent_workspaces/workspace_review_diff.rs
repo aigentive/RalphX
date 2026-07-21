@@ -101,7 +101,7 @@ async fn authorized_workspace_review_diff_context(
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), conversation_id).await?;
     let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(workspace_review_diff_error)?;
+        .map_err(workspace_review_action_error)?;
     let project = state
         .app_state
         .project_repo
@@ -153,7 +153,7 @@ async fn authorized_workspace_review_diff_context(
 
 fn workspace_review_diff_error(error: AppError) -> JsonError {
     let status = match &error {
-        AppError::Validation(_) => StatusCode::CONFLICT,
+        AppError::Validation(_) => StatusCode::BAD_REQUEST,
         AppError::Conflict(_) => StatusCode::CONFLICT,
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
