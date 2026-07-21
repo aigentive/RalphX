@@ -151,6 +151,35 @@ describe("notification command mocks", () => {
   });
 });
 
+describe("task command mocks", () => {
+  afterEach(() => {
+    resetStore();
+  });
+
+  it("reports durable history only for the requested ideation session", async () => {
+    const store = getStore();
+    const task = store.tasks.get("task-mock-1");
+    if (!task) throw new Error("Expected task fixture");
+    store.tasks.set(task.id, {
+      ...task,
+      ideationSessionId: "session-with-history",
+    });
+
+    await expect(
+      invoke("get_session_task_history_availability", {
+        projectId: "project-mock-1",
+        ideationSessionId: "session-with-history",
+      }),
+    ).resolves.toEqual({ has_history: true, task_count: 1 });
+    await expect(
+      invoke("get_session_task_history_availability", {
+        projectId: "project-mock-1",
+        ideationSessionId: "session-without-history",
+      }),
+    ).resolves.toEqual({ has_history: false, task_count: 0 });
+  });
+});
+
 describe("review settings command mocks", () => {
   afterEach(async () => {
     await invoke("update_review_settings", {

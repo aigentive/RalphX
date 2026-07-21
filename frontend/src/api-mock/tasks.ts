@@ -42,6 +42,17 @@ function createMockStep(overrides: Partial<TaskStep> & { id: string; taskId: str
 // ============================================================================
 
 export const mockTasksApi = {
+  getSessionHistoryAvailability: async (
+    projectId: string,
+    ideationSessionId: string,
+  ): Promise<{ hasHistory: boolean; taskCount: number }> => {
+    const taskCount = Array.from(getStore().tasks.values()).filter(
+      (task) =>
+        task.projectId === projectId && task.ideationSessionId === ideationSessionId,
+    ).length;
+    return { hasHistory: taskCount > 0, taskCount };
+  },
+
   list: async (params: {
     projectId: string;
     statuses?: string[];

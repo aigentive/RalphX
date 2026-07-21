@@ -509,6 +509,9 @@ mod v20260718162852_clear_detected_validation_commands_tests;
 mod v20260718182035_add_tasks_enabled_setting;
 #[cfg(test)]
 mod v20260718182035_add_tasks_enabled_setting_tests;
+mod v20260720102513_add_tasks_feature_state;
+#[cfg(test)]
+mod v20260720102513_add_tasks_feature_state_tests;
 mod v20260720131416_review_pr_disable_pr_automation;
 #[cfg(test)]
 mod v20260720131416_review_pr_disable_pr_automation_tests;
@@ -1665,6 +1668,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260718182035,
         name: "add_tasks_enabled_setting",
         migrate: v20260718182035_add_tasks_enabled_setting::migrate,
+    },
+    Migration {
+        version: 20260720102513,
+        name: "add_tasks_feature_state",
+        migrate: v20260720102513_add_tasks_feature_state::migrate,
     },
     Migration {
         version: 20260720131416,

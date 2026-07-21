@@ -2218,6 +2218,16 @@ const commandHandlers: Record<
   update_notification_settings: async () => mockNotificationSettings,
 
   // Task commands
+  get_session_task_history_availability: async (args) => {
+    const availability = await mockTasksApi.getSessionHistoryAvailability(
+      args.projectId as string,
+      args.ideationSessionId as string,
+    );
+    return {
+      has_history: availability.hasHistory,
+      task_count: availability.taskCount,
+    };
+  },
   list_tasks: async (args) => {
     // Build params object, only including defined properties
     const params: {

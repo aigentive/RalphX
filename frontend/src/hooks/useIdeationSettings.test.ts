@@ -11,11 +11,16 @@ vi.mock("@/api/ideation", () => ({
     settings: {
       get: vi.fn(),
       update: vi.fn(),
+      setTasksEnabled: vi.fn(),
     },
   },
 }));
 
-const settings = { ...defaultIdeationSettings, tasksEnabled: true };
+const settings = {
+  ...defaultIdeationSettings,
+  tasksEnabled: true,
+  tasksFeatureState: "enabled" as const,
+};
 
 function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -27,6 +32,7 @@ describe("useIdeationSettings", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -38,7 +44,7 @@ describe("useIdeationSettings", () => {
 
   it("keeps Tasks off and refetches after the backend commits OFF with a drain error", async () => {
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-    vi.mocked(ideationApi.settings.update).mockRejectedValue(
+    vi.mocked(ideationApi.settings.setTasksEnabled).mockRejectedValue(
       new Error("ralphx:tasks_drain_incomplete: retry cleanup"),
     );
     const { result } = renderHook(() => useIdeationSettings(), {
@@ -47,7 +53,7 @@ describe("useIdeationSettings", () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     await act(async () => {
-      result.current.updateSettings({ ...settings, tasksEnabled: false });
+      await result.current.setTasksEnabled(false).catch(() => undefined);
     });
 
     await waitFor(() => {
@@ -69,6 +75,27 @@ describe("useIdeationSettings", () => {
     await waitFor(() => {
       expect(result.current.settings.tasksEnabled).toBe(true);
       expect(result.current.updateError).toBeInstanceOf(Error);
+    });
+  });
+
+  it("does not optimistically change backend-owned Tasks fields during an ordinary update", async () => {
+    vi.mocked(ideationApi.settings.update).mockReturnValue(new Promise(() => undefined));
+    const { result } = renderHook(() => useIdeationSettings(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => {
+      result.current.updateSettings({
+        ...settings,
+        tasksEnabled: false,
+        tasksFeatureState: "disabled",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.settings.tasksEnabled).toBe(true);
+      expect(result.current.settings.tasksFeatureState).toBe("enabled");
     });
   });
 });

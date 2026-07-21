@@ -25,7 +25,17 @@ pub(super) fn persist_status_change(
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    // Insert history record
+    insert_status_history(conn, id, from, to, trigger, now)
+}
+
+pub(super) fn insert_status_history(
+    conn: &Connection,
+    id: &TaskId,
+    from: InternalStatus,
+    to: InternalStatus,
+    trigger: &str,
+    now: DateTime<Utc>,
+) -> AppResult<String> {
     let history_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO task_state_history (id, task_id, from_status, to_status, changed_by, created_at)
@@ -40,7 +50,6 @@ pub(super) fn persist_status_change(
         ],
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
-
     Ok(history_id)
 }
 
