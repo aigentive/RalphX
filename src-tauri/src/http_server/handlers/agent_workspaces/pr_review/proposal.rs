@@ -9,6 +9,13 @@ pub async fn write_agent_workspace_pr_review_artifact(
     let content = non_empty_string(req.content, "content")?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.has_terminal_publication_pr_status() {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
     let pr_number = review_pr_number(&workspace).ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
@@ -100,6 +107,13 @@ pub async fn write_agent_workspace_pr_review_artifact(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request became terminal before the review action settled",
+            None,
+        ));
+    }
 
     let content_text = match &created.content {
         crate::domain::entities::ArtifactContent::Inline { text } => text.clone(),
@@ -151,6 +165,13 @@ pub async fn propose_agent_workspace_pr_review_action(
         .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.has_terminal_publication_pr_status() {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
     let pr_number = review_pr_number(&workspace).ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
@@ -167,6 +188,31 @@ pub async fn propose_agent_workspace_pr_review_action(
     )
     .await?;
     ensure_review_artifact_for_head(&monitor, &head_sha)?;
+    let github = state.app_state.github_service.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "GitHub review submission is unavailable",
+            None,
+        )
+    })?;
+    let health =
+        fetch_review_pr_health_for_mutation(&workspace, pr_number, github.as_ref()).await?;
+    if reconcile_terminal_review_pr_health(state.app_state.as_ref(), &workspace, pr_number, &health)
+        .await?
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
+    if health.sync_state.head_ref_oid.as_deref() != Some(head_sha.as_str()) {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request head changed; run a fresh review before proposing an action",
+            None,
+        ));
+    }
 
     let action = AgentWorkspacePrReviewAction::new(
         conversation_id.clone(),
@@ -178,12 +224,45 @@ pub async fn propose_agent_workspace_pr_review_action(
         req.findings_json,
         req.created_by_run_id.clone(),
     );
-    let action = state
+    let entering_awaiting_user = monitor.monitor_enabled
+        && monitor.status != AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    monitor.status = if monitor.monitor_enabled {
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    } else {
+        AgentWorkspacePrReviewMonitorStatus::Paused
+    };
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
+    monitor.last_review_run_id = req.created_by_run_id;
+    monitor.last_review_outcome = Some(proposed_action.to_string());
+    monitor.last_error = None;
+    let transition = state
         .app_state
         .agent_conversation_workspace_repo
-        .create_or_update_pr_review_action(action)
+        .transition_pr_review_state_if_nonterminal(
+            monitor,
+            Some(AgentWorkspacePrReviewActionMutation::UpsertPending(action)),
+        )
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(|error| match error {
+            AppError::Conflict(message) => json_error(StatusCode::CONFLICT, message, None),
+            error => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None),
+        })?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::CONFLICT,
+                "Pull request became terminal before the review action settled",
+                None,
+            )
+        })?;
+    let mut monitor = transition.monitor;
+    let action = transition.action.ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Review PR proposal transition did not return its action",
+            None,
+        )
+    })?;
     let recent_actions = state
         .app_state
         .agent_conversation_workspace_repo
@@ -203,7 +282,6 @@ pub async fn propose_agent_workspace_pr_review_action(
             ))
             .await;
     }
-    let mut auto_submission_failed = false;
     if monitor.can_auto_approve(&action) {
         match submit_agent_workspace_pr_review_action(
             State(state.clone()),
@@ -220,7 +298,6 @@ pub async fn propose_agent_workspace_pr_review_action(
                 }));
             }
             Err(_) => {
-                auto_submission_failed = true;
                 monitor = state
                     .app_state
                     .agent_conversation_workspace_repo
@@ -230,29 +307,16 @@ pub async fn propose_agent_workspace_pr_review_action(
                         json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                     })?
                     .unwrap_or(monitor);
+                if monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+                    return Err(json_error(
+                        StatusCode::CONFLICT,
+                        "Pull request became terminal during automatic review submission",
+                        None,
+                    ));
+                }
             }
         }
     }
-    let entering_awaiting_user = monitor.monitor_enabled
-        && monitor.status != AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
-    monitor.status = if monitor.monitor_enabled {
-        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
-    } else {
-        AgentWorkspacePrReviewMonitorStatus::Paused
-    };
-    monitor.first_review_completed = true;
-    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
-    monitor.last_review_run_id = req.created_by_run_id;
-    monitor.last_review_outcome = Some(proposed_action.to_string());
-    if !auto_submission_failed {
-        monitor.last_error = None;
-    }
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     if entering_awaiting_user {
         state
             .app_state
@@ -296,6 +360,13 @@ pub async fn complete_agent_workspace_pr_review_run(
     let summary = non_empty_string(req.summary, "summary")?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.has_terminal_publication_pr_status() {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
     let pr_number = review_pr_number(&workspace).ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
@@ -328,9 +399,17 @@ pub async fn complete_agent_workspace_pr_review_run(
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
+        .transition_pr_review_state_if_nonterminal(monitor, None)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::CONFLICT,
+                "Pull request became terminal before review completion",
+                None,
+            )
+        })?
+        .monitor;
     maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
 
     Ok(Json(CompleteAgentWorkspacePrReviewRunResponse {

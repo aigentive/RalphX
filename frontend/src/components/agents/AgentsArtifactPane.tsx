@@ -922,7 +922,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       toast.success(
         result.monitor.monitorEnabled
           ? "PR review monitoring restarted"
-          : "PR review monitoring paused",
+          : "New-head PR reviews paused; lifecycle monitoring continues",
       );
       void invalidateWorkspaceQueries(queryClient, variables.conversationId);
     },

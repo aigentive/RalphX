@@ -161,6 +161,20 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     ]);
   });
 
+  it("describes Review PR as a remote GitHub action workflow", () => {
+    const conversationMode = AGENT_CONVERSATION_MODE_OPTIONS.find(
+      (option) => option.id === "review_pr",
+    );
+    const startMode = AGENT_START_MODE_OPTIONS.find(
+      (option) => option.id === "review_pr",
+    );
+
+    for (const option of [conversationMode, startMode]) {
+      expect(option?.description).toContain("remote GitHub PR");
+      expect(option?.description).toContain("user-approved GitHub review");
+    }
+  });
+
   it("keeps legacy-only modes out of fresh conversations and gates Autopilot", () => {
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: false }).map(

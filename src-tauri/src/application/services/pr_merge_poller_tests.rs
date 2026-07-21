@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-use super::{PrPollerRegistry, RateLimitState};
+use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
@@ -4192,6 +4192,28 @@ fn start_polling_noop_when_github_service_none() {
     assert!(!registry.is_polling(&task_id));
     // start_polling with None github_service returns early without inserting
     drop(plan_branch_id); // suppress unused warning
+}
+
+#[tokio::test]
+async fn agent_workspace_poller_start_reports_unavailable_without_github() {
+    let registry = make_registry_no_github();
+    let conversation_id = ChatConversationId::from_string("review-pr-start-unavailable");
+    let project = Project::new("Review PR".to_string(), "/tmp/review-pr".to_string());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+
+    let started = registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        411,
+        project,
+        std::path::PathBuf::from("/tmp/review-pr"),
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+    );
+
+    assert_eq!(started, AgentWorkspacePrPollerStart::Unavailable);
+    assert!(!registry.is_agent_workspace_polling(&conversation_id));
 }
 
 // ────────────────────────────────────────────────────────────────────

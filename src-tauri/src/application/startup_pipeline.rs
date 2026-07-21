@@ -579,13 +579,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
+        Some(app_state.notification_service()),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
