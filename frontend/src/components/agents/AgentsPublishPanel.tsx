@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  ExternalLink,
   GitPullRequestArrow,
   GitBranch,
   Info,
@@ -20,7 +19,6 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 
 import { diffApi } from "@/api/diff";
@@ -75,7 +73,6 @@ import {
 } from "./AgentsPublishWorkspaceDialog";
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
-import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
@@ -91,7 +88,6 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
-  AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
@@ -105,6 +101,7 @@ import {
   markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
+import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -353,19 +350,13 @@ export function AgentPublishPanel({
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
   const canInspectBaseFreshness =
     canInspectAgentWorkspaceBaseFreshness(workspace);
-  const freshnessQuery = useQuery({
-    queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
-    queryFn: () =>
-      chatApi.getAgentConversationWorkspaceFreshness(conversationId!, {
-        scope: "full",
-      }),
+  const freshnessQuery = useAgentWorkspaceFullFreshness(conversationId, {
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
       canInspectBaseFreshness &&
       !terminalPublicationStatus,
-    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const freshness = freshnessQuery.data;
   const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
@@ -646,19 +637,11 @@ export function AgentPublishPanel({
 
   const branch = workspace.branchName;
   const base = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
-  const prLabel = workspace.publicationPrNumber
-    ? `PR #${workspace.publicationPrNumber}`
-    : workspace.publicationPrUrl
-      ? "Published PR"
-      : "No PR yet";
   const publishTargetPullRequestLabel = workspace.publicationPrNumber
     ? `PR #${workspace.publicationPrNumber}`
     : workspace.publicationPrUrl
       ? "the linked pull request"
       : null;
-  const prUrlLabel = workspace.publicationPrUrl
-    ? formatPullRequestUrlLabel(workspace.publicationPrUrl)
-    : null;
   const baseRetargeted = baseStatus === "retargeted";
   const isBranchUpdateNeeded =
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
@@ -1436,120 +1419,63 @@ export function AgentPublishPanel({
             </div>
           )}
         </section>
-        <section
-          className="rounded-lg border px-3 py-2"
-          style={{
-            backgroundColor: "var(--bg-surface)",
-            borderColor: "var(--border-subtle)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-          }}
-          data-testid="agents-publish-metadata-strip"
-        >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-              <GitBranch className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-              <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{branch}</span>
-              <span style={{ color: "var(--text-muted)" }} aria-hidden="true">&rarr;</span>
-              <span className="truncate" style={{ color: "var(--text-muted)" }}>{base}</span>
-            </span>
-
-            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
-
-            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-              <GitPullRequestArrow className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-              {workspace.publicationPrUrl ? (
-                <button
-                  type="button"
-                  className="inline-flex min-w-0 items-center gap-1 truncate bg-transparent p-0 text-left font-medium transition-colors hover:text-[var(--accent-primary)]"
-                  style={{ color: "var(--text-primary)" }}
-                  onClick={() => void openUrl(workspace.publicationPrUrl!)}
-                  data-testid="agents-open-pr-url"
-                  aria-label={`Open ${prUrlLabel ?? "pull request"}`}
-                >
-                  {prLabel}
-                  <ExternalLink className="h-2.5 w-2.5 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
-                </button>
-              ) : (
-                <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{prLabel}</span>
-              )}
-            </span>
-
-            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
-
-            <span
-              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
-              data-testid="agents-publish-status-pill"
-              style={{
-                borderColor: "var(--overlay-weak)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {workspace.mode === "edit"
-                ? "Edit"
-                : isPipelineOwnedWorkspace
-                  ? "Plan"
-                  : workspace.mode}
-            </span>
-
-            <span
-              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
-              data-testid="agents-publish-push-status-pill"
-              style={{
-                borderColor: "var(--overlay-weak)",
-                color: "var(--text-muted)",
-              }}
-            >
-              {terminalPublicationLabel ??
-                (isRepairPending
-                  ? "Repair pending"
-                  : hasPrConflict
-                    ? "Conflicting"
-                    : isBranchUpdateNeeded
-                      ? "Behind base"
-                      : workspace.publicationPushStatus ?? workspace.status)}
-            </span>
-          </div>
-
-          {prAnnotationSummary && (
-            <div
-              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
-              data-testid="agents-pr-annotations-summary"
-              style={{
-                backgroundColor: "var(--bg-subtle)",
-                borderColor:
-                  prAnnotations.length > 0
-                    ? "var(--status-warning-border)"
-                    : "var(--border-subtle)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {prAnnotationSummary}
-            </div>
-          )}
-          {workspaceReviewHunkAnnotationSummary && (
-            <div
-              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
-              data-testid="agents-workspace-review-hunk-annotations-summary"
-              style={{
-                backgroundColor: "var(--bg-subtle)",
-                borderColor: "var(--status-info-border)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {workspaceReviewHunkAnnotationSummary}
-            </div>
-          )}
-          {shouldShowPublishPipeline && (
-            <PublishPipelineSteps
-              autoMergeCurrent={prAutoMergeCurrent}
-              autoMergeDesired={prAutoMergeDesired}
-              prSupervisionStatus={prSupervisionStatus}
-              status={pipelineStatus}
-              isPublishing={effectivePublishing}
-            />
-          )}
-        </section>
+        {(prAnnotationSummary ||
+          workspaceReviewHunkAnnotationSummary ||
+          shouldShowPublishPipeline) && (
+          <section
+            className="space-y-2 rounded-lg px-3 py-2"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+            data-testid="agents-publish-summaries"
+          >
+            {prAnnotationSummary && (
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+                data-testid="agents-pr-annotations-summary"
+                style={{
+                  backgroundColor: "var(--bg-subtle)",
+                  borderColor:
+                    prAnnotations.length > 0
+                      ? "var(--status-warning-border)"
+                      : "var(--border-subtle)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {prAnnotationSummary}
+              </div>
+            )}
+            {workspaceReviewHunkAnnotationSummary && (
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
+                data-testid="agents-workspace-review-hunk-annotations-summary"
+                style={{
+                  backgroundColor: "var(--bg-subtle)",
+                  borderColor: "var(--status-info-border)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {workspaceReviewHunkAnnotationSummary}
+              </div>
+            )}
+            {shouldShowPublishPipeline && (
+              <PublishPipelineSteps
+                autoMergeCurrent={prAutoMergeCurrent}
+                autoMergeDesired={prAutoMergeDesired}
+                prSupervisionStatus={prSupervisionStatus}
+                status={pipelineStatus}
+                isPublishing={effectivePublishing}
+              />
+            )}
+          </section>
+        )}
 
         <GitAuthRepairPanel
           projectId={workspace.projectId}

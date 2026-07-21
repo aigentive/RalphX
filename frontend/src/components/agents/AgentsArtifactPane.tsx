@@ -147,6 +147,7 @@ import {
   EmptyArtifactState,
 } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
+import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
@@ -682,9 +683,24 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     enabled: Boolean(focusedRunTarget && focusedAutomationRunConversationId),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
+  const focusedWorkspaceResolution = focusedRunTarget
+    ? focusedRunWorkspaceQuery.isError ||
+      (focusedRunWorkspaceQuery.isSuccess && !focusedRunWorkspaceQuery.data)
+      ? "unavailable"
+      : focusedRunWorkspaceQuery.data
+        ? "resolved"
+        : "loading"
+    : "resolved";
   const scopedWorkspace = focusedRunTarget
-    ? (focusedRunWorkspaceQuery.data ?? null)
+    ? focusedWorkspaceResolution === "resolved"
+      ? (focusedRunWorkspaceQuery.data ?? null)
+      : null
     : workspace;
+  const scopedLocalFreshness =
+    scopedWorkspace &&
+    activeWorkspaceFreshness?.conversationId === scopedWorkspace.conversationId
+      ? activeWorkspaceFreshness
+      : undefined;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
     focusedIdeationSessionId ||
@@ -1938,6 +1954,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           </div>
         </div>
 
+        <AgentWorkspaceToolbar
+          workspace={scopedWorkspace}
+          resolutionState={focusedWorkspaceResolution}
+        />
+
         <div
           key={
             personaArtifactOnly
@@ -1988,7 +2009,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 conversation={conversation}
                 workspace={scopedWorkspace}
                 conversationId={conversationId}
-                activeWorkspaceFreshness={activeWorkspaceFreshness}
+                activeWorkspaceFreshness={scopedLocalFreshness}
                 conversationTitle={conversation?.title ?? null}
                 automationId={automationId}
                 isAutomationRunConversation={isAutomationRunConversation}
