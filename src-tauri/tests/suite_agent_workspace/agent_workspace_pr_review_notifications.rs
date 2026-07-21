@@ -546,6 +546,74 @@ async fn skipped_pr_review_action_resolves_first_action_without_enabling_monitor
 }
 
 #[tokio::test]
+async fn skip_rejects_pending_action_for_a_previous_workspace_pr_without_mutation() {
+    let (app_state, state, mut workspace, _) = setup_review_workspace(false).await;
+    let Json(proposal) = propose_agent_workspace_pr_review_action(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(proposal_request()),
+    )
+    .await
+    .expect("review action should await a manual decision");
+
+    let source_pr = workspace
+        .source_pull_request
+        .as_mut()
+        .expect("Review PR workspace should have a source PR");
+    source_pr.number = 412;
+    source_pr.url = Some("https://github.com/mock/project/pull/412".to_string());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("retargeted workspace should persist");
+
+    let (status, _) = skip_agent_workspace_pr_review_action(
+        State(state),
+        Path((
+            workspace.conversation_id.to_string(),
+            proposal.action.id.clone(),
+        )),
+        Json(SkipAgentWorkspacePrReviewActionRequest {
+            reason: Some("Stale UI action".to_string()),
+        }),
+    )
+    .await
+    .expect_err("an action for the previous PR must not be skipped");
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_action(&proposal.action.id)
+            .await
+            .unwrap()
+            .expect("action should remain available")
+            .status,
+        AgentWorkspacePrReviewActionStatus::Pending
+    );
+    let monitor = app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should remain available");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    );
+    assert!(!monitor.first_action_resolved);
+    let notifications = app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert!(notifications[0].read_at.is_none());
+}
+
+#[tokio::test]
 async fn pr_review_submission_fails_closed_when_current_head_cannot_be_verified() {
     let (app_state, state, workspace, github) = setup_review_workspace(true).await;
     let github = github.expect("GitHub mock should exist");
@@ -580,6 +648,57 @@ async fn pr_review_submission_fails_closed_when_current_head_cannot_be_verified(
             .status,
         AgentWorkspacePrReviewActionStatus::Pending
     );
+}
+
+#[tokio::test]
+async fn pr_review_submission_rejects_a_changed_remote_head_without_claiming_action() {
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    let Json(proposal) = propose_agent_workspace_pr_review_action(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(proposal_request()),
+    )
+    .await
+    .expect("review action should await a manual decision");
+    let mut changed_head = current_head_sync_state();
+    changed_head.head_ref_oid = Some("new-head-sha".to_string());
+    github.will_return_sync_state(changed_head);
+
+    let (status, _) = submit_agent_workspace_pr_review_action(
+        State(state),
+        Path((
+            workspace.conversation_id.to_string(),
+            proposal.action.id.clone(),
+        )),
+        Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+    )
+    .await
+    .expect_err("submission must reject an action for an older remote head");
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(github.submit_review_calls(), 0);
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_action(&proposal.action.id)
+            .await
+            .unwrap()
+            .expect("action should remain available")
+            .status,
+        AgentWorkspacePrReviewActionStatus::Pending
+    );
+    let monitor = app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should remain available");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    );
+    assert!(!monitor.first_action_resolved);
 }
 
 #[tokio::test]

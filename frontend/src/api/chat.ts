@@ -2178,6 +2178,11 @@ export type AgentWorkspacePrReviewActionStatus =
   | "failed"
   | "superseded";
 
+export type AgentWorkspacePrReviewActionHeadStatus =
+  | "current"
+  | "stale"
+  | "unverified";
+
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
   projectId: string;
@@ -2225,6 +2230,7 @@ export interface AgentWorkspacePrReviewContext {
   prNumber: number;
   prUrl: string | null;
   currentHeadSha: string | null;
+  pendingActionHeadStatus: AgentWorkspacePrReviewActionHeadStatus | null;
   health: unknown | null;
   reviewFeedback: unknown | null;
   monitor: AgentWorkspacePrReviewMonitor | null;
@@ -2590,6 +2596,9 @@ const AgentWorkspacePrReviewContextResponseSchema = z.object({
   pr_number: z.number(),
   pr_url: z.string().nullable(),
   current_head_sha: z.string().nullable(),
+  pending_action_head_status: z
+    .enum(["current", "stale", "unverified"])
+    .nullable(),
   health: z.unknown().nullable(),
   review_feedback: z.unknown().nullable(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema.nullable(),
@@ -3256,6 +3265,7 @@ function transformAgentWorkspacePrReviewContext(
     prNumber: raw.pr_number,
     prUrl: raw.pr_url,
     currentHeadSha: raw.current_head_sha,
+    pendingActionHeadStatus: raw.pending_action_head_status,
     health: raw.health,
     reviewFeedback: raw.review_feedback,
     monitor: raw.monitor

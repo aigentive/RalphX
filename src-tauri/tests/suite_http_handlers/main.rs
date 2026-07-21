@@ -10,6 +10,7 @@ fn merged_suite_requires_nextest() {
 #[path = "../support/mod.rs"]
 mod support;
 
+mod agent_workspace_pr_review_context;
 mod agent_workspace_review_context;
 mod api_keys_handlers;
 mod artifacts_handlers;
