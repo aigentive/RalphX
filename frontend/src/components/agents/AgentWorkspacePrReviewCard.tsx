@@ -46,7 +46,7 @@ const MONITOR_STATUS_LABELS: Record<AgentWorkspacePrReviewMonitorStatus, string>
   watching: "Monitoring",
   submitting: "Submitting",
   blocked: "Blocked",
-  paused: "Monitoring paused",
+  paused: "Re-review paused",
   terminal: "Complete",
 };
 
@@ -62,11 +62,6 @@ export function AgentWorkspacePrReviewCard({
     () => lastResolvedPrReviewAction(context?.recentActions ?? []),
     [context?.recentActions],
   );
-  const monitorStatus = context?.monitor?.status ?? null;
-  const monitorLabel = monitorStatus
-    ? MONITOR_STATUS_LABELS[monitorStatus] ?? prReviewStatusLabel(monitorStatus)
-    : "Not started";
-
   const submitMutation = useMutation({
     mutationFn: (action: AgentWorkspacePrReviewAction) =>
       chatApi.submitAgentWorkspacePrReviewAction(
@@ -188,6 +183,12 @@ export function AgentWorkspacePrReviewCard({
 
   const presentation = getAgentWorkspacePrReviewPresentation(context);
   const pendingAction = presentation.pendingAction;
+  const monitorStatus = presentation.isTerminal
+    ? "terminal"
+    : context.monitor?.status ?? null;
+  const monitorLabel = monitorStatus
+    ? MONITOR_STATUS_LABELS[monitorStatus] ?? prReviewStatusLabel(monitorStatus)
+    : "Not started";
   const copy = pendingAction
     ? prReviewActionCopy(pendingAction.proposedAction)
     : null;
@@ -364,7 +365,9 @@ export function AgentWorkspacePrReviewCard({
                 style={{ color: "var(--text-muted)" }}
               >
                 {context.monitor?.lastError ??
-                  (context.monitor?.monitorEnabled
+                  (presentation.isTerminal
+                    ? "The remote pull request is merged or closed. Review history remains available."
+                    : context.monitor?.monitorEnabled
                     ? "New PR commits can be reviewed again by the Review PR agent."
                     : "The Review PR agent will propose an action after it finishes reviewing.")}
               </div>

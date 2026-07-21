@@ -19,6 +19,7 @@ Primary project docs:
 - `.claude/rules/codeql-path-safety.md` for CodeQL-safe filesystem sink validation when paths are influenced by env vars, settings, HTTP/MCP payloads, DB state, agent metadata, or repo contents
 - `.claude/rules/multi-harness.md` for provider-neutral runtime/config/event rules and documentation sync requirements
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across canonical agent metadata, harness runtime config, prompt contracts, and MCP registration
+- `.claude/rules/agent-workspace-review-modes.md` for the non-interchangeable local Workspace Review gate and remote GitHub Review PR workflow
 - `.claude/rules/merge-recovery-consistency.md` for the coupled merge-failure behavior across merge outcome handling, manual retry, reconciliation, startup recovery, and MergeIncomplete UI
 - `.claude/rules/stateful-workflow-review.md` for false-success review of completion/cache/retry/recovery/state-machine changes
 - `.claude/rules/task-state-machine.md` for the 28 internal task statuses, the transition table, and the validated transition API contract

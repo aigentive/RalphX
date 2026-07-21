@@ -521,10 +521,23 @@ export interface ActiveStreamingTaskResponse {
  */
 export interface ConversationActiveStateResponse {
   is_active: boolean;
+  runId?: string;
   tool_calls: unknown[];
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
 }
+
+const ConversationActiveStateResponseSchema = z.object({
+  is_active: z.boolean(),
+  run_id: z.string().min(1).optional(),
+  tool_calls: z.array(z.unknown()).default([]),
+  streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
+    if (value == null || typeof value !== "object") return false;
+    const record = value as Record<string, unknown>;
+    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+  })).default([]),
+  partial_text: z.string().default(""),
+});
 
 /**
  * Fetch the active streaming state for a conversation.
@@ -543,7 +556,14 @@ export async function getConversationActiveState(
   if (!res.ok) {
     throw new Error(`Failed to get conversation active state: ${res.status}`);
   }
-  return res.json() as Promise<ConversationActiveStateResponse>;
+  const parsed = ConversationActiveStateResponseSchema.parse(await res.json());
+  return {
+    is_active: parsed.is_active,
+    ...(parsed.run_id ? { runId: parsed.run_id } : {}),
+    tool_calls: parsed.tool_calls,
+    streaming_tasks: parsed.streaming_tasks,
+    partial_text: parsed.partial_text,
+  };
 }
 
 // ============================================================================

@@ -42,6 +42,68 @@ async fn test_new_cache_is_empty() {
 }
 
 #[tokio::test]
+async fn test_changing_run_id_discards_stale_transient_projection() {
+    let cache = StreamingStateCache::new();
+    cache
+        .set_run_id("conv-123", Some("run-1".to_string()))
+        .await;
+    cache.append_text("conv-123", "stale text").await;
+    cache
+        .upsert_tool_call(
+            "conv-123",
+            CachedToolCall {
+                id: "toolu_stale".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({}),
+                result: None,
+                diff_context: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+    cache
+        .add_task("conv-123", cached_streaming_task("task-stale"))
+        .await;
+
+    cache
+        .set_run_id("conv-123", Some("run-2".to_string()))
+        .await;
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(state.run_id.as_deref(), Some("run-2"));
+    assert!(state.partial_text.is_empty());
+    assert!(state.tool_calls.is_empty());
+    assert!(state.streaming_tasks.is_empty());
+}
+
+#[tokio::test]
+async fn test_add_task_for_run_rejects_stale_run_and_accepts_current_run() {
+    let cache = StreamingStateCache::new();
+    cache
+        .set_run_id("conv-123", Some("run-current".to_string()))
+        .await;
+
+    assert!(
+        !cache
+            .add_task_for_run("conv-123", "run-stale", cached_streaming_task("task-stale"),)
+            .await
+    );
+    assert!(
+        cache
+            .add_task_for_run(
+                "conv-123",
+                "run-current",
+                cached_streaming_task("task-current"),
+            )
+            .await
+    );
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(state.streaming_tasks.len(), 1);
+    assert_eq!(state.streaming_tasks[0].tool_use_id, "task-current");
+}
+
+#[tokio::test]
 async fn test_upsert_tool_call_creates_state() {
     let cache = StreamingStateCache::new();
     let tool_call = CachedToolCall {
@@ -221,6 +283,7 @@ async fn test_updated_at_changes_on_modification() {
 #[tokio::test]
 async fn test_serialize_produces_expected_json() {
     let state = ConversationStreamingState {
+        run_id: Some("run-1".to_string()),
         tool_calls: vec![CachedToolCall {
             id: "toolu_001".to_string(),
             name: "bash".to_string(),

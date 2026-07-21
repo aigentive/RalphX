@@ -35,6 +35,7 @@ import {
   ExecutionPlanControlResponseSchemaRaw,
   InjectTaskResponseSchemaRaw,
   StateTransitionResponseSchemaRaw,
+  TaskHistoryAvailabilityResponseSchemaRaw,
   UnblockTaskResponseSchemaRaw,
 } from "./tasks.schemas";
 import {
@@ -46,6 +47,7 @@ import {
   transformCleanupReport,
   transformInjectTaskResponse,
   transformStateTransition,
+  transformTaskHistoryAvailability,
   transformUnblockTaskResponse,
   type BulkCancelResponse,
   type BulkPauseResponse,
@@ -55,6 +57,7 @@ import {
   type CleanupReport,
   type InjectTaskResponse,
   type StateTransition,
+  type TaskHistoryAvailability,
   type UnblockTaskResponse,
 } from "./tasks.transforms";
 import {
@@ -74,6 +77,7 @@ export type {
   InjectTaskResponse,
   StateTransition,
   UnblockTaskResponse,
+  TaskHistoryAvailability,
 } from "./tasks.transforms";
 
 // Re-export schemas for consumers that need validation
@@ -86,6 +90,7 @@ export {
   ExecutionPlanControlResponseSchemaRaw,
   InjectTaskResponseSchemaRaw,
   StateTransitionResponseSchemaRaw,
+  TaskHistoryAvailabilityResponseSchemaRaw,
   UnblockTaskResponseSchemaRaw,
 } from "./tasks.schemas";
 
@@ -99,6 +104,7 @@ export {
   transformExecutionPlanControlResponse,
   transformInjectTaskResponse,
   transformStateTransition,
+  transformTaskHistoryAvailability,
   transformUnblockTaskResponse,
 } from "./tasks.transforms";
 
@@ -185,6 +191,17 @@ export const tasksApi = {
     executionPlanId?: string;
   }): Promise<TaskListResponse> =>
     typedInvokeWithTransform("list_tasks", params, TaskListResponseSchema, transformTaskListResponse),
+
+  getSessionHistoryAvailability: (
+    projectId: string,
+    ideationSessionId: string
+  ): Promise<TaskHistoryAvailability> =>
+    typedInvokeWithTransform(
+      "get_session_task_history_availability",
+      { projectId, ideationSessionId },
+      TaskHistoryAvailabilityResponseSchemaRaw,
+      transformTaskHistoryAvailability
+    ),
 
   /**
    * Search tasks by query string

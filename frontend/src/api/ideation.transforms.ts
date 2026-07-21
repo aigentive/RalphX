@@ -252,6 +252,8 @@ export function transformNullableBool(value: number | null | undefined): boolean
 export function transformIdeationSettings(raw: IdeationSettingsResponse): IdeationSettings {
   return {
     tasksEnabled: raw.tasks_enabled,
+    autoVerifyDraftPlans: raw.auto_verify_draft_plans,
+    tasksFeatureState: raw.tasks_feature_state,
     autoVerifyPlans: raw.auto_verify_plans,
     requireAcceptForFinalize: raw.require_accept_for_finalize,
     requireVerificationForAccept: raw.require_verification_for_accept,

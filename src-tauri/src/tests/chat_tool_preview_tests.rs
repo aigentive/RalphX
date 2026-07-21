@@ -478,6 +478,7 @@ fn live_preview_fields_flatten_into_agent_tool_call_payload_json() {
         tool_id: Some("tool-1".to_string()),
         arguments: json!({ "command": "cat big.log" }),
         result: Some(preview.result.clone()),
+        run_id: Some("run-1".to_string()),
         preview: AgentToolCallPreviewFields::from_tool_result_preview(Some(&preview)),
         conversation_id: "conv-1".to_string(),
         context_type: "project".to_string(),
@@ -579,6 +580,7 @@ fn live_preview_for_tool_call_builds_completed_event_payload() {
         "conv-1",
         "project",
         "project-1",
+        Some("run-1"),
         Some(json!({ "file_path": "big.log" })),
         Some("parent-tool".to_string()),
         9,
@@ -623,6 +625,7 @@ fn live_completed_edit_payload_previews_arguments_with_detail_ref() {
         "conv-1",
         "project",
         "project-1",
+        None,
         None,
         None,
         10,
@@ -677,6 +680,7 @@ fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
         "conv-1",
         "project",
         "project-1",
+        None,
         Some(diff_context),
         None,
         10,
@@ -935,6 +939,7 @@ fn live_tool_result_payload_helpers_use_preview_result() {
         "conv-1",
         "project",
         "project-1",
+        Some("run-1"),
         Some("parent-tool".to_string()),
         11,
     );
@@ -1016,6 +1021,9 @@ async fn stream_background_previews_heavy_live_tool_result() {
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
     .expect("stream should process");

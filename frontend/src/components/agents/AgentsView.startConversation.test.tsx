@@ -155,6 +155,40 @@ function agentProviderSettings(
   return { ...settings, ...overrides };
 }
 
+function claudeWorkspaceEditRoleDefault() {
+  return {
+    role: "workspace_edit",
+    source: "global_ui",
+    value: {
+      provider: "claude",
+      model: "opus",
+      effort: "high",
+      service_tier: "provider_default",
+      coordination_mode: "solo",
+      persona_id: null,
+      approval_policy: null,
+      sandbox_mode: null,
+    },
+  } as const;
+}
+
+function codexRoleDefault(role: string) {
+  return {
+    role,
+    source: "global_ui",
+    value: {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      service_tier: "standard",
+      coordination_mode: "solo",
+      persona_id: null,
+      approval_policy: "never",
+      sandbox_mode: "danger-full-access",
+    },
+  } as const;
+}
+
 describe("AgentsView start conversation", () => {
   beforeEach(setupAgentsViewTest);
 
@@ -754,8 +788,18 @@ describe("AgentsView start conversation", () => {
   it("omits picker overrides when starting from the untouched role default", async () => {
     mockAgentViewData();
     resetAgentSessionState({ lastRuntimeByProjectId: {} });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(claudeWorkspaceEditRoleDefault())
+        : Promise.resolve(undefined),
+    );
     renderAgentsView();
 
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "opus",
+      ),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "use the current role default" },
     });
@@ -771,6 +815,44 @@ describe("AgentsView start conversation", () => {
     expect(startInput).not.toHaveProperty("personaId");
   });
 
+  it("starts with the visible Codex runtime while the Claude role default is still loading", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({ lastRuntimeByProjectId: {} });
+    let resolveRoleDefault:
+      | ((value: ReturnType<typeof claudeWorkspaceEditRoleDefault>) => void)
+      | null = null;
+    const pendingRoleDefault = new Promise<
+      ReturnType<typeof claudeWorkspaceEditRoleDefault>
+    >((resolve) => {
+      resolveRoleDefault = resolve;
+    });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? pendingRoleDefault
+        : Promise.resolve(undefined),
+    );
+    renderAgentsView();
+
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+      "gpt-5.5",
+    );
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep the visible Codex runtime" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+      }),
+    );
+
+    resolveRoleDefault?.(claudeWorkspaceEditRoleDefault());
+  });
+
   it("does not reuse a remembered runtime after the workspace mode changes", async () => {
     mockAgentViewData();
     resetAgentSessionState({
@@ -782,10 +864,20 @@ describe("AgentsView start conversation", () => {
         },
       },
     });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(codexRoleDefault("workspace_plan"))
+        : Promise.resolve(undefined),
+    );
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "gpt-5.5",
+      ),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "plan with the plan role default" },
     });
@@ -3400,6 +3492,11 @@ describe("AgentsView start conversation", () => {
 
   it("starts automation mode from the selected current branch", async () => {
     mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(codexRoleDefault("workspace_automation"))
+        : Promise.resolve(undefined),
+    );
     const currentBranchOptions: BranchBaseOption[] = [
       {
         key: "project_default:main",
@@ -3495,6 +3592,11 @@ describe("AgentsView start conversation", () => {
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
     await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_start_composer_role_default", {
+        input: { projectId: "project-1", mode: "automation" },
+      }),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "set up a weekly dependency cleanup automation" },
     });

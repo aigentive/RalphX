@@ -1822,6 +1822,9 @@ pub struct GetTeamArtifactsResponse {
 pub struct ActiveStateResponse {
     /// Whether an agent is currently running for this conversation
     pub is_active: bool,
+    /// Owning run for the transient projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool calls currently in progress or recently completed
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ActiveToolCall>,

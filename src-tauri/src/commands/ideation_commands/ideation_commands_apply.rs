@@ -615,7 +615,10 @@ async fn apply_proposals_core_inner(
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
-        .authorize_session(Some(&session_id))
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
         .await?;
 
     if session.status != IdeationSessionStatus::Active {
@@ -976,6 +979,7 @@ async fn apply_proposals_core_inner(
             crate::application::tasks_feature_policy::authorize_tasks_session_sync(
                 conn,
                 Some(&session_id_str),
+                crate::domain::ideation::TasksFeatureAction::Progress,
             )?;
             if let Some(conversation_id) = supervised_conversation_id_tx.as_deref() {
                 validate_start_authority_sync(

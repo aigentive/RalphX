@@ -462,6 +462,7 @@ async fn persona_switch_stopping_running_agent_stops_run_and_preserves_provider_
             interactive_key.clone(),
             child.stdin.take().expect("interactive stdin should exist"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some(provider_session.provider_session_id.clone()),
                 persona_id: None,

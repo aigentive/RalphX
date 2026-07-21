@@ -839,6 +839,12 @@ vi.mock("@/api/ideation", () => ({
       archive: vi.fn(),
       reopen: vi.fn(),
     },
+    settings: {
+      get: vi.fn(),
+      update: vi.fn(),
+      getDisableImpact: vi.fn(),
+      setTasksEnabled: vi.fn(),
+    },
   },
 }));
 

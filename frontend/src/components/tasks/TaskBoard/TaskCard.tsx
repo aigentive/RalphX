@@ -64,6 +64,7 @@ interface TaskCardProps {
   groupInfo?: GroupInfo;
   /** Optional host-owned task selection handler for embedded task surfaces. */
   onSelect?: (taskId: string) => void;
+  readOnly?: boolean;
 }
 
 function CheckpointIndicator() {
@@ -96,8 +97,12 @@ export function TaskCard({
   revisionCount,
   groupInfo,
   onSelect,
+  readOnly = false,
 }: TaskCardProps) {
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: task.id });
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: task.id,
+    disabled: readOnly,
+  });
 
   // UI Store - use selectedTaskId for split layout (TaskDetailOverlay handles rendering)
   const setSelectedTaskId = useUiStore((state) => state.setSelectedTaskId);
@@ -248,6 +253,7 @@ export function TaskCard({
   return (
     <>
       <TaskCardContextMenu
+        readOnly={readOnly}
         task={task}
         onViewDetails={handleViewDetails}
         onEdit={handleEdit}
@@ -265,7 +271,7 @@ export function TaskCard({
       >
         <div
           ref={setNodeRef}
-          {...(isDraggable ? { ...attributes, ...listeners } : {})}
+          {...(isDraggable && !readOnly ? { ...attributes, ...listeners } : {})}
           data-testid={`task-card-${task.id}`}
           onClick={() => {
             handleViewDetails();
@@ -275,7 +281,7 @@ export function TaskCard({
           tabIndex={0}
         >
       {/* Drag handle - appears on hover over the status badge (hidden if not draggable) */}
-      {isDraggable && !isArchived && (
+      {isDraggable && !isArchived && !readOnly && (
         <div
           data-testid="drag-handle"
           className="absolute right-8 top-2.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"

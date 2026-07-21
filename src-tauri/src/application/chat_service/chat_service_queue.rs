@@ -552,8 +552,9 @@ fn build_queued_preflight_failure_run(
     run
 }
 
-async fn persist_failed_queued_run(
+async fn persist_failed_queued_run<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
+    app_handle: Option<&AppHandle<R>>,
     run: AgentRun,
     error: &str,
 ) -> Option<String> {
@@ -576,6 +577,7 @@ async fn persist_failed_queued_run(
             "Failed to mark queued preflight run failed"
         );
     }
+    settle_terminal_queued_plan_verification(app_handle, &run_id).await;
     Some(run_id)
 }
 
@@ -822,10 +824,28 @@ async fn resolve_queue_resume_persona<R: Runtime>(
     .map_err(|error| error.to_string())
 }
 
-async fn fail_queued_agent_run(
+pub(super) async fn settle_terminal_queued_plan_verification<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    run_id: &str,
+) {
+    let Some(state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) else {
+        return;
+    };
+    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+        state.inner(),
+        &AgentRunId::from_string(run_id.to_string()),
+    )
+    .await
+    {
+        tracing::warn!(error = %error, queued_run_id = run_id, "Failed to release deferred plan approval for terminal queued verification run");
+    }
+}
+
+async fn fail_queued_agent_run<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     registry_key: &RunningAgentKey,
+    app_handle: Option<&AppHandle<R>>,
     run_id: &str,
     error: &str,
 ) {
@@ -835,6 +855,7 @@ async fn fail_queued_agent_run(
     running_agent_registry
         .unregister(registry_key, run_id)
         .await;
+    settle_terminal_queued_plan_verification(app_handle, run_id).await;
 }
 
 async fn reconcile_queued_verification_child_completion<R: Runtime>(
@@ -1397,8 +1418,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_msg.metadata_override.as_deref(),
                             &queued_msg,
                         );
-                        let failed_run_id =
-                            persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
                         emit_queued_preflight_error(
                             app_handle.as_ref(),
                             &conversation_id,
@@ -1433,8 +1459,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_msg.metadata_override.as_deref(),
                             &queued_msg,
                         );
-                        let failed_run_id =
-                            persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
                         emit_queued_preflight_error(
                             app_handle.as_ref(),
                             &conversation_id,
@@ -1489,8 +1520,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         &queued_msg,
                         launch_security,
                     );
-                    let failed_run_id =
-                        persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                    let failed_run_id = persist_failed_queued_run(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        failed_run,
+                        &error,
+                    )
+                    .await;
                     emit_queued_preflight_error(
                         app_handle.as_ref(),
                         &conversation_id,
@@ -1603,6 +1639,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error,
                         )
@@ -1647,6 +1684,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error,
                     )
@@ -1940,6 +1978,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -1994,6 +2033,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -2034,6 +2074,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     agent_run_repo,
                     running_agent_registry,
                     &queue_registry_key,
+                    app_handle.as_ref(),
                     &queued_run_id,
                     &error_string,
                 )
@@ -2106,6 +2147,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -2143,6 +2185,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -2160,6 +2203,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     agent_run_repo,
                     running_agent_registry,
                     &queue_registry_key,
+                    app_handle.as_ref(),
                     &queued_run_id,
                     error_string,
                 )
@@ -2182,6 +2226,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -2286,6 +2331,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         None, // Queue processing doesn't persist session_id
                         split_verification_transcript,
                         true,
+                        None,
+                        None,
+                        None,
                     )
                     .await
                     {
@@ -2296,6 +2344,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let provider_session_id = outcome.session_id;
                             let queue_stderr = outcome.stderr_text;
                             let turns_finalized = outcome.turns_finalized;
+                            let turn_completion_applied = outcome.completion_applied;
                             let silent_interactive_exit = outcome.silent_interactive_exit;
                             if resume_in_place {
                                 persist_hidden_resume_in_place_marker(
@@ -2320,7 +2369,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     )
                                     .await;
                             }
-                            if has_meaningful_output(&response, tools.len(), &queue_stderr) {
+                            let meaningful_output =
+                                has_meaningful_output(&response, tools.len(), &queue_stderr);
+                            let assistant_message_persisted = if meaningful_output {
                                 super::chat_service_send_background::finalize_structured_assistant_message(
                                     chat_message_repo,
                                     &chat_timeline_repo,
@@ -2335,8 +2386,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     &blocks,
                                     split_verification_transcript,
                                 )
-                                .await;
-                            }
+                                .await
+                            } else {
+                                false
+                            };
                             let recovery_enqueue =
                                 super::chat_service_send_background::enqueue_silent_completion_recovery(
                                     message_queue.as_ref(),
@@ -2357,6 +2410,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 recovery_enqueue,
                                 super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { .. }
                             );
+                            let mut verification_pending = false;
                             match recovery_enqueue {
                                 super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Queued {
                                     attempt,
@@ -2408,19 +2462,104 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         "Agent stopped after automated silent-completion recovery attempts",
                                     )
                                     .await;
-                            } else {
+                            } else if meaningful_output && !assistant_message_persisted {
                                 let _ = agent_run_repo
-                                    .complete(&AgentRunId::from_string(queued_run_id.clone()))
+                                    .fail(
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                        "Failed to persist the final assistant message",
+                                    )
                                     .await;
-                                reconcile_queued_verification_child_completion(
-                                    context_type,
-                                    context_id,
-                                    ideation_session_repo,
-                                    chat_message_repo,
-                                    message_queue,
-                                    app_handle.as_ref(),
-                                )
-                                .await;
+                            } else {
+                                let completion_applied = if turn_completion_applied {
+                                    true
+                                } else {
+                                    agent_run_repo
+                                        .complete_if_running(&AgentRunId::from_string(
+                                            queued_run_id.clone(),
+                                        ))
+                                        .await
+                                        .unwrap_or_else(|error| {
+                                            tracing::error!(
+                                                error = %error,
+                                                queued_run_id,
+                                                "Queue: guarded run completion failed"
+                                            );
+                                            false
+                                        })
+                                };
+                                if completion_applied
+                                    && ((meaningful_output && assistant_message_persisted)
+                                        || turns_finalized > 0)
+                                {
+                                    if let Some(handle) = app_handle.as_ref() {
+                                        if let Some(state) =
+                                            handle.try_state::<crate::application::AppState>()
+                                        {
+                                            let chat_service = state
+                                                .build_chat_service_for_runtime(
+                                                    execution_state.clone(),
+                                                    Some(handle.clone()),
+                                                );
+                                            match crate::application::plan_verification_service::admit_automatic_plan_verification(
+                                                state.inner(),
+                                                &chat_service,
+                                                &conversation_id,
+                                                &AgentRunId::from_string(queued_run_id.clone()),
+                                                true,
+                                            )
+                                            .await
+                                            {
+                                                Ok(disposition) => {
+                                                    verification_pending =
+                                                        disposition.verification_pending();
+                                                }
+                                                Err(error) => {
+                                                    tracing::error!(
+                                                        error = %error,
+                                                        conversation_id = %conversation_id,
+                                                        queued_run_id,
+                                                        "Queue: automatic plan verification admission failed"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if completion_applied {
+                                    reconcile_queued_verification_child_completion(
+                                        context_type,
+                                        context_id,
+                                        ideation_session_repo,
+                                        chat_message_repo,
+                                        message_queue,
+                                        app_handle.as_ref(),
+                                    )
+                                    .await;
+                                }
+                            }
+                            if let Some(handle) = app_handle.as_ref() {
+                                if let Some(state) =
+                                    handle.try_state::<crate::application::AppState>()
+                                {
+                                    if !verification_pending {
+                                        if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
+                                            state.inner(),
+                                            &conversation_id,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to release deferred plan approval after queued admission settled");
+                                        }
+                                    }
+                                    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+                                        state.inner(),
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(error = %error, queued_run_id, "Failed to release deferred plan approval for terminal queued verification run");
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -2474,6 +2613,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         .await;
                                 }
                             }
+                            settle_terminal_queued_plan_verification(
+                                app_handle.as_ref(),
+                                &queued_run_id,
+                            )
+                            .await;
                             // Emit error event
                             if let Some(ref handle) = app_handle {
                                 let _ = handle.emit(
@@ -2514,6 +2658,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )

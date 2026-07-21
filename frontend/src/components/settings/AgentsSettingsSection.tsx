@@ -9,6 +9,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { fetchPersonas, personaKeys } from "@/hooks/usePersonas";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import {
@@ -77,6 +78,11 @@ export function AgentsSettingsSection() {
   const agentsUi = useAgentsSettingsUiState(activeProject?.id ?? null);
   const { scope, projectId, disclosure } = agentsUi;
   const defaults = useManualRoleDefaults(projectId);
+  const ideationSettings = useIdeationSettings();
+  const tasksEnabled =
+    !ideationSettings.isLoading &&
+    !ideationSettings.isError &&
+    ideationSettings.settings.tasksFeatureState === "enabled";
   const { registry } = useAgentModels();
   const { providers } = useHarnessProviders();
   const { data: featureFlags } = useFeatureFlags();
@@ -96,6 +102,7 @@ export function AgentsSettingsSection() {
     const normalizedSearch = search.trim().toLowerCase();
     const groups = new Map<string, FamilyGroup>();
     for (const role of defaults.catalog?.roles ?? []) {
+      if (!tasksEnabled && role.requiresTasks) continue;
       const existing = groups.get(role.family);
       const group = existing ?? {
         id: role.family,
@@ -121,7 +128,7 @@ export function AgentsSettingsSection() {
     return [...groups.values()].filter(
       (group) => !filtering || group.roles.length > 0,
     );
-  }, [attentionOnly, defaults.catalog?.roles, overridesOnly, search]);
+  }, [attentionOnly, defaults.catalog?.roles, overridesOnly, search, tasksEnabled]);
   const activePersonas = (personasQuery.data ?? []).filter(
     (persona) => persona.status === "active",
   );
@@ -154,6 +161,21 @@ export function AgentsSettingsSection() {
           disabled={false}
           onChange={setDefaultStartMode}
         />
+        {!tasksEnabled && (
+          <p
+            data-testid="tasks-required-roles-hidden-notice"
+            className="rounded-md px-3 py-2 text-xs"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-secondary)",
+            }}
+          >
+            Execution roles are hidden while Tasks are off. Saved overrides are preserved.
+          </p>
+        )}
         <div className="agents-settings-toolbar">
           <Tabs
             value={scope}

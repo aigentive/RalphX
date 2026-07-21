@@ -1,5 +1,4 @@
 use super::chat_service_context::noninteractive_agent_name;
-use super::SendMessageOptions;
 use super::{
     agent_conversation_mode_for_send, canonical_parented_agent_binding,
     conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
@@ -10,7 +9,10 @@ use super::{
     should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
     supervised_workspace_runtime_message,
 };
-use crate::application::interactive_process_registry::InteractiveProcessMetadata;
+use super::{ChatService, SendMessageOptions, SendQueuePolicy};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata,
+};
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -22,6 +24,72 @@ use crate::domain::entities::{
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REVIEWER;
 use chrono::Utc;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+async fn interactive_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Child) {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin fixture");
+    let stdin = child.stdin.take().expect("stdin fixture");
+    (stdin, child)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn active_interactive_process_cannot_strand_fresh_verification_in_queue() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("conversation should persist");
+    let key = InteractiveProcessKey::new("project", conversation.id.as_str());
+    let (stdin, _child) = interactive_test_stdin().await;
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            key,
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("planning-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let service = state.build_chat_service();
+
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "Verify the plan",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation.id),
+                queue_policy: SendQueuePolicy::RequireImmediateStart,
+                metadata: Some(
+                    r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"plan-session","ralphx_action_target_id":"plan-artifact"}"#
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("active process must reject a fresh verifier without queueing it");
+
+    assert!(error.to_string().contains("immediate start required"));
+    let conversation_id = conversation.id.as_str();
+    assert!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id)
+            .is_empty(),
+        "a TurnComplete retry must not be blocked by a stranded Verify Plan queue row"
+    );
+}
 
 fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
     ResolvedPersona {
@@ -152,6 +220,7 @@ fn interactive_run_started_provider_session_prefers_process_metadata_harness() {
     let (harness, provider_session_id) = interactive_run_started_provider_session(
         &conversation,
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: Some(AgentHarnessKind::Codex),
             provider_session_id: None,
             persona_id: None,
@@ -185,6 +254,7 @@ fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch()
         Some(AgentHarnessKind::Codex),
         None,
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: Some(AgentHarnessKind::Claude),
             provider_session_id: Some("claude-session-123".to_string()),
             persona_id: None,
@@ -208,6 +278,7 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
         Some(AgentHarnessKind::Codex),
         Some(&conversation),
         Some(&InteractiveProcessMetadata {
+            agent_run_id: None,
             harness: None,
             provider_session_id: Some("legacy-session-123".to_string()),
             persona_id: None,
@@ -222,6 +293,7 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
 fn persona_invalidation_for_content_hash_mismatch() {
     let resolved = resolved_persona("persona-a", "new-hash");
     let process = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: Some(AgentHarnessKind::Claude),
         provider_session_id: Some("claude-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),
@@ -238,6 +310,7 @@ fn persona_invalidation_for_content_hash_mismatch() {
 fn persona_invalidation_for_persona_id_mismatch() {
     let resolved = resolved_persona("persona-b", "hash-b");
     let bound = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: None,
         provider_session_id: None,
         persona_id: Some("persona-a".to_string()),
@@ -272,6 +345,7 @@ fn persona_invalidation_skipped_when_both_unbound() {
 fn persona_invalidation_independent_of_harness_override() {
     let resolved = resolved_persona("persona-a", "hash-a");
     let process = InteractiveProcessMetadata {
+        agent_run_id: None,
         harness: Some(AgentHarnessKind::Codex),
         provider_session_id: Some("codex-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),

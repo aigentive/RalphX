@@ -200,6 +200,8 @@ impl AgentRunStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentChunkPayload {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -280,6 +282,8 @@ pub struct AgentToolCallPayload {
     pub tool_id: Option<String>,
     pub arguments: serde_json::Value,
     pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(flatten)]
     pub preview: AgentToolCallPreviewFields,
     pub conversation_id: String,
@@ -299,6 +303,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         parent_tool_use_id: Option<String>,
         seq: u64,
     ) -> Self {
@@ -307,6 +312,7 @@ impl AgentToolCallPayload {
             tool_id: Some(tool_use_id.to_string()),
             arguments: serde_json::Value::Null,
             result: Some(result_preview.result.clone()),
+            run_id: run_id.map(str::to_string),
             preview: AgentToolCallPreviewFields::from_tool_result_preview(
                 result_preview.preview.as_ref(),
             ),
@@ -326,6 +332,7 @@ impl AgentToolCallPayload {
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
+        run_id: Option<&str>,
         diff_context: Option<serde_json::Value>,
         parent_tool_use_id: Option<String>,
         seq: u64,
@@ -351,6 +358,7 @@ impl AgentToolCallPayload {
             tool_id: tool_call.id.clone(),
             arguments,
             result,
+            run_id: run_id.map(str::to_string),
             preview,
             conversation_id: conversation_id.to_string(),
             context_type: context_type.to_string(),
@@ -661,6 +669,8 @@ pub struct AgentErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskStartedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     /// Tool name that triggered this: "Task" or "Agent"
     pub tool_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -709,6 +719,8 @@ pub struct AgentTaskStartedPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskCompletedPayload {
     pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

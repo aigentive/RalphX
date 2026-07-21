@@ -37,6 +37,7 @@ use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::error::AppError;
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +232,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
+    let phase_started_at = startup_phase_started("deferred_plan_approval_reconciliation");
+    if let Err(error) = crate::application::plan_approval_notification_service::reconcile_deferred_plan_approvals_on_startup(&app_state).await {
+        tracing::warn!(error = %error, "Deferred plan approval reconciliation did not complete");
+    }
+    startup_phase_completed("deferred_plan_approval_reconciliation", phase_started_at);
+
+    // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
+    // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
     match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
         Arc::clone(&app_state.branch_update_repo),
@@ -263,6 +272,21 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
     startup_phase_completed("git_mutation_authority_recovery", phase_started_at);
+
+    let tasks_settings = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
+        app_state
+            .build_tasks_feature_toggle_service(
+                Arc::clone(&execution_state),
+                Some(app_handle.clone()),
+            )
+            .set_tasks_enabled(false)
+            .await?;
+    }
 
     let phase_started_at = startup_phase_started("branch_update_run_binding_recovery");
     match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(
@@ -561,13 +585,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
+        Some(app_state.notification_service()),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;

@@ -113,6 +113,8 @@ interface ChatState {
   effectiveModel: Record<string, ModelDisplay>;
   /** Unsent composer drafts keyed by conversation/start-composer target. Transient only. */
   composerDraftsByKey: Record<string, ChatComposerDraft>;
+  /** User-owned delegate expansion keyed by conversation then stable tool/job id. */
+  delegateExpansionByConversation: Record<string, Record<string, true>>;
 }
 
 // ============================================================================
@@ -193,6 +195,12 @@ interface ChatActions {
   setComposerDraftFolders: (draftKey: string, folders: ChatComposerFolder[]) => void;
   /** Clear the full unsent composer draft for a target. */
   clearComposerDraft: (draftKey: string) => void;
+  /** Preserve delegate expansion across live/persisted projection replacement. */
+  setDelegateExpanded: (
+    conversationId: string,
+    delegateKey: string,
+    expanded: boolean,
+  ) => void;
 }
 
 function queuedMessageListsEqual(
@@ -259,6 +267,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     toolCallCompletionTimestamps: {},
     effectiveModel: {},
     composerDraftsByKey: {},
+    delegateExpansionByConversation: {},
 
     // Actions
     setContext: (context) =>
@@ -292,6 +301,10 @@ export const useChatStore = create<ChatState & ChatActions>()(
     setActiveConversation: (storeKey, conversationId) =>
       set((state) => {
         if (state.activeConversationIds[storeKey] === conversationId) return;
+        const previousConversationId = state.activeConversationIds[storeKey];
+        if (previousConversationId) {
+          delete state.delegateExpansionByConversation[previousConversationId];
+        }
         state.activeConversationIds[storeKey] = conversationId;
       }),
 
@@ -602,6 +615,21 @@ export const useChatStore = create<ChatState & ChatActions>()(
     clearComposerDraft: (draftKey) =>
       set((state) => {
         delete state.composerDraftsByKey[draftKey];
+      }),
+
+    setDelegateExpanded: (conversationId, delegateKey, expanded) =>
+      set((state) => {
+        if (expanded) {
+          state.delegateExpansionByConversation[conversationId] ??= {};
+          state.delegateExpansionByConversation[conversationId][delegateKey] = true;
+          return;
+        }
+        const conversationExpansion = state.delegateExpansionByConversation[conversationId];
+        if (!conversationExpansion) return;
+        delete conversationExpansion[delegateKey];
+        if (Object.keys(conversationExpansion).length === 0) {
+          delete state.delegateExpansionByConversation[conversationId];
+        }
       }),
 
     processQueue: async (contextKey) => {

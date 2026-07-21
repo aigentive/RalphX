@@ -7,7 +7,7 @@ use crate::application::validation_service::validation_run_proves_current_comple
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ExecutionRecoveryMetadata, ExecutionRecoveryState,
-    InternalStatus, Task, TaskId, TaskStepStatus, ValidationCacheMetadata,
+    InternalStatus, Task, TaskId, TaskStep, TaskStepStatus, ValidationCacheMetadata,
 };
 use crate::domain::repositories::{TaskRepository, TaskStepRepository};
 use crate::domain::state_machine::transition_handler::{parse_metadata, set_trigger_origin};
@@ -16,6 +16,12 @@ use crate::error::{AppError, AppResult};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReadyRestartPreparation {
     pub cleared_failed_steps: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TerminalReadyRestartPlan {
+    pub task: Task,
+    pub failed_steps: Vec<TaskStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,8 +317,33 @@ pub async fn prepare_terminal_task_for_ready_restart(
     task_step_repo: &Arc<dyn TaskStepRepository>,
     old_task: &Task,
 ) -> AppResult<ReadyRestartPreparation> {
-    if !old_task.internal_status.is_terminal() {
+    let Some(plan) = build_terminal_ready_restart_plan(task_step_repo, old_task).await? else {
         return Ok(ReadyRestartPreparation::default());
+    };
+
+    if !task_repo
+        .update_with_expected_status(&plan.task, old_task.internal_status)
+        .await?
+    {
+        return Err(AppError::Validation(format!(
+            "Task {} changed concurrently; restart preparation did not clear preserved work",
+            old_task.id.as_str()
+        )));
+    }
+
+    let cleared_failed_steps = reset_failed_steps(task_step_repo, plan.failed_steps).await?;
+
+    Ok(ReadyRestartPreparation {
+        cleared_failed_steps,
+    })
+}
+
+pub async fn build_terminal_ready_restart_plan(
+    task_step_repo: &Arc<dyn TaskStepRepository>,
+    old_task: &Task,
+) -> AppResult<Option<TerminalReadyRestartPlan>> {
+    if !old_task.internal_status.is_terminal() {
+        return Ok(None);
     }
     ensure_restart_worktree_is_safe_to_clear(old_task).await?;
 
@@ -344,25 +375,21 @@ pub async fn prepare_terminal_task_for_ready_restart(
     }
     task_mut.metadata = Some(meta.to_string());
 
-    if !task_repo
-        .update_with_expected_status(&task_mut, old_task.internal_status)
-        .await?
-    {
-        return Err(AppError::Validation(format!(
-            "Task {} changed concurrently; restart preparation did not clear preserved work",
-            old_task.id.as_str()
-        )));
-    }
-
-    let cleared_failed_steps = if old_task.internal_status == InternalStatus::Failed {
-        clear_failed_steps_for_failed_restart(task_step_repo, &old_task.id).await?
+    let failed_steps = if old_task.internal_status == InternalStatus::Failed {
+        task_step_repo
+            .get_by_task(&old_task.id)
+            .await?
+            .into_iter()
+            .filter(|step| step.status == TaskStepStatus::Failed)
+            .collect()
     } else {
-        0
+        Vec::new()
     };
 
-    Ok(ReadyRestartPreparation {
-        cleared_failed_steps,
-    })
+    Ok(Some(TerminalReadyRestartPlan {
+        task: task_mut,
+        failed_steps,
+    }))
 }
 
 pub async fn clear_failed_steps_for_failed_restart(
@@ -371,12 +398,22 @@ pub async fn clear_failed_steps_for_failed_restart(
 ) -> AppResult<u32> {
     let steps = task_step_repo.get_by_task(task_id).await?;
 
+    reset_failed_steps(
+        task_step_repo,
+        steps
+            .into_iter()
+            .filter(|step| step.status == TaskStepStatus::Failed)
+            .collect(),
+    )
+    .await
+}
+
+async fn reset_failed_steps(
+    task_step_repo: &Arc<dyn TaskStepRepository>,
+    steps: Vec<TaskStep>,
+) -> AppResult<u32> {
     let mut cleared = 0u32;
     for mut step in steps {
-        if step.status != TaskStepStatus::Failed {
-            continue;
-        }
-
         step.status = TaskStepStatus::Pending;
         step.started_at = None;
         step.completed_at = None;

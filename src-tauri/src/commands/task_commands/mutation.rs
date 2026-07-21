@@ -6,7 +6,7 @@ use super::types::{
     InjectTaskResponse, TaskResponse, UnblockTaskResponse, UpdateTaskInput,
 };
 use crate::application::chat_service::PauseReason;
-use crate::application::task_restart::prepare_terminal_task_for_ready_restart;
+use crate::application::task_restart::build_terminal_ready_restart_plan;
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::prepare_resumed_task_for_entry_actions;
 use crate::commands::execution_commands::project_has_execution_capacity_for_state;
@@ -179,7 +179,10 @@ fn build_task_scheduler(
 
 async fn authorize_task_mutation(state: &AppState, task: &Task) -> Result<(), String> {
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(state)
-        .authorize_session(task.ideation_session_id.as_ref())
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::HistoryMutation,
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -344,45 +347,31 @@ pub async fn move_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
-    authorize_task_mutation(&state, &old_task).await?;
+    let feature_action = if matches!(
+        new_status,
+        InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
+    ) {
+        crate::domain::ideation::TasksFeatureAction::Quiesce
+    } else {
+        crate::domain::ideation::TasksFeatureAction::Progress
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(old_task.ideation_session_id.as_ref(), feature_action)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let old_status = old_task.internal_status;
     let project_id = old_task.project_id.clone();
 
-    // Terminal→Ready restart: clear stale git refs, reset execution_recovery, and set
-    // trigger_origin in a single atomic task_repo.update().
-    //
-    // IMPORTANT: This write MUST happen before transition_task_with_metadata / transition_task
-    // below, because both paths re-fetch the task from DB before running on_enter. The cleared
-    // git refs must be visible to on_enter so it creates a fresh branch instead of failing with
-    // ExecutionBlocked on a deleted branch.
-    if old_status.is_terminal() && new_status == InternalStatus::Ready {
-        match prepare_terminal_task_for_ready_restart(
-            &state.task_repo,
-            &state.task_step_repo,
-            &old_task,
-        )
-        .await
-        {
-            Ok(preparation) => {
-                if old_status == InternalStatus::Failed && preparation.cleared_failed_steps > 0 {
-                    tracing::info!(
-                        task_id = task_id.as_str(),
-                        cleared = preparation.cleared_failed_steps,
-                        "Cleared failed steps while preserving completed progress for failed-task restart"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    task_id = task_id.as_str(),
-                    error = %e,
-                    "Failed to clear git refs and reset execution_recovery on task restart"
-                );
-                return Err(format!("Failed to prepare task restart: {e}"));
-            }
-        }
-    }
+    // Terminal→Ready restarts are planned without writes, then committed below with
+    // cleanup, failed-step resets, Ready status, and history in one repository transaction.
+    let terminal_restart_plan = if old_status.is_terminal() && new_status == InternalStatus::Ready {
+        build_terminal_ready_restart_plan(&state.task_step_repo, &old_task)
+            .await
+            .map_err(|error| format!("Failed to prepare task restart: {error}"))?
+    } else {
+        None
+    };
 
     // Create the task scheduler for auto-scheduling Ready tasks
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
@@ -395,7 +384,12 @@ pub async fn move_task(
     // Transition the task - this triggers entry actions like spawning workers!
     // When a note is provided and the task is moving to Ready (restart/reopen flow),
     // store it as restart_note in metadata so the re-executing agent can read it.
-    let task = if note.is_some() && new_status == InternalStatus::Ready {
+    let task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, Some(build_restart_metadata(note.as_deref())))
+            .await
+            .map_err(|e| e.to_string())?
+    } else if note.is_some() && new_status == InternalStatus::Ready {
         let restart_metadata = build_restart_metadata(note.as_deref());
         transition_service
             .transition_task_with_metadata(&task_id, new_status, Some(restart_metadata))
@@ -449,7 +443,7 @@ pub async fn inject_task(
     app: tauri::AppHandle,
 ) -> Result<InjectTaskResponse, String> {
     crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
-        .authorize_session(None)
+        .authorize_session(None, crate::domain::ideation::TasksFeatureAction::Progress)
         .await
         .map_err(|error| error.to_string())?;
     let project_id = ProjectId::from_string(input.project_id.clone());
@@ -1284,6 +1278,7 @@ pub async fn pause_task(
                 owner: lease.owner().clone(),
                 fencing_epoch: lease.fencing_epoch(),
                 history_id: uuid::Uuid::new_v4().to_string(),
+                task_metadata: None,
             })
             .await
             .map_err(|error| error.to_string())?;
@@ -1799,6 +1794,13 @@ pub async fn retry_branch_update(
             task_id.as_str()
         ));
     }
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     if !execution_state.can_start_any_execution_context() {
         return Err("Cannot retry: max concurrent task limit reached".to_string());
     }

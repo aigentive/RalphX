@@ -3367,8 +3367,9 @@ describe("getConversationActiveState", () => {
   });
 
   it("fetches conversation active state with stats fields", async () => {
-    const mockResponse: ConversationActiveStateResponse = {
+    const mockResponse = {
       is_active: true,
+      run_id: "run-parent-123",
       tool_calls: [],
       streaming_tasks: [
         {
@@ -3416,6 +3417,7 @@ describe("getConversationActiveState", () => {
       backendApiUrl("conversations/conv-123/active-state"),
     );
     expect(result.is_active).toBe(true);
+    expect(result.runId).toBe("run-parent-123");
     expect(result.streaming_tasks).toHaveLength(1);
     const task = result.streaming_tasks[0];
     expect(task.tool_use_id).toBe("toolu_abc123");

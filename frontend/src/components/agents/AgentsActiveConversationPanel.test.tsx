@@ -94,7 +94,9 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
   useIdeationSettings: () => ({
     settings: {
       tasksEnabled: tasksEnabledRef.current,
+      tasksFeatureState: tasksEnabledRef.current ? "enabled" : "disabled",
       autoVerifyPlans: false,
+      autoVerifyDraftPlans: true,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: false,
       externalOverrides: {},
@@ -3366,7 +3368,8 @@ describe("AgentsActiveConversationPanel", () => {
     ).not.toBeInTheDocument();
     expect(
       within(row).getByTestId("agents-plan-composer-cta-hint"),
-    ).toHaveTextContent(/Tasks is off/i);
+    ).toHaveTextContent("Recommended: Implement Directly");
+    expect(within(row).queryByText("why?")).not.toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
@@ -3901,6 +3904,42 @@ describe("AgentsActiveConversationPanel", () => {
       expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
     );
     expect(onSelectArtifact).not.toHaveBeenCalledWith("verification");
+  });
+
+  it("keeps a verified composer control and confirms a manual rerun", async () => {
+    const user = userEvent.setup();
+    useVerificationStatusMock.mockReturnValue({
+      data: { status: "verified", inProgress: false },
+      isLoading: false,
+      isFetching: false,
+    });
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await user.click(
+      within(
+        await screen.findByTestId("agents-plan-composer-cta-row"),
+      ).getByRole("button", { name: "Verified" }),
+    );
+
+    expect(screen.getByText("Verify this plan again?")).toBeInTheDocument();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Verify again" }));
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
+    );
   });
 
   it("requires confirmation before running the typed fork command", async () => {

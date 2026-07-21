@@ -56,6 +56,10 @@ import {
   type ToolActivitySummary,
   type ToolActivityTask,
 } from "./tool-activity-summary";
+import {
+  foldDelegationTimelineMessages,
+  persistedTimelineToolCall,
+} from "./delegation-timeline";
 
 // ============================================================================
 // Constants
@@ -333,27 +337,6 @@ function collectToolCallGroupRun(
   }
 
   return group.length >= 1 ? group : null;
-}
-
-function persistedTimelineToolCall(message: ChatMessageData): ToolCall | null {
-  const block = message.contentBlocks?.[0];
-  if (!block || block.type !== "tool_use" || !block.name) {
-    return null;
-  }
-  const matching = block.id
-    ? message.toolCalls?.find((toolCall) => toolCall.id === block.id)
-    : undefined;
-  const toolCall: ToolCall = {
-    id: block.id || matching?.id || message.id,
-    name: block.name || matching?.name || "unknown",
-    arguments: block.arguments ?? matching?.arguments ?? {},
-    result: block.result ?? matching?.result,
-  };
-  const diffContext = block.diffContext ?? matching?.diffContext;
-  if (diffContext) {
-    toolCall.diffContext = diffContext;
-  }
-  return toolCall;
 }
 
 function toolCallGroupKey(messages: ChatMessageData[]): string {
@@ -1194,6 +1177,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           );
         })
         : messages;
+      const teamFilteredMessages = foldDelegationTimelineMessages(filteredMessages);
 
       const pushMessageItem = (
         msg: ChatMessageData,
@@ -1213,8 +1197,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         });
       };
 
-      for (let index = 0; index < filteredMessages.length; index += 1) {
-        const toolCallGroup = collectToolCallGroupRun(filteredMessages, index);
+      for (let index = 0; index < teamFilteredMessages.length; index += 1) {
+        const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
           const groupedToolCalls = toolCallGroup.map(persistedTimelineToolCall);
@@ -1237,7 +1221,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           continue;
         }
 
-        const msg = filteredMessages[index];
+        const msg = teamFilteredMessages[index];
         if (msg) {
           pushMessageItem(msg);
         }

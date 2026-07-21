@@ -22,11 +22,6 @@ import {
 import { cn } from "@/lib/utils";
 
 import { agentGranolaNoteKeys } from "./agentGranolaNoteQueries";
-import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
-import {
-  buildGranolaSelectionContent,
-  getGranolaSelectionSourceTitle,
-} from "./artifact-selection/granolaSelectionContent";
 import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsGranolaNotePanelProps {
@@ -56,19 +51,6 @@ export function AgentsGranolaNotePanel({
     staleTime: 5_000,
   });
   const note = noteQuery.data ?? null;
-  const selectionSourceTitle = getGranolaSelectionSourceTitle(note?.title);
-  const selectionContent = useMemo(
-    () =>
-      note
-        ? buildGranolaSelectionContent({
-            noteId: note.noteId,
-            title: note.title,
-            summaryMarkdown: note.summaryMarkdown,
-            transcript: note.transcript,
-          })
-        : null,
-    [note],
-  );
   const showList = !note || isReassigning;
   const notesQuery = useQuery({
     queryKey: ["agents", "granola-notes", showList] as const,
@@ -219,21 +201,6 @@ export function AgentsGranolaNotePanel({
           </div>
         ) : null}
       </div>
-
-      {note && selectionContent ? (
-        <ArtifactSelectionSource
-          conversationId={conversationId}
-          source={{
-            sourceType: "note",
-            sourceKind: "granola",
-            sourceId: note.noteId,
-            ...(selectionSourceTitle ? { sourceTitle: selectionSourceTitle } : {}),
-            provider: "granola",
-            sourceRevision: note.lastRefreshedAt ?? note.updatedAt,
-          }}
-          content={selectionContent}
-        />
-      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {!conversationId ? (

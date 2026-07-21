@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 use async_trait::async_trait;
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::AppState;
@@ -13,16 +13,17 @@ use ralphx_lib::domain::agents::{
     AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole,
 };
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, DelegatedSession,
-    DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId,
-    PersonaStatus, Project, ProjectId, SessionPurpose,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
+    ChatConversation, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
+    IdeationSession, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
 };
 use ralphx_lib::domain::repositories::DelegatedSessionRepository;
 use ralphx_lib::error::{AppError, AppResult};
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
-    get_delegated_session_status, start_delegate, wait_delegate,
+    get_delegated_session_status, start_delegate, start_delegate_with_runtime_context,
+    wait_delegate,
 };
 use ralphx_lib::http_server::types::{
     DelegateCancelRequest, DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary,
@@ -271,6 +272,34 @@ fn delegate_start_request_accepts_legacy_message_alias_for_prompt() {
 
 async fn create_parent_session(state: &HttpServerState) -> IdeationSession {
     create_parent_session_in_working_directory(state, &repo_root()).await
+}
+
+fn routed_delegate_start_request(
+    parent_session_id: &str,
+    parent_conversation_id: &str,
+) -> DelegateStartRequest {
+    DelegateStartRequest {
+        caller_agent_name: Some("ralphx-ideation".to_string()),
+        caller_agent_profile: None,
+        caller_context_type: Some("ideation".to_string()),
+        caller_context_id: Some(parent_session_id.to_string()),
+        parent_session_id: Some(parent_session_id.to_string()),
+        parent_turn_id: None,
+        parent_message_id: None,
+        parent_conversation_id: Some(parent_conversation_id.to_string()),
+        parent_tool_use_id: None,
+        delegated_session_id: None,
+        child_session_id: None,
+        agent_name: "ralphx-general-explorer".to_string(),
+        prompt: "Review the current change.".to_string(),
+        title: None,
+        inherit_context: true,
+        harness: Some(AgentHarnessKind::Codex),
+        model: None,
+        logical_effort: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
 }
 
 async fn create_parent_session_in_working_directory(
@@ -1757,6 +1786,210 @@ async fn test_delegate_cancel_rejects_unknown_job() {
     assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn test_routed_delegate_start_requires_trusted_parent_run_context() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        HeaderMap::new(),
+        Json(routed_delegate_start_request(
+            "parent-session",
+            "parent-conversation",
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("requires trusted parent agent run context"));
+}
+
+#[tokio::test]
+async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_runs() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .expect("create parent conversation");
+    let other_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .expect("create other conversation");
+
+    let wrong_conversation_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(other_conversation.id))
+        .await
+        .expect("create wrong-conversation run");
+    let mut wrong_headers = HeaderMap::new();
+    wrong_headers.insert(
+        "x-ralphx-agent-run-id",
+        wrong_conversation_run.id.as_str().parse().unwrap(),
+    );
+    let wrong_error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        wrong_headers,
+        Json(routed_delegate_start_request(
+            parent.id.as_str(),
+            &parent_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(wrong_error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(wrong_error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("does not belong to the parent conversation"));
+
+    let mut stale_run = AgentRun::new(parent_conversation.id);
+    stale_run.status = AgentRunStatus::Completed;
+    stale_run.completed_at = Some(Utc::now());
+    let stale_run = state
+        .app_state
+        .agent_run_repo
+        .create(stale_run)
+        .await
+        .expect("create stale parent run");
+    state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let mut stale_headers = HeaderMap::new();
+    stale_headers.insert(
+        "x-ralphx-agent-run-id",
+        stale_run.id.as_str().parse().unwrap(),
+    );
+    let stale_error = start_delegate_with_runtime_context(
+        State(state),
+        stale_headers,
+        Json(routed_delegate_start_request(
+            parent.id.as_str(),
+            &parent_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(stale_error.0, axum::http::StatusCode::CONFLICT);
+    assert!(stale_error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("is not the active parent run"));
+}
+
+#[tokio::test]
+async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            parent.project_id,
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            "ralphx-general-explorer".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create delegated session");
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(
+            delegated_session.id.clone(),
+        ))
+        .await
+        .expect("create delegated conversation");
+
+    let mut exact_run = AgentRun::new(delegated_conversation.id);
+    exact_run.status = AgentRunStatus::Completed;
+    exact_run.completed_at = Some(Utc::now());
+    exact_run.effective_model_id = Some("exact-model".to_string());
+    let exact_run = state
+        .app_state
+        .agent_run_repo
+        .create(exact_run)
+        .await
+        .expect("create exact delegated run");
+
+    let mut newer_run = AgentRun::new(delegated_conversation.id);
+    newer_run.started_at = exact_run.started_at + chrono::Duration::seconds(1);
+    newer_run.status = AgentRunStatus::Completed;
+    newer_run.completed_at = Some(Utc::now());
+    newer_run.effective_model_id = Some("newer-model".to_string());
+    state
+        .app_state
+        .agent_run_repo
+        .create(newer_run)
+        .await
+        .expect("create newer delegated run");
+
+    let job_id = "job-exact-run".to_string();
+    state
+        .delegation_service
+        .register_running(
+            job_id.clone(),
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            delegated_session.id.as_str().to_string(),
+            Some(delegated_conversation.id.as_str()),
+            Some(exact_run.id.as_str()),
+            "ralphx-general-explorer".to_string(),
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            Some("exact-model".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let waited = wait_delegate(
+        State(state),
+        Json(DelegateWaitRequest {
+            job_id,
+            include_delegated_status: Some(true),
+            include_child_status: None,
+            include_messages: Some(false),
+            message_limit: None,
+        }),
+    )
+    .await
+    .expect("wait response")
+    .0;
+    let hydrated_run = waited
+        .delegated_status
+        .and_then(|status| status.latest_run)
+        .expect("exact delegated run status");
+    assert_eq!(hydrated_run.agent_run_id, exact_run.id.as_str());
+    assert_eq!(
+        hydrated_run.effective_model_id.as_deref(),
+        Some("exact-model")
+    );
+}
+
 #[test]
 fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_metadata() {
     let snapshot = DelegationJobSnapshot {
@@ -1766,12 +1999,22 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
         parent_turn_id: Some("turn-1".to_string()),
         parent_message_id: Some("msg-1".to_string()),
         parent_conversation_id: Some("parent-conv-1".to_string()),
+        parent_agent_run_id: Some("parent-run-1".to_string()),
         parent_tool_use_id: Some("toolu-parent-1".to_string()),
         delegated_session_id: "delegated-session-1".to_string(),
         delegated_conversation_id: Some("delegated-conv-1".to_string()),
         delegated_agent_run_id: Some("run-1".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
         harness: "codex".to_string(),
+        provider_session_id: Some("provider-thread-start".to_string()),
+        upstream_provider: Some("openai".to_string()),
+        provider_profile: Some("openai".to_string()),
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: Some("gpt-5.4-2026-07-01".to_string()),
+        logical_effort: Some("high".to_string()),
+        effective_effort: Some("high".to_string()),
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
         status: "running".to_string(),
         content: None,
         error: None,
@@ -1796,6 +2039,7 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
     .expect("parent linkage should produce a payload");
 
     assert_eq!(payload.tool_use_id, "toolu-parent-1");
+    assert_eq!(payload.run_id.as_deref(), Some("parent-run-1"));
     assert_eq!(payload.tool_name, "delegate_start");
     assert_eq!(
         payload.description.as_deref(),
@@ -1813,7 +2057,15 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
     );
     assert_eq!(payload.delegated_agent_run_id.as_deref(), Some("run-1"));
     assert_eq!(payload.provider_harness.as_deref(), Some("codex"));
+    assert_eq!(
+        payload.provider_session_id.as_deref(),
+        Some("provider-thread-start")
+    );
     assert_eq!(payload.logical_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        payload.effective_model_id.as_deref(),
+        Some("gpt-5.4-2026-07-01")
+    );
     assert_eq!(payload.logical_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
@@ -1832,12 +2084,22 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         parent_turn_id: Some("turn-2".to_string()),
         parent_message_id: Some("msg-2".to_string()),
         parent_conversation_id: Some("parent-conv-2".to_string()),
+        parent_agent_run_id: Some("parent-run-2".to_string()),
         parent_tool_use_id: Some("toolu-parent-2".to_string()),
         delegated_session_id: "delegated-session-2".to_string(),
         delegated_conversation_id: Some("delegated-conv-2".to_string()),
         delegated_agent_run_id: Some("run-2".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
         harness: "codex".to_string(),
+        provider_session_id: None,
+        upstream_provider: None,
+        provider_profile: None,
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: None,
+        logical_effort: Some("high".to_string()),
+        effective_effort: None,
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
         status: "running".to_string(),
         content: None,
         error: None,
@@ -1884,6 +2146,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     .expect("parent linkage should produce a payload");
 
     assert_eq!(payload.tool_use_id, "toolu-parent-2");
+    assert_eq!(payload.run_id.as_deref(), Some("parent-run-2"));
     assert_eq!(payload.agent_id.as_deref(), Some("run-2"));
     assert_eq!(payload.status.as_deref(), Some("failed"));
     assert_eq!(payload.total_duration_ms, Some(5000));
@@ -1928,4 +2191,49 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.context_type, "ideation");
     assert_eq!(payload.context_id, "parent-session-2");
     assert_eq!(payload.seq, 99);
+}
+
+#[test]
+fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
+    let snapshot = DelegationJobSnapshot {
+        job_id: "job-without-placement".to_string(),
+        parent_context_type: "project".to_string(),
+        parent_context_id: "project-1".to_string(),
+        parent_turn_id: None,
+        parent_message_id: None,
+        parent_conversation_id: Some("parent-conversation".to_string()),
+        parent_agent_run_id: None,
+        parent_tool_use_id: None,
+        delegated_session_id: "delegated-session".to_string(),
+        delegated_conversation_id: Some("delegated-conversation".to_string()),
+        delegated_agent_run_id: Some("delegated-run".to_string()),
+        agent_name: "ralphx-general-explorer".to_string(),
+        harness: "codex".to_string(),
+        provider_session_id: None,
+        upstream_provider: Some("openai".to_string()),
+        provider_profile: None,
+        logical_model: Some("gpt-5.4".to_string()),
+        effective_model_id: None,
+        logical_effort: Some("medium".to_string()),
+        effective_effort: None,
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
+        status: "running".to_string(),
+        content: None,
+        error: None,
+        started_at: "2026-04-12T10:00:00Z".to_string(),
+        completed_at: None,
+        history: vec![],
+        delegated_status: None,
+    };
+
+    let started = build_delegated_task_started_payload(&snapshot, None, None, None, None, 7)
+        .expect("parent conversation and job should be sufficient for lifecycle correlation");
+
+    assert_eq!(started.tool_use_id, "delegate-job:job-without-placement");
+    assert_eq!(
+        started.delegated_job_id.as_deref(),
+        Some("job-without-placement")
+    );
+    assert_eq!(started.conversation_id, "parent-conversation");
 }

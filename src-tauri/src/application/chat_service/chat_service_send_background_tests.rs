@@ -9,14 +9,19 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
+use crate::application::plan_approval_notification_service::{
+    has_deferred_plan_approval, reconcile_plan_approval_on_publish, PlanApprovalPublishAuthority,
+};
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRun, AgentRunId, AgentRunStatus, ChatAttachment,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
-    IdeationSession, IdeationSessionStatus, Persona, PersonaId, PersonaStatus, ProjectId,
-    SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatTimelineItemStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionStatus, Persona, PersonaId, PersonaStatus,
+    Project, ProjectId, SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot,
+    VerificationStatus,
 };
 use crate::domain::repositories::PersonaRepository;
 use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
@@ -1284,6 +1289,126 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             .is_none(),
         "spawn failure should not leave queued continuation marked running"
     );
+}
+
+#[tokio::test]
+async fn terminal_queued_verifier_failure_releases_deferred_plan_attention() {
+    let state = AppState::new_test();
+    state
+        .db
+        .run(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS deferred_plan_approval_notifications (
+                    session_id TEXT PRIMARY KEY NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Queued verifier failure".to_string(),
+            "/tmp/queued-verifier-failure".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut session = IdeationSession::new(project.id.clone());
+    session.session_flow = IdeationSessionFlow::Planning;
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id,
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base".to_string()),
+        "plan-workspace".to_string(),
+        "/tmp/plan-workspace".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let publish_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id))
+        .await
+        .unwrap();
+    let publish_authority = PlanApprovalPublishAuthority::new(publish_run.id, conversation.id);
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        Some(&publish_authority),
+    )
+    .await;
+    assert!(
+        has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+
+    let mut verifier_run = AgentRun::new(conversation.id);
+    verifier_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    verifier_run.action_context_id = Some(session.id.as_str().to_string());
+    verifier_run.action_target_id = Some("plan-current".to_string());
+    let verifier_run = state.agent_run_repo.create(verifier_run).await.unwrap();
+    state
+        .agent_run_repo
+        .fail(&verifier_run.id, "queued preflight failed")
+        .await
+        .unwrap();
+    let verifier_run_id = verifier_run.id.as_str();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    super::super::chat_service_queue::settle_terminal_queued_plan_verification(
+        Some(&app_handle),
+        &verifier_run_id,
+    )
+    .await;
+
+    let state = app_handle.state::<AppState>();
+    assert!(
+        !has_deferred_plan_approval(state.inner(), &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title, "Plan approval needed");
 }
 
 #[cfg(unix)]

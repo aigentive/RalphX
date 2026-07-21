@@ -1,13 +1,18 @@
 use super::execution_complete_http;
 use crate::application::AppState;
-use crate::domain::entities::{Project, Task, ValidationCacheMetadata};
-use crate::http_server::types::{ExecutionCompleteRequest, HttpServerState, TestResultInput};
+use crate::domain::entities::{Project, ProjectId, Task, TaskStep, ValidationCacheMetadata};
+use crate::domain::ideation::TasksFeatureState;
+use crate::http_server::types::{
+    ExecutionCompleteRequest, HttpServerState, StartStepRequest, TestResultInput,
+};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use axum::{
     extract::{Path, State},
     Json,
 };
 use std::sync::Arc;
+
+use super::start_step_http;
 
 fn create_temp_git_repo() -> tempfile::TempDir {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
@@ -94,6 +99,136 @@ async fn task_for_repo(app_state: &AppState, repo_path: &std::path::Path, title:
     project.base_branch = Some("main".to_string());
     let project = app_state.project_repo.create(project).await.unwrap();
     Task::new(project.id.clone(), title.to_string())
+}
+
+#[tokio::test]
+async fn start_step_preserves_tasks_disabled_error() {
+    let app_state = Arc::new(AppState::new_test());
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let task = Task::new(
+        ProjectId::from_string("tasks-disabled-steps".to_string()),
+        "Task".to_string(),
+    );
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    let step = app_state
+        .task_step_repo
+        .create(TaskStep::new(
+            task.id.clone(),
+            "Step".to_string(),
+            0,
+            "agent".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = start_step_http(
+        State(test_http_state(Arc::clone(&app_state))),
+        Json(StartStepRequest {
+            step_id: step.id.to_string(),
+        }),
+    )
+    .await
+    .expect_err("Tasks-off step mutation must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert_eq!(
+        app_state
+            .task_step_repo
+            .get_by_id(&step.id)
+            .await
+            .unwrap()
+            .expect("step remains present")
+            .status,
+        crate::domain::entities::TaskStepStatus::Pending
+    );
+}
+
+async fn assert_execution_complete_rejects_tasks_feature_state(state: TasksFeatureState) {
+    let app_state = Arc::new(AppState::new_test());
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let task = Task::new(
+        ProjectId::from_string(format!("tasks-{state:?}-execution-complete")),
+        "Task".to_string(),
+    );
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(TasksFeatureState::Enabled, state)
+        .await
+        .unwrap();
+
+    let error = execution_complete_http(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off execution completion must be rejected before side effects");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert!(
+        app_state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "rejection must preserve the task"
+    );
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_while_tasks_disabled_before_side_effects() {
+    assert_execution_complete_rejects_tasks_feature_state(TasksFeatureState::Disabled).await;
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_while_tasks_draining_before_side_effects() {
+    assert_execution_complete_rejects_tasks_feature_state(TasksFeatureState::Draining).await;
 }
 
 #[tokio::test]

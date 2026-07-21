@@ -774,3 +774,29 @@ async fn read_transitions_and_prune_preserve_unread_rows_and_keep_newest() {
     assert_eq!(page.notifications.len(), 1);
     assert_eq!(page.notifications[0].id, newest.id);
 }
+
+#[tokio::test]
+async fn memory_prune_keeps_actionable_plan_approval_but_removes_it_after_settlement() {
+    let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
+    let now = Utc::now();
+    let mut approval = new_notification(Some("plan:session-1:artifact-1"))
+        .into_notification(now - Duration::days(40));
+    approval.category = NotificationCategory::PlanApproval;
+    let newest = new_notification(Some("newest-task")).into_notification(now);
+    repo.create_with_dedupe(approval.clone()).await.unwrap();
+    repo.create_with_dedupe(newest.clone()).await.unwrap();
+
+    repo.prune(now - Duration::days(30), 1).await.unwrap();
+    let retained = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(retained.iter().any(|row| row.id == approval.id));
+    assert!(retained.iter().any(|row| row.id == newest.id));
+
+    repo.mark_read(&approval.id, now - Duration::days(35))
+        .await
+        .unwrap();
+    repo.prune(now - Duration::days(30), 1).await.unwrap();
+    let retained = repo.list(None, None, 50).await.unwrap().notifications;
+    assert!(retained.iter().all(|row| row.id != approval.id));
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, newest.id);
+}

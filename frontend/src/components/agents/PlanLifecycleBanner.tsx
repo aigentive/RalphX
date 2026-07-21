@@ -25,7 +25,7 @@ export interface PlanLifecycleAction {
   disabled?: boolean;
   loading?: boolean;
   primary?: boolean;
-  tone?: "default" | "danger";
+  tone?: "default" | "success" | "danger";
   testId?: string;
 }
 
@@ -102,6 +102,16 @@ function actionButtonStyle(
       borderStyle: "solid",
       borderWidth: "1px",
       color: "var(--status-error)",
+    };
+  }
+
+  if (action.tone === "success") {
+    return {
+      backgroundColor: "var(--status-success-muted)",
+      borderColor: "var(--status-success-border)",
+      borderStyle: "solid",
+      borderWidth: "1px",
+      color: "var(--status-success)",
     };
   }
 

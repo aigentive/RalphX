@@ -793,6 +793,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_agent_profile: RALPHX_AGENT_PROFILE,
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
+            }, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                },
             });
         }
         else if (name === "delegate_wait") {

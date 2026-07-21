@@ -560,6 +560,9 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None,                                       // no conversation_repo for recovery
         false,                                      // no verification transcript splitting
         true, // recovery may persist any replacement session externally
+        None, // no interactive process registry
+        None, // no interactive process key
+        None, // no interactive process token
     )
     .await
     {

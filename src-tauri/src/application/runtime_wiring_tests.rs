@@ -4,6 +4,22 @@ use super::runtime_wiring::{
     should_recenter_macos_traffic_lights,
 };
 
+#[test]
+fn verification_runtime_coordination_is_arc_shared() {
+    let source = crate::application::AppState::new_test();
+    let mut target = crate::application::AppState::new_test();
+    super::runtime_wiring::share_plan_verification_runtime(&source, &mut target);
+
+    assert!(std::sync::Arc::ptr_eq(
+        &source.plan_verification_locks,
+        &target.plan_verification_locks
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &source.plan_verification_admissions,
+        &target.plan_verification_admissions
+    ));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn traffic_light_target_center_tracks_navbar_midline_from_titlebar_top() {
@@ -31,9 +47,13 @@ fn traffic_light_origin_centers_button_on_converted_parent_coordinate() {
 fn traffic_light_centering_reapplies_after_native_layout_events() {
     use tauri::{PhysicalSize, WindowEvent};
 
-    assert!(should_recenter_macos_traffic_lights(&WindowEvent::Focused(true)));
+    assert!(should_recenter_macos_traffic_lights(&WindowEvent::Focused(
+        true
+    )));
     assert!(should_recenter_macos_traffic_lights(&WindowEvent::Resized(
         PhysicalSize::new(1200, 800),
     )));
-    assert!(!should_recenter_macos_traffic_lights(&WindowEvent::Focused(false)));
+    assert!(!should_recenter_macos_traffic_lights(
+        &WindowEvent::Focused(false)
+    ));
 }

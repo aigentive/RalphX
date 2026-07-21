@@ -31,6 +31,7 @@ use ralphx_lib::domain::entities::{
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority,
     ProposalCategory, TaskProposal, VerificationRunSnapshot,
 };
+use ralphx_lib::domain::ideation::TasksFeatureState;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
@@ -2084,6 +2085,15 @@ async fn test_task_transition_cancel() {
 #[tokio::test]
 async fn test_task_transition_retry_from_terminal() {
     let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
 
     let project_id = "proj-retry";
     let p = make_project(project_id, "Retry Test");
@@ -2102,7 +2112,7 @@ async fn test_task_transition_retry_from_terminal() {
         .unwrap();
 
     let result = external_task_transition_http(
-        State(state),
+        State(state.clone()),
         unrestricted_scope(),
         Json(TaskTransitionRequest {
             task_id: task.id.to_string(),
@@ -2114,6 +2124,25 @@ async fn test_task_transition_retry_from_terminal() {
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert!(response.success);
+    assert_eq!(response.new_status, InternalStatus::Ready.as_str());
+
+    let persisted = state
+        .app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("retried task should remain persisted");
+    assert_eq!(persisted.internal_status, InternalStatus::Ready);
+    let history = state
+        .app_state
+        .task_repo
+        .get_status_history(&task.id)
+        .await
+        .unwrap();
+    assert!(history.iter().any(|entry| {
+        entry.from == InternalStatus::Stopped && entry.to == InternalStatus::Ready
+    }));
 }
 
 #[tokio::test]
@@ -2147,7 +2176,73 @@ async fn test_task_transition_retry_non_terminal_fails() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        result.unwrap_err().status,
+        axum::http::StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn test_task_transition_retry_preserves_tasks_disabled_error() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-retry-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Retry Tasks Disabled"))
+        .await
+        .unwrap();
+    let mut task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Stopped task".to_string(),
+    );
+    task.internal_status = InternalStatus::Stopped;
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = external_task_transition_http(
+        State(state),
+        unrestricted_scope(),
+        Json(TaskTransitionRequest {
+            task_id: task.id.to_string(),
+            action: TransitionAction::Retry,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off retry must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
 }
 
 #[tokio::test]
@@ -2180,7 +2275,10 @@ async fn test_task_transition_scope_violation() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(
+        result.unwrap_err().status,
+        axum::http::StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]
@@ -2232,6 +2330,98 @@ async fn test_review_action_approve_review_allows_review_passed() {
 }
 
 #[tokio::test]
+async fn test_review_action_preserves_tasks_disabled_error_without_transition() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-review-action-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Review Action Tasks Disabled"))
+        .await
+        .unwrap();
+    let mut task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Review passed task".to_string(),
+    );
+    task.internal_status = InternalStatus::ReviewPassed;
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+    let history_before = state
+        .app_state
+        .task_repo
+        .get_status_history(&task.id)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = review_action_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        Json(ReviewActionRequest {
+            task_id: task.id.to_string(),
+            action: ReviewActionType::ApproveReview,
+            resolution: None,
+            feedback: None,
+        }),
+    )
+    .await
+    .expect_err("Tasks-off review action must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("task must remain persisted")
+            .internal_status,
+        InternalStatus::ReviewPassed
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_status_history(&task.id)
+            .await
+            .unwrap()
+            .len(),
+        history_before.len()
+    );
+}
+
+#[tokio::test]
 async fn test_review_action_approve_review_rejects_reviewing() {
     let state = setup_test_state().await;
 
@@ -2265,7 +2455,7 @@ async fn test_review_action_approve_review_rejects_reviewing() {
 
     assert!(result.is_err());
     assert_eq!(
-        result.unwrap_err(),
+        result.unwrap_err().status,
         axum::http::StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -2313,7 +2503,7 @@ async fn test_review_action_approve_review_rejects_merged() {
 
     assert!(result.is_err());
     assert_eq!(
-        result.unwrap_err(),
+        result.unwrap_err().status,
         axum::http::StatusCode::UNPROCESSABLE_ENTITY
     );
 
@@ -2325,6 +2515,79 @@ async fn test_review_action_approve_review_rejects_merged() {
         .unwrap()
         .unwrap();
     assert_eq!(updated.internal_status, InternalStatus::Merged);
+}
+
+#[tokio::test]
+async fn test_create_task_note_preserves_tasks_disabled_error_without_mutation() {
+    let state = setup_test_state().await;
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Disabled,
+            TasksFeatureState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let project_id = "proj-task-note-tasks-disabled";
+    state
+        .app_state
+        .project_repo
+        .create(make_project(project_id, "Task Note Tasks Disabled"))
+        .await
+        .unwrap();
+    let task = Task::new(
+        ProjectId::from_string(project_id.to_string()),
+        "Task with a note".to_string(),
+    );
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_settings_repo
+        .compare_and_set_tasks_feature_state(
+            TasksFeatureState::Enabled,
+            TasksFeatureState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let error = create_task_note_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        Json(CreateTaskNoteRequest {
+            task_id: task.id.to_string(),
+            note: "must not be saved".to_string(),
+        }),
+    )
+    .await
+    .expect_err("Tasks-off note mutation must be rejected");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("ralphx:tasks_disabled")),
+        "Tasks-off error must remain available to external callers"
+    );
+    assert_eq!(
+        state
+            .app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("task must remain persisted")
+            .description,
+        task.description
+    );
 }
 
 // ============================================================================
