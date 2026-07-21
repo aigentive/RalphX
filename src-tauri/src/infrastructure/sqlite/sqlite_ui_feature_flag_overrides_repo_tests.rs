@@ -29,7 +29,6 @@ async fn missing_overrides_default_and_persona_values_round_trip() {
 
     let defaults = repository.get().await.expect("read missing override row");
     assert_eq!(defaults.agent_personas, None);
-    assert_eq!(defaults.composer_folder_references, None);
     assert!(!defaults.agent_conversation_team);
     assert!(!defaults.agent_conversation_workflows);
     assert!(!defaults.agent_conversation_autopilot);
@@ -75,31 +74,16 @@ async fn missing_overrides_default_and_persona_values_round_trip() {
 }
 
 #[tokio::test]
-async fn composer_folder_reference_override_round_trips() {
-    let repository = SqliteUiFeatureFlagOverridesRepository::new(connection());
-    repository
-        .set_composer_folder_references(Some(true))
-        .await
-        .expect("enable folder references");
-    assert_eq!(
-        repository
-            .get()
-            .await
-            .expect("read folder reference override")
-            .composer_folder_references,
-        Some(true)
-    );
-}
-
-#[tokio::test]
-async fn capability_updates_preserve_omitted_values_and_persona_override() {
-    let repository =
-        SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::new(Mutex::new(connection())));
-
-    repository
-        .set_composer_folder_references(Some(true))
-        .await
-        .expect("enable folder references");
+async fn capability_updates_preserve_persona_override_and_inert_legacy_folder_column() {
+    let connection = connection();
+    connection
+        .execute(
+            "INSERT INTO ui_feature_flag_overrides (id, composer_folder_references) VALUES (1, 1)",
+            [],
+        )
+        .expect("seed retired folder flag column");
+    let shared = Arc::new(Mutex::new(connection));
+    let repository = SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared));
 
     let team_enabled = repository
         .update_agent_capabilities(Some(true), None, None)
@@ -108,7 +92,6 @@ async fn capability_updates_preserve_omitted_values_and_persona_override() {
     assert!(team_enabled.agent_conversation_team);
     assert!(!team_enabled.agent_conversation_workflows);
     assert_eq!(team_enabled.agent_personas, None);
-    assert_eq!(team_enabled.composer_folder_references, Some(true));
 
     repository
         .set_agent_personas(Some(true))
@@ -122,7 +105,6 @@ async fn capability_updates_preserve_omitted_values_and_persona_override() {
     assert!(workflows_enabled.agent_conversation_workflows);
     assert!(workflows_enabled.agent_conversation_autopilot);
     assert_eq!(workflows_enabled.agent_personas, Some(true));
-    assert_eq!(workflows_enabled.composer_folder_references, Some(true));
 
     let team_disabled = repository
         .update_agent_capabilities(Some(false), None, None)
@@ -131,9 +113,18 @@ async fn capability_updates_preserve_omitted_values_and_persona_override() {
     assert!(!team_disabled.agent_conversation_team);
     assert!(team_disabled.agent_conversation_workflows);
     assert_eq!(team_disabled.agent_personas, Some(true));
-    assert_eq!(team_disabled.composer_folder_references, Some(true));
     assert_eq!(
         repository.get().await.expect("read final overrides"),
         team_disabled
     );
+    let retired_value = shared
+        .lock()
+        .await
+        .query_row(
+            "SELECT composer_folder_references FROM ui_feature_flag_overrides WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .expect("read retired folder flag column");
+    assert_eq!(retired_value, Some(1));
 }
