@@ -1,8 +1,12 @@
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
-use super::team_artifacts::{artifact_author, authorized_team_artifact_author};
+use super::team_artifacts::{
+    artifact_author, authorized_team_artifact_author, persist_team_artifact,
+};
 use crate::application::AppState;
-use crate::domain::entities::{AgentRun, ChatConversation, IdeationSessionId};
+use crate::domain::entities::{
+    AgentRun, Artifact, ArtifactType, ChatConversation, IdeationSessionId,
+};
 
 fn canonical_agent_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -121,4 +125,82 @@ fn artifact_author_rejects_unknown_transport_identity() {
     let (status, message) = artifact_author(&headers).expect_err("unknown caller must fail closed");
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message.contains("Unknown canonical caller agent"));
+}
+
+#[tokio::test]
+async fn team_artifact_relation_failure_rolls_back_artifact() {
+    let app_state = AppState::new_sqlite_test();
+    let artifact = Artifact::new_inline(
+        "Atomic team artifact",
+        ArtifactType::TeamSummary,
+        "content",
+        "system",
+    );
+    let artifact_id = artifact.id.clone();
+
+    let (status, message) = persist_team_artifact(
+        &app_state,
+        artifact,
+        Some("missing-related-artifact".to_string()),
+    )
+    .await
+    .expect_err("a missing relation target must reject the complete write");
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("does not exist"));
+    assert!(
+        app_state
+            .artifact_repo
+            .get_by_id(&artifact_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the artifact insert must roll back with the failed relation"
+    );
+}
+
+#[tokio::test]
+async fn team_artifact_and_relation_are_persisted_together() {
+    let app_state = AppState::new_sqlite_test();
+    let related_artifact = Artifact::new_inline(
+        "Existing artifact",
+        ArtifactType::TeamResearch,
+        "research",
+        "system",
+    );
+    let related_artifact_id = related_artifact.id.clone();
+    app_state
+        .artifact_repo
+        .create(related_artifact)
+        .await
+        .unwrap();
+
+    let artifact = Artifact::new_inline(
+        "Related team artifact",
+        ArtifactType::TeamSummary,
+        "summary",
+        "system",
+    );
+    let artifact_id = artifact.id.clone();
+
+    let created_id =
+        persist_team_artifact(&app_state, artifact, Some(related_artifact_id.to_string()))
+            .await
+            .expect("a valid artifact and relation should commit atomically");
+
+    assert_eq!(created_id, artifact_id);
+    assert!(app_state
+        .artifact_repo
+        .get_by_id(&created_id)
+        .await
+        .unwrap()
+        .is_some());
+    let relations = app_state
+        .artifact_repo
+        .get_relations(&created_id)
+        .await
+        .unwrap();
+    assert_eq!(relations.len(), 1);
+    assert_eq!(relations[0].from_artifact_id, created_id);
+    assert_eq!(relations[0].to_artifact_id, related_artifact_id);
 }

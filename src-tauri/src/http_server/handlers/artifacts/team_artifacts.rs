@@ -213,6 +213,47 @@ async fn validate_team_artifact_session_id(
     Ok(session_id.to_string())
 }
 
+pub(super) async fn persist_team_artifact(
+    app_state: &crate::application::AppState,
+    artifact: Artifact,
+    related_artifact_id: Option<String>,
+) -> Result<ArtifactId, (StatusCode, String)> {
+    app_state
+        .db
+        .run_transaction(move |conn| {
+            if let Some(related_id) = related_artifact_id.as_deref() {
+                if ArtifactRepo::get_by_id_sync(conn, related_id)?.is_none() {
+                    return Err(AppError::Validation(format!(
+                        "Related artifact '{related_id}' does not exist"
+                    )));
+                }
+            }
+
+            let artifact_id = artifact.id.clone();
+            ArtifactRepo::create_sync(conn, artifact)?;
+            if let Some(related_id) = related_artifact_id {
+                ArtifactRepo::add_relation_sync(
+                    conn,
+                    ArtifactRelation {
+                        id: ArtifactRelationId::new(),
+                        from_artifact_id: artifact_id.clone(),
+                        to_artifact_id: ArtifactId::from_string(related_id),
+                        relation_type: ArtifactRelationType::RelatedTo,
+                    },
+                )?;
+            }
+            Ok(artifact_id)
+        })
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => (StatusCode::BAD_REQUEST, message),
+            other => {
+                error!(%other, "Failed to persist team artifact transaction");
+                (StatusCode::INTERNAL_SERVER_ERROR, other.to_string())
+            }
+        })
+}
+
 pub async fn create_team_artifact(
     State(state): State<HttpServerState>,
     headers: axum::http::HeaderMap,
@@ -253,28 +294,10 @@ pub async fn create_team_artifact(
         team_phase: None,
     });
 
-    let artifact_id = artifact.id.to_string();
-
-    state
-        .app_state
-        .artifact_repo
-        .create(artifact)
-        .await
-        .map_err(|e| {
-            error!("Failed to create team artifact: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })?;
-
-    // Link to related artifact if provided
-    if let Some(related_id) = &req.related_artifact_id {
-        let relation = ArtifactRelation {
-            id: ArtifactRelationId::new(),
-            from_artifact_id: ArtifactId::from_string(artifact_id.clone()),
-            to_artifact_id: ArtifactId::from_string(related_id.clone()),
-            relation_type: ArtifactRelationType::RelatedTo,
-        };
-        let _ = state.app_state.artifact_repo.add_relation(relation).await;
-    }
+    let artifact_id =
+        persist_team_artifact(&state.app_state, artifact, req.related_artifact_id.clone())
+            .await?
+            .to_string();
 
     info!(
         artifact_id = %artifact_id,
