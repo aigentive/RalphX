@@ -6,8 +6,10 @@ use tracing::warn;
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_review::{
-    apply_current_target_to_monitor, load_or_create_monitor, resolve_review_target,
-    start_agent_workspace_review, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    apply_current_target_to_monitor, load_current_workspace_review_eligible,
+    load_or_create_monitor, lock_workspace_review_lifecycle, resolve_review_target,
+    start_agent_workspace_review_unlocked, workspace_review_mode_is_eligible,
+    AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -64,6 +66,8 @@ pub async fn preview_manual_workspace_review_start(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<WorkspaceReviewManualStartPreview> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let target = resolve_current_target(state, workspace).await?;
     let pr_number = target
         .as_ref()
@@ -138,6 +142,9 @@ pub async fn start_guarded_agent_workspace_review(
     origin: WorkspaceReviewStartOrigin,
     confirmation: Option<&WorkspaceReviewStartConfirmation>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.as_ref(), workspace).await?;
+    let workspace = &workspace;
     let preview = match origin {
         WorkspaceReviewStartOrigin::Manual => {
             let manual_preview =
@@ -160,7 +167,8 @@ pub async fn start_guarded_agent_workspace_review(
         }
     };
     let Some(preview) = preview else {
-        let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
+        let start =
+            start_agent_workspace_review_unlocked(Arc::clone(&state), workspace, force).await?;
         return settle_skipped_guarded_workspace_review_start(
             state.as_ref(),
             workspace,
@@ -187,7 +195,8 @@ pub async fn start_guarded_agent_workspace_review(
                         .to_string(),
                 ));
             }
-            let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
+            let start =
+                start_agent_workspace_review_unlocked(Arc::clone(&state), workspace, force).await?;
             return settle_skipped_guarded_workspace_review_start(
                 state.as_ref(),
                 workspace,
@@ -296,7 +305,7 @@ pub async fn start_guarded_agent_workspace_review(
     )
     .await;
 
-    let started = start_agent_workspace_review(Arc::clone(&state), workspace, force).await;
+    let started = start_agent_workspace_review_unlocked(Arc::clone(&state), workspace, force).await;
     match started {
         Ok(start) if start.started => Ok(start),
         Ok(start) => {
@@ -359,6 +368,8 @@ pub async fn handle_passing_workspace_review_auto_merge_guard(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let current = load_or_create_monitor(state, workspace).await?;
     if !passing_monitor_is_current(&current, monitor) {
         return Ok(current);
@@ -443,6 +454,8 @@ pub async fn restore_guarded_auto_merge_after_publish(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<()> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let monitor = load_or_create_monitor(state, workspace).await?;
     let Some(guard) = monitor.auto_merge_guard.as_ref() else {
         return Ok(());
@@ -467,6 +480,19 @@ pub fn auto_merge_guard_blocks_enable(monitor: Option<&AgentWorkspaceReviewMonit
 pub async fn cancel_workspace_review_auto_merge_guard(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
+) -> AppResult<bool> {
+    cancel_workspace_review_auto_merge_guard_with_reason(
+        state,
+        workspace,
+        "GitHub auto-merge will remain disabled because workspace supervision was turned off.",
+    )
+    .await
+}
+
+async fn cancel_workspace_review_auto_merge_guard_with_reason(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    reason: &str,
 ) -> AppResult<bool> {
     let monitor = load_or_create_monitor(state, workspace).await?;
     let Some(guard) = monitor.auto_merge_guard else {
@@ -504,20 +530,11 @@ pub async fn cancel_workspace_review_auto_merge_guard(
                 &workspace.conversation_id,
                 Some(false),
                 Some("review_paused"),
-                Some(
-                    "GitHub auto-merge will remain disabled because workspace supervision was turned off.",
-                ),
+                Some(reason),
             )
             .await?;
-        append_auto_merge_guard_event(
-            state,
-            workspace,
-            &guard,
-            "cancelled",
-            "cancelled",
-            "GitHub auto-merge will remain disabled because workspace supervision was turned off.",
-        )
-        .await;
+        append_auto_merge_guard_event(state, workspace, &guard, "cancelled", "cancelled", reason)
+            .await;
     }
     Ok(cancelled)
 }
@@ -550,11 +567,30 @@ pub async fn reconcile_workspace_review_auto_merge_guards(state: &AppState) -> A
         else {
             continue;
         };
+        let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+        if !workspace_review_mode_is_eligible(workspace.mode) {
+            if cleanup_ineligible_workspace_review_auto_merge_guard(state, &workspace).await? {
+                reconciled += 1;
+            }
+            continue;
+        }
         if reconcile_workspace_review_auto_merge_guard(state, &workspace, &monitor).await? {
             reconciled += 1;
         }
     }
     Ok(reconciled)
+}
+
+pub(crate) async fn cleanup_ineligible_workspace_review_auto_merge_guard(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<bool> {
+    cancel_workspace_review_auto_merge_guard_with_reason(
+        state,
+        workspace,
+        "GitHub auto-merge will remain disabled because Workspace Review is unavailable in the current workspace mode.",
+    )
+    .await
 }
 
 async fn reconcile_workspace_review_auto_merge_guard(

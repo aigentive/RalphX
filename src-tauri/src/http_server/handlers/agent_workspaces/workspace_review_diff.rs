@@ -7,7 +7,10 @@ use axum::{
 use super::workspace_review_context::workspace_review_runtime_header;
 use super::*;
 
-use crate::application::agent_workspace_review::apply_workspace_review_runtime_authority;
+use crate::application::agent_workspace_review::{
+    apply_workspace_review_runtime_authority, load_current_workspace_review_eligible,
+    lock_workspace_review_lifecycle,
+};
 use crate::application::agent_workspace_review_diff::{
     get_workspace_review_diff_page, list_workspace_review_files, AgentWorkspaceReviewDiffPage,
     AgentWorkspaceReviewFilePage,
@@ -50,6 +53,7 @@ pub async fn list_agent_workspace_review_files(
     Query(query): Query<ListAgentWorkspaceReviewFilesQuery>,
 ) -> Result<Json<ListAgentWorkspaceReviewFilesResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let (workspace, project) =
         authorized_workspace_review_diff_context(&state, &conversation_id, &headers).await?;
     let page =
@@ -70,6 +74,7 @@ pub async fn get_agent_workspace_review_diff_page(
     Query(query): Query<GetAgentWorkspaceReviewDiffPageQuery>,
 ) -> Result<Json<GetAgentWorkspaceReviewDiffPageResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let (workspace, project) =
         authorized_workspace_review_diff_context(&state, &conversation_id, &headers).await?;
     let diff = get_workspace_review_diff_page(
@@ -94,6 +99,9 @@ async fn authorized_workspace_review_diff_context(
     headers: &HeaderMap,
 ) -> Result<(AgentConversationWorkspace, Project), JsonError> {
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), conversation_id).await?;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_diff_error)?;
     let project = state
         .app_state
         .project_repo
@@ -145,7 +153,7 @@ async fn authorized_workspace_review_diff_context(
 
 fn workspace_review_diff_error(error: AppError) -> JsonError {
     let status = match &error {
-        AppError::Validation(_) => StatusCode::BAD_REQUEST,
+        AppError::Validation(_) => StatusCode::CONFLICT,
         AppError::Conflict(_) => StatusCode::CONFLICT,
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,

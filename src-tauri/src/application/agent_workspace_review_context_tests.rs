@@ -249,6 +249,41 @@ async fn full_target_reuses_a_current_calculation_without_reloading_git_context(
 }
 
 #[tokio::test]
+async fn cached_edit_context_is_rejected_after_persisted_mode_changes_to_plan() {
+    let (_temp, _repo, state, workspace) = setup_full_context().await;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("Edit workspace should persist");
+    load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect("Edit context should warm the presentation cache");
+
+    let mut plan_workspace = workspace.clone();
+    plan_workspace.mode = AgentConversationWorkspaceMode::Plan;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(plan_workspace)
+        .await
+        .expect("PLAN workspace should persist");
+
+    let error = load_agent_workspace_review_presentation_context(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewContextReadMode::FullTarget,
+    )
+    .await
+    .expect_err("PLAN must reject before reusing the Edit presentation cache");
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[tokio::test]
 async fn full_packet_refreshes_instead_of_reusing_the_presentation_cache() {
     let (_temp, repo, state, workspace) = setup_full_context().await;
 

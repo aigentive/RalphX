@@ -160,6 +160,7 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  isLocalWorkspaceReviewModeEligible,
   prReviewContextForConversation,
   refreshWorkspaceReviewContext,
   resolveWorkspaceReviewOwnerConversationId,
@@ -943,7 +944,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const shouldLoadWorkspaceReviewContext = Boolean(
     workspaceReviewConversationId &&
     scopedWorkspace &&
-    ["edit", "ideation", "plan"].includes(scopedWorkspace.mode),
+    isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode),
   );
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(

@@ -8,8 +8,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::application::agent_workspace_review::{
-    build_context, load_agent_workspace_review_context, AgentWorkspaceReviewContext,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
+    build_context, load_agent_workspace_review_context, load_current_workspace_review_eligible,
+    AgentWorkspaceReviewContext, AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewPacket,
+    AgentWorkspaceReviewTarget,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -153,6 +154,15 @@ fn coordinator_entry(key: &WorkspaceReviewContextKey) -> AppResult<Arc<Coordinat
         .entry(key.clone())
         .or_insert_with(|| Arc::new(CoordinatorEntry::default()))
         .clone())
+}
+
+pub(crate) fn invalidate_workspace_review_presentation_context(
+    conversation_id: &crate::domain::entities::ChatConversationId,
+) {
+    let Some(coordinator) = CONTEXT_COORDINATOR.get() else {
+        return;
+    };
+    lock_unpoisoned(coordinator).retain(|key, _| key.conversation_id != conversation_id.as_str());
 }
 
 struct CalculationOwnerGuard {
@@ -449,6 +459,8 @@ pub async fn load_agent_workspace_review_presentation_context(
     workspace: &AgentConversationWorkspace,
     mode: AgentWorkspaceReviewContextReadMode,
 ) -> AppResult<AgentWorkspaceReviewContext> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let request_id = Uuid::new_v4();
     let started = Instant::now();
     let generation = load_monitor_generation(state, workspace).await?;
