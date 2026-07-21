@@ -212,6 +212,24 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
     assert_eq!(options[0].model_override, None);
     assert_eq!(options[0].logical_effort_override, None);
     assert_eq!(options[0].service_tier_override, None);
+
+    let prompts = chat.get_sent_messages().await;
+    let prompt = prompts
+        .first()
+        .expect("verification action should receive its review contract");
+    for required_lens in [
+        "industry best practices",
+        "reuses existing components",
+        "UI/UX",
+        "product sense",
+        "remote base branch drift",
+        "instead of assuming no drift",
+    ] {
+        assert!(
+            prompt.contains(required_lens),
+            "verification prompt must require the {required_lens:?} review lens"
+        );
+    }
 }
 
 #[tokio::test]
