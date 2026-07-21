@@ -115,6 +115,7 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
+import { shouldPollForPrReviewContext } from "./agentWorkspacePrReviewPresentation";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -1907,12 +1908,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ),
     staleTime: 5_000,
     refetchInterval: (query) =>
-      prReviewContextForConversation(
-        query.state.data,
-        activeWorkspace?.conversationId,
-      )?.pendingAction
-        ? false
-        : 5_000,
+      shouldPollForPrReviewContext(
+        prReviewContextForConversation(
+          query.state.data,
+          activeWorkspace?.conversationId,
+        ),
+      )
+        ? 5_000
+        : false,
   });
   const reviewPrContext = prReviewContextForConversation(
     reviewPrContextQuery.data,

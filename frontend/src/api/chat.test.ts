@@ -3490,6 +3490,7 @@ describe("getConversationActiveState", () => {
           pr_number: 411,
           pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
           current_head_sha: "abcdef1234567890",
+          pending_action_head_status: "current",
           health: { merge_state_status: "Blocked" },
           review_feedback: null,
           monitor: rawMonitor(),
@@ -3516,6 +3517,7 @@ describe("getConversationActiveState", () => {
     expect(result.monitor?.lastReviewRunId).toBe("run-1");
     expect(result.monitor?.reviewArtifactHeadSha).toBe("abcdef1234567890");
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
+    expect(result.pendingActionHeadStatus).toBe("current");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
   });
