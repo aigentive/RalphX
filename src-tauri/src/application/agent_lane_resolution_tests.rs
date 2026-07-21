@@ -874,6 +874,34 @@ async fn delegated_subagent_provider_without_model_or_effort_uses_harness_fallba
 }
 
 #[tokio::test]
+async fn provider_default_does_not_override_non_delegated_role_model_or_effort() {
+    let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider.enabled = true;
+    provider.is_default = true;
+    provider.model = Some("sonnet".to_string());
+    provider.effort = Some(LogicalEffort::XHigh);
+    let (_config_root, service) = manual_role_service_with_provider(provider).await;
+
+    let resolved = resolve_manual_role_spawn_settings(
+        "ralphx-utility-pr-describer",
+        Some("project-provider-boundary"),
+        None,
+        RoutingRole::UtilityPrDescriber,
+        None,
+        None,
+        &service,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.effective_harness, AgentHarnessKind::Claude);
+    assert_eq!(resolved.model, "haiku");
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(resolved.configured_model, None);
+    assert_eq!(resolved.configured_logical_effort, None);
+}
+
+#[tokio::test]
 async fn workspace_plan_codex_override_ignores_configured_claude_model() {
     let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
