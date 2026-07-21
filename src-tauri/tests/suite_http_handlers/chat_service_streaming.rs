@@ -209,7 +209,7 @@ fn test_long_idle_kills_agent() {
         dur(1800),
         false,
         false,
-        true,  // even with pid alive
+        true, // even with pid alive
         false,
         false,
         false,
@@ -222,7 +222,7 @@ fn test_long_idle_kills_agent() {
 #[test]
 fn test_active_tasks_bypass_idle_timeout() {
     assert!(!should_kill_on_timeout(
-        dur(700),  // idle 11+ minutes — above line_read_timeout but under max_idle
+        dur(700), // idle 11+ minutes — above line_read_timeout but under max_idle
         dur(1800),
         false,
         false,
@@ -237,7 +237,7 @@ fn test_active_tasks_bypass_idle_timeout() {
 #[test]
 fn test_dead_process_killed_despite_short_idle() {
     assert!(should_kill_on_timeout(
-        dur(300),  // idle only 5 minutes
+        dur(300), // idle only 5 minutes
         dur(1800),
         false,
         false,
@@ -423,6 +423,7 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentChunkPayload includes seq field
     let chunk = AgentChunkPayload {
         text: "test".to_string(),
+        run_id: Some("run-1".to_string()),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -441,6 +442,7 @@ fn test_payloads_serialize_with_seq() {
         tool_id: Some("tool-1".to_string()),
         arguments: serde_json::json!({}),
         result: None,
+        run_id: Some("run-1".to_string()),
         preview: AgentToolCallPreviewFields::default(),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
@@ -458,6 +460,7 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentTaskStartedPayload includes seq field
     let task_started = AgentTaskStartedPayload {
         tool_use_id: "tool-1".to_string(),
+        run_id: Some("run-1".to_string()),
         tool_name: "Task".to_string(),
         description: Some("test".to_string()),
         subagent_type: Some("bash".to_string()),
@@ -491,6 +494,7 @@ fn test_payloads_serialize_with_seq() {
     // Verify AgentTaskCompletedPayload includes seq field
     let task_completed = AgentTaskCompletedPayload {
         tool_use_id: "tool-1".to_string(),
+        run_id: Some("run-1".to_string()),
         agent_id: Some("agent-1".to_string()),
         status: None,
         total_duration_ms: Some(1000),
