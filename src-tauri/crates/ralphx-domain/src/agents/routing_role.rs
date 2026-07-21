@@ -129,6 +129,7 @@ pub struct RoutingRoleMetadata {
     pub display_name: &'static str,
     pub description: &'static str,
     pub family: RoutingRoleFamily,
+    pub requires_tasks: bool,
 }
 
 impl RoutingRole {
@@ -300,6 +301,7 @@ const fn metadata(
         display_name,
         description: super::routing_role_descriptions::routing_role_description(role),
         family,
+        requires_tasks: matches!(family, RoutingRoleFamily::Execution),
     }
 }
 

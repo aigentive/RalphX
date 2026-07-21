@@ -7,6 +7,7 @@ use ralphx_lib::domain::entities::{
     ProjectId, ProposalCategory, TaskProposal, TaskProposalId,
 };
 use ralphx_lib::domain::ideation::IdeationSettings;
+use tauri::Manager;
 
 fn setup_test_state() -> AppState {
     AppState::new_test()
@@ -1260,6 +1261,42 @@ async fn test_system_message_in_session() {
 // ========================================================================
 
 #[tokio::test]
+async fn ipc_contract_ideation_settings_commands_preserve_backend_tasks_state() {
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("ideation settings command app should build");
+
+    let current = get_ideation_settings(app.state::<AppState>())
+        .await
+        .expect("settings command should return defaults");
+    let backend_tasks_enabled = current.tasks_enabled;
+    let backend_tasks_feature_state = current.tasks_feature_state;
+
+    let requested = IdeationSettings {
+        plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Required,
+        tasks_enabled: !backend_tasks_enabled,
+        ..current
+    };
+    let updated = update_ideation_settings(requested, app.state::<AppState>())
+        .await
+        .expect("ordinary settings command should persist planning fields");
+
+    assert_eq!(
+        updated.plan_mode,
+        ralphx_lib::domain::ideation::IdeationPlanMode::Required
+    );
+    assert_eq!(
+        updated.tasks_enabled, backend_tasks_enabled,
+        "ordinary settings updates must preserve backend-owned enablement"
+    );
+    assert_eq!(
+        updated.tasks_feature_state, backend_tasks_feature_state,
+        "ordinary settings updates must preserve backend-owned feature state"
+    );
+}
+
+#[tokio::test]
 async fn test_get_ideation_settings_returns_default() {
     let state = setup_test_state();
 
@@ -1286,6 +1323,7 @@ async fn test_update_ideation_settings() {
     // Create custom settings
     let custom_settings = IdeationSettings {
         tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
@@ -1320,6 +1358,7 @@ async fn test_ideation_settings_persist_across_reads() {
     // Update settings
     let custom_settings = IdeationSettings {
         tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: ralphx_lib::domain::ideation::IdeationPlanMode::Parallel,
         require_plan_approval: false,
         suggest_plans_for_complex: true,
