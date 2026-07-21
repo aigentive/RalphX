@@ -3653,6 +3653,7 @@ describe("getConversationActiveState", () => {
       expect.objectContaining({
         name: "AgentWorkspaceHttpError",
         status: 409,
+        detail: "workspace Review target or GitHub auto-merge state changed",
       }),
     );
   });

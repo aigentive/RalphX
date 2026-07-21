@@ -192,6 +192,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             workspace,
             start,
             false,
+            None,
         )
         .await;
     };
@@ -225,6 +226,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
                 workspace,
                 start,
                 false,
+                None,
             )
             .await;
         }
@@ -284,7 +286,13 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         )
         .await
     {
-        let _ = restore_guarded_auto_merge(state.as_ref(), workspace, &pausing).await;
+        let _ = restore_guarded_auto_merge_after_failed_start(
+            state.as_ref(),
+            workspace,
+            &pausing,
+            &preview.target.working_directory,
+        )
+        .await;
         return Err(error);
     }
     let paused = guard_for_preview(
@@ -300,14 +308,26 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         )
         .await?;
     if !paused_persisted {
-        let _ = restore_guarded_auto_merge(state.as_ref(), workspace, &pausing).await;
+        let _ = restore_guarded_auto_merge_after_failed_start(
+            state.as_ref(),
+            workspace,
+            &pausing,
+            &preview.target.working_directory,
+        )
+        .await;
         return Err(AppError::Conflict(
             "workspace Review auto-merge guard changed after GitHub was paused".to_string(),
         ));
     }
     let mut paused_monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
     if paused_monitor.auto_merge_guard.as_ref() != Some(&paused) {
-        let _ = restore_guarded_auto_merge(state.as_ref(), workspace, &paused).await;
+        let _ = restore_guarded_auto_merge_after_failed_start(
+            state.as_ref(),
+            workspace,
+            &paused,
+            &preview.target.working_directory,
+        )
+        .await;
         return Err(AppError::Conflict(
             "workspace Review auto-merge guard changed before review target was recorded"
                 .to_string(),
@@ -338,12 +358,23 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
     match started {
         Ok(start) if start.started => Ok(start),
         Ok(start) => {
-            settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start, true)
-                .await
+            settle_skipped_guarded_workspace_review_start(
+                state.as_ref(),
+                workspace,
+                start,
+                true,
+                Some(&preview.target.working_directory),
+            )
+            .await
         }
         Err(error) => {
-            let restore_result =
-                restore_guarded_auto_merge(state.as_ref(), workspace, &paused).await;
+            let restore_result = restore_guarded_auto_merge_after_failed_start(
+                state.as_ref(),
+                workspace,
+                &paused,
+                &preview.target.working_directory,
+            )
+            .await;
             restore_result?;
             Err(error)
         }
@@ -358,6 +389,7 @@ async fn settle_skipped_guarded_workspace_review_start(
     workspace: &AgentConversationWorkspace,
     mut start: AgentWorkspaceReviewStart,
     guard_created_by_start: bool,
+    failed_start_working_directory: Option<&std::path::Path>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let Some(guard) = start.context.monitor.auto_merge_guard.clone() else {
         return Ok(start);
@@ -382,7 +414,19 @@ async fn settle_skipped_guarded_workspace_review_start(
             start.context.monitor = load_or_create_monitor(state, workspace).await?;
         }
         _ if guard_created_by_start => {
-            restore_guarded_auto_merge(state, workspace, &guard).await?;
+            let working_directory = failed_start_working_directory.ok_or_else(|| {
+                AppError::Infrastructure(
+                    "failed workspace Review start lost its auto-merge restoration path"
+                        .to_string(),
+                )
+            })?;
+            restore_guarded_auto_merge_after_failed_start(
+                state,
+                workspace,
+                &guard,
+                working_directory,
+            )
+            .await?;
             start.context.monitor = load_or_create_monitor(state, workspace).await?;
         }
         _ => {}
@@ -988,10 +1032,47 @@ async fn cancel_guard_without_restoring(
     Ok(())
 }
 
+async fn restore_guarded_auto_merge_after_failed_start(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    guard: &AgentWorkspaceReviewAutoMergeGuard,
+    working_directory: &std::path::Path,
+) -> AppResult<()> {
+    if !matches!(
+        guard.status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::Pausing
+            | AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview
+    ) {
+        return Err(AppError::Conflict(
+            "failed-start auto-merge restoration requires an attempt-owned guard".to_string(),
+        ));
+    }
+    let working_directory = crate::utils::path_safety::validate_absolute_non_root_path(
+        working_directory,
+        "failed workspace Review start working directory",
+    )?;
+    restore_guarded_auto_merge_with_failed_start_path(
+        state,
+        workspace,
+        guard,
+        Some(&working_directory),
+    )
+    .await
+}
+
 pub(crate) async fn restore_guarded_auto_merge(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     guard: &AgentWorkspaceReviewAutoMergeGuard,
+) -> AppResult<()> {
+    restore_guarded_auto_merge_with_failed_start_path(state, workspace, guard, None).await
+}
+
+async fn restore_guarded_auto_merge_with_failed_start_path(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    guard: &AgentWorkspaceReviewAutoMergeGuard,
+    failed_start_working_directory: Option<&std::path::Path>,
 ) -> AppResult<()> {
     let current_workspace = state
         .agent_conversation_workspace_repo
@@ -1049,7 +1130,9 @@ pub(crate) async fn restore_guarded_auto_merge(
         return Ok(());
     }
     let monitor = load_or_create_monitor(state, &current_workspace).await?;
-    let working_directory = if workspace_publish_requires_proof {
+    let working_directory = if let Some(working_directory) = failed_start_working_directory {
+        working_directory.to_path_buf()
+    } else if workspace_publish_requires_proof {
         if !workspace_delta_publish_proves_guard(state, &monitor, &current_workspace, &restoring)
             .await?
         {
@@ -1091,11 +1174,17 @@ pub(crate) async fn restore_guarded_auto_merge(
             "GitHub integration became unavailable before auto-merge restoration".to_string(),
         )
     })?;
-    if pr_status_is_terminal(
-        &github
-            .check_pr_status(&working_directory, restoring.pr_number)
-            .await?,
-    ) {
+    let pr_status = match github
+        .check_pr_status(&working_directory, restoring.pr_number)
+        .await
+    {
+        Ok(status) => status,
+        Err(error) => {
+            return mark_restore_failed(state, &current_workspace, restoring, error.to_string())
+                .await;
+        }
+    };
+    if pr_status_is_terminal(&pr_status) {
         return cancel_guard_without_restoring(
             state,
             &current_workspace,
@@ -1134,13 +1223,24 @@ pub(crate) async fn restore_guarded_auto_merge(
                 .await;
         }
     }
-    let _ = finalize_confirmed_auto_merge_restore(
-        state,
-        &current_workspace,
-        &restoring,
-        &working_directory,
-    )
-    .await?;
+    let finalized = if failed_start_working_directory.is_some() {
+        finalize_confirmed_failed_start_auto_merge_restore(
+            state,
+            &current_workspace,
+            &restoring,
+            &working_directory,
+        )
+        .await?
+    } else {
+        finalize_confirmed_auto_merge_restore(
+            state,
+            &current_workspace,
+            &restoring,
+            &working_directory,
+        )
+        .await?
+    };
+    let _ = finalized;
     Ok(())
 }
 
@@ -1150,21 +1250,57 @@ async fn finalize_confirmed_auto_merge_restore(
     restoring: &AgentWorkspaceReviewAutoMergeGuard,
     working_directory: &std::path::Path,
 ) -> AppResult<bool> {
-    let authority_is_current =
-        match restoration_authority_is_current(state, workspace, restoring).await {
-            Ok(is_current) => is_current,
-            Err(error) => {
-                re_pause_auto_merge_after_restore_finalization_error(
-                    state,
-                    workspace,
-                    restoring,
-                    working_directory,
-                    &error.to_string(),
-                )
-                .await?;
-                return Err(error);
-            }
-        };
+    finalize_confirmed_auto_merge_restore_with_authority(
+        state,
+        workspace,
+        restoring,
+        working_directory,
+        false,
+    )
+    .await
+}
+
+async fn finalize_confirmed_failed_start_auto_merge_restore(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    restoring: &AgentWorkspaceReviewAutoMergeGuard,
+    working_directory: &std::path::Path,
+) -> AppResult<bool> {
+    finalize_confirmed_auto_merge_restore_with_authority(
+        state,
+        workspace,
+        restoring,
+        working_directory,
+        true,
+    )
+    .await
+}
+
+async fn finalize_confirmed_auto_merge_restore_with_authority(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    restoring: &AgentWorkspaceReviewAutoMergeGuard,
+    working_directory: &std::path::Path,
+    failed_start_authority: bool,
+) -> AppResult<bool> {
+    let authority_is_current = match if failed_start_authority {
+        failed_start_restoration_authority_is_current(state, workspace, restoring).await
+    } else {
+        restoration_authority_is_current(state, workspace, restoring).await
+    } {
+        Ok(is_current) => is_current,
+        Err(error) => {
+            re_pause_auto_merge_after_restore_finalization_error(
+                state,
+                workspace,
+                restoring,
+                working_directory,
+                &error.to_string(),
+            )
+            .await?;
+            return Err(error);
+        }
+    };
     if !authority_is_current {
         re_pause_auto_merge_after_lost_restore_authority(
             state,
@@ -1213,6 +1349,27 @@ async fn finalize_confirmed_auto_merge_restore(
     )
     .await;
     Ok(true)
+}
+
+async fn failed_start_restoration_authority_is_current(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    restoring: &AgentWorkspaceReviewAutoMergeGuard,
+) -> AppResult<bool> {
+    let Some(current_workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if !current_workspace.pr_auto_merge_desired
+        || guarded_pr_is_terminal(&current_workspace, restoring.pr_number)
+    {
+        return Ok(false);
+    }
+    let monitor = load_or_create_monitor(state, &current_workspace).await?;
+    Ok(monitor.auto_merge_guard.as_ref() == Some(restoring))
 }
 
 async fn re_pause_auto_merge_after_restore_finalization_error(

@@ -1381,7 +1381,11 @@ fn workspace_review_action_error(error: AppError) -> JsonError {
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    json_error(status, error.to_string(), None)
+    let message = match error {
+        AppError::Conflict(message) => message,
+        error => error.to_string(),
+    };
+    json_error(status, message, None)
 }
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-start-preview

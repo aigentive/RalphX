@@ -63,6 +63,17 @@ function fixerDescription(context: AgentWorkspaceReviewContext): string {
     : "The Repair agent will address the current blocking findings.";
 }
 
+function blockedWorkspaceReviewCopy(error: unknown): string | null {
+  return error instanceof AgentWorkspaceHttpError &&
+    error.status === 409 &&
+    error.detail
+    ? error.detail
+    : null;
+}
+
+const GENERIC_PREPARATION_ERROR =
+  "Could not prepare this action. Cancel and try again.";
+
 export function useWorkspaceReviewActions({
   conversationId,
   projectId,
@@ -98,6 +109,10 @@ export function useWorkspaceReviewActions({
           preview = await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
           return reviewStartDescription(preview);
         },
+        recoverFromPrepareError: (error) => {
+          const description = blockedWorkspaceReviewCopy(error);
+          return description ? { description, confirmDisabled: true } : null;
+        },
         onConfirm: async (runtimeOverride) => {
           if (!preview) {
             throw new Error("Workspace Review preparation did not finish");
@@ -112,12 +127,22 @@ export function useWorkspaceReviewActions({
           if (!isWorkspaceReviewStartConflict(error)) {
             return null;
           }
-          const refreshedPreview =
-            await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
-          preview = refreshedPreview;
-          return {
-            description: `The review target changed. ${reviewStartDescription(refreshedPreview)} Confirm the updated details to start the review.`,
-          };
+          try {
+            const refreshedPreview =
+              await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
+            preview = refreshedPreview;
+            return {
+              description: `The review target changed. ${reviewStartDescription(refreshedPreview)} Confirm the updated details to start the review.`,
+              confirmDisabled: false,
+            };
+          } catch (refreshError) {
+            preview = null;
+            return {
+              description:
+                blockedWorkspaceReviewCopy(refreshError) ?? GENERIC_PREPARATION_ERROR,
+              confirmDisabled: true,
+            };
+          }
         },
       });
     },
