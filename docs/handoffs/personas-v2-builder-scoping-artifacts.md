@@ -114,7 +114,7 @@ Immutable forward chains; owner holds the tip pointer. Verified caveats: `materi
 
 ### D1 — Feature flags & rollout posture
 
-- `agent_personas` (existing) gates persona behavior; `composer_folder_references` gates D6; `standalone_conversations` gates D3.
+- `agent_personas` (existing) gates persona behavior; folder references are always available; `standalone_conversations` gates D3.
 - The old Settings builder path stays functional until the Phase 7 cutover. **One acknowledged exception:** Phase 0 enforcement changes legacy *refine* builds immediately — they currently read the whole project via the implicit-CWD hole; post-Phase-0 they are deny-all on fs tools (bound-draft-only builds have no ingest store). This is the intended hardening of a security hole, called out in Phase 0's exit criterion and test fixtures. The old extractor prompt leads with `fs_*` calls and would open every roots-empty refine build on denials — the prompt touch-up is therefore a mandatory Phase 0 task (0.5), not contingent; interview/draft tools are unaffected.
 
 ### D2 — Persona project scoping
@@ -559,7 +559,7 @@ Independently landable slices. Every phase: TDD, zero new warnings, dual clippy 
 | 2.3 | Tests: happy path; CAS conflict; seeded-draft edit + `SOURCE_CHANGED_SINCE_SEED`; events |
 | Exit | Any persona editable. (Accepted: no history until Phase 6) |
 
-### Phase 3 — Composer Add Folder (D6)  `flag: composer_folder_references`
+### Phase 3 — Composer Add Folder (D6)  `always on`
 | Task | Detail |
 |---|---|
 | 3.1 | M2 + repo + 3 commands + validation chain (§8.1) |

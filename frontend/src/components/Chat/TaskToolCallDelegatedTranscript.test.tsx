@@ -578,6 +578,75 @@ describe("TaskToolCallDelegatedTranscript", () => {
     expect(screen.queryByText("Recovered answer")).not.toBeInTheDocument();
   });
 
+  it("coalesces nested provider and lifecycle aliases for one delegation job", async () => {
+    vi.spyOn(chatApi, "getConversationActiveState").mockResolvedValue({
+      is_active: true,
+      runId: "run-child-aliases",
+      tool_calls: [],
+      streaming_tasks: [],
+      partial_text: "",
+    });
+    vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
+      conversation: {
+        id: "child-conv-aliases",
+        contextType: "project",
+        contextId: "project-1",
+        claudeSessionId: null,
+        providerSessionId: "thread-aliases",
+        providerHarness: "codex",
+        upstreamProvider: "openai",
+        providerProfile: "openai",
+        title: "Nested delegation aliases",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-04-12T10:00:00Z",
+        updatedAt: "2026-04-12T10:00:00Z",
+      },
+      messages: [],
+      limit: 40,
+      offset: 0,
+      totalMessageCount: 0,
+      hasOlder: false,
+    });
+
+    renderWithQueryClient(
+      <TaskToolCallDelegatedTranscript
+        conversationId="child-conv-aliases"
+        delegatedAgentRunId="run-child-aliases"
+        fallbackText={undefined}
+      />,
+    );
+    expect(await screen.findByText("Waiting for delegated output...")).toBeInTheDocument();
+
+    act(() => {
+      emitEvent("agent:tool_call", {
+        conversation_id: "child-conv-aliases",
+        run_id: "run-child-aliases",
+        tool_name: "delegate_start",
+        tool_id: "provider-nested",
+        arguments: {
+          title: "Inspect nested reconciliation",
+          prompt: "Inspect nested reconciliation",
+        },
+      });
+      emitEvent("agent:task_started", {
+        conversation_id: "child-conv-aliases",
+        run_id: "run-child-aliases",
+        tool_use_id: "delegate-job:nested-job",
+        description: "ralphx-general-explorer",
+        subagent_type: "delegated",
+        delegated_job_id: "nested-job",
+        status: "running",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("task-tool-call-card")).toHaveLength(1);
+    });
+    expect(screen.getAllByText("Inspect nested reconciliation")).toHaveLength(2);
+    expect(screen.queryByText("ralphx-general-explorer")).not.toBeInTheDocument();
+  });
+
   it("shows fallback text after an empty delegated conversation settles", async () => {
     vi.spyOn(chatApi, "getConversationActiveState").mockResolvedValue({
       is_active: false,

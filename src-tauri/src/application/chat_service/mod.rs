@@ -4033,7 +4033,6 @@ impl<R: Runtime> AppChatService<R> {
             persona_ingest_app_data_dir.as_deref(),
             self.folder_reference_app_data_dir.as_deref(),
             self.conversation_folder_reference_repo.as_ref().map(Arc::clone),
-            crate::infrastructure::agents::composer_folder_references_enabled(),
         )
         .await
         .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
@@ -4636,7 +4635,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     &conversation_id,
                     self.conversation_folder_reference_repo.as_ref().map(Arc::clone),
                     self.folder_reference_app_data_dir.as_deref(),
-                    crate::infrastructure::agents::composer_folder_references_enabled(),
                 )
                 .await;
         }

@@ -221,8 +221,8 @@ fn to_server_response_with_scope(
 fn to_server_response_with_repair(
     effective: EffectiveMcpServerPolicy,
     scoped: Option<&McpPolicyOverride>,
-    legacy_registration: Option<
-        crate::infrastructure::agents::claude::mcp_catalog::LegacyClaudeRegistration,
+    reserved_registration: Option<
+        crate::infrastructure::agents::claude::mcp_catalog::ReservedClaudeUserRegistration,
     >,
 ) -> McpServerResponse {
     let known_tools = effective
@@ -245,8 +245,8 @@ fn to_server_response_with_repair(
     let is_reserved_collision = effective.native.key.is_ralphx_owned()
         && effective.native.native_scope.as_deref() != Some("ralphx");
     let (conflict_kind, repair_status) = if is_reserved_collision {
-        if legacy_registration
-            == Some(crate::infrastructure::agents::claude::mcp_catalog::LegacyClaudeRegistration::ExactHistorical)
+        if reserved_registration
+            == Some(crate::infrastructure::agents::claude::mcp_catalog::ReservedClaudeUserRegistration::ReservedUserEntry)
             && effective.native.key.provider == AgentHarnessKind::Claude
             && effective.native.key.server_id == "ralphx"
             && effective.native.native_scope.as_deref() == Some("user")
@@ -334,15 +334,14 @@ async fn build_catalog(
     let mut servers = Vec::new();
     let mut provider_diagnostics = BTreeMap::new();
     for provider in providers {
-        let legacy_registration = if provider == AgentHarnessKind::Claude {
+        let reserved_registration = if provider == AgentHarnessKind::Claude {
             let provider_root = service
                 .provider_native_config_root(provider)
                 .await
                 .map_err(|error| error.to_string())?;
             Some(
-                crate::infrastructure::agents::claude::mcp_catalog::classify_legacy_user_registration(
+                crate::infrastructure::agents::claude::mcp_catalog::classify_reserved_user_registration(
                     &provider_root,
-                    state.app_paths.app_data_dir(),
                 )?,
             )
         } else {
@@ -425,7 +424,7 @@ async fn build_catalog(
             servers.push(to_server_response_with_repair(
                 effective,
                 scoped,
-                legacy_registration,
+                reserved_registration,
             ));
         }
     }
@@ -591,7 +590,7 @@ pub async fn retry_legacy_mcp_registration_repair(
     ensure_mutation_ready(&state, provider).await?;
     let changed = state
         .mcp_policy_service()
-        .retry_legacy_claude_registration_repair()
+        .retry_reserved_claude_registration_repair()
         .await
         .map_err(|error| error.to_string())?;
     Ok(McpMutationResponse { changed })

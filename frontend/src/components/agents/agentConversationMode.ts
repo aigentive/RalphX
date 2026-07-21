@@ -4,6 +4,7 @@ import type {
 } from "@/api/chat";
 
 import type { AgentConversation } from "./agentConversations";
+import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
 
 export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
@@ -11,14 +12,17 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   description: string;
   disabled?: boolean;
   disabledReason?: string;
-}> = [
-  { id: "chat", label: "Ask", description: "Ask read-only questions about the project." },
-  { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
-  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
-  { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
-  { id: "persona_builder", label: "Persona", description: "Build or refine a reusable agent persona.", disabled: true, disabledReason: "Persona mode is fixed when the conversation starts." },
-  { id: "review_pr", label: "Review PR", description: "Review a remote GitHub PR through its local checkout and propose a user-approved GitHub review." },
-];
+}> = AGENT_START_MODE_OPTIONS.map(({ id, label, description }) => ({
+  id,
+  label,
+  description,
+  ...(id === "persona_builder"
+    ? {
+        disabled: true,
+        disabledReason: "Persona mode is fixed when the conversation starts.",
+      }
+    : {}),
+}));
 
 const TASKS_MODE_OPTION = {
   id: "tasks" as const,
@@ -32,6 +36,12 @@ const AUTOPILOT_MODE_OPTION = {
   description: "Plan, create tasks, and start execution with minimal supervision.",
 };
 
+const IDEATION_MODE_OPTION = {
+  id: "ideation" as const,
+  label: "Ideation",
+  description: "Continue the linked planning conversation.",
+};
+
 export function buildAgentConversationModeOptions({
   currentMode,
   taskPipelineAvailable,
@@ -43,10 +53,13 @@ export function buildAgentConversationModeOptions({
 }) {
   const options = [...AGENT_CONVERSATION_MODE_OPTIONS];
   if (currentMode === "tasks" || taskPipelineAvailable) {
-    options.splice(3, 0, TASKS_MODE_OPTION);
+    options.splice(4, 0, TASKS_MODE_OPTION);
   }
   if (autopilotEnabled || currentMode === "autopilot") {
-    options.splice(4, 0, {
+    const personaIndex = options.findIndex(
+      (option) => option.id === "persona_builder",
+    );
+    options.splice(personaIndex, 0, {
       ...AUTOPILOT_MODE_OPTION,
       ...(autopilotEnabled
         ? {}
@@ -56,7 +69,16 @@ export function buildAgentConversationModeOptions({
           }),
     });
   }
-  return options;
+  if (currentMode === "ideation") {
+    options.push(IDEATION_MODE_OPTION);
+  }
+
+  const currentIndex = options.findIndex((option) => option.id === currentMode);
+  if (currentIndex <= 0) {
+    return options;
+  }
+  const [currentOption] = options.splice(currentIndex, 1);
+  return currentOption ? [currentOption, ...options] : options;
 }
 
 export function resolveConversationAgentMode(

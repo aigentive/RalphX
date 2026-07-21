@@ -51,6 +51,7 @@ describe("agentSessionStore", () => {
 
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
+    expect(useAgentSessionStore.getInitialState().showEmptyProjectGroups).toBe(true);
     expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
     expect(useAgentSessionStore.getInitialState().sidebarPublicationStateFilters).toEqual([
       "active",
@@ -108,6 +109,43 @@ describe("agentSessionStore", () => {
       ),
     ).toMatchObject({
       showAllProjects: false,
+    });
+  });
+
+  it("migrates existing sidebar preferences to show empty project groups", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          showAllProjects: false,
+          projectSort: "za",
+          sidebarGroupBy: "project",
+          sidebarProjectFilterIds: ["project-1", "project-2"],
+          sidebarPublicationStateFilters: ["active", "draft"],
+        },
+        9,
+      ),
+    ).toMatchObject({
+      showAllProjects: false,
+      showEmptyProjectGroups: true,
+      projectSort: "za",
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: ["project-1", "project-2"],
+      sidebarPublicationStateFilters: ["active", "draft"],
+    });
+  });
+
+  it("preserves a current persisted empty-project-group preference", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          showEmptyProjectGroups: false,
+          sidebarProjectFilterIds: ["project-2"],
+        },
+        10,
+      ),
+    ).toEqual({
+      showEmptyProjectGroups: false,
+      sidebarProjectFilterIds: ["project-2"],
     });
   });
 
@@ -542,13 +580,22 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().expandedProjectIds.p1).toBe(false);
     });
 
-    it("setShowAllProjects + setProjectSort persist their values", () => {
-      const { setShowAllProjects, setProjectSort } = useAgentSessionStore.getState();
+    it("persists project scope, empty-group visibility, and sort preferences", () => {
+      const {
+        setProjectSort,
+        setShowAllProjects,
+        setShowEmptyProjectGroups,
+      } = useAgentSessionStore.getState();
       setShowAllProjects(false);
+      setShowEmptyProjectGroups(false);
       setProjectSort("za");
       const s = useAgentSessionStore.getState();
       expect(s.showAllProjects).toBe(false);
+      expect(s.showEmptyProjectGroups).toBe(false);
       expect(s.projectSort).toBe("za");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"showEmptyProjectGroups":false',
+      );
     });
 
     it("persists sidebar filters and pinned conversation ids", () => {

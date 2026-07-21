@@ -646,6 +646,7 @@ vi.mock("./AgentComposerSurface", () => ({
       disabled?: boolean;
       onOpen?: () => void;
       onValueChange: (value: string) => void;
+      secondaryOptionIds?: string[];
       options: Array<{
         id: string;
         label: string;
@@ -695,9 +696,13 @@ vi.mock("./AgentComposerSurface", () => ({
             disabled={mode.disabled}
             onClick={() => mode.onOpen?.()}
           >
-            {mode.value}
+            {mode.options.find((option) => option.id === mode.value)?.label ?? "—"}
           </button>
-          {mode.options.map((option) => {
+          {mode.options.filter(
+            (option) =>
+              !mode.secondaryOptionIds?.includes(option.id) ||
+              option.id === mode.value,
+          ).map((option) => {
             const disabled = mode.disabled || option.disabled;
             return (
               <button
@@ -718,6 +723,9 @@ vi.mock("./AgentComposerSurface", () => ({
               </button>
             );
           })}
+          {mode.secondaryOptionIds?.length ? (
+            <button type="button">Show more modes</button>
+          ) : null}
         </div>
       )}
       {capability && (
@@ -1248,6 +1256,57 @@ describe("AgentsActiveConversationPanel", () => {
     });
     finalizeAutomationMock.mockResolvedValue({ id: "automation-1", status: "active" });
     triggerAutomationRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
+  });
+
+  it("keeps a disabled-feature historical Tasks mode labeled and first", () => {
+    tasksEnabledRef.current = false;
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "tasks" },
+      activeConversationMode: "tasks",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "tasks",
+        taskPipelineSessionId: "planning-session-1",
+        taskPipelineAvailable: true,
+      },
+    });
+
+    expect(screen.getByTestId("agent-composer-mode-chip")).toHaveTextContent(
+      "Tasks",
+    );
+    expect(screen.getAllByTestId(/^agent-mode-option-/)[0]).toHaveTextContent(
+      "Tasks",
+    );
+  });
+
+  it("keeps a legacy Ideation mode labeled and first while current", () => {
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "ideation" },
+      activeConversationMode: "ideation",
+      activeWorkspace: { ...workspace(), mode: "ideation" },
+    });
+
+    expect(screen.getByTestId("agent-composer-mode-chip")).toHaveTextContent(
+      "Ideation",
+    );
+    expect(screen.getAllByTestId(/^agent-mode-option-/)[0]).toHaveTextContent(
+      "Ideation",
+    );
+  });
+
+  it("uses the new-conversation secondary mode disclosure", () => {
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+    });
+
+    expect(screen.queryByTestId("agent-mode-option-automation"))
+      .not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show more modes" }),
+    ).toBeInTheDocument();
   });
 
   it("reloads a durable Review PR proposal after navigating away and evicting its query", async () => {

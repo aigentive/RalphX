@@ -32,7 +32,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-const featureFlags = vi.hoisted(() => ({ composerFolderReferences: true }));
+const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: () => ({ data: featureFlags }),
 }));
@@ -277,7 +277,7 @@ describe("AgentComposerSurface", () => {
     ).not.toBeInTheDocument();
     normal.unmount();
 
-    // Persona mode needs the Personas flag in addition to folder references.
+    // Persona mode remains tied to the separate Personas capability.
     renderComposer({
       conversationId: "conversation-2",
       enableAttachments: true,

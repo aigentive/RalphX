@@ -195,6 +195,7 @@ interface AgentSessionState {
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
+  showEmptyProjectGroups: boolean;
   projectSort: AgentProjectSort;
   sidebarGroupBy: AgentSidebarGroupBy;
   sidebarProjectFilterIds: string[];
@@ -233,6 +234,7 @@ interface AgentSessionActions {
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
+  setShowEmptyProjectGroups: (showEmptyProjectGroups: boolean) => void;
   setProjectSort: (projectSort: AgentProjectSort) => void;
   setSidebarGroupBy: (groupBy: AgentSidebarGroupBy) => void;
   setSidebarProjectFilterIds: (projectIds: string[]) => void;
@@ -305,6 +307,7 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   hiddenTabs: [],
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
+const DEFAULT_SHOW_EMPTY_PROJECT_GROUPS = true;
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
   "active",
   "draft",
@@ -539,6 +542,10 @@ export function migrateAgentSessionStore(
     );
   }
 
+  if (version < 10) {
+    nextState.showEmptyProjectGroups = DEFAULT_SHOW_EMPTY_PROJECT_GROUPS;
+  }
+
   return nextState;
 }
 
@@ -629,6 +636,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
+      showEmptyProjectGroups: DEFAULT_SHOW_EMPTY_PROJECT_GROUPS,
       projectSort: "latest",
       sidebarGroupBy: "project",
       sidebarProjectFilterIds: [],
@@ -724,6 +732,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setShowAllProjects: (showAllProjects) =>
         set((state) => {
           state.showAllProjects = showAllProjects;
+        }),
+
+      setShowEmptyProjectGroups: (showEmptyProjectGroups) =>
+        set((state) => {
+          state.showEmptyProjectGroups = showEmptyProjectGroups;
         }),
 
       setProjectSort: (projectSort) =>
@@ -981,6 +994,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         lastSelectedConversationByProjectId: state.lastSelectedConversationByProjectId,
         expandedProjectIds: state.expandedProjectIds,
         showAllProjects: state.showAllProjects,
+        showEmptyProjectGroups: state.showEmptyProjectGroups,
         projectSort: state.projectSort,
         sidebarGroupBy: state.sidebarGroupBy,
         sidebarProjectFilterIds: state.sidebarProjectFilterIds,
