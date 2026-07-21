@@ -6706,7 +6706,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toHaveTextContent(
+      "This approved plan is guiding the current workspace agent.",
+    );
     expect(
       screen.queryByTestId("restart-implementation-button"),
     ).not.toBeInTheDocument();
@@ -7438,8 +7440,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(banner).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
-    expect(within(banner).queryByText(/Tasks is off/i)).not.toBeInTheDocument();
-    expect(within(banner).getByText(/Choose the next step/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/Tasks is off/i)).toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
@@ -8310,7 +8311,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -8385,7 +8386,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();

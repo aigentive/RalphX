@@ -2926,6 +2926,11 @@ function AgentPlanPanel({
             agentWorkspaceKeys.workspace(workspace.conversationId),
             result.workspace,
           );
+          onConversationModeSwitched?.(
+            workspace.conversationId,
+            "edit",
+            result.workspace,
+          );
         }
         void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
         modeTransitionCompleted = true;
@@ -2969,7 +2974,14 @@ function AgentPlanPanel({
       setIsImplementingPlanDirectly(false);
       }
     });
-  }, [canImplementDirectly, confirmImplementDirectly, queryClient, session, workspace]);
+  }, [
+    canImplementDirectly,
+    confirmImplementDirectly,
+    onConversationModeSwitched,
+    queryClient,
+    session,
+    workspace,
+  ]);
 
   const handleStartNewConversationWithPlan = useCallback(
     (reference: PlanDisplayConversationReference) => {
