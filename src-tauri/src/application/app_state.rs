@@ -422,7 +422,6 @@ impl AppState {
             self.app_paths.global_mcp_policy_path(),
         )
         .with_provider_settings_repo(Arc::clone(&self.agent_provider_settings_repo))
-        .with_legacy_claude_mcp_cleanup(self.app_paths.app_data_dir().to_path_buf())
     }
 
     pub(crate) async fn resolve_effective_manual_role_default(
@@ -541,15 +540,13 @@ impl AppState {
         project_repo: Arc<dyn ProjectRepository>,
         provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
         global_mcp_policy_path: PathBuf,
-        app_data_dir: PathBuf,
     ) -> AgentClientBundle {
         let base = AgentClientBundle::standard_production_runtime_clients();
         let policy_service = crate::application::mcp_policy_service::McpPolicyService::new(
             mcp_policy_repo,
             global_mcp_policy_path,
         )
-        .with_provider_settings_repo(provider_settings_repo)
-        .with_legacy_claude_mcp_cleanup(app_data_dir);
+        .with_provider_settings_repo(provider_settings_repo);
         let wrap = |harness, client| {
             Arc::new(
                 crate::application::mcp_policy_agent_client::McpPolicyAgentClient::new(
@@ -1314,7 +1311,6 @@ impl AppState {
                 Arc::clone(&project_repo),
                 Arc::clone(&agent_provider_settings_repo),
                 app_paths.global_mcp_policy_path(),
-                app_paths.app_data_dir().to_path_buf(),
             ),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
             execution_settings_repo: Arc::new(SqliteExecutionSettingsRepository::from_shared(

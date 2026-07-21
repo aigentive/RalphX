@@ -1,47 +1,39 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
 use super::mcp_registration_repair::{
-    retire_exact_legacy_user_registration_for_test, LegacyMcpRepairFailureCode,
+    remove_reserved_user_registration_for_test,
+    remove_reserved_user_registration_with_env_for_test, ReservedMcpRepairFailureCode,
 };
 
 #[test]
 fn repair_failure_codes_have_stable_protocol_values() {
     assert_eq!(
-        LegacyMcpRepairFailureCode::ConfigRead.to_string(),
+        ReservedMcpRepairFailureCode::ConfigRead.to_string(),
         "config_read_failed"
     );
     assert_eq!(
-        LegacyMcpRepairFailureCode::NoExactHistoricalMatch.to_string(),
-        "no_exact_historical_match"
-    );
-    assert_eq!(
-        LegacyMcpRepairFailureCode::CommandFailed.to_string(),
+        ReservedMcpRepairFailureCode::CommandFailed.to_string(),
         "command_failed"
     );
-    assert_eq!(LegacyMcpRepairFailureCode::Timeout.to_string(), "timeout");
+    assert_eq!(ReservedMcpRepairFailureCode::Timeout.to_string(), "timeout");
     assert_eq!(
-        LegacyMcpRepairFailureCode::PostconditionFailed.to_string(),
+        ReservedMcpRepairFailureCode::PostconditionFailed.to_string(),
         "postcondition_failed"
     );
 }
 
-fn write_exact_registration(home: &Path, app_data: &Path) {
-    let script = app_data.join("generated/release/claude-plugin/ralphx-mcp-server/build/index.js");
-    fs::create_dir_all(script.parent().unwrap()).unwrap();
-    fs::write(&script, "fixture").unwrap();
+fn write_reserved_registration(home: &Path) {
     fs::write(
         home.join(".claude.json"),
         serde_json::json!({
             "mcpServers": {"ralphx": {
                 "type": "stdio",
                 "command": "node",
-                "args": [
-                    script,
-                    "--trace-dir",
-                    app_data.join("logs/mcp-proxy")
-                ]
+                    "args": ["missing-or-user-shaped.js"],
+                    "env": {"TOKEN": "definition-is-not-inspected"}
             }}
         })
         .to_string(),
@@ -61,21 +53,16 @@ fn write_executable(path: &Path, body: &str) {
 #[tokio::test]
 async fn successful_cli_without_absence_fails_the_postcondition() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
-    write_exact_registration(home.path(), app_data.path());
+    write_reserved_registration(home.path());
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 0\n");
 
-    let error = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap_err();
 
-    assert_eq!(error, LegacyMcpRepairFailureCode::PostconditionFailed);
+    assert_eq!(error, ReservedMcpRepairFailureCode::PostconditionFailed);
     assert!(home.path().join(".claude.json").exists());
 }
 
@@ -83,18 +70,13 @@ async fn successful_cli_without_absence_fails_the_postcondition() {
 #[tokio::test]
 async fn missing_legacy_registration_is_a_safe_noop_without_invoking_cli() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
-    let changed = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    )
-    .await
-    .unwrap();
+    let changed =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap();
 
     assert!(!changed);
 }
@@ -103,28 +85,22 @@ async fn missing_legacy_registration_is_a_safe_noop_without_invoking_cli() {
 #[tokio::test]
 async fn unreadable_legacy_config_fails_before_invoking_cli() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     fs::write(home.path().join(".claude.json"), "not json").unwrap();
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
-    let error = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap_err();
 
-    assert_eq!(error, LegacyMcpRepairFailureCode::ConfigRead);
+    assert_eq!(error, ReservedMcpRepairFailureCode::ConfigRead);
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn ambiguous_and_failed_cleanup_are_distinguished_without_mutating_config() {
+async fn arbitrary_reserved_definition_is_removed_and_nonzero_without_removal_fails() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     fs::write(
         home.path().join(".claude.json"),
         r#"{"mcpServers":{"ralphx":{"command":"user-owned"}}}"#,
@@ -133,51 +109,97 @@ async fn ambiguous_and_failed_cleanup_are_distinguished_without_mutating_config(
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
-    let ambiguous = retire_exact_legacy_user_registration_for_test(
+    let command_failed =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap_err();
+    assert_eq!(command_failed, ReservedMcpRepairFailureCode::CommandFailed);
+    assert!(home.path().join(".claude.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nonzero_exit_after_removal_is_settled_from_provider_state() {
+    let home = tempfile::tempdir().unwrap();
+    write_reserved_registration(home.path());
+    let cli = home.path().join("fake-claude");
+    write_executable(
         &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        ambiguous,
-        LegacyMcpRepairFailureCode::NoExactHistoricalMatch
+        "#!/bin/sh\nprintf '{}' > \"$HOME/.claude.json\"\nexit 7\n",
     );
 
-    write_exact_registration(home.path(), app_data.path());
-    let command_failed = retire_exact_legacy_user_registration_for_test(
+    let changed =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap();
+
+    assert!(changed);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_pins_home_after_provider_environment_is_applied() {
+    let home = tempfile::tempdir().unwrap();
+    let conflicting_home = tempfile::tempdir().unwrap();
+    write_reserved_registration(home.path());
+    write_reserved_registration(conflicting_home.path());
+    let cli = home.path().join("fake-claude");
+    write_executable(&cli, "#!/bin/sh\nprintf '{}' > \"$HOME/.claude.json\"\n");
+    let provider_env = HashMap::from([(
+        "HOME".to_string(),
+        conflicting_home.path().to_string_lossy().into_owned(),
+    )]);
+
+    let changed = remove_reserved_user_registration_with_env_for_test(
         &cli,
         home.path(),
-        app_data.path(),
+        &provider_env,
         Duration::from_secs(1),
     )
     .await
-    .unwrap_err();
-    assert_eq!(command_failed, LegacyMcpRepairFailureCode::CommandFailed);
-    assert!(home.path().join(".claude.json").exists());
+    .unwrap();
+
+    assert!(changed);
+    assert!(
+        fs::read_to_string(conflicting_home.path().join(".claude.json"))
+            .unwrap()
+            .contains("ralphx")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_after_removal_is_settled_from_provider_state() {
+    let home = tempfile::tempdir().unwrap();
+    write_reserved_registration(home.path());
+    let cli = home.path().join("fake-claude");
+    write_executable(
+        &cli,
+        "#!/bin/sh\nprintf '{}' > \"$HOME/.claude.json\"\nsleep 3\n",
+    );
+
+    let changed =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+            .await
+            .unwrap();
+
+    assert!(changed);
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn timeout_kills_cleanup_and_preserves_the_registration() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
-    write_exact_registration(home.path(), app_data.path());
+    write_reserved_registration(home.path());
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nsleep 2\n");
 
-    let error = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_millis(20),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_millis(20))
+            .await
+            .unwrap_err();
 
-    assert_eq!(error, LegacyMcpRepairFailureCode::Timeout);
+    assert_eq!(error, ReservedMcpRepairFailureCode::Timeout);
     assert!(home.path().join(".claude.json").exists());
 }
 
@@ -185,8 +207,7 @@ async fn timeout_kills_cleanup_and_preserves_the_registration() {
 #[tokio::test]
 async fn concurrent_callers_run_the_constant_removal_once() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
-    write_exact_registration(home.path(), app_data.path());
+    write_reserved_registration(home.path());
     let config = home.path().join(".claude.json");
     let marker = home.path().join("cleanup-count");
     let cli = home.path().join("fake-claude");
@@ -199,18 +220,10 @@ async fn concurrent_callers_run_the_constant_removal_once() {
         ),
     );
 
-    let first = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    );
-    let second = retire_exact_legacy_user_registration_for_test(
-        &cli,
-        home.path(),
-        app_data.path(),
-        Duration::from_secs(1),
-    );
+    let first =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1));
+    let second =
+        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1));
     let (first, second) = tokio::join!(first, second);
 
     assert!(first.is_ok());
