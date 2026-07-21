@@ -424,7 +424,6 @@ pub async fn attempt_session_recovery<R: Runtime>(
                 Some(app_state.app_paths.app_data_dir()),
                 Some(app_state.app_paths.app_data_dir()),
                 Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
-                crate::infrastructure::agents::composer_folder_references_enabled(),
             )
             .await?
         } else {
