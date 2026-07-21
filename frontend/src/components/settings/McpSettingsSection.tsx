@@ -166,11 +166,8 @@ function ServerPolicyCard({
             disabled={disabled}
             onClick={() => void onRepair()}
           >
-            Retry safe cleanup
+            Retry cleanup
           </Button>
-          <code className="text-xs text-[var(--text-muted)]">
-            claude mcp remove ralphx -s user
-          </code>
         </div>
       )}
       {server.knownTools.length > 0 && (

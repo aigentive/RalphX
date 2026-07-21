@@ -10,10 +10,9 @@ use crate::domain::agents::{
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LegacyClaudeRegistration {
+pub(crate) enum ReservedClaudeUserRegistration {
     NotPresent,
-    ExactHistorical,
-    AmbiguousCollision,
+    ReservedUserEntry,
 }
 
 pub(crate) fn discover_native_mcp_servers(
@@ -73,80 +72,24 @@ pub(crate) fn discover_native_mcp_servers(
     Ok(servers.into_values().collect())
 }
 
-pub(crate) fn classify_legacy_user_registration(
+pub(crate) fn classify_reserved_user_registration(
     home_dir: &Path,
-    app_data_dir: &Path,
-) -> Result<LegacyClaudeRegistration, String> {
+) -> Result<ReservedClaudeUserRegistration, String> {
     let home_dir = validate_absolute_non_root_path(home_dir, "Claude config root")
-        .map_err(|error| error.to_string())?;
-    let app_data_dir = validate_absolute_non_root_path(app_data_dir, "RalphX app data root")
         .map_err(|error| error.to_string())?;
     let user_state_path = home_dir.join(".claude.json");
     let Some(user_state) = read_fixed_json(&home_dir, &user_state_path, Path::new(".claude.json"))?
     else {
-        return Ok(LegacyClaudeRegistration::NotPresent);
+        return Ok(ReservedClaudeUserRegistration::NotPresent);
     };
-    let Some(registration) = user_state
+    let reserved_entry_present = user_state
         .get("mcpServers")
         .and_then(Value::as_object)
-        .and_then(|servers| servers.get("ralphx"))
-    else {
-        return Ok(LegacyClaudeRegistration::NotPresent);
-    };
-
-    let exact = matches_historical_registration(registration, &app_data_dir);
-    Ok(if exact {
-        LegacyClaudeRegistration::ExactHistorical
-    } else {
-        LegacyClaudeRegistration::AmbiguousCollision
-    })
-}
-
-fn matches_historical_registration(registration: &Value, app_data_dir: &Path) -> bool {
-    let resolved_node = super::node_utils::find_node_binary();
-    let accepted_node_commands = [Path::new("node"), resolved_node.as_path()];
-    let template_script =
-        app_data_dir.join("generated/claude-plugin/ralphx-mcp-server/build/index.js");
-    let trace_enabled_scripts = ["release", "debug"].map(|profile| {
-        app_data_dir
-            .join("generated")
-            .join(profile)
-            .join("claude-plugin/ralphx-mcp-server/build/index.js")
-    });
-
-    accepted_node_commands.iter().any(|node_command| {
-        historical_script_is_contained(app_data_dir, &template_script)
-            && registration
-                == &serde_json::json!({
-                    "type": "stdio",
-                    "command": node_command,
-                    "args": [template_script]
-                })
-    }) || trace_enabled_scripts.into_iter().any(|script_path| {
-        historical_script_is_contained(app_data_dir, &script_path)
-            && accepted_node_commands.iter().any(|node_command| {
-                registration
-                    == &serde_json::json!({
-                        "type": "stdio",
-                        "command": node_command,
-                        "args": [
-                            script_path,
-                            "--trace-dir",
-                            app_data_dir.join("logs/mcp-proxy"),
-                        ]
-                    })
-            })
-    })
-}
-
-fn historical_script_is_contained(app_data_dir: &Path, script_path: &Path) -> bool {
-    let Ok(canonical_root) = app_data_dir.canonicalize() else {
-        return false;
-    };
-    let Ok(canonical_script) = script_path.canonicalize() else {
-        return false;
-    };
-    canonical_script.starts_with(canonical_root) && canonical_script.is_file()
+        .is_some_and(|servers| servers.contains_key("ralphx"));
+    if !reserved_entry_present {
+        return Ok(ReservedClaudeUserRegistration::NotPresent);
+    }
+    Ok(ReservedClaudeUserRegistration::ReservedUserEntry)
 }
 
 fn read_fixed_json(

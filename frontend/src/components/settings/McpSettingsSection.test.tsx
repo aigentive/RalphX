@@ -301,7 +301,7 @@ describe("McpSettingsSection", () => {
     );
   });
 
-  it("deep-links to a reserved conflict and retries only proven legacy cleanup", async () => {
+  it("deep-links to a reserved conflict and retries cleanup without terminal guidance", async () => {
     const user = userEvent.setup();
     testState.modalContext = {
       section: "mcp",
@@ -333,7 +333,8 @@ describe("McpSettingsSection", () => {
 
     expect(await screen.findByText("Reserved ID conflict")).toBeInTheDocument();
     expect(document.querySelector('[data-mcp-server-id="ralphx"]')).toHaveFocus();
-    await user.click(screen.getByRole("button", { name: "Retry safe cleanup" }));
+    expect(screen.queryByText("claude mcp remove ralphx -s user")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
     expect(testState.retryLegacyRepair).toHaveBeenCalledWith({
       provider: "claude",
       serverId: "ralphx",

@@ -3,7 +3,8 @@ use std::fs;
 use crate::domain::agents::NativeMcpState;
 
 use super::mcp_catalog::{
-    classify_legacy_user_registration, discover_native_mcp_servers, LegacyClaudeRegistration,
+    classify_reserved_user_registration, discover_native_mcp_servers,
+    ReservedClaudeUserRegistration,
 };
 
 #[test]
@@ -63,7 +64,7 @@ fn rejects_project_config_symlink_escape() {
 }
 
 #[test]
-fn classifies_v081_trace_enabled_user_registration() {
+fn classifies_trace_enabled_reserved_user_registration() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
     let script = app_data
@@ -88,13 +89,13 @@ fn classifies_v081_trace_enabled_user_registration() {
     .unwrap();
 
     assert_eq!(
-        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-        LegacyClaudeRegistration::ExactHistorical
+        classify_reserved_user_registration(home.path()).unwrap(),
+        ReservedClaudeUserRegistration::ReservedUserEntry
     );
 }
 
 #[test]
-fn classifies_plugin_template_user_registration() {
+fn classifies_reserved_user_registration_with_generated_script_path() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
     let script = app_data
@@ -118,34 +119,33 @@ fn classifies_plugin_template_user_registration() {
     .unwrap();
 
     assert_eq!(
-        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-        LegacyClaudeRegistration::ExactHistorical
+        classify_reserved_user_registration(home.path()).unwrap(),
+        ReservedClaudeUserRegistration::ReservedUserEntry
     );
 }
 
 #[test]
-fn classifies_missing_and_unregistered_user_config_as_not_present() {
+fn classifies_missing_and_near_name_user_config_as_not_present() {
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
 
     assert_eq!(
-        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-        LegacyClaudeRegistration::NotPresent
+        classify_reserved_user_registration(home.path()).unwrap(),
+        ReservedClaudeUserRegistration::NotPresent
     );
 
     fs::write(
         home.path().join(".claude.json"),
-        r#"{"mcpServers":{"github":{"command":"provider-owned"}}}"#,
+        r#"{"mcpServers":{"github":{"command":"provider-owned"},"ralphx_internal":{},"ralph-x":{}}}"#,
     )
     .unwrap();
     assert_eq!(
-        classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-        LegacyClaudeRegistration::NotPresent
+        classify_reserved_user_registration(home.path()).unwrap(),
+        ReservedClaudeUserRegistration::NotPresent
     );
 }
 
 #[test]
-fn rejects_plugin_template_one_field_deviations_and_internal_reserved_registration() {
+fn classifies_any_exact_reserved_user_registration_regardless_of_definition() {
     let home = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
     let script = app_data
@@ -188,14 +188,14 @@ fn rejects_plugin_template_one_field_deviations_and_internal_reserved_registrati
         .unwrap();
 
         assert_eq!(
-            classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-            LegacyClaudeRegistration::AmbiguousCollision
+            classify_reserved_user_registration(home.path()).unwrap(),
+            ReservedClaudeUserRegistration::ReservedUserEntry
         );
     }
 }
 
 #[test]
-fn rejects_historical_shape_when_the_script_symlink_escapes_app_data() {
+fn definition_paths_do_not_gate_reserved_user_registration_ownership() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
@@ -224,8 +224,8 @@ fn rejects_historical_shape_when_the_script_symlink_escapes_app_data() {
         .unwrap();
 
         assert_eq!(
-            classify_legacy_user_registration(home.path(), app_data.path()).unwrap(),
-            LegacyClaudeRegistration::AmbiguousCollision
+            classify_reserved_user_registration(home.path()).unwrap(),
+            ReservedClaudeUserRegistration::ReservedUserEntry
         );
     }
 }
