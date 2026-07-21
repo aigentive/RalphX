@@ -27,7 +27,9 @@ import {
   agentProjectFixture as project,
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
+  renderWithAgentProviders,
 } from "./agentsTestFixtures";
+import { AgentsStartComposer } from "./AgentsStartComposer";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import {
@@ -1274,7 +1276,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("shows actionable MCP recovery, preserves the draft, and opens the exact settings card", async () => {
+  it("shows in-app MCP recovery without terminal guidance and opens the exact settings card", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     startAgentConversationMock.mockRejectedValueOnce(
@@ -1291,7 +1293,7 @@ describe("AgentsView start conversation", () => {
 
     const recovery = await screen.findByTestId("agents-start-mcp-setup-error");
     expect(recovery).toHaveTextContent("MCP setup needs attention");
-    expect(recovery).toHaveTextContent("claude mcp remove ralphx -s user");
+    expect(recovery).not.toHaveTextContent("claude mcp remove");
     expect(screen.getByTestId("agents-start-textarea")).toHaveValue("keep this draft");
     expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
     expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
@@ -1308,7 +1310,7 @@ describe("AgentsView start conversation", () => {
     });
   });
 
-  it("retries recognized legacy Claude MCP cleanup and keeps the draft ready to start", async () => {
+  it("retries Claude MCP cleanup and automatically replays the original start once", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     startAgentConversationMock.mockRejectedValueOnce(
@@ -1342,13 +1344,82 @@ describe("AgentsView start conversation", () => {
         },
       ),
     );
-    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
-      "keep this cleanup draft",
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(2));
+    expect(startAgentConversationMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ content: "keep this cleanup draft" }),
     );
-    expect(
-      await screen.findByText("Claude MCP cleanup completed. Start the agent again."),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Start the agent again/)).not.toBeInTheDocument();
     expect(useAgentSessionStore.getState().startConversationFailure).toBeNull();
+  });
+
+  it("snapshots files and folders before MCP cleanup, gates Send, and replays those references once", async () => {
+    const user = userEvent.setup();
+    const file = new File(["same bytes"], "recovery.txt", { type: "text/plain" });
+    const folder = {
+      id: "folder-recovery",
+      folderPath: "/work/recovery",
+      displayName: "recovery",
+    };
+    useChatStore.getState().setComposerDraftFolders("agents:start", [folder]);
+    let finishCleanup: ((value: { changed: boolean }) => void) | null = null;
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    renderWithAgentProviders(
+      <AgentsStartComposer
+        projects={[project]}
+        defaultProjectId={project.id}
+        defaultRuntime={{ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" }}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{
+          claude: [],
+          codex: [
+            {
+              id: "gpt-5.5",
+              label: "gpt-5.5",
+              menuLabel: "gpt-5.5",
+              defaultEffort: "xhigh",
+              supportedEfforts: ["xhigh"],
+            },
+          ],
+        }}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [file] },
+    });
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "replay with context" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await screen.findByTestId("agents-start-mcp-setup-error");
+
+    vi.mocked(invoke).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishCleanup = resolve;
+        }),
+    );
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+    expect(screen.getByRole("button", { name: "Retrying cleanup…" })).toBeDisabled();
+    expect(screen.getByTestId("agents-start-submit")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    finishCleanup?.({ changed: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    const replay = onSubmit.mock.calls[1]?.[0];
+    expect(replay.files).toHaveLength(1);
+    expect(replay.files[0]).toBe(file);
+    expect(replay.folders).toEqual([{ ...folder }]);
   });
 
   it("keeps the MCP recovery actionable when cleanup retry fails", async () => {
