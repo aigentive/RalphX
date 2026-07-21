@@ -298,6 +298,7 @@ export function AgentsStartComposer({
   const [roleOverrideKey, setRoleOverrideKey] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
   const [isRepairingMcp, setIsRepairingMcp] = useState(false);
+  const isStartBusy = isRepairingMcp || isSubmitting;
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
@@ -1347,6 +1348,14 @@ export function AgentsStartComposer({
       ) {
         return;
       }
+      if (!startConversationFailure || startConversationFailure.kind !== "mcp_setup") {
+        return;
+      }
+      const replayInput: AgentsStartComposerSubmitInput = {
+        ...startConversationFailure.retryInput,
+        files: attachments.map((attachment) => attachment.file),
+        folders: folders.map((folder) => ({ ...folder })),
+      };
       setIsRepairingMcp(true);
       try {
         await mcpPolicyApi.retryLegacyRepair({
@@ -1354,10 +1363,7 @@ export function AgentsStartComposer({
           serverId: "ralphx",
           scope: "user",
         });
-        setStartConversationFailure(null);
-        setError(
-          plainStartComposerError("Claude MCP cleanup completed. Start the agent again."),
-        );
+        await submitStartInput(replayInput);
       } catch (repairError) {
         const parsed = startComposerErrorFromUnknown(repairError);
         setError(
@@ -1369,7 +1375,7 @@ export function AgentsStartComposer({
         setIsRepairingMcp(false);
       }
     },
-    [setStartConversationFailure],
+    [attachments, folders, startConversationFailure, submitStartInput],
   );
 
   const handleRetryWithIsolatedBranch = useCallback(async () => {
@@ -1415,6 +1421,9 @@ export function AgentsStartComposer({
     message,
     options,
   ) => {
+    if (isStartBusy) {
+      return;
+    }
     if (projectId === null && !featureFlags.standaloneConversations) {
       setError(plainStartComposerError("Project is required"));
       return;
@@ -1608,7 +1617,7 @@ export function AgentsStartComposer({
                 message={error.message}
                 onRemoveAndRetry={() => void handleRemovePersonaAndRetry()}
                 onOpenPersonas={openPersonaSettings}
-                disabled={isSubmitting}
+                disabled={isStartBusy}
               />
             </div>
           )}
@@ -1641,7 +1650,7 @@ export function AgentsStartComposer({
                   ? "Describe your goal for the new automation"
                   : "Ask the agent to plan, build, debug, or review something"
             }
-            isSubmitting={isSubmitting}
+            isSubmitting={isStartBusy}
             autoFocus
             attachments={attachments}
             folders={folders}
@@ -1929,17 +1938,12 @@ export function AgentsStartComposer({
                   The provider already defines the reserved MCP server ID
                   {" "}<code>{error.details.serverId}</code>
                   {error.details.scope ? ` at ${error.details.scope} scope` : ""}.
-                  {error.details.repairStatus === "manual_only"
-                    ? " RalphX cannot safely identify it as an obsolete registration, so it was left unchanged. Rename or remove that provider-native server before retrying."
-                    : " RalphX recognized an obsolete registration, but Claude did not complete the safe cleanup. Retry cleanup or remove it manually."}
-                </p>
-                {error.details.provider === "claude" &&
+                  {error.details.provider === "claude" &&
                   error.details.serverId === "ralphx" &&
-                  error.details.scope === "user" && (
-                    <code className="mt-2 block rounded px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-surface)]">
-                      claude mcp remove ralphx -s user
-                    </code>
-                  )}
+                  error.details.scope === "user"
+                    ? " RalphX could not remove its reserved Claude user registration. Retry cleanup in the app."
+                    : " Open MCP settings to resolve this provider-native conflict."}
+                </p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -1965,7 +1969,7 @@ export function AgentsStartComposer({
                         backgroundColor: "var(--bg-surface)",
                       }}
                       onClick={() => void retryLegacyMcpRepair(error.details)}
-                      disabled={isRepairingMcp || isSubmitting}
+                      disabled={isStartBusy}
                     >
                       {isRepairingMcp ? "Retrying cleanup…" : "Retry cleanup"}
                     </button>
@@ -2003,7 +2007,7 @@ export function AgentsStartComposer({
                   backgroundColor: "var(--accent-muted)",
                 }}
                 onClick={handleRetryWithIsolatedBranch}
-                disabled={isSubmitting}
+                disabled={isStartBusy}
                 data-testid="agents-start-linked-setup-retry"
               >
                 Retry with isolated branch
