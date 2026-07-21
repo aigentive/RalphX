@@ -6586,9 +6586,8 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(
-      await screen.findByTestId("plan-lifecycle-banner"),
-    ).toHaveAttribute("data-lifecycle-state", "approved");
+    await screen.findByTestId("plan-display-chromeless");
+    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("restart-implementation-button"),
     ).not.toBeInTheDocument();
@@ -7320,7 +7319,8 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(banner).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
-    expect(within(banner).getByText(/Tasks is off/i)).toBeInTheDocument();
+    expect(within(banner).queryByText(/Tasks is off/i)).not.toBeInTheDocument();
+    expect(within(banner).getByText(/Choose the next step/i)).toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
@@ -7539,6 +7539,15 @@ describe("AgentsArtifactPane", () => {
       createdAt: "2026-04-23T09:31:00Z",
       updatedAt: "2026-04-23T09:31:00Z",
     });
+    switchAgentConversationModeMock.mockResolvedValue({
+      conversation: conversation({ agentMode: "edit" }),
+      workspace: workspace({
+        mode: "edit",
+        linkedIdeationSessionId: "session-1",
+      }),
+    });
+
+    const onConversationModeSwitched = vi.fn();
 
     renderPane(
       "plan",
@@ -7549,6 +7558,7 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      { onConversationModeSwitched },
     );
 
     expect(
@@ -7580,6 +7590,11 @@ describe("AgentsArtifactPane", () => {
     );
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "edit",
+      expect.objectContaining({ mode: "edit" }),
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });
@@ -8173,7 +8188,8 @@ describe("AgentsArtifactPane", () => {
       },
     );
 
-    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
+    await screen.findByTestId("plan-display-chromeless");
+    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -8247,7 +8263,8 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
+    await screen.findByTestId("plan-display-chromeless");
+    expect(screen.queryByTestId("plan-lifecycle-banner")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
