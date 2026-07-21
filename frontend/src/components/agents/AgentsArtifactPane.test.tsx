@@ -5535,7 +5535,7 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
     expect(
-      screen.getByText("Review changes before publishing."),
+      screen.getByText("Loading changed files..."),
     ).toBeInTheDocument();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(getWorkspaceChangesMock).not.toHaveBeenCalled();
@@ -9169,7 +9169,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(publishButton).toHaveTextContent("Commit & Publish"),
     );
-    await screen.findByText("Review changes before publishing.");
+    await screen.findByText("Loading changed files...");
     expect(publishButton).toBeEnabled();
     expect(publishButton).not.toHaveTextContent("PR is up to date");
 
