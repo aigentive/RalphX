@@ -27,13 +27,12 @@ use crate::domain::entities::{
     ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, SkillUsageListOptions, StateHistoryMetadata, StatusTransition,
-    TaskDependencyRepository, TaskOutcomeListOptions, TaskProposalRepository, TaskRepository,
-    TaskStepRepository, ValidationRunRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, SkillUsageListOptions,
+    StateHistoryMetadata, StatusTransition, TaskDependencyRepository, TaskOutcomeListOptions,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;

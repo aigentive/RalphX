@@ -290,14 +290,6 @@ export async function deleteTaskProposal(proposalId: string): Promise<void> {
 }
 
 /**
- * Reject a task proposal without archiving it
- * @param proposalId The proposal ID
- */
-export async function rejectTaskProposal(proposalId: string): Promise<void> {
-  await invoke("reject_task_proposal", { id: proposalId });
-}
-
-/**
  * Reorder proposals within a session
  * @param sessionId The session ID
  * @param proposalIds Array of proposal IDs in desired order
@@ -423,7 +415,6 @@ export const proposalApi = {
   createTaskProposal,
   updateTaskProposal,
   deleteTaskProposal,
-  rejectTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,

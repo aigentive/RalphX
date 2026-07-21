@@ -2122,8 +2122,8 @@ describe("AgentsArtifactPane", () => {
           "jira",
           "linear",
           "granola",
-          "review",
           "skills",
+          "review",
           "publish",
         ],
       },
@@ -2133,7 +2133,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getAllByRole("button", { name: "Customize tabs" })).not.toHaveLength(0);
   });
 
-  it("defaults to Plan and Commit & Publish when no contextual artifact is attached", async () => {
+  it("defaults to Plan, Skills, and Commit & Publish when no contextual artifact is attached", async () => {
     renderPane(
       "plan",
       workspace({ mode: "edit" }),

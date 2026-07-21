@@ -1451,8 +1451,8 @@ export function AgentComposerSurface({
           normalizedIntegrationReferences.length > 0 ||
           normalizedArtifactReferences.length > 0 ||
           excerptReferences.length > 0 ||
-          capabilityIntent ||
-          teamIntent
+           capabilityIntent ||
+           teamIntent
           ? {
               options: {
                 ...(folderReferenceSnapshots.length > 0

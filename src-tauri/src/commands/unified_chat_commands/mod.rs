@@ -133,9 +133,8 @@ use crate::domain::execution::{
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspaceOutcomeAdapter, AgentWorkspacePrPublisher, ComposerArtifactReference,
-    ComposerExcerptReference,
-    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
-    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    ComposerExcerptReference, ComposerIntegrationReference, ComposerProjectReference,
+    ComposerSelectionSnapshot, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;

@@ -3693,8 +3693,6 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
     github.state().fetch_pr_health_result = Some(Ok(open_pr_health("review-feedback-head")));
     let chat = Arc::new(MockChatService::new());
     let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
-    let task_outcome_repo: Arc<dyn TaskOutcomeRepository> =
-        Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         github as Arc<dyn GithubServiceTrait>,
@@ -3703,7 +3701,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(agent_run_repo),
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3787,7 +3785,6 @@ async fn agent_workspace_review_feedback_with_autofix_disabled_has_no_repair_sid
     let github = Arc::new(MockGithubService::new());
     github.will_return_review_feedback(requested_changes_feedback("review-disabled"));
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -3796,7 +3793,7 @@ async fn agent_workspace_review_feedback_with_autofix_disabled_has_no_repair_sid
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3849,7 +3846,6 @@ async fn agent_workspace_review_feedback_final_authorization_rejects_disabled_wo
     github.will_return_review_feedback(requested_changes_feedback("review-final-disabled"));
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -3858,7 +3854,7 @@ async fn agent_workspace_review_feedback_final_authorization_rejects_disabled_wo
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3902,8 +3898,6 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         .expect("workspace should persist");
     let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo: Arc<dyn TaskOutcomeRepository> =
-        Arc::new(MemoryTaskOutcomeRepository::new());
 
     github.will_return_review_feedback(requested_changes_feedback("review-reenabled"));
     assert!(!super::route_agent_workspace_review_feedback_if_present(
@@ -3913,7 +3907,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        Arc::clone(&task_outcome_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3938,7 +3932,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        Arc::clone(&task_outcome_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3952,7 +3946,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4008,7 +4002,6 @@ async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
     github.will_return_review_feedback(feedback);
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -4017,7 +4010,7 @@ async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4073,7 +4066,6 @@ async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
         "permission denied".to_string(),
     )));
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -4082,7 +4074,7 @@ async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4136,7 +4128,6 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
     let github = Arc::new(MockGithubService::new());
     github.will_return_review_feedback(feedback);
     let chat = Arc::new(MockChatService::new());
-    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -4145,7 +4136,7 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        task_outcome_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4446,7 +4437,7 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
     chat.fail_next_stop_agent_calls(1).await;
     let stopping = Arc::new(dashmap::DashMap::new());
     let agent_run_repo_dyn: Arc<dyn AgentRunRepository> = agent_run_repo.clone();
-    let task_outcome_repo: Arc<dyn TaskOutcomeRepository> =
+    let task_outcome_repo_dyn: Arc<dyn TaskOutcomeRepository> =
         Arc::new(MemoryTaskOutcomeRepository::new());
     let plan_branch_repo_dyn: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
         plan_branch_repo;
@@ -4455,7 +4446,7 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
     super::terminalize_polled_agent_workspace(
         &workspace_repo,
         &agent_run_repo_dyn,
-        &task_outcome_repo,
+        &task_outcome_repo_dyn,
         &plan_branch_repo_dyn,
         &chat_dyn,
         &stopping,

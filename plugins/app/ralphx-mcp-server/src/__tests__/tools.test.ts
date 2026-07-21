@@ -1212,7 +1212,6 @@ describe('delete_task_proposal tool', () => {
   });
 });
 
-
 // ===========================================================================
 // get_acceptance_status + get_pending_confirmations tool definitions + allowlist
 // ===========================================================================

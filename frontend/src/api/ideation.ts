@@ -455,14 +455,6 @@ export const ideationApi = {
     },
 
     /**
-     * Reject a proposal without archiving it
-     * @param proposalId The proposal ID
-     */
-    reject: async (proposalId: string): Promise<void> => {
-      await invoke("reject_task_proposal", { id: proposalId });
-    },
-
-    /**
      * Reorder proposals within a session
      * @param sessionId The session ID
      * @param proposalIds Array of proposal IDs in desired order

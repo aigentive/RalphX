@@ -665,12 +665,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const [skillsEnabled] = useSkillsEnabled();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
     !ideationSettingsQuery.isError &&
     ideationSettingsQuery.settings.tasksEnabled;
-  const [skillsEnabled] = useSkillsEnabled();
   const tasksFeatureState =
     !ideationSettingsQuery.isLoading && !ideationSettingsQuery.isError
       ? ideationSettingsQuery.settings.tasksFeatureState
@@ -1318,13 +1318,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               ...ARTIFACT_TABS.filter((tab) =>
                 availableArtifactTabIds.includes(tab.id),
               ).map(visibleTab),
+              ...(skillsEnabled ? [visibleTab(SKILLS_TAB)] : []),
               ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
               ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
               ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
               ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
               ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
               ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-              ...(skillsEnabled ? [visibleTab(SKILLS_TAB)] : []),
               ...(availableArtifactTabIds.includes("review")
                 ? [visibleTab(REVIEW_TAB)]
                 : []),
@@ -2141,6 +2141,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onOpenTasks={() => onTabChange("tasks")}
                 taskArtifactSelectedId={taskArtifactSelectedId}
                 onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+                skillsEnabled={skillsEnabled}
               />
             </ArtifactSelectionProvider>
           )}

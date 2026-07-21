@@ -226,7 +226,6 @@ pub use ideation_commands::{
     get_agent_lane_settings, get_blocked_tasks, get_ideation_harness_availability,
     get_ideation_session, get_ideation_session_with_data, get_project_messages,
     get_proposal_dependencies, get_proposal_dependents, get_recent_session_messages,
-    reject_task_proposal,
     get_session_messages, get_task_blockers, get_task_messages, get_task_proposal,
     is_orchestrator_available, list_ideation_sessions, list_session_proposals,
     remove_proposal_dependency, reorder_proposals, restart_ideation_implementation,

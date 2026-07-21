@@ -66,11 +66,12 @@ use crate::application::notification_service::NotificationService;
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use crate::application::question_state::QuestionState;
-use crate::application::AppState;
-use crate::application::AtlassianIntegrationService;
-use crate::application::GranolaIntegrationService;
-use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS};
+use crate::application::{
+    AppState, AtlassianIntegrationService, GranolaIntegrationService, LinearIntegrationService,
+};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, RoutingRole, DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -105,6 +106,7 @@ use crate::domain::services::{
     RunningAgentInfo, RunningAgentKey, RunningAgentRegistry, SkillUsageService,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::infrastructure::agents::internal_skills::inject_learned_skill_citations_into_system_prompt;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER, AGENT_TASK_MANAGER,
@@ -112,7 +114,6 @@ use crate::infrastructure::agents::claude::agent_names::{
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, resolve_project_root_from_plugin_dir,
 };
-use crate::infrastructure::agents::internal_skills::inject_learned_skill_citations_into_system_prompt;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};

@@ -326,7 +326,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
-        Arc::new(MemoryTaskOutcomeRepository::new()),
+        Arc::clone(&app_state.task_outcome_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )
@@ -369,7 +369,7 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
-        Arc::new(MemoryTaskOutcomeRepository::new()),
+        Arc::clone(&app_state.task_outcome_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )

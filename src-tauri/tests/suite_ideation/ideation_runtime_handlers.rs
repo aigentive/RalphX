@@ -1234,7 +1234,6 @@ async fn test_send_ideation_session_message_send_error_returns_500_in_test_mode(
     let (status, _body) = result.unwrap_err();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
-
 #[tokio::test]
 async fn test_post_verification_status_records_recurring_gap_outcome() {
     let state = setup_test_state().await;

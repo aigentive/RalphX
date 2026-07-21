@@ -3191,6 +3191,7 @@ pub async fn build_codex_command(
         elapsed_ms = prompt_build_started.elapsed().as_millis() as u64,
         "chat_service.build_codex_command phase completed"
     );
+    let prompt_compose_started = Instant::now();
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -3205,7 +3206,6 @@ pub async fn build_codex_command(
         project_mcp_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
-    let prompt_compose_started = Instant::now();
     let CodexPromptComposition {
         prompt,
         persona_injected,
