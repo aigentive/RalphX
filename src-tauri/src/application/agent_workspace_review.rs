@@ -2450,7 +2450,7 @@ async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatSe
             ));
         }
         prepared_launch = Some(
-            prepare_workspace_review_fixer_launch(state, workspace, &context.monitor, &target)
+            prepare_workspace_review_fixer_launch(state, workspace, &context.monitor, target)
                 .await?,
         );
         pre_resolved_runtime = Some(

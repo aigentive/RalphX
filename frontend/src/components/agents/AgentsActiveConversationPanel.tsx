@@ -164,6 +164,7 @@ import {
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
+import { PRIMARY_AGENT_START_MODE_IDS } from "./agentStartModeOptions";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -1790,7 +1791,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         (activeWorkspace?.taskPipelineAvailable ??
           Boolean(activeWorkspace?.taskPipelineSessionId)),
       autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
-    }).filter((option) => tasksEnabled || option.id !== "tasks");
+    }).filter(
+      (option) =>
+        tasksEnabled ||
+        option.id !== "tasks" ||
+        option.id === activeConversationMode,
+    );
     if (!resolvedConversationModeLocked) {
       return eligibleOptions;
     }
@@ -1811,6 +1817,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     featureFlags.agentConversationAutopilot,
     tasksEnabled,
   ]);
+  const secondaryModeOptionIds = useMemo(
+    () =>
+      modeOptions
+        .filter(
+          (option) =>
+            option.id !== "tasks" &&
+            option.id !== "ideation" &&
+            !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+        )
+        .map((option) => option.id),
+    [modeOptions],
+  );
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
     activeConversationMode === "plan" &&
@@ -3057,8 +3075,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             onValueChange: (value: string) =>
                               onActiveConversationModeChange(
                                 value as AgentConversationWorkspaceMode,
-                              ),
+                            ),
                             options: modeOptions,
+                            secondaryOptionIds: secondaryModeOptionIds,
                             // Workspace conversation owns mode; child chats
                             // inherit and display it read-only.
                             disabled:
