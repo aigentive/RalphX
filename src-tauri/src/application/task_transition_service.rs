@@ -1842,6 +1842,31 @@ impl TaskTransitionService {
         }
     }
 
+    /// Quiesce an archived task that still carries a legacy active status.
+    ///
+    /// Normal workflow transitions reject archived tasks. Tasks OFF recovery must still
+    /// be able to pause this inconsistent state through the canonical transition path so
+    /// status history, metadata, exit effects, and events remain aligned.
+    #[track_caller]
+    pub(crate) fn transition_archived_task_to_paused_with_metadata<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        metadata_update: MetadataUpdate,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
+        let caller = Location::caller();
+        async move {
+            self.transition_task_with_metadata_from_caller_allow_archived(
+                task_id,
+                InternalStatus::Paused,
+                Some(metadata_update),
+                caller,
+                true,
+            )
+            .await
+            .map(|(task, _changed)| task)
+        }
+    }
+
     /// Finalize one accepted execution attempt and emit completion side effects only for
     /// the caller that wins the optimistic status transition.
     pub async fn transition_execution_completed_to_review(
@@ -1930,6 +1955,8 @@ impl TaskTransitionService {
                 task.internal_status.as_str()
             )));
         }
+        self.authorize_task_action(&task, crate::domain::ideation::TasksFeatureAction::Progress)
+            .await?;
 
         let old_status = task.internal_status;
         let original_failure = task
@@ -1998,27 +2025,21 @@ impl TaskTransitionService {
                 .merge_into(Some(&metadata_with_recovery)),
         );
 
-        if !self
+        let Some(history_entry_id) = self
             .task_repo
-            .update_with_expected_status(&task, InternalStatus::Failed)
+            .update_with_expected_status_and_history_for_action(
+                &task,
+                InternalStatus::Failed,
+                "user_recovery",
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )
             .await?
-        {
+        else {
             return Err(AppError::Validation(format!(
                 "Failed-task recovery lost authority because task {} changed concurrently",
                 task_id.as_str()
             )));
-        }
-
-        let history_entry_id = self
-            .task_repo
-            .persist_status_change(
-                task_id,
-                InternalStatus::Failed,
-                InternalStatus::PendingReview,
-                "user_recovery",
-            )
-            .await
-            .ok();
+        };
         self.emit_task_event(serde_json::json!({
             "type": "status_changed",
             "taskId": task_id.as_str(),
@@ -2037,7 +2058,7 @@ impl TaskTransitionService {
             task_id,
             &task,
             InternalStatus::PendingReview,
-            history_entry_id,
+            Some(history_entry_id),
         )
         .await;
 
@@ -2050,6 +2071,24 @@ impl TaskTransitionService {
         new_status: InternalStatus,
         metadata_update: Option<MetadataUpdate>,
         caller: &'static Location<'static>,
+    ) -> AppResult<(Task, bool)> {
+        self.transition_task_with_metadata_from_caller_allow_archived(
+            task_id,
+            new_status,
+            metadata_update,
+            caller,
+            false,
+        )
+        .await
+    }
+
+    async fn transition_task_with_metadata_from_caller_allow_archived(
+        &self,
+        task_id: &TaskId,
+        new_status: InternalStatus,
+        metadata_update: Option<MetadataUpdate>,
+        caller: &'static Location<'static>,
+        allow_archived_pause: bool,
     ) -> AppResult<(Task, bool)> {
         tracing::debug!(
             task_id = task_id.as_str(),
@@ -2066,7 +2105,9 @@ impl TaskTransitionService {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
 
-        if task.archived_at.is_some() {
+        if task.archived_at.is_some()
+            && !(allow_archived_pause && new_status == InternalStatus::Paused)
+        {
             return Err(AppError::Validation(format!(
                 "Cannot transition archived task: {}",
                 task_id.as_str()
@@ -2085,12 +2126,15 @@ impl TaskTransitionService {
             return Ok((task, false));
         }
 
-        if !matches!(
+        let feature_action = if matches!(
             new_status,
             InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
         ) {
-            self.authorize_task_progress(&task).await?;
-        }
+            crate::domain::ideation::TasksFeatureAction::Quiesce
+        } else {
+            crate::domain::ideation::TasksFeatureAction::Progress
+        };
+        self.authorize_task_action(&task, feature_action).await?;
 
         tracing::debug!(
             from = old_status.as_str(),
@@ -2121,12 +2165,17 @@ impl TaskTransitionService {
 
         // 4. Persist the update with optimistic locking (WHERE id = ? AND status = old_status)
         //    If another caller already transitioned this task, rows_affected = 0 → no-op.
-        let updated = self
+        let history_entry_id = self
             .task_repo
-            .update_with_expected_status(&task, old_status)
+            .update_with_expected_status_and_history_for_action(
+                &task,
+                old_status,
+                "system",
+                feature_action,
+            )
             .await?;
 
-        if !updated {
+        let Some(history_entry_id) = history_entry_id else {
             tracing::info!(
                 task_id = task_id.as_str(),
                 from = old_status.as_str(),
@@ -2141,20 +2190,8 @@ impl TaskTransitionService {
                 AppError::NotFound(format!("Task not found: {}", task_id.as_str()))
             })?;
             return Ok((current, false));
-        }
-
-        // 4.1 Record state transition history for time-travel feature
-        let history_entry_id = match self
-            .task_repo
-            .persist_status_change(task_id, old_status, new_status, "system")
-            .await
-        {
-            Ok(history_entry_id) => Some(history_entry_id),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to record state history (non-fatal)");
-                None
-            }
         };
+        let history_entry_id = Some(history_entry_id);
         tracing::debug!("Task status persisted to database");
 
         // Log every confirmed state change at INFO level so the full state history is
@@ -2207,6 +2244,117 @@ impl TaskTransitionService {
         tracing::debug!("Task transition complete");
 
         Ok((task, true))
+    }
+
+    /// Commit terminal restart cleanup, failed-step resets, Ready status, and
+    /// state history through the repository's single transaction before any
+    /// transition effects are dispatched.
+    pub async fn restart_terminal_task_to_ready(
+        &self,
+        mut plan: crate::application::task_restart::TerminalReadyRestartPlan,
+        metadata_update: Option<MetadataUpdate>,
+    ) -> AppResult<Task> {
+        let mut task = plan.task;
+        if task.archived_at.is_some() {
+            return Err(AppError::Validation(format!(
+                "Cannot restart archived task: {}",
+                task.id.as_str()
+            )));
+        }
+        let old_status = task.internal_status;
+        if !old_status.is_terminal() {
+            return Err(AppError::Validation(format!(
+                "Task {} is no longer terminal",
+                task.id.as_str()
+            )));
+        }
+        self.authorize_task_action(&task, crate::domain::ideation::TasksFeatureAction::Progress)
+            .await?;
+        self.validate_status_transition(
+            &task.id,
+            old_status,
+            InternalStatus::Ready,
+            std::panic::Location::caller(),
+        )?;
+
+        task.internal_status = InternalStatus::Ready;
+        task.touch();
+        if let Some(update) = metadata_update {
+            task.metadata = Some(update.merge_into(task.metadata.as_deref()));
+        }
+
+        if !plan.failed_steps.is_empty() && self.step_repo.is_none() {
+            return Err(AppError::Infrastructure(
+                "Terminal restart requires the task-step repository".to_string(),
+            ));
+        }
+        let failed_step_ids = plan
+            .failed_steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>();
+        let Some((history_entry_id, reset_count)) = self
+            .task_repo
+            .restart_terminal_task_to_ready_with_history_for_action(
+                &task,
+                old_status,
+                &failed_step_ids,
+                "user_restart",
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )
+            .await?
+        else {
+            return Err(AppError::Validation(format!(
+                "Task {} changed concurrently; terminal restart was not applied",
+                task.id.as_str()
+            )));
+        };
+
+        if reset_count != failed_step_ids.len() as u32 {
+            if reset_count != 0 {
+                return Err(AppError::Infrastructure(format!(
+                    "Terminal restart reset {reset_count} of {} failed steps",
+                    failed_step_ids.len()
+                )));
+            }
+            let step_repo = self
+                .step_repo
+                .as_ref()
+                .expect("failed steps require repository checked before commit");
+            for step in &mut plan.failed_steps {
+                step.status = crate::domain::entities::TaskStepStatus::Pending;
+                step.started_at = None;
+                step.completed_at = None;
+                step.completion_note = None;
+                step_repo.update(step).await?;
+            }
+        }
+
+        self.emit_task_event(serde_json::json!({
+            "type": "status_changed",
+            "taskId": task.id.as_str(),
+            "from": old_status.as_str(),
+            "to": InternalStatus::Ready.as_str(),
+            "changedBy": "user_restart",
+        }));
+        self.event_emitter
+            .emit_status_change(
+                task.id.as_str(),
+                old_status.as_str(),
+                InternalStatus::Ready.as_str(),
+            )
+            .await;
+        self.execute_exit_actions(&task.id, &task, old_status, InternalStatus::Ready)
+            .await;
+        self.execute_entry_actions_with_notification_context(
+            &task.id,
+            &task,
+            InternalStatus::Ready,
+            Some(history_entry_id),
+        )
+        .await;
+
+        Ok(task)
     }
 
     /// Transition a task to Stopped status with context capture for smart resume.
@@ -3656,7 +3804,10 @@ impl TaskTransitionService {
             status,
             InternalStatus::Paused | InternalStatus::Stopped | InternalStatus::Cancelled
         ) {
-            if let Err(error) = self.authorize_task_progress(task).await {
+            if let Err(error) = self
+                .authorize_task_action(task, crate::domain::ideation::TasksFeatureAction::Progress)
+                .await
+            {
                 tracing::warn!(
                     task_id = task_id.as_str(),
                     status = status.as_str(),
@@ -4068,27 +4219,17 @@ impl TaskTransitionService {
         }
     }
 
-    async fn authorize_task_progress(&self, task: &Task) -> AppResult<()> {
+    async fn authorize_task_action(
+        &self,
+        task: &Task,
+        action: crate::domain::ideation::TasksFeatureAction,
+    ) -> AppResult<()> {
         let Some(settings_repo) = self.tasks_feature_settings_repo.as_ref() else {
             return Ok(());
         };
-        let Some(workspace_repo) = self.agent_conversation_workspace_repo.as_ref() else {
-            return Err(AppError::FeatureDisabled(
-                crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
-            ));
-        };
-        let Some(session_repo) = self.ideation_session_repo.as_ref() else {
-            return Err(AppError::FeatureDisabled(
-                crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
-            ));
-        };
-        crate::application::tasks_feature_policy::TasksFeaturePolicy::new(
-            Arc::clone(settings_repo),
-            Arc::clone(workspace_repo),
-            Arc::clone(session_repo),
-        )
-        .authorize_session(task.ideation_session_id.as_ref())
-        .await
+        crate::application::tasks_feature_policy::TasksFeaturePolicy::new(Arc::clone(settings_repo))
+            .authorize_session(task.ideation_session_id.as_ref(), action)
+            .await
     }
 
     /// Shared handler for `BranchFreshnessConflict` errors.

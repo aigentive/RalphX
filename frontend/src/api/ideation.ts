@@ -658,11 +658,11 @@ export const ideationApi = {
         "update_ideation_settings",
         {
           settings: {
-            tasks_enabled: settings.tasksEnabled,
             plan_mode: "optional",
             require_plan_approval: false,
             suggest_plans_for_complex: false,
             auto_link_proposals: false,
+            auto_verify_draft_plans: settings.autoVerifyDraftPlans,
             auto_verify_plans: settings.autoVerifyPlans,
             require_accept_for_finalize: settings.requireAcceptForFinalize,
             require_verification_for_proposals: false,
@@ -676,6 +676,40 @@ export const ideationApi = {
           },
         },
         IdeationSettingsResponseSchema
+      );
+      return transformIdeationSettings(raw);
+    },
+
+    getDisableImpact: async (): Promise<import("@/types/ideation-config").TasksDisableImpact> => {
+      const raw = await typedInvoke(
+        "get_tasks_disable_impact",
+        {},
+        z.object({
+          active_standalone_tasks: z.number().int().nonnegative(),
+          active_attached_agent_workspaces: z.number().int().nonnegative(),
+          paused_or_blocked_tasks: z.number().int().nonnegative(),
+          active_branch_update_operations: z.number().int().nonnegative(),
+          affected_task_ids: z.array(z.string()),
+          affected_conversation_ids: z.array(z.string()),
+          affected_project_ids: z.array(z.string()),
+        }),
+      );
+      return {
+        activeStandaloneTasks: raw.active_standalone_tasks,
+        activeAttachedAgentWorkspaces: raw.active_attached_agent_workspaces,
+        pausedOrBlockedTasks: raw.paused_or_blocked_tasks,
+        activeBranchUpdateOperations: raw.active_branch_update_operations,
+        affectedTaskIds: raw.affected_task_ids,
+        affectedConversationIds: raw.affected_conversation_ids,
+        affectedProjectIds: raw.affected_project_ids,
+      };
+    },
+
+    setTasksEnabled: async (enabled: boolean): Promise<IdeationSettings> => {
+      const raw = await typedInvoke(
+        "set_tasks_feature_enabled",
+        { enabled },
+        IdeationSettingsResponseSchema,
       );
       return transformIdeationSettings(raw);
     },

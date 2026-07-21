@@ -10,11 +10,13 @@ use crate::domain::ideation::config::{
 fn settings(required: bool) -> IdeationSettings {
     IdeationSettings {
         tasks_enabled: false,
+        tasks_feature_state: Default::default(),
         plan_mode: IdeationPlanMode::Optional,
         require_plan_approval: false,
         suggest_plans_for_complex: false,
         auto_link_proposals: false,
         auto_verify_plans: false,
+        auto_verify_draft_plans: true,
         require_verification_for_accept: required,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,

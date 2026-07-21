@@ -26,6 +26,7 @@ const ATTENTION_TASK_LIMIT: u32 = 1_000;
 /// by UI urgency group (agent requests, reviews, tasks, automations, git), newest first within a
 /// group.
 pub struct AttentionService {
+    db: crate::infrastructure::sqlite::DbConnection,
     task_repo: Arc<dyn TaskRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     automation_repo: Arc<dyn AutomationRepository>,
@@ -42,6 +43,7 @@ pub struct AttentionService {
 impl AttentionService {
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
+            db: state.db.clone(),
             task_repo: Arc::clone(&state.task_repo),
             project_repo: Arc::clone(&state.project_repo),
             automation_repo: Arc::clone(&state.automation_repo),
@@ -296,7 +298,14 @@ impl AttentionService {
                 .get_by_session(&session.id)
                 .await?
                 .is_some_and(|approval| approval.artifact_id == *plan_artifact_id);
+            let approval_deferred = crate::application::plan_approval_notification_service::has_deferred_plan_approval_in_db(
+                &self.db,
+                &session.id,
+                plan_artifact_id.as_str(),
+            )
+            .await?;
             if current_artifact_approved
+                || approval_deferred
                 || self
                     .notification_context
                     .session_is_automation_owned(&session)

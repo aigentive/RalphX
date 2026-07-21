@@ -677,6 +677,7 @@ async fn active_runtime_detection_matches_interactive_process_metadata() {
             key.clone(),
             stdin,
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some("thread-123".to_string()),
                 persona_id: None,

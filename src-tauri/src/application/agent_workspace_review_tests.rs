@@ -395,6 +395,7 @@ x
         WORKSPACE_REVIEW_MAX_CHANGED_FILES
     );
     assert!(packet.summary.files_changed > WORKSPACE_REVIEW_MAX_CHANGED_FILES as u32);
+    assert!(packet.changed_files_truncated);
     assert_eq!(packet.summary.deletions, 2);
     assert!(packet.summary.insertions >= 4);
     assert!(packet.patch_excerpt_truncated);
@@ -444,6 +445,32 @@ x
         .expect("ranked file should be tracked");
     assert_eq!(ranked.status, "untracked");
     assert!(ranked.sources.contains("ignored"));
+}
+
+#[test]
+fn review_packet_reports_typed_hunk_truncation_without_changing_small_packets() {
+    let large_diff = (0..=WORKSPACE_REVIEW_MAX_HUNK_ANCHORS)
+        .map(|index| {
+            format!(
+                "diff --git a/src/{index}.rs b/src/{index}.rs\n--- a/src/{index}.rs\n+++ b/src/{index}.rs\n@@ -1 +1 @@\n-old\n+new"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let truncated = build_selected_source_review_packet(&large_diff);
+    assert!(truncated.hunk_anchors_truncated);
+    assert_eq!(
+        truncated.hunk_anchors.len(),
+        WORKSPACE_REVIEW_MAX_HUNK_ANCHORS
+    );
+
+    let small = build_selected_source_review_packet(
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new",
+    );
+    assert!(!small.changed_files_truncated);
+    assert!(!small.hunk_anchors_truncated);
+    assert!(!small.patch_excerpt_truncated);
 }
 
 #[test]
@@ -3615,7 +3642,7 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
         .expect("persisted monitor should exist");
     assert_eq!(
         persisted.reviewed_target_scope,
-        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
     );
     assert_eq!(
         persisted.review_gate_status,
@@ -3634,6 +3661,21 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
     assert!(!start.started);
     assert_eq!(start.skipped_reason.as_deref(), Some("current"));
     assert_eq!(chat_service.get_sent_messages().await.len(), 0);
+
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("persisted monitor read should succeed")
+        .expect("persisted monitor should exist");
+    assert_eq!(
+        persisted.reviewed_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+    );
+    assert_eq!(
+        persisted.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
 }
 
 #[tokio::test]
@@ -4233,6 +4275,8 @@ fn review_request_message_and_started_summary_describe_targets() {
     assert!(message.contains("Goal Wins"));
     assert!(message.contains("Respect the approved plan."));
     assert!(message.contains("target.review_packet"));
+    assert!(message.contains("list_workspace_review_files"));
+    assert!(message.contains("get_workspace_review_diff_page"));
     assert!(message.contains("Do not run shell commands, tests, linters, or validation suites."));
     assert!(message.contains(&workspace.conversation_id.as_str()));
     assert_eq!(

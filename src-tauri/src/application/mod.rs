@@ -45,6 +45,16 @@ pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+mod agent_workspace_review_diff_cursor;
+pub mod agent_workspace_review_diff;
+mod agent_workspace_review_diff_inventory;
+#[cfg(test)]
+mod agent_workspace_review_diff_scope_tests;
+#[cfg(test)]
+mod agent_workspace_review_diff_tests;
+pub mod agent_workspace_review_context;
+#[cfg(test)]
+mod agent_workspace_review_context_tests;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
 pub mod agent_workspace_review_auto_merge;
@@ -109,6 +119,8 @@ pub mod interactive_notification_producer;
 #[cfg(test)]
 mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
+#[cfg(test)]
+mod interactive_process_registry_tests;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
@@ -133,6 +145,9 @@ mod persona_prompt_tests;
 #[cfg(test)]
 mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
+pub mod plan_approval_notification_service;
+#[cfg(test)]
+mod plan_approval_notification_service_tests;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_verification_service;

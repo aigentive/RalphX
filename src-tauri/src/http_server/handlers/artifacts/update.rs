@@ -33,6 +33,7 @@ pub async fn update_plan_artifact(
     )
     .await
     .map_err(map_app_err)?;
+    let transaction_authority = mutation_authority.clone();
 
     let (
         created,
@@ -63,7 +64,7 @@ pub async fn update_plan_artifact(
                 }
             }
 
-            finalize_plan_update(conn, &old_artifact, content, mutation_authority.as_ref())
+            finalize_plan_update(conn, &old_artifact, content, transaction_authority.as_ref())
         })
         .await
         .map_err(|e| {
@@ -79,7 +80,14 @@ pub async fn update_plan_artifact(
         linked_proposal_ids,
         verification_reset,
     );
-    reconcile_plan_notifications(&state, Some(&old_artifact_id_str), &created, &sessions).await;
+    reconcile_plan_notifications(
+        &state,
+        Some(&old_artifact_id_str),
+        &created,
+        &sessions,
+        mutation_authority.as_ref(),
+    )
+    .await;
     let mut response = ArtifactResponse::from(created);
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());

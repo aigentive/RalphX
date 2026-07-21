@@ -13,9 +13,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
-use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
+use crate::application::agent_conversation_workspace::{
+    agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
+    TerminalAgentWorkspaceCause,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
@@ -24,7 +27,7 @@ use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
-use crate::application::{NotificationService, TaskTransitionService};
+use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -123,6 +126,60 @@ pub struct PrPollerRegistry {
     notification_service: Arc<std::sync::RwLock<Option<Arc<NotificationService>>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePrPollerStart {
+    Started,
+    AlreadyRunning,
+    Unavailable,
+}
+
+pub async fn start_review_pr_lifecycle_polling(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    monitor: &crate::domain::entities::AgentWorkspacePrReviewMonitor,
+) -> crate::AppResult<AgentWorkspacePrPollerStart> {
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr
+        || workspace.status != AgentConversationWorkspaceStatus::Active
+        || workspace.has_terminal_publication_pr_status()
+        || monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+    {
+        return Err(AppError::Conflict(
+            "Review PR lifecycle polling requires an active nonterminal workspace".to_string(),
+        ));
+    }
+    let pr_number = workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
+        .ok_or_else(|| {
+            AppError::Conflict("Review PR lifecycle polling requires a linked PR".to_string())
+        })?;
+    if monitor.pr_number != pr_number || monitor.conversation_id != workspace.conversation_id {
+        return Err(AppError::Conflict(
+            "Review PR lifecycle monitor does not match its workspace".to_string(),
+        ));
+    }
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.to_string()))?;
+    let worktree_path =
+        resolve_valid_agent_conversation_workspace_path(&project, workspace).await?;
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    Ok(state.pr_poller_registry.start_agent_workspace_polling(
+        workspace.conversation_id.clone(),
+        pr_number,
+        project,
+        worktree_path,
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
+        chat_service,
+    ))
+}
+
 impl PrPollerRegistry {
     /// Maximum number of concurrent PR poll tasks. (AD9: default 10)
     const MAX_CONCURRENT_POLLS: usize = 10;
@@ -163,7 +220,7 @@ impl PrPollerRegistry {
         agent_run_repo: Arc<dyn AgentRunRepository>,
         task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         chat_service: Arc<dyn ChatService>,
-    ) {
+    ) -> AgentWorkspacePrPollerStart {
         use dashmap::mapref::entry::Entry;
 
         if let Some(handle) = self.workspace_active.get(&conversation_id) {
@@ -173,7 +230,7 @@ impl PrPollerRegistry {
                     pr_number,
                     "start_agent_workspace_polling: already polling, skipping"
                 );
-                return;
+                return AgentWorkspacePrPollerStart::AlreadyRunning;
             }
         }
         self.workspace_active.remove(&conversation_id);
@@ -184,8 +241,10 @@ impl PrPollerRegistry {
                 pr_number,
                 "start_agent_workspace_polling: github_service is None — skipping"
             );
-            return;
+            return AgentWorkspacePrPollerStart::Unavailable;
         };
+
+        self.workspace_stopping.remove(&conversation_id);
 
         let active = Arc::clone(&self.workspace_active);
         let stopping = Arc::clone(&self.workspace_stopping);
@@ -221,9 +280,11 @@ impl PrPollerRegistry {
         match self.workspace_active.entry(conversation_id) {
             Entry::Vacant(vacant) => {
                 vacant.insert(handle);
+                AgentWorkspacePrPollerStart::Started
             }
             Entry::Occupied(_) => {
                 handle.abort();
+                AgentWorkspacePrPollerStart::AlreadyRunning
             }
         }
     }
@@ -430,6 +491,20 @@ impl PrPollerRegistry {
             chat_service,
         )
         .await
+    }
+
+    pub async fn check_agent_workspace_pr_status_once(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> crate::AppResult<Option<PrStatus>> {
+        let Some(github) = self.github_service.as_ref() else {
+            return Ok(None);
+        };
+        github
+            .check_pr_status(working_dir, pr_number)
+            .await
+            .map(Some)
     }
 }
 
@@ -922,7 +997,7 @@ async fn agent_workspace_poll_loop(
         match github.check_pr_status(&working_dir, pr_number).await {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
-                terminalize_polled_agent_workspace(
+                terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
                     &agent_run_repo,
                     &task_outcome_repo,
@@ -935,6 +1010,7 @@ async fn agent_workspace_poll_loop(
                     "merged",
                     "Pull request merged",
                     interval,
+                    notification_service.as_ref(),
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -943,7 +1019,7 @@ async fn agent_workspace_poll_loop(
             }
             Ok(PrStatus::Closed) => {
                 drop(permit);
-                terminalize_polled_agent_workspace(
+                terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
                     &agent_run_repo,
                     &task_outcome_repo,
@@ -956,6 +1032,7 @@ async fn agent_workspace_poll_loop(
                     "closed",
                     "Pull request closed without merging",
                     interval,
+                    notification_service.as_ref(),
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -1162,6 +1239,7 @@ async fn agent_workspace_poll_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn terminalize_polled_agent_workspace(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
@@ -1176,6 +1254,106 @@ async fn terminalize_polled_agent_workspace(
     summary: &str,
     retry_interval: Duration,
 ) {
+    terminalize_polled_agent_workspace_with_notifications(
+        workspace_repo,
+        agent_run_repo,
+        task_outcome_repo,
+        plan_branch_repo,
+        chat_service,
+        stopping,
+        conversation_id,
+        project,
+        cause,
+        status,
+        summary,
+        retry_interval,
+        None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn terminalize_polled_agent_workspace_with_notifications(
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_outcome_repo: &Arc<dyn TaskOutcomeRepository>,
+    plan_branch_repo: &Arc<dyn PlanBranchRepository>,
+    chat_service: &Arc<dyn ChatService>,
+    stopping: &Arc<DashMap<ChatConversationId, ()>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    cause: TerminalAgentWorkspaceCause,
+    status: &str,
+    summary: &str,
+    retry_interval: Duration,
+    notification_service: Option<&Arc<NotificationService>>,
+) {
+    let review_pr_number = loop {
+        match workspace_repo.get_by_conversation_id(conversation_id).await {
+            Ok(Some(workspace)) if workspace.mode == AgentConversationWorkspaceMode::ReviewPr => {
+                break workspace
+                    .source_pull_request
+                    .map(|pull_request| pull_request.number)
+                    .or(workspace.publication_pr_number);
+            }
+            Ok(_) => break None,
+            Err(error) => tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                retry_secs = retry_interval.as_secs(),
+                "Agent workspace PR poller: failed to load terminal workspace authority; retrying"
+            ),
+        }
+        tokio::time::sleep(retry_interval).await;
+        if stopping.contains_key(conversation_id) {
+            return;
+        }
+    };
+
+    if let Some(pr_number) = review_pr_number {
+        loop {
+            match settle_review_pr_terminal_observation(
+                Arc::clone(workspace_repo),
+                Arc::clone(agent_run_repo),
+                Some(Arc::clone(plan_branch_repo)),
+                Some(Arc::clone(chat_service)),
+                notification_service.cloned(),
+                conversation_id,
+                project,
+                pr_number,
+                status,
+                summary,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    if outcome.require_runtime_shutdown().is_ok() {
+                        return;
+                    }
+                    tracing::error!(
+                        conversation_id = conversation_id.as_str(),
+                        error = outcome
+                            .message
+                            .as_deref()
+                            .unwrap_or("terminal cleanup incomplete"),
+                        retry_secs = retry_interval.as_secs(),
+                        "Agent workspace PR poller: terminal runtime shutdown failed; retrying"
+                    );
+                }
+                Err(error) => tracing::error!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    retry_secs = retry_interval.as_secs(),
+                    "Agent workspace PR poller: terminal authority persistence failed; retrying"
+                ),
+            }
+            tokio::time::sleep(retry_interval).await;
+            if stopping.contains_key(conversation_id) {
+                return;
+            }
+        }
+    }
+
     loop {
         match mark_agent_workspace_pr_terminal(
             Arc::clone(workspace_repo),
@@ -1186,7 +1364,7 @@ async fn terminalize_polled_agent_workspace(
         )
         .await
         {
-            Ok(()) => break,
+            Ok(_) => break,
             Err(error) => tracing::error!(
                 conversation_id = conversation_id.as_str(),
                 error = %error,
@@ -1211,13 +1389,15 @@ async fn terminalize_polled_agent_workspace(
             cause,
         )
         .await;
-        let Err(error) = terminalized.require_runtime_shutdown() else {
+        if terminalized.require_runtime_shutdown().is_ok() {
             return;
-        };
-
+        }
         tracing::error!(
             conversation_id = conversation_id.as_str(),
-            error,
+            error = terminalized
+                .message
+                .as_deref()
+                .unwrap_or("terminal cleanup incomplete"),
             retry_secs = retry_interval.as_secs(),
             "Agent workspace PR poller: terminal runtime shutdown failed; retrying"
         );
@@ -1314,7 +1494,6 @@ async fn agent_workspace_pr_review_monitor_is_current(
     match workspace_repo.get_pr_review_monitor(conversation_id).await {
         Ok(Some(monitor)) => {
             monitor.pr_number == pr_number
-                && monitor.monitor_enabled
                 && monitor.status != AgentWorkspacePrReviewMonitorStatus::Terminal
         }
         Ok(None) => false,
@@ -1372,44 +1551,29 @@ async fn mark_agent_workspace_pr_terminal(
     conversation_id: &ChatConversationId,
     status: &str,
     summary: &str,
-) -> crate::AppResult<()> {
+) -> crate::AppResult<Vec<String>> {
     let Some(workspace) = workspace_repo
         .get_by_conversation_id(conversation_id)
         .await?
     else {
-        return Ok(());
+        return Ok(Vec::new());
     };
 
     if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
-        if let Some(mut monitor) = workspace_repo
-            .get_pr_review_monitor(conversation_id)
-            .await?
-            .filter(|monitor| monitor.status != AgentWorkspacePrReviewMonitorStatus::Terminal)
-        {
-            monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
-            monitor.monitor_enabled = false;
-            monitor.last_review_outcome = Some(status.to_string());
-            monitor.last_error = (status == "closed").then(|| summary.to_string());
-            workspace_repo.upsert_pr_review_monitor(monitor).await?;
-        }
-        workspace_repo
-            .update_publication(
-                conversation_id,
-                workspace.publication_pr_number,
-                workspace.publication_pr_url.as_deref(),
-                Some(status),
-                workspace.publication_push_status.as_deref(),
-            )
-            .await?;
+        let pr_number = workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number)
+            .or(workspace.publication_pr_number)
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "Review PR terminal settlement requires a linked pull request".to_string(),
+                )
+            })?;
         return workspace_repo
-            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                conversation_id.clone(),
-                format!("pr_{status}"),
-                "succeeded",
-                summary,
-                None,
-            ))
-            .await;
+            .settle_pr_review_terminal(conversation_id, pr_number, status, summary)
+            .await
+            .map(|settlement| settlement.superseded_action_ids);
     }
 
     workspace_repo
@@ -1421,33 +1585,30 @@ async fn mark_agent_workspace_pr_terminal(
             workspace.publication_push_status.as_deref(),
         )
         .await?;
-    workspace_repo
-        .append_publication_event({
-            let event = AgentConversationWorkspacePublicationEvent::new(
-                conversation_id.clone(),
-                format!("pr_{status}"),
-                "succeeded",
-                summary,
-                None,
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        format!("pr_{status}"),
+        "succeeded",
+        summary,
+        None,
+    );
+    let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
+    if let Some(pr_number) = workspace.publication_pr_number {
+        if let Err(error) = adapter
+            .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
+            .await
+        {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                status,
+                error = %error,
+                "Failed to record direct agent workspace terminal PR outcome"
             );
-            let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
-            if let Some(pr_number) = workspace.publication_pr_number {
-                if let Err(error) = adapter
-                    .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
-                    .await
-                {
-                    tracing::warn!(
-                        conversation_id = conversation_id.as_str(),
-                        pr_number,
-                        status,
-                        error = %error,
-                        "Failed to record direct agent workspace terminal PR outcome"
-                    );
-                }
-            }
-            event
-        })
-        .await
+        }
+    }
+    workspace_repo.append_publication_event(event).await?;
+    Ok(Vec::new())
 }
 
 async fn mark_agent_workspace_pr_merge_conflict_if_needed(

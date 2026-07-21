@@ -76,8 +76,10 @@ fn setup_db() -> Connection {
             ext_require_verification_for_proposals INTEGER,
             ext_require_accept_for_finalize INTEGER,
             auto_verify_plans INTEGER NOT NULL DEFAULT 0,
+            auto_verify_draft_plans INTEGER NOT NULL DEFAULT 1,
             ext_auto_verify_plans INTEGER,
-            tasks_enabled INTEGER NOT NULL DEFAULT 1
+            tasks_enabled INTEGER NOT NULL DEFAULT 1,
+            tasks_feature_state TEXT NOT NULL DEFAULT 'enabled'
         );
         INSERT INTO ideation_settings (id, tasks_enabled) VALUES (1, 1);
         CREATE TABLE agent_conversation_workspaces (
@@ -127,7 +129,9 @@ fn assessment_submission_rejects_stale_output_while_tasks_are_disabled() {
     let conn = setup_db();
     seed_current_plan(&conn, "planning", Some("approved"));
     conn.execute(
-        "UPDATE ideation_settings SET tasks_enabled = 0 WHERE id = 1",
+        "UPDATE ideation_settings
+         SET tasks_enabled = 0, tasks_feature_state = 'disabled'
+         WHERE id = 1",
         [],
     )
     .unwrap();

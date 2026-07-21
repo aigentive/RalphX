@@ -88,6 +88,8 @@ pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepo
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
+    AgentWorkspacePrTerminalSettlement,
 };
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use manual_role_default_repository::ManualRoleDefaultRepository;

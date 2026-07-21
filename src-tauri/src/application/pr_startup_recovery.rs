@@ -20,6 +20,7 @@ use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_linked_plan_branch_agent_worktree_path,
     resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_terminal_cleanup::settle_review_pr_terminal_observation;
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_merged_plan_branch_local_artifacts_with_known_local_branches,
@@ -28,7 +29,7 @@ use crate::application::git_artifact_cleanup::{
 use crate::application::git_service::{git_cmd, FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
-use crate::application::TaskTransitionService;
+use crate::application::{NotificationService, TaskTransitionService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, ExecutionPlanId, ExecutionPlanStatus, InternalStatus,
@@ -40,7 +41,7 @@ use crate::domain::repositories::{
     TaskOutcomeRepository, TaskRepository,
 };
 use crate::domain::services::{
-    GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+    GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState, PrStatus,
     RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::{
@@ -1092,6 +1093,32 @@ pub async fn recover_agent_workspace_pr_pollers(
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
+    recover_agent_workspace_pr_pollers_with_notifications(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        pr_poller_registry,
+        agent_run_repo,
+        task_outcome_repo,
+        chat_service,
+        None,
+        blocked_git_project_ids,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn recover_agent_workspace_pr_pollers_with_notifications(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    pr_poller_registry: Arc<PrPollerRegistry>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+) {
     let mut workspaces = match workspace_repo
         .list_active_pr_poller_recovery_workspaces()
         .await
@@ -1110,39 +1137,22 @@ pub async fn recover_agent_workspace_pr_pollers(
         .iter()
         .map(|workspace| workspace.conversation_id.as_str().to_string())
         .collect::<HashSet<_>>();
-    match workspace_repo.list_active_pr_review_monitors().await {
-        Ok(monitors) => {
-            for monitor in monitors {
-                if !seen_conversations.insert(monitor.conversation_id.as_str().to_string()) {
+    match workspace_repo
+        .list_pr_review_lifecycle_recovery_workspaces()
+        .await
+    {
+        Ok(review_workspaces) => {
+            for workspace in review_workspaces {
+                if !seen_conversations.insert(workspace.conversation_id.as_str().to_string()) {
                     continue;
                 }
-                match workspace_repo
-                    .get_by_conversation_id(&monitor.conversation_id)
-                    .await
-                {
-                    Ok(Some(workspace)) => workspaces.push(workspace),
-                    Ok(None) => {
-                        tracing::warn!(
-                            conversation_id = monitor.conversation_id.as_str(),
-                            pr_number = monitor.pr_number,
-                            "Agent workspace PR startup recovery: active Review PR monitor has no workspace"
-                        );
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            conversation_id = monitor.conversation_id.as_str(),
-                            pr_number = monitor.pr_number,
-                            error = %error,
-                            "Agent workspace PR startup recovery: failed to load Review PR monitor workspace"
-                        );
-                    }
-                }
+                workspaces.push(workspace);
             }
         }
         Err(error) => {
             tracing::warn!(
                 error = %error,
-                "Agent workspace PR startup recovery: failed to list active Review PR monitors"
+                "Agent workspace PR startup recovery: failed to list Review PR lifecycle recovery workspaces"
             );
         }
     }
@@ -1169,6 +1179,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                 let agent_run_repo = Arc::clone(&agent_run_repo);
                 let task_outcome_repo = Arc::clone(&task_outcome_repo);
                 let chat_service = Arc::clone(&chat_service);
+                let notification_service = notification_service.as_ref().map(Arc::clone);
                 let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
                 async move {
                     recover_one_agent_workspace_pr_poller(
@@ -1180,6 +1191,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                         agent_run_repo,
                         task_outcome_repo,
                         chat_service,
+                        notification_service,
                         blocked_git_project_ids,
                     )
                     .await;
@@ -1198,13 +1210,14 @@ async fn recover_one_agent_workspace_pr_poller(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
 
-    if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+    let review_pr_monitor = if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
         let existing = match workspace_repo
             .get_pr_review_monitor(&workspace.conversation_id)
             .await
@@ -1219,7 +1232,7 @@ async fn recover_one_agent_workspace_pr_poller(
                 return;
             }
         };
-        if existing.is_none() {
+        if existing.is_none() && !workspace.has_terminal_publication_pr_status() {
             let head_sha = workspace
                 .source_pull_request
                 .as_ref()
@@ -1232,33 +1245,23 @@ async fn recover_one_agent_workspace_pr_poller(
             );
             monitor.monitor_enabled = true;
             monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
-            if let Err(error) = workspace_repo.upsert_pr_review_monitor(monitor).await {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    error = %error,
-                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
-                );
-                return;
+            match workspace_repo.upsert_pr_review_monitor(monitor).await {
+                Ok(monitor) => Some(monitor),
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        error = %error,
+                        "Agent workspace PR startup recovery: failed to create missing Review PR monitor"
+                    );
+                    return;
+                }
             }
-        } else if existing.as_ref().is_some_and(|monitor| {
-            !monitor.monitor_enabled
-                && monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
-        }) {
-            if let Err(error) = workspace_repo
-                .set_pr_review_monitor_enabled(&workspace.conversation_id, true)
-                .await
-            {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    error = %error,
-                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
-                );
-                return;
-            }
-        } else if existing.is_some_and(|monitor| !monitor.monitor_enabled) {
-            return;
+        } else {
+            existing
         }
-    }
+    } else {
+        None
+    };
 
     let project = match project_repo.get_by_id(&workspace.project_id).await {
         Ok(Some(project)) => project,
@@ -1280,6 +1283,52 @@ async fn recover_one_agent_workspace_pr_poller(
             return;
         }
     };
+
+    if workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+        && workspace.has_terminal_publication_pr_status()
+    {
+        let status = workspace
+            .publication_pr_status
+            .as_deref()
+            .expect("terminal status checked above");
+        let summary = if status == "merged" {
+            "Pull request merged"
+        } else {
+            "Pull request closed without merging"
+        };
+        match settle_review_pr_terminal_observation(
+            Arc::clone(&workspace_repo),
+            Arc::clone(&agent_run_repo),
+            Some(Arc::clone(&plan_branch_repo)),
+            Some(Arc::clone(&chat_service)),
+            notification_service,
+            &workspace.conversation_id,
+            &project,
+            pr_number,
+            status,
+            summary,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                if let Err(error) = outcome.require_runtime_shutdown() {
+                    tracing::warn!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error,
+                        "Agent workspace PR startup recovery: terminal authority converged with local cleanup pending"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                pr_number,
+                error = %error,
+                "Agent workspace PR startup recovery: failed to converge persisted terminal Review PR state"
+            ),
+        }
+        return;
+    }
 
     if blocked_git_project_ids.contains(&project.id) {
         tracing::warn!(
@@ -1315,6 +1364,104 @@ async fn recover_one_agent_workspace_pr_poller(
             return;
         }
     };
+
+    if review_pr_monitor
+        .as_ref()
+        .is_some_and(|monitor| monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal)
+    {
+        let live_status = match pr_poller_registry
+            .check_agent_workspace_pr_status_once(&worktree_path, pr_number)
+            .await
+        {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    "Agent workspace PR startup recovery: GitHub status is unavailable for terminal-monitor repair"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Agent workspace PR startup recovery: live terminal-monitor repair check failed"
+                );
+                return;
+            }
+        };
+        match live_status {
+            PrStatus::Open => {
+                match workspace_repo
+                    .rearm_terminal_pr_review_monitor_after_live_open(
+                        &workspace.conversation_id,
+                        pr_number,
+                    )
+                    .await
+                {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        tracing::warn!(
+                            conversation_id = workspace.conversation_id.as_str(),
+                            pr_number,
+                            "Agent workspace PR startup recovery: legacy terminal monitor lost repair authority"
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = workspace.conversation_id.as_str(),
+                            pr_number,
+                            error = %error,
+                            "Agent workspace PR startup recovery: failed to rearm open legacy terminal monitor"
+                        );
+                        return;
+                    }
+                }
+            }
+            PrStatus::Merged { .. } | PrStatus::Closed => {
+                let (status, summary) = match live_status {
+                    PrStatus::Merged { .. } => ("merged", "Pull request merged"),
+                    PrStatus::Closed => ("closed", "Pull request closed without merging"),
+                    PrStatus::Open => unreachable!(),
+                };
+                match settle_review_pr_terminal_observation(
+                    Arc::clone(&workspace_repo),
+                    Arc::clone(&agent_run_repo),
+                    Some(Arc::clone(&plan_branch_repo)),
+                    Some(Arc::clone(&chat_service)),
+                    notification_service,
+                    &workspace.conversation_id,
+                    &project,
+                    pr_number,
+                    status,
+                    summary,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if let Err(error) = outcome.require_runtime_shutdown() {
+                            tracing::warn!(
+                                conversation_id = workspace.conversation_id.as_str(),
+                                pr_number,
+                                error,
+                                "Agent workspace PR startup recovery: live terminal authority converged with local cleanup pending"
+                            );
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %error,
+                        "Agent workspace PR startup recovery: failed to settle live terminal Review PR authority"
+                    ),
+                }
+                return;
+            }
+        }
+    }
 
     if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
         match pr_poller_registry

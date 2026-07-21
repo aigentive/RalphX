@@ -102,7 +102,8 @@ pub use agent_conversation_workspace::{
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_run::{
-    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
+    AgentRunUsage,
     InterruptedConversation,
 };
 pub use agent_task::{

@@ -23,6 +23,8 @@ export declare function callPublishAgentWorkspaceTool(callTauri: TauriPost, args
 export declare function callGetAgentWorkspacePrFixContextTool(callTauriGet: TauriGet, args: unknown): Promise<unknown>;
 export declare function callGetPrReviewContextTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callGetWorkspaceReviewContextTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
+export declare function callListWorkspaceReviewFilesTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
+export declare function callGetWorkspaceReviewDiffPageTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callWriteWorkspaceReviewArtifactTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callCompleteWorkspaceReviewRunTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;

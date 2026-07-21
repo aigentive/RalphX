@@ -40,6 +40,9 @@ paths:
 | Fail closed | Missing settings/proof, malformed action metadata, ordinary chat turns, stale runs, and failed/cancelled runs never satisfy a required gate. |
 | Queue semantics survive | Typed action metadata must survive ordinary message queues and durable capacity-deferred pending prompts. |
 | One status projection | Status is derived from exact proof plus the typed action run/queue; do not add a second verification state machine. |
+| Completion admission is exact | Automatic review is admitted only after the latest ordinary Plan turn persists its assistant output and completes its own run CAS successfully. |
+| Fresh verifier process | A typed verifier turn never reuses an idle interactive Claude stdin process; provider session continuity may be retained. |
+| Approval notification follows review | While automatic draft verification is pending, defer the exact artifact's durable Plan Approval notification and all derived presentations until the verifier settles. |
 
 ## Runtime flow
 
@@ -54,6 +57,11 @@ CTA / auto policy / external MCP
   -> SQLite CAS checks live matching run + exact current artifact + owning conversation
   -> verified_plan_artifact_id and verified_plan_agent_run_id are stored
 ```
+
+With `auto_verify_draft_plans` enabled, successful completion of the latest ordinary turn in an
+active Plan workspace enters the same request path after assistant persistence and guarded run
+completion. Admission is conversation/session scoped and idempotent. Failed persistence, stale or
+superseded runs, non-Plan workspaces, and verifier turns do not trigger another review.
 
 ## Ownership map
 
@@ -70,12 +78,16 @@ CTA / auto policy / external MCP
 | Internal MCP | `plugins/app/ralphx-mcp-server/src/plan-tools.ts` |
 | External MCP | `plugins/app/ralphx-external-mcp/src/tools/ideation.ts` |
 | Product CTA/settings | Agent Plan surfaces + `IdeationSettingsPanel.tsx` |
+| Automatic admission | Ordinary chat turn finalizers + `admit_automatic_plan_verification` |
+| Interactive ownership | `InteractiveProcessRegistry` active/idle token and idle retirement |
+| Deferred approval presentation | `plan_approval_notification_service.rs` + durable exact-artifact marker |
 
 ## Policy
 
 | Setting | Default | Meaning |
 |---|---:|---|
-| `auto_verify_plans` | `false` | When verification is required, queue Verify Plan on an unverified acceptance attempt. Never trigger from drafting mutations. |
+| `auto_verify_draft_plans` | `true` | After a successful ordinary Plan turn publishes the current draft, queue one visible Verify Plan turn automatically. |
+| `auto_verify_plans` | `false` | Legacy acceptance fallback: when verification is required, queue Verify Plan on an unverified acceptance attempt. |
 | `require_verification_for_accept` | `false` | Reject acceptance unless proof matches the current artifact. |
 | External overrides | `null` | Inherit the base setting; session origin alone never forces verification. |
 
@@ -89,11 +101,14 @@ CTA / auto policy / external MCP
 - Failed/cancelled authoritative run clears or cannot establish proof.
 - Queued and capacity-deferred turns preserve typed metadata.
 - Duplicate manual/auto/external requests return already queued/running/verified.
+- Automatic admission rejects failed persistence, stale run CAS, non-latest runs, and non-Plan workspaces.
+- Automatic verifier settlement releases exactly one current-artifact Plan Approval notification on success or failure.
+- Startup reconciliation releases stranded deferred markers only after no verifier remains queued/running.
 - Required acceptance fails closed; advisory verification does not block.
 
 ## Removed surfaces
 
-Do not reintroduce fixed verifier/critic/specialist agents, hidden verification sessions, round/gap/convergence orchestration, confirmation dialogs, a Verification artifact tab, verification-specific chat widgets, revert/skip/stop controls, or startup reconciliation for verifier children.
+Do not reintroduce fixed verifier/critic/specialist agents, hidden verification sessions, round/gap/convergence orchestration, preflight confirmation for a first verification, a Verification artifact tab, verification-specific chat widgets, or revert/skip/stop controls. A manual rerun of an already verified artifact does require confirmation. Startup reconciliation is limited to durable deferred Plan Approval presentation; it must not recreate verifier children or runs.
 
 ## Validation
 

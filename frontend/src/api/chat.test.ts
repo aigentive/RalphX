@@ -3370,8 +3370,9 @@ describe("getConversationActiveState", () => {
   });
 
   it("fetches conversation active state with stats fields", async () => {
-    const mockResponse: ConversationActiveStateResponse = {
+    const mockResponse = {
       is_active: true,
+      run_id: "run-parent-123",
       tool_calls: [],
       streaming_tasks: [
         {
@@ -3419,6 +3420,7 @@ describe("getConversationActiveState", () => {
       backendApiUrl("conversations/conv-123/active-state"),
     );
     expect(result.is_active).toBe(true);
+    expect(result.runId).toBe("run-parent-123");
     expect(result.streaming_tasks).toHaveLength(1);
     const task = result.streaming_tasks[0];
     expect(task.tool_use_id).toBe("toolu_abc123");
@@ -3490,6 +3492,7 @@ describe("getConversationActiveState", () => {
           pr_number: 411,
           pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
           current_head_sha: "abcdef1234567890",
+          pending_action_head_status: "current",
           health: { merge_state_status: "Blocked" },
           review_feedback: null,
           monitor: rawMonitor(),
@@ -3516,6 +3519,7 @@ describe("getConversationActiveState", () => {
     expect(result.monitor?.lastReviewRunId).toBe("run-1");
     expect(result.monitor?.reviewArtifactHeadSha).toBe("abcdef1234567890");
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
+    expect(result.pendingActionHeadStatus).toBe("current");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
   });
@@ -3557,6 +3561,40 @@ describe("getConversationActiveState", () => {
     expect(result.reviewArtifactIsOutdated).toBe(false);
     expect(result.canMutateReviewState).toBe(false);
     expect(result.reviewRuntimeState).toBe("missing_runtime_identity");
+  });
+
+  it("forwards cancellation and full-target refresh options for workspace review context", async () => {
+    const controller = new AbortController();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [],
+          target: rawWorkspaceReviewTarget(),
+          monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: false,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
+          is_current: false,
+          is_outdated: false,
+          should_show_tab: true,
+        }),
+    });
+
+    await getAgentWorkspaceReviewContext("conversation/1", {
+      signal: controller.signal,
+      refreshTarget: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-context?refresh_target=true",
+      ),
+      { signal: controller.signal },
+    );
   });
 
   it("starts a general workspace review run through the encoded REST endpoint", async () => {

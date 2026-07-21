@@ -9,6 +9,7 @@ use crate::domain::entities::{
     BranchUpdateOperation, BranchUpdateOperationId, GitMutationClaim, GitTargetIdentity,
     GitTargetLease, GitTargetLeaseOwner, TaskId,
 };
+use crate::domain::ideation::TasksFeatureAction;
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
     BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
@@ -23,20 +24,44 @@ use crate::infrastructure::sqlite::DbConnection;
 
 pub struct SqliteBranchUpdateRepository {
     db: DbConnection,
+    enforce_tasks_feature_policy: bool,
 }
 
 impl SqliteBranchUpdateRepository {
     pub fn new(conn: Connection) -> Self {
         Self {
             db: DbConnection::new(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
 
     pub fn from_shared(conn: Arc<Mutex<Connection>>) -> Self {
         Self {
             db: DbConnection::from_shared(conn),
+            enforce_tasks_feature_policy: false,
         }
     }
+
+    pub(crate) fn with_tasks_feature_policy(mut self) -> Self {
+        self.enforce_tasks_feature_policy = true;
+        self
+    }
+}
+
+fn authorize_branch_update_progress(conn: &Connection, task_id: &TaskId) -> AppResult<()> {
+    let exists = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)",
+        [task_id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists {
+        return Err(AppError::TaskNotFound(task_id.as_str().to_string()));
+    }
+    crate::infrastructure::sqlite::sqlite_ideation_settings_repo::authorize_tasks_session_sync(
+        conn,
+        None,
+        TasksFeatureAction::Progress,
+    )
 }
 
 #[derive(Debug)]
@@ -376,8 +401,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: BranchUpdateActivation,
     ) -> AppResult<BranchUpdateActivationOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.operation.task_id)?;
+                }
                 let current_status: Option<String> = conn
                     .query_row(
                         "SELECT internal_status FROM tasks WHERE id = ?1",
@@ -506,8 +535,17 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: BeginGitMutation,
     ) -> AppResult<GitAuthorityCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    if let Some(task_id) = request.owner.task_id.as_ref() {
+                        authorize_branch_update_progress(
+                            conn,
+                            &TaskId::from_string(task_id.clone()),
+                        )?;
+                    }
+                }
                 let current = load_lease_authority(conn, &request.identity)?;
                 if let Some(outcome) =
                     classify_authority(current.as_ref(), &request.owner, request.fencing_epoch)
@@ -616,8 +654,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: CheckpointBranchUpdateResult,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let epoch = i64::try_from(request.fencing_epoch)
                     .map_err(|_| AppError::Database("target lease epoch overflow".to_string()))?;
                 let changed = conn.execute(
@@ -660,8 +702,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: SettleBranchUpdateProgrammatic,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let identity = conn
                     .query_row(
                         "SELECT git_common_dir, target_ref FROM branch_update_operations
@@ -720,8 +766,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: BlockBranchUpdate,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let conflicts = serde_json::to_string(&request.conflict_files)
                     .map_err(|error| AppError::Database(error.to_string()))?;
                 let changed = conn.execute(
@@ -803,8 +853,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: MarkBranchUpdateResolving,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let conflicts = serde_json::to_string(&request.conflict_files)
                     .map_err(|error| AppError::Database(error.to_string()))?;
                 let epoch = i64::try_from(request.fencing_epoch)
@@ -981,8 +1035,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: ClaimBranchUpdateContinuation,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let changed = conn.execute(
                     "UPDATE branch_update_operations SET phase = 'continuation_in_progress',
                         continuation_claim_id = ?1, continuation_idempotency_key = ?2,
@@ -1014,8 +1072,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: CompleteBranchUpdateContinuation,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let now = Utc::now().to_rfc3339();
                 let epoch = i64::try_from(request.fencing_epoch)
                     .map_err(|_| AppError::Database("target lease epoch overflow".to_string()))?;
@@ -1351,9 +1413,11 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
                     return Ok(BranchUpdateCasOutcome::Stale);
                 }
                 if conn.execute(
-                    "UPDATE tasks SET internal_status = 'paused', updated_at = ?1
-                     WHERE id = ?2 AND internal_status = ?3",
+                    "UPDATE tasks
+                     SET internal_status = 'paused', metadata = COALESCE(?1, metadata), updated_at = ?2
+                     WHERE id = ?3 AND internal_status = ?4",
                     params![
+                        request.task_metadata,
                         now,
                         request.task_id.as_str(),
                         request.update_status.as_str()
@@ -1388,8 +1452,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: ResumeBranchUpdate,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let now = Utc::now().to_rfc3339();
                 let epoch = i64::try_from(request.fencing_epoch)
                     .map_err(|_| AppError::Database("target lease epoch overflow".to_string()))?;
@@ -1547,8 +1615,12 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
         &self,
         request: RetryBranchUpdate,
     ) -> AppResult<BranchUpdateCasOutcome> {
+        let enforce_tasks_feature_policy = self.enforce_tasks_feature_policy;
         self.db
             .run_transaction(move |conn| {
+                if enforce_tasks_feature_policy {
+                    authorize_branch_update_progress(conn, &request.task_id)?;
+                }
                 let now = Utc::now().to_rfc3339();
                 let epoch = i64::try_from(request.fencing_epoch)
                     .map_err(|_| AppError::Database("target lease epoch overflow".to_string()))?;

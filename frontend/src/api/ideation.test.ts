@@ -1043,6 +1043,7 @@ describe("ideationApi.settings.update — payload regression", () => {
     suggest_plans_for_complex: true,
     auto_link_proposals: true,
     auto_verify_plans: false,
+    auto_verify_draft_plans: true,
     require_accept_for_finalize: true,
     require_verification_for_accept: false,
     require_verification_for_proposals: false,
@@ -1058,6 +1059,7 @@ describe("ideationApi.settings.update — payload regression", () => {
     mockInvoke.mockResolvedValue(baseSettingsResponse);
 
     await ideationApi.settings.update({
+      autoVerifyDraftPlans: true,
       autoVerifyPlans: false,
       requireAcceptForFinalize: true,
       requireVerificationForAccept: false,
@@ -1076,6 +1078,7 @@ describe("ideationApi.settings.update — payload regression", () => {
     mockInvoke.mockResolvedValue(baseSettingsResponse);
 
     await ideationApi.settings.update({
+      autoVerifyDraftPlans: false,
       autoVerifyPlans: true,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: true,
@@ -1088,6 +1091,7 @@ describe("ideationApi.settings.update — payload regression", () => {
 
     const calledSettings = mockInvoke.mock.calls[0]![1].settings;
     expect(calledSettings).toHaveProperty("require_verification_for_accept", true);
+    expect(calledSettings).toHaveProperty("auto_verify_draft_plans", false);
     expect(calledSettings).toHaveProperty("auto_verify_plans", true);
     expect(calledSettings).toHaveProperty("require_verification_for_proposals", false);
     expect(calledSettings).toHaveProperty("external_overrides", {
@@ -1096,5 +1100,48 @@ describe("ideationApi.settings.update — payload regression", () => {
       require_verification_for_proposals: null,
       require_accept_for_finalize: null,
     });
+  });
+});
+
+describe("ideationApi.settings — Tasks feature controls", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("maps the disable impact response to the frontend contract", async () => {
+    mockInvoke.mockResolvedValue({
+      active_standalone_tasks: 2,
+      active_attached_agent_workspaces: 1,
+      paused_or_blocked_tasks: 3,
+      active_branch_update_operations: 1,
+      affected_task_ids: ["task-1"],
+      affected_conversation_ids: ["conversation-1"],
+      affected_project_ids: ["project-1"],
+    });
+
+    await expect(ideationApi.settings.getDisableImpact()).resolves.toEqual({
+      activeStandaloneTasks: 2,
+      activeAttachedAgentWorkspaces: 1,
+      pausedOrBlockedTasks: 3,
+      activeBranchUpdateOperations: 1,
+      affectedTaskIds: ["task-1"],
+      affectedConversationIds: ["conversation-1"],
+      affectedProjectIds: ["project-1"],
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_tasks_disable_impact", {});
+  });
+
+  it("sends the requested Tasks feature state and transforms the response", async () => {
+    mockInvoke.mockResolvedValue({
+      tasks_enabled: false,
+      tasks_feature_state: "disabled",
+      require_accept_for_finalize: false,
+    });
+
+    await expect(ideationApi.settings.setTasksEnabled(false)).resolves.toMatchObject({
+      tasksEnabled: false,
+      tasksFeatureState: "disabled",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("set_tasks_feature_enabled", { enabled: false });
   });
 });

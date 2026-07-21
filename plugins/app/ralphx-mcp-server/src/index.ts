@@ -1013,16 +1013,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         explicitParentConversationId ??
         RALPHX_PARENT_CONVERSATION_ID ??
         RALPHX_CONVERSATION_ID;
-      result = await callTauri("coordination/delegate/start", {
-        ...delegateArgs,
-        ...(parentConversationId
-          ? { parent_conversation_id: parentConversationId }
-          : {}),
-        caller_agent_name: AGENT_TYPE,
-        caller_agent_profile: RALPHX_AGENT_PROFILE,
-        caller_context_type: RALPHX_CONTEXT_TYPE,
-        caller_context_id: RALPHX_CONTEXT_ID,
-      });
+      result = await callTauri(
+        "coordination/delegate/start",
+        {
+          ...delegateArgs,
+          ...(parentConversationId
+            ? { parent_conversation_id: parentConversationId }
+            : {}),
+          caller_agent_name: AGENT_TYPE,
+          caller_agent_profile: RALPHX_AGENT_PROFILE,
+          caller_context_type: RALPHX_CONTEXT_TYPE,
+          caller_context_id: RALPHX_CONTEXT_ID,
+        },
+        {
+          headers: {
+            "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          },
+        },
+      );
     } else if (name === "delegate_wait") {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
     } else if (name === "delegate_cancel") {

@@ -16,11 +16,3 @@ export function getComposerSelectionSourceLabel(
 ): string {
   return snapshot.sourceKey ?? snapshot.sourceTitle ?? SOURCE_FALLBACK_LABELS[snapshot.sourceKind];
 }
-
-export function getComposerSelectionSourceNoun(
-  sourceKind: ComposerSelectionSnapshot["sourceKind"],
-): string {
-  if (sourceKind === "plan") return "plan";
-  if (sourceKind === "granola") return "Granola note";
-  return "ticket";
-}

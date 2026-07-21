@@ -32,6 +32,7 @@ export interface ManualRoleCatalogEntry {
   description: string;
   family: string;
   familyDisplayName: string;
+  requiresTasks: boolean;
   configured: ManualRoleDefault | null;
   effective: ManualRoleDefault | null;
   source: string | null;

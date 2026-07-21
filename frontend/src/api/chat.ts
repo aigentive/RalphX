@@ -522,10 +522,23 @@ export interface ActiveStreamingTaskResponse {
  */
 export interface ConversationActiveStateResponse {
   is_active: boolean;
+  runId?: string;
   tool_calls: unknown[];
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
 }
+
+const ConversationActiveStateResponseSchema = z.object({
+  is_active: z.boolean(),
+  run_id: z.string().min(1).optional(),
+  tool_calls: z.array(z.unknown()).default([]),
+  streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
+    if (value == null || typeof value !== "object") return false;
+    const record = value as Record<string, unknown>;
+    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+  })).default([]),
+  partial_text: z.string().default(""),
+});
 
 /**
  * Fetch the active streaming state for a conversation.
@@ -544,7 +557,14 @@ export async function getConversationActiveState(
   if (!res.ok) {
     throw new Error(`Failed to get conversation active state: ${res.status}`);
   }
-  return res.json() as Promise<ConversationActiveStateResponse>;
+  const parsed = ConversationActiveStateResponseSchema.parse(await res.json());
+  return {
+    is_active: parsed.is_active,
+    ...(parsed.run_id ? { runId: parsed.run_id } : {}),
+    tool_calls: parsed.tool_calls,
+    streaming_tasks: parsed.streaming_tasks,
+    partial_text: parsed.partial_text,
+  };
 }
 
 // ============================================================================
@@ -2179,6 +2199,11 @@ export type AgentWorkspacePrReviewActionStatus =
   | "failed"
   | "superseded";
 
+export type AgentWorkspacePrReviewActionHeadStatus =
+  | "current"
+  | "stale"
+  | "unverified";
+
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
   projectId: string;
@@ -2226,6 +2251,7 @@ export interface AgentWorkspacePrReviewContext {
   prNumber: number;
   prUrl: string | null;
   currentHeadSha: string | null;
+  pendingActionHeadStatus: AgentWorkspacePrReviewActionHeadStatus | null;
   health: unknown | null;
   reviewFeedback: unknown | null;
   monitor: AgentWorkspacePrReviewMonitor | null;
@@ -2591,6 +2617,9 @@ const AgentWorkspacePrReviewContextResponseSchema = z.object({
   pr_number: z.number(),
   pr_url: z.string().nullable(),
   current_head_sha: z.string().nullable(),
+  pending_action_head_status: z
+    .enum(["current", "stale", "unverified"])
+    .nullable(),
   health: z.unknown().nullable(),
   review_feedback: z.unknown().nullable(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema.nullable(),
@@ -2996,7 +3025,7 @@ function transformAgentConversationWorkspace(
   };
 }
 
-function sourcePullRequestInvokeInput(
+export function sourcePullRequestInvokeInput(
   sourcePullRequest: AgentConversationSourcePullRequest,
 ) {
   return {
@@ -3257,6 +3286,7 @@ function transformAgentWorkspacePrReviewContext(
     prNumber: raw.pr_number,
     prUrl: raw.pr_url,
     currentHeadSha: raw.current_head_sha,
+    pendingActionHeadStatus: raw.pending_action_head_status,
     health: raw.health,
     reviewFeedback: raw.review_feedback,
     monitor: raw.monitor
@@ -3608,10 +3638,16 @@ export async function getAgentWorkspacePrReviewContext(
 
 export async function getAgentWorkspaceReviewContext(
   conversationId: string,
+  options: {
+    signal?: AbortSignal;
+    refreshTarget?: boolean;
+  } = {},
 ): Promise<AgentWorkspaceReviewContext> {
+  const query = options.refreshTarget ? "?refresh_target=true" : "";
   const raw = await fetchAgentWorkspaceJson(
-    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context`,
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context${query}`,
     AgentWorkspaceReviewContextResponseSchema,
+    options.signal ? { signal: options.signal } : undefined,
   );
   return transformAgentWorkspaceReviewContext(raw);
 }

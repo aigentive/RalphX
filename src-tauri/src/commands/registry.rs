@@ -93,6 +93,7 @@ macro_rules! register_tauri_commands {
             commands::task_commands::query::search_tasks,
             commands::task_commands::query::get_valid_transitions,
             commands::task_commands::query::get_tasks_awaiting_review,
+            commands::task_commands::query::get_session_task_history_availability,
             commands::task_commands::query::get_task_state_transitions,
             commands::task_commands::query::get_task_dependency_graph,
             commands::task_commands::query::get_task_timeline_events,
@@ -263,6 +264,8 @@ macro_rules! register_tauri_commands {
             // Ideation settings commands
             commands::ideation_commands::get_ideation_settings,
             commands::ideation_commands::update_ideation_settings,
+            commands::ideation_commands::get_tasks_disable_impact,
+            commands::ideation_commands::set_tasks_feature_enabled,
             // Agent lane settings commands
             commands::ideation_commands::get_agent_lane_settings,
             commands::ideation_commands::get_agent_harness_availability,

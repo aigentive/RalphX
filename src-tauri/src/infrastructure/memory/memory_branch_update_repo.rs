@@ -49,7 +49,12 @@ impl MemoryBranchUpdateRepository {
             .insert(task_id, status);
     }
 
-    async fn mirror_task_status(&self, task_id: &TaskId, status: InternalStatus) -> AppResult<()> {
+    async fn mirror_task_status(
+        &self,
+        task_id: &TaskId,
+        status: InternalStatus,
+        metadata: Option<String>,
+    ) -> AppResult<()> {
         let Some(repository) = self.task_repository.as_ref() else {
             return Ok(());
         };
@@ -59,6 +64,9 @@ impl MemoryBranchUpdateRepository {
             ));
         };
         task.internal_status = status;
+        if metadata.is_some() {
+            task.metadata = metadata;
+        }
         task.touch();
         repository.update(&task).await
     }
@@ -212,7 +220,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
         let task_id = operation.task_id.clone();
         state.operations.insert(operation_id.clone(), operation);
         drop(state);
-        self.mirror_task_status(&task_id, request.update_status)
+        self.mirror_task_status(&task_id, request.update_status, None)
             .await?;
         Ok(BranchUpdateActivationOutcome::Applied {
             operation_id,
@@ -409,7 +417,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), InternalStatus::BranchUpdateBlocked);
         drop(state);
-        self.mirror_task_status(&request.task_id, InternalStatus::BranchUpdateBlocked)
+        self.mirror_task_status(&request.task_id, InternalStatus::BranchUpdateBlocked, None)
             .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }
@@ -566,7 +574,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), request.destination_status);
         drop(state);
-        self.mirror_task_status(&request.task_id, request.destination_status)
+        self.mirror_task_status(&request.task_id, request.destination_status, None)
             .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }
@@ -670,8 +678,12 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), InternalStatus::Paused);
         drop(state);
-        self.mirror_task_status(&request.task_id, InternalStatus::Paused)
-            .await?;
+        self.mirror_task_status(
+            &request.task_id,
+            InternalStatus::Paused,
+            request.task_metadata,
+        )
+        .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }
 
@@ -705,7 +717,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), request.update_status);
         drop(state);
-        self.mirror_task_status(&request.task_id, request.update_status)
+        self.mirror_task_status(&request.task_id, request.update_status, None)
             .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }
@@ -752,7 +764,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), InternalStatus::Stopped);
         drop(state);
-        self.mirror_task_status(&request.task_id, InternalStatus::Stopped)
+        self.mirror_task_status(&request.task_id, InternalStatus::Stopped, None)
             .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }
@@ -831,7 +843,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .task_statuses
             .insert(request.task_id.clone(), request.update_status);
         drop(state);
-        self.mirror_task_status(&request.task_id, request.update_status)
+        self.mirror_task_status(&request.task_id, request.update_status, None)
             .await?;
         Ok(BranchUpdateCasOutcome::Applied)
     }

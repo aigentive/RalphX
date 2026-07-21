@@ -220,7 +220,9 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
   useIdeationSettings: () => ({
     settings: {
       tasksEnabled: tasksEnabledRef.current,
+      tasksFeatureState: tasksEnabledRef.current ? "enabled" : "disabled",
       autoVerifyPlans: false,
+      autoVerifyDraftPlans: true,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: false,
       externalOverrides: {},
@@ -402,12 +404,15 @@ vi.mock("@/components/Ideation/VerificationPanel", () => ({
 vi.mock("@/components/tasks/TaskBoard", () => ({
   TaskBoard: ({
     onTaskSelect,
+    readOnly,
   }: {
     onTaskSelect?: (taskId: string) => void;
+    readOnly?: boolean;
   }) => (
     <button
       type="button"
       data-testid="mock-agent-task-card"
+      data-read-only={readOnly ? "true" : "false"}
       onClick={() => onTaskSelect?.("task-1")}
     >
       Open task
@@ -418,10 +423,12 @@ vi.mock("@/components/tasks/TaskBoard", () => ({
 vi.mock("@/components/TaskGraph", () => ({
   TaskGraphView: ({
     hidePlanSelector,
+    readOnly,
   }: {
     hidePlanSelector?: boolean;
+    readOnly?: boolean;
   }) => (
-    <div data-testid="mock-agent-task-graph">
+    <div data-testid="mock-agent-task-graph" data-read-only={readOnly ? "true" : "false"}>
       <div data-testid="floating-graph-filters">Graph filters</div>
       {!hidePlanSelector && (
         <div data-testid="global-plan-selector">Global plan selector</div>
@@ -435,6 +442,7 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
     onFocusTaskRuntime,
     selectedTaskIdOverride,
     onCloseOverride,
+    readOnly,
   }: {
     onFocusTaskRuntime?: (
       taskId: string,
@@ -442,11 +450,13 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
     ) => void;
     selectedTaskIdOverride?: string | null;
     onCloseOverride?: () => void;
+    readOnly?: boolean;
   }) =>
     selectedTaskIdOverride ? (
       <div
         data-testid="mock-agent-task-detail"
         data-task-id={selectedTaskIdOverride}
+        data-read-only={readOnly ? "true" : "false"}
       >
         <button
           type="button"
@@ -581,10 +591,25 @@ vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
 
 vi.mock("@/hooks/useTasks", () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
+  useSessionTaskHistoryAvailability: (_projectId: string, sessionId: string | null) => {
+    const result = useTasksMock() as {
+      data?: Array<{ ideationSessionId?: string | null }>;
+      isError?: boolean;
+    };
+    const taskCount = (result.data ?? []).filter(
+      (task) => task.ideationSessionId === sessionId,
+    ).length;
+    return {
+      data: { hasHistory: taskCount > 0, taskCount },
+      isError: result.isError ?? false,
+    };
+  },
   taskKeys: {
     all: ["tasks"],
     lists: () => ["tasks", "list"],
     list: (projectId: string) => ["tasks", "list", projectId],
+    sessionHistory: (projectId: string, sessionId: string) =>
+      ["tasks", "session-history", projectId, sessionId],
   },
 }));
 
@@ -1288,6 +1313,7 @@ function prReviewContext(
     prNumber: 78,
     prUrl: "https://github.com/mock/project/pull/78",
     currentHeadSha: "head-sha",
+    pendingActionHeadStatus: "current",
     health: null,
     reviewFeedback: null,
     monitor: {
@@ -1600,6 +1626,7 @@ describe("AgentsArtifactPane", () => {
       prNumber: 78,
       prUrl: "https://github.com/mock/project/pull/78",
       currentHeadSha: "head-sha",
+      pendingActionHeadStatus: "current",
       health: null,
       reviewFeedback: null,
       monitor: null,
@@ -1898,6 +1925,29 @@ describe("AgentsArtifactPane", () => {
       startConversationDraft: null,
     });
     useChatStore.getState().setActiveConversation("project:project-1", null);
+  });
+
+  it("keeps one workspace toolbar fixed between the tabs and scrolling content", async () => {
+    const user = userEvent.setup();
+    renderControlledPane("publish", workspace({ mode: "edit" }));
+
+    const tabRow = screen.getByTestId("agents-artifact-tab-row");
+    const toolbar = screen.getByTestId("agents-workspace-toolbar");
+    const publishContent = screen.getByTestId(
+      "agents-artifact-content-publish",
+    );
+    expect(tabRow.nextElementSibling).toBe(toolbar);
+    expect(toolbar.nextElementSibling).toBe(publishContent);
+    expect(
+      screen.queryByTestId("agents-publish-metadata-strip"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-artifact-tab-plan"));
+
+    expect(screen.getByTestId("agents-workspace-toolbar")).toBe(toolbar);
+    expect(toolbar.nextElementSibling).toBe(
+      screen.getByTestId("agents-artifact-content-plan"),
+    );
   });
 
   it.each([
@@ -2371,6 +2421,69 @@ describe("AgentsArtifactPane", () => {
       "task-1",
     );
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("keeps durable task history visible and read-only while Tasks are off", async () => {
+    tasksEnabledRef.current = false;
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-1", ideationSessionId: "session-1" })],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+    );
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "kanban" },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
+      "Tasks are off",
+    );
+    const card = screen.getByTestId("mock-agent-task-card");
+    expect(card).toHaveAttribute("data-read-only", "true");
+    fireEvent.click(card);
+    expect(await screen.findByTestId("mock-agent-task-detail")).toHaveAttribute(
+      "data-read-only",
+      "true",
+    );
+  });
+
+  it("keeps a read-only Tasks shell visible when history availability fails", async () => {
+    useTasksMock.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+    );
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "graph" },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
+      "Task history could not be checked",
+    );
+    expect(screen.getByTestId("mock-agent-task-graph")).toHaveAttribute(
+      "data-read-only",
+      "true",
+    );
   });
 
   it("shows graph filters without the global plan selector in the Tasks artifact", async () => {
@@ -2881,6 +2994,89 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
   });
 
+  it("fails closed when a focused automation run has no workspace", async () => {
+    getConversationWorkspaceMock.mockResolvedValue(null);
+
+    renderPane(
+      "plan",
+      workspace({
+        conversationId: "conversation-setup",
+        branchName: "parent-workspace-branch",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-without-workspace",
+          conversationId: "conversation-run-without-workspace",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByText("Workspace status unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading workspace status…")).not.toBeInTheDocument();
+  });
+
+  it("does not render cached focused workspace metadata after its refresh fails", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace("conversation-run-stale"),
+      workspace({
+        conversationId: "conversation-run-stale",
+        branchName: "stale-focused-branch",
+        mode: "plan",
+      }),
+      { updatedAt: 0 },
+    );
+    getConversationWorkspaceMock.mockRejectedValue(
+      new Error("Focused workspace refresh failed"),
+    );
+
+    renderPane(
+      "plan",
+      workspace({
+        conversationId: "conversation-setup",
+        branchName: "parent-workspace-branch",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-stale",
+          conversationId: "conversation-run-stale",
+        },
+      },
+      queryClient,
+    );
+
+    expect(
+      await screen.findByText("Workspace status unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("stale-focused-branch")).not.toBeInTheDocument();
+    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
+  });
+
   it("keeps the empty Plan tab visible when Review is also available", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -3235,6 +3431,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
         "conversation-1",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
     await screen.findByTestId("agents-artifact-tab-review");
@@ -3395,6 +3592,39 @@ describe("AgentsArtifactPane", () => {
     expect(toastMessageMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the parent Review owner while a reviewer child conversation is selected", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        conversationId: "parent-conversation",
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "review",
+      workspace({ conversationId: "parent-conversation", mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "review-child-conversation",
+        parentConversationId: "parent-conversation",
+      },
+    );
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "parent-conversation",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalledWith(
+      "review-child-conversation",
+      expect.anything(),
+    );
   });
 
   it("keeps a failed Review start visible after the mutation settles", async () => {
@@ -4114,7 +4344,7 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("polls the Review context while the background review is preparing", async () => {
+  it("keeps the artifact pane as a passive Review observer", async () => {
     vi.useFakeTimers();
     try {
       getWorkspaceReviewContextMock.mockResolvedValue(
@@ -4145,7 +4375,7 @@ describe("AgentsArtifactPane", () => {
         await vi.advanceTimersByTimeAsync(2_000);
       });
 
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(2);
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -4178,6 +4408,7 @@ describe("AgentsArtifactPane", () => {
       prNumber: 78,
       prUrl: "https://github.com/mock/project/pull/78",
       currentHeadSha: "head-sha",
+      pendingActionHeadStatus: "current",
       health: null,
       reviewFeedback: null,
       monitor: {
@@ -4422,7 +4653,9 @@ describe("AgentsArtifactPane", () => {
         true,
       ),
     );
-    expect(toastSuccessMock).toHaveBeenCalledWith("PR review monitoring paused");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "New-head PR reviews paused; lifecycle monitoring continues",
+    );
   });
 
   it("asks whether to finish or cancel an active PR review before stopping", async () => {
@@ -5022,7 +5255,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText(/Auto Publish is waiting/i)).toBeInTheDocument();
     expect(screen.getByText("PR conflicts")).toBeInTheDocument();
     expect(
-      screen.getByTestId("agents-publish-push-status-pill"),
+      screen.getByTestId("agents-workspace-sync-status"),
     ).toHaveTextContent("Conflicting");
     await user.click(screen.getByRole("button", { name: "Resolve conflicts" }));
     await user.click(
@@ -5436,7 +5669,10 @@ describe("AgentsArtifactPane", () => {
       expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"),
     );
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
   });
 
   it("hydrates a Plan workspace from a plan artifact tool result when the workspace link is stale", async () => {
@@ -6423,7 +6659,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
-  it("ignores a project active execution plan that belongs to another planning session", async () => {
+  it("keeps durable session history visible when the active execution plan is foreign", async () => {
     usePlanStore.setState({
       activePlanByProject: { "project-1": "session-other" },
       activeExecutionPlanIdByProject: { "project-1": "exec-foreign" },
@@ -6463,7 +6699,7 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
     expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
   });
 
   it("opens the Tasks tab from the accepted Plan progress banner", async () => {
@@ -7875,6 +8111,38 @@ describe("AgentsArtifactPane", () => {
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
+  it("keeps a verified Plan banner control and confirms a manual rerun", async () => {
+    useVerificationStatusMock.mockReturnValue({
+      data: { status: "verified", inProgress: false },
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({ mode: "plan", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Verified" }),
+    );
+
+    expect(screen.getByText("Verify this plan again?")).toBeInTheDocument();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Verify again" }),
+    );
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1"),
+    );
+  });
+
   it("hides right-side approved plan CTAs when the workspace has changes", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -8112,7 +8380,10 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
     expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
       "session-1",
       "verification",
@@ -8989,14 +9260,18 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    fireEvent.click(await screen.findByTestId("agents-open-pr-url"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open PR #78 in GitHub" }),
+    );
 
-    expect(openUrlMock).toHaveBeenCalledWith(
-      "https://github.com/mock/project/pull/78",
+    await waitFor(() =>
+      expect(openUrlMock).toHaveBeenCalledWith(
+        "https://github.com/mock/project/pull/78",
+      ),
     );
   });
 
-  it("shows the PR link with readable URL in the compact metadata strip", async () => {
+  it("shows the PR link in the persistent workspace toolbar", async () => {
     renderPane(
       "publish",
       workspace({
@@ -9006,15 +9281,17 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    expect(
-      screen.getByTestId("agents-publish-metadata-strip"),
-    ).toBeInTheDocument();
-    const prUrl = await screen.findByTestId("agents-open-pr-url");
+    expect(screen.getByTestId("agents-workspace-toolbar")).toBeInTheDocument();
+    const prUrl = await screen.findByRole("button", {
+      name: "Open PR #78 in GitHub",
+    });
     expect(prUrl).toHaveTextContent("PR #78");
     fireEvent.click(prUrl);
 
-    expect(openUrlMock).toHaveBeenCalledWith(
-      "https://github.com/mock/project/pull/78",
+    await waitFor(() =>
+      expect(openUrlMock).toHaveBeenCalledWith(
+        "https://github.com/mock/project/pull/78",
+      ),
     );
   });
 
@@ -9344,11 +9621,11 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
       "feature/agent-screen",
     );
-    expect(screen.getByTestId("agents-publish-status-pill")).toHaveAttribute(
+    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
       "style",
-      expect.stringContaining("border-color: var(--overlay-weak)"),
+      expect.stringContaining("border-color: var(--border-subtle)"),
     );
-    expect(screen.getByTestId("agents-publish-status-pill")).toHaveAttribute(
+    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
       "style",
       expect.stringContaining("color: var(--text-secondary)"),
     );
@@ -10116,7 +10393,7 @@ describe("AgentsArtifactPane", () => {
       "agents-publish-repair-state",
     );
     const actionbar = screen.getByTestId("agents-publish-actionbar");
-    const metadataStrip = screen.getByTestId("agents-publish-metadata-strip");
+    const workspaceToolbar = screen.getByTestId("agents-workspace-toolbar");
     expect(repairState).toBeInTheDocument();
     expect(
       within(actionbar).getByText(/RalphX routed this workspace to the agent/),
@@ -10134,7 +10411,7 @@ describe("AgentsArtifactPane", () => {
     ).toHaveLength(1);
     expect(screen.queryByTestId("agents-base-stale")).not.toBeInTheDocument();
     expect(
-      within(metadataStrip).getByTestId("agents-publish-push-status-pill"),
+      within(workspaceToolbar).getByTestId("agents-workspace-sync-status"),
     ).toHaveTextContent("Repair pending");
     await waitFor(() =>
       expect(

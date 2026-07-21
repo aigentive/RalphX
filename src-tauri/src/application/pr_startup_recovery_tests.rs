@@ -19,7 +19,8 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatu
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId,
     PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
@@ -154,6 +155,7 @@ struct ReviewPrPollerRecoveryFixture {
     project_repo: Arc<dyn ProjectRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     registry: Arc<PrPollerRegistry>,
+    github: Arc<MockGithubService>,
     conversation_id: ChatConversationId,
     workspace: AgentConversationWorkspace,
 }
@@ -219,6 +221,7 @@ async fn setup_review_pr_poller_recovery_fixture(
         project_repo,
         plan_branch_repo,
         registry,
+        github,
         conversation_id,
         workspace,
     }
@@ -588,12 +591,57 @@ async fn startup_agent_workspace_pr_recovery_rearms_legacy_terminal_review_pr_mo
         monitor.status,
         AgentWorkspacePrReviewMonitorStatus::Watching
     );
+    assert!(fixture.github.state().check_pr_status_calls >= 1);
     assert!(fixture
         .registry
         .is_agent_workspace_polling(&fixture.conversation_id));
     fixture
         .registry
         .stop_agent_workspace_polling(&fixture.conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_settles_terminal_monitor_from_remote_authority() {
+    init_tracing();
+
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-1818-1919-2020-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-terminal-monitor-merged",
+    )
+    .await;
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        fixture.conversation_id.clone(),
+        fixture.workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = false;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+    fixture
+        .workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .unwrap();
+    fixture
+        .github
+        .will_return_status(crate::domain::services::github_service::PrStatus::Merged {
+            merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: Some("2026-07-21T00:00:00Z".to_string()),
+        });
+
+    recover_review_pr_poller_fixture(&fixture).await;
+
+    let workspace = fixture
+        .workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(fixture.github.state().check_pr_status_calls, 1);
+    assert!(!fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
 }
 
 #[tokio::test]
@@ -629,9 +677,84 @@ async fn startup_agent_workspace_pr_recovery_preserves_paused_review_pr_monitor(
         .expect("paused monitor should remain present");
     assert!(!monitor.monitor_enabled);
     assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Paused);
+    assert!(fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
+    fixture
+        .registry
+        .stop_agent_workspace_polling(&fixture.conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_converges_persisted_terminal_workspace() {
+    init_tracing();
+
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-2222-2323-2424-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-persisted-terminal",
+    )
+    .await;
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        fixture.conversation_id.clone(),
+        fixture.workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    fixture
+        .workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .unwrap();
+    let action = fixture
+        .workspace_repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            fixture.conversation_id.clone(),
+            101,
+            "old-head".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Approve".to_string(),
+            "Looks good".to_string(),
+            None,
+            Some("run-terminal".to_string()),
+        ))
+        .await
+        .unwrap();
+    let mut terminal_workspace = fixture.workspace.clone();
+    terminal_workspace.publication_pr_status = Some("merged".to_string());
+    fixture
+        .workspace_repo
+        .create_or_update(terminal_workspace)
+        .await
+        .unwrap();
+
+    recover_review_pr_poller_fixture(&fixture).await;
+
+    assert_eq!(
+        fixture
+            .workspace_repo
+            .get_pr_review_monitor(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    );
+    assert_eq!(
+        fixture
+            .workspace_repo
+            .get_pr_review_action(&action.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkspacePrReviewActionStatus::Superseded
+    );
     assert!(!fixture
         .registry
         .is_agent_workspace_polling(&fixture.conversation_id));
+    assert_eq!(fixture.github.state().check_pr_status_calls, 0);
 }
 
 #[tokio::test]

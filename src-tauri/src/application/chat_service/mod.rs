@@ -76,7 +76,8 @@ use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
     AgentConversationLinearIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
+    AgentRunStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
@@ -4166,6 +4167,7 @@ impl<R: Runtime> AppChatService<R> {
                     interactive_key_for_register,
                     child_stdin,
                     InteractiveProcessMetadata {
+                        agent_run_id: Some(agent_run_id.to_string()),
                         harness: Some(resolved_spawn_settings.effective_harness),
                         provider_session_id: stored_session_id.map(str::to_string),
                         persona_id: registered_persona_id,
@@ -4972,6 +4974,68 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 context_id,
             )
             .map_err(ChatServiceError::InvalidInput)?;
+        }
+        let requires_fresh_action_process = AgentRunAction::from_metadata_json(
+            options.metadata.as_deref(),
+        )
+        .is_some_and(|action| action.kind == AgentRunActionKind::VerifyPlan);
+        if has_ipr_entry && requires_fresh_action_process {
+            if let Some(retired) = ipr_ref.retire_if_idle(&interactive_key).await {
+                if let Some(retired_run_id) = retired.metadata.agent_run_id.as_deref() {
+                    self.running_agent_registry
+                        .unregister(
+                            &RunningAgentKey::new(
+                                context_type.to_string(),
+                                &runtime_context_id,
+                            ),
+                            retired_run_id,
+                        )
+                        .await;
+                }
+                has_ipr_entry = false;
+                interactive_process_metadata = None;
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "chat_service.send_message: retired idle process for fresh Verify Plan run"
+                );
+            } else if ipr_ref.has_process(&interactive_key).await {
+                if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                    return Err(ChatServiceError::SpawnFailed(
+                        "immediate start required, but an interactive process is active"
+                            .to_string(),
+                    ));
+                }
+                let conversation = existing_conv.as_ref().ok_or_else(|| {
+                    ChatServiceError::InvalidInput(
+                        "Verify Plan cannot queue without its owning conversation".to_string(),
+                    )
+                })?;
+                let queued = self
+                    .enqueue_pending_send(
+                        context_type,
+                        &runtime_context_id,
+                        message,
+                        &options,
+                        Some(conversation.id.as_str().to_string()),
+                    )
+                    .await?;
+                return Ok(SendResult {
+                    conversation_id: conversation.id.as_str().to_string(),
+                    agent_run_id: interactive_process_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.agent_run_id.clone())
+                        .unwrap_or_default(),
+                    is_new_conversation: false,
+                    was_queued: true,
+                    queued_message_id: Some(queued.id),
+                    queued_as_pending: false,
+                });
+            } else {
+                has_ipr_entry = false;
+                interactive_process_metadata = None;
+            }
         }
         if has_ipr_entry && existing_conv.is_none() {
             // A registry entry without its conversation cannot safely resolve a persona or
@@ -8807,6 +8871,7 @@ mod agent_workspace_send_tests {
                 interactive_key.clone(),
                 stdin,
                 InteractiveProcessMetadata {
+                    agent_run_id: Some(run_id.clone()),
                     harness: Some(AgentHarnessKind::Claude),
                     provider_session_id: Some("claude-session-active".to_string()),
                     persona_id: None,

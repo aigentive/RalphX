@@ -4,7 +4,7 @@ Verify Plan is an optional model-native review pass for a Plan-mode artifact. It
 
 ## Behavior
 
-1. The user, a verification-gated acceptance attempt, or external MCP triggers `Verify Plan`.
+1. A successful ordinary Plan turn, the user, a verification-gated acceptance attempt, or external MCP triggers `Verify Plan`.
 2. RalphX queues a typed `verify_plan` turn in the active Plan conversation.
 3. The active model rereads the current plan and relevant repository context, chooses useful review lenses, and may use its normally allowed delegates.
 4. The model revises the existing linked plan when it finds actionable issues.
@@ -17,18 +17,25 @@ There is no separate verifier agent, fixed critic roster, hidden verification se
 
 | Setting | Default | Effect |
 |---|---:|---|
-| Auto-verify on acceptance | Off | When verification is required, the first unverified acceptance attempt queues Verify Plan and remains blocked until proof is recorded. |
+| Verify draft plans automatically | On | After a successful ordinary Plan turn publishes the current draft, queues one visible Verify Plan turn. |
+| Queue missing verification on acceptance | Off | Legacy fallback: when verification is required, the first unverified acceptance attempt queues Verify Plan and remains blocked until proof is recorded. |
 | Require verification before acceptance | Off | Blocks acceptance until proof matches the current plan artifact. |
 
 External sessions may override either setting. A null override inherits the global/project value. Being an external session does not itself force verification.
 
-Automatic verification is intentionally acceptance-bound. Creating or revising a draft never queues a review turn. If automatic triggering is on while the acceptance requirement is off, acceptance proceeds without a verification turn because verification is advisory.
+Automatic draft verification is advisory and independent from the acceptance gate. It is admitted only after the latest ordinary Plan turn has durably saved its assistant output and successfully completed its own run. Failed persistence, stale or superseded completions, non-Plan workspaces, and verifier turns do not trigger it. Duplicate admissions converge on the existing queued or running verifier.
+
+The typed verifier always starts as a fresh process. An idle interactive Claude process is retired rather than receiving verifier instructions over stdin, while its provider session id may still be used for model continuity.
 
 ## Exact-version proof
 
 Verification is satisfied only when the session's current `plan_artifact_id` equals its `verified_plan_artifact_id`. If review revises the plan, completion proves the revised artifact. If the plan changes later, the prior proof is stale and no longer satisfies a required acceptance gate.
 
 Only the live matching `verify_plan` agent run can record proof. Ordinary planning turns, stale runs, wrong conversations, failed runs, and cancelled runs cannot authorize acceptance.
+
+## Approval notification timing
+
+When automatic draft verification is pending, RalphX stores an exact-artifact deferred marker instead of recording the durable Plan Approval notification. This suppresses the in-app toast, Attention item, notification history row, and desktop notification together. Verifier success or failure releases the current artifact exactly once; revising the plan replaces the marker, and startup reconciliation releases markers stranded after a restart only when no verifier remains queued or running.
 
 ## Statuses
 
@@ -44,11 +51,14 @@ Only the live matching `verify_plan` agent run can record proof. Ordinary planni
 ## Entry points
 
 - Plan-mode `Verify Plan` CTA.
+- Successful completion of the latest ordinary Plan turn when `auto_verify_draft_plans` is enabled.
 - Required acceptance with `auto_verify_plans` enabled.
 - Internal MCP `get_plan_verification` and zero-argument `complete_plan_verification`.
 - External MCP `v1_trigger_plan_verification` and `v1_get_plan_verification`.
 
 The external trigger queues the same visible planning turn; it does not start a separate verifier runtime.
+
+Both Plan controls remain visible after proof is recorded and show `Verified` with success styling. Selecting that state asks for confirmation before queuing an explicit rerun; the existing exact-artifact proof remains valid unless the plan changes.
 
 ## Relationship to workspace review
 
