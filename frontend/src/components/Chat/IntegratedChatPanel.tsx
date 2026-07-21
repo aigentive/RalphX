@@ -31,6 +31,7 @@ import {
   selectQueuedMessages,
   selectAgentActivityLabel,
   selectAgentStatus,
+  selectActiveAgentRunId,
   selectIsAgentRunning,
   selectIsSending,
   selectToolCallStartTimes,
@@ -747,6 +748,11 @@ export function IntegratedChatPanel({
     [storeContextKey],
   );
   const agentStatus = useChatStore(agentStatusSelector);
+  const activeAgentRunIdSelector = useMemo(
+    () => selectActiveAgentRunId(storeContextKey),
+    [storeContextKey],
+  );
+  const activeAgentRunId = useChatStore(activeAgentRunIdSelector);
   const agentActivityLabelSelector = useMemo(
     () => selectAgentActivityLabel(storeContextKey),
     [storeContextKey],
@@ -1347,6 +1353,9 @@ export function IntegratedChatPanel({
 
   useChatEvents({
     activeConversationId: effectiveConversationId,
+    activeAgentRunId:
+      activeAgentRunId ??
+      (agentRunQuery.data?.status === "running" ? agentRunQuery.data.id : null),
     contextId: currentContextId,
     contextType: currentContextType,
     streamingToolCalls,

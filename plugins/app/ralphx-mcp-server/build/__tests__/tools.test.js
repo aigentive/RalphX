@@ -1736,6 +1736,8 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.properties).toHaveProperty('parent_turn_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_message_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_conversation_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
         expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['agent_name', 'prompt']));
