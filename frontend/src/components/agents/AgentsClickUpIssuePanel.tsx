@@ -1,13 +1,11 @@
 import { ExternalLink, Loader2, Ticket } from "lucide-react";
-import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { useConversationTicket, useTicketDetail } from "@/hooks/useTicketing";
 
-import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
-import { buildTicketSelectionContent } from "./artifact-selection/ticketSelectionContent";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsClickUpIssuePanelProps {
   conversationId: string | null;
@@ -28,26 +26,6 @@ export function AgentsClickUpIssuePanel({
     enabled: Boolean(detailInput),
   });
   const ticket = detailQuery.data ?? null;
-  const selectionContent = useMemo(
-    () =>
-      ticket
-        ? buildTicketSelectionContent({
-            key: ticket.ref.key ?? ticket.ref.id,
-            title: ticket.title,
-            status: ticket.state.name,
-            assignees: ticket.assignees?.map((assignee) => assignee.name),
-            reporter: ticket.reporter?.name,
-            description:
-              ticket.descriptionMarkdown ?? ticket.descriptionText ?? null,
-            acceptanceCriteria: ticket.acceptanceCriteriaMarkdown,
-            comments: ticket.comments.map((comment) => ({
-              author: comment.author?.name,
-              body: comment.bodyMarkdown || comment.bodyText,
-            })),
-          })
-        : null,
-    [ticket],
-  );
 
   const displayKey =
     ticket?.ref.key ?? binding?.ticketRef.key ?? ticket?.ref.id ?? binding?.ticketRef.id;
@@ -98,22 +76,6 @@ export function AgentsClickUpIssuePanel({
         ) : null}
       </div>
 
-      {ticket && selectionContent ? (
-        <ArtifactSelectionSource
-          conversationId={conversationId}
-          source={{
-            sourceType: "ticket",
-            sourceKind: "clickup",
-            sourceId: ticket.ref.id,
-            ...(ticket.ref.key ? { sourceKey: ticket.ref.key } : {}),
-            sourceTitle: ticket.title,
-            provider: "clickup",
-            sourceRevision: ticket.updatedAt,
-          }}
-          content={selectionContent}
-        />
-      ) : null}
-
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {!conversationId ? (
           <PanelStatus label="No conversation selected" />
@@ -124,7 +86,17 @@ export function AgentsClickUpIssuePanel({
         ) : detailQuery.error ? (
           <PanelStatus label="Could not load the ClickUp task" />
         ) : ticket ? (
-          <div className="space-y-4">
+          <ArtifactSelectableRegion
+            className="space-y-4"
+            source={{
+              sourceKind: "task",
+              sourceId: ticket.ref.id,
+              sourceLabel: "ClickUp task",
+              title: ticket.title,
+              ...(url ? { url } : {}),
+              ...(ticket.updatedAt ? { revision: ticket.updatedAt } : {}),
+            }}
+          >
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium">{ticket.title}</p>
               <span
@@ -155,7 +127,7 @@ export function AgentsClickUpIssuePanel({
                 </ReactMarkdown>
               </div>
             ) : null}
-          </div>
+          </ArtifactSelectableRegion>
         ) : null}
       </div>
     </div>
