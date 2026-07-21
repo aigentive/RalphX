@@ -14,7 +14,7 @@ use crate::application::chat_service::chat_service_errors::{ProviderErrorCategor
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
-    AgentRun, AgentRunActionKind, AgentRunUsage, ChatContextType, ChatConversation,
+    AgentRun, AgentRunActionKind, AgentRunId, AgentRunUsage, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
     ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole, ProjectId, TaskId,
 };
@@ -180,6 +180,88 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
     ];
 
     assert_eq!(emitted, [false, true]);
+}
+
+#[tokio::test]
+async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
+    let unmanaged_app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("build unmanaged mock app");
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            unmanaged_app.handle(),
+            ChatContextType::Standalone,
+            "standalone",
+            &ChatConversationId::new(),
+            None,
+        )
+        .await
+    );
+
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create conversation");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("build managed mock app");
+    let handle = app.handle();
+    let missing_run_id = AgentRunId::new().as_str();
+
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &ChatConversationId::new(),
+            None,
+        )
+        .await
+    );
+    assert!(
+        record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &conversation.id,
+            Some(&missing_run_id),
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Ideation,
+            "missing-session",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Task,
+            "missing-task",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Merge,
+            "merge",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
 }
 
 #[async_trait::async_trait]

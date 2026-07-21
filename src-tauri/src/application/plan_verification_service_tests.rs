@@ -13,8 +13,9 @@ use crate::application::plan_verification_service::{
 };
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
-    ArtifactId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, AgentRunActionKind, AgentRunId, ArtifactId, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSession, ProjectId,
 };
 use crate::domain::services::EffectiveGatePolicy;
 use crate::domain::services::{QueueKey, QueuedMessage};
@@ -264,6 +265,81 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
 }
 
 #[tokio::test]
+async fn verification_status_reports_no_plan_and_exact_proof_without_run_inference() {
+    let state = AppState::new_test();
+    let no_plan = state
+        .ideation_session_repo
+        .create(IdeationSession::new(ProjectId::new()))
+        .await
+        .unwrap();
+
+    let status = get_plan_verification_status(&state, &no_plan.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
+    assert!(!status.in_progress);
+
+    let unverified = session_with_plan(&state).await;
+    let status = get_plan_verification_status(&state, &unverified.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
+    assert!(!status.in_progress);
+
+    state.message_queue.queue_with_overrides(
+        crate::domain::entities::ChatContextType::Ideation,
+        unverified.id.as_str(),
+        "Verify plan".to_string(),
+        Some(format!(
+            r#"{{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"{}","ralphx_action_target_id":"plan-current"}}"#,
+            unverified.id
+        )),
+        None,
+        None,
+    );
+    let status = get_plan_verification_status(&state, &unverified.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Queued);
+    assert!(status.in_progress);
+
+    let mut verified = IdeationSession::new(ProjectId::new());
+    verified.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    verified.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    let verified = state.ideation_session_repo.create(verified).await.unwrap();
+
+    let status = get_plan_verification_status(&state, &verified.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Verified);
+    assert!(!status.in_progress);
+    assert_eq!(status.started_at, None);
+    assert_eq!(status.completed_at, None);
+}
+
+#[tokio::test]
+async fn verification_status_prefers_active_owner_action() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(session.id.clone()))
+        .await
+        .unwrap();
+    let mut verifier = AgentRun::new(conversation.id);
+    verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    verifier.action_context_id = Some(session.id.as_str().to_string());
+    verifier.action_target_id = Some("plan-current".to_string());
+    state.agent_run_repo.create(verifier).await.unwrap();
+
+    let status = get_plan_verification_status(&state, &session.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Verifying);
+    assert!(status.in_progress);
+}
+
+#[tokio::test]
 async fn concurrent_verification_requests_admit_exactly_one_turn() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
@@ -501,6 +577,123 @@ async fn automatic_admission_rejects_typed_and_non_winning_finalizers() {
             AutomaticPlanVerificationDisposition::NotEligible
         );
     }
+    assert_eq!(chat.call_count(), 0);
+}
+
+#[tokio::test]
+async fn automatic_admission_rejects_missing_and_superseded_finalizers() {
+    let state = AppState::new_test();
+    let (_session, conversation, run) = completed_plan_workspace_run(&state, None).await;
+    let chat = mock_chat(&state);
+
+    assert_eq!(
+        admit_automatic_plan_verification(
+            &state,
+            &chat,
+            &conversation.id,
+            &AgentRunId::new(),
+            true,
+        )
+        .await
+        .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
+
+    let newer = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id))
+        .await
+        .unwrap();
+    assert!(state
+        .agent_run_repo
+        .complete_if_running(&newer.id)
+        .await
+        .unwrap());
+    assert_eq!(
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
+    assert_eq!(chat.call_count(), 0);
+}
+
+#[tokio::test]
+async fn automatic_admission_requires_active_linked_enabled_workspace_with_a_plan() {
+    let state = AppState::new_test();
+    let (session, conversation, run) = completed_plan_workspace_run(&state, None).await;
+    let chat = mock_chat(&state);
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
+
+    workspace.status = AgentConversationWorkspaceStatus::Active;
+    workspace.linked_ideation_session_id = None;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
+
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let mut settings = state.ideation_settings_repo.get_settings().await.unwrap();
+    settings.auto_verify_draft_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+    assert_eq!(
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
+
+    settings.auto_verify_draft_plans = true;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        admit_automatic_plan_verification(&state, &chat, &conversation.id, &run.id, true)
+            .await
+            .unwrap(),
+        AutomaticPlanVerificationDisposition::NotEligible
+    );
     assert_eq!(chat.call_count(), 0);
 }
 

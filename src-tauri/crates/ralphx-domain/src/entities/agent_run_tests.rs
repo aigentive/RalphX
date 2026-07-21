@@ -121,6 +121,12 @@ fn malformed_or_partial_action_metadata_is_not_authoritative() {
         Some("not-json"),
         Some(r#"{"ralphx_action_kind":"ordinary"}"#),
         Some(r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1"}"#),
+        Some(
+            r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":" ","ralphx_action_target_id":"artifact-1"}"#,
+        ),
+        Some(
+            r#"{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"session-1","ralphx_action_target_id":" "}"#,
+        ),
     ] {
         let mut run = AgentRun::new(ChatConversationId::new());
         run.apply_action_metadata_json(metadata);
