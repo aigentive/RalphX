@@ -101,7 +101,10 @@ pub async fn get_agent_workspace_review_context(
     }))
 }
 
-fn workspace_review_runtime_header(headers: &HeaderMap, name: &'static str) -> Option<String> {
+pub(super) fn workspace_review_runtime_header(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Option<String> {
     headers.get(name).map(|value| {
         value
             .to_str()
