@@ -189,6 +189,40 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("opens the Workspace Review transcript without hiding its metadata", async () => {
+    const user = userEvent.setup();
+    const onViewTranscript = vi.fn();
+
+    renderPanel({ onViewTranscript });
+
+    expect(screen.getByText("Workspace changes")).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date("2026-07-10T00:00:00.000Z").toLocaleString()),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "View transcript" }),
+    );
+
+    expect(onViewTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("hides the transcript action without a callback", () => {
+    renderPanel();
+
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the Workspace Review transcript action in Review PR", () => {
+    renderPanel({ onViewTranscript: vi.fn(), isReviewPrWorkspace: true });
+
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("offers Approve anyway behind confirmation while Fix Issues stays primary", async () => {
     const user = userEvent.setup();
     const onApproveAnyway = vi.fn().mockResolvedValue(undefined);
