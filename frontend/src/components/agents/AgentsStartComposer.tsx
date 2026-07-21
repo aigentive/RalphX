@@ -1484,7 +1484,7 @@ export function AgentsStartComposer({
       projectId,
       content: message.trim(),
       runtime: launchRuntime,
-      useRoleDefault: !hasRoleOverride,
+      useRoleDefault: !hasRoleOverride && Boolean(roleDefaultQuery.data),
       mode,
       ...(mode === "automation" && automationAuthoringMode
         ? { automationAuthoringMode }
