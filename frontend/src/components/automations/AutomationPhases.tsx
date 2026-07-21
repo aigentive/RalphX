@@ -3,6 +3,7 @@ import { CheckCircle2, Circle, Loader2, MinusCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
+  AUTOMATION_PHASES_LABEL,
   AUTOMATION_PHASE_STATUS_LABELS,
   normalizeAutomationPhaseStatus,
   parseAutomationGoalItems,
@@ -147,7 +148,11 @@ export function AutomationPhaseProgress({
           />
         </div>
       </div>
-      <ul className="space-y-1">
+      <ul
+        className="max-h-64 space-y-1 overflow-y-auto overscroll-contain pr-1"
+        aria-label={`Automation ${AUTOMATION_PHASES_LABEL.toLowerCase()}`}
+        tabIndex={items.length > 6 ? 0 : undefined}
+      >
         {items.map((item, index) => {
           const status = normalizeAutomationPhaseStatus(item.status);
           const isCurrent = status === "in_progress";

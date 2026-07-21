@@ -1585,33 +1585,29 @@ async fn mark_agent_workspace_pr_terminal(
             workspace.publication_push_status.as_deref(),
         )
         .await?;
-    workspace_repo
-        .append_publication_event({
-            let event = AgentConversationWorkspacePublicationEvent::new(
-                conversation_id.clone(),
-                format!("pr_{status}"),
-                "succeeded",
-                summary,
-                None,
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        format!("pr_{status}"),
+        "succeeded",
+        summary,
+        None,
+    );
+    let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
+    if let Some(pr_number) = workspace.publication_pr_number {
+        if let Err(error) = adapter
+            .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
+            .await
+        {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                status,
+                error = %error,
+                "Failed to record direct agent workspace terminal PR outcome"
             );
-            let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
-            if let Some(pr_number) = workspace.publication_pr_number {
-                if let Err(error) = adapter
-                    .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
-                    .await
-                {
-                    tracing::warn!(
-                        conversation_id = conversation_id.as_str(),
-                        pr_number,
-                        status,
-                        error = %error,
-                        "Failed to record direct agent workspace terminal PR outcome"
-                    );
-                }
-            }
-            event
-        })
-        .await?;
+        }
+    }
+    workspace_repo.append_publication_event(event).await?;
     Ok(Vec::new())
 }
 

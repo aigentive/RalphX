@@ -1315,21 +1315,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : isAutomationRunConversation
           ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
           : [
-            ...ARTIFACT_TABS.filter((tab) =>
-              availableArtifactTabIds.includes(tab.id),
-            ).map(visibleTab),
-            ...(skillsEnabled ? [visibleTab(SKILLS_TAB)] : []),
-            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
-            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
-            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
-            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
-            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
-            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-            ...(availableArtifactTabIds.includes("review")
-              ? [visibleTab(REVIEW_TAB)]
-              : []),
-            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
-          ],
+              ...ARTIFACT_TABS.filter((tab) =>
+                availableArtifactTabIds.includes(tab.id),
+              ).map(visibleTab),
+              ...(skillsEnabled ? [visibleTab(SKILLS_TAB)] : []),
+              ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+              ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+              ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+              ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+              ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
+              ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+              ...(availableArtifactTabIds.includes("review")
+                ? [visibleTab(REVIEW_TAB)]
+                : []),
+              ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+            ],
     [
       availableArtifactTabIds,
       automationId,
@@ -2020,6 +2020,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               <ArtifactContent
                 activeTab={effectiveActiveTab}
                 tasksEnabled={tasksEnabled}
+                skillsEnabled={skillsEnabled}
                 tasksSurfaceCapabilities={tasksSurfaceCapabilities}
                 conversation={conversation}
                 workspace={scopedWorkspace}

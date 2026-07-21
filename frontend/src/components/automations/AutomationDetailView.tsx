@@ -532,7 +532,7 @@ function SourcePrInput({ automation }: { automation: Automation }) {
 
 function GoalItems({ value }: { value: string | null }) {
   const parsed = useMemo(
-    () => parseAutomationGoalItems(value, { limit: 6 }),
+    () => parseAutomationGoalItems(value),
     [value],
   );
 
@@ -545,7 +545,7 @@ function GoalItems({ value }: { value: string | null }) {
       <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
         {AUTOMATION_PHASES_LABEL}
       </div>
-      <AutomationPhaseProgress value={value} limit={6} />
+      <AutomationPhaseProgress value={value} />
     </div>
   );
 }

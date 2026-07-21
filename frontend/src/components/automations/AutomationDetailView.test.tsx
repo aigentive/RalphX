@@ -721,6 +721,31 @@ describe("AutomationDetailView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps every phase available in a scrollable list", async () => {
+    const phases = Array.from({ length: 25 }, (_, index) => ({
+      id: `phase-${index + 1}`,
+      title: `Phase ${index + 1}`,
+      status: index === 0 ? "in_progress" : "pending",
+    }));
+
+    renderDetail({
+      automation: automation({ goalItemsJson: JSON.stringify(phases) }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const goalCard = screen.getByTestId("automation-goal-card");
+    const phaseList = within(goalCard).getByRole("list", {
+      name: "Automation phases",
+    });
+    expect(within(phaseList).getAllByRole("listitem")).toHaveLength(25);
+    expect(within(phaseList).getByText("Phase 25")).toBeInTheDocument();
+    expect(phaseList).toHaveClass("max-h-64", "overflow-y-auto");
+    expect(phaseList).toHaveAttribute("tabindex", "0");
+  });
+
   it("shows the current phase chip on open timeline runs only", async () => {
     renderDetail({
       automation: automation({
