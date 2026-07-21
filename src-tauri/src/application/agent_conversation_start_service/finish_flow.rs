@@ -392,12 +392,9 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             {
                 AgentWorkspacePrPollerStart::Started
                 | AgentWorkspacePrPollerStart::AlreadyRunning => {}
-                AgentWorkspacePrPollerStart::Unavailable => {
-                    return Err(
-                        "Review PR lifecycle polling is unavailable; reviewer was not started"
-                            .to_string(),
-                    );
-                }
+                // The persisted monitor is authoritative. A temporarily unavailable
+                // poller can be started by lifecycle recovery once GitHub is available.
+                AgentWorkspacePrPollerStart::Unavailable => {}
             }
         }
         log_start_agent_conversation_phase(
