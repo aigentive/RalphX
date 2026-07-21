@@ -411,7 +411,7 @@ For non-stale sessions, `--resume <session_id>` continues an existing conversati
 
 ## Provider-Native MCP Inheritance
 
-RalphX never rewrites `~/.claude.json` or registers a user-scoped server at app startup. Each launch adds only the required RalphX config and resolved `--disallowedTools` deny patterns; Claude remains authoritative for third-party definitions, trust, approvals, authentication, and native enabled state. During upgrades, RalphX may remove only the exact obsolete user-scoped `ralphx` signature written by historical RalphX releases, through the resolved Claude CLI with revalidation and an absence postcondition. See [Provider-Native MCP Policy](provider-native-mcp-policy.md).
+RalphX never directly rewrites `~/.claude.json` or registers a user-scoped server at app startup. Each launch adds only the required RalphX config and resolved `--disallowedTools` deny patterns; Claude remains authoritative for third-party definitions, trust, approvals, authentication, and native enabled state. The exact Claude user-scoped server ID `ralphx` is reserved RalphX state regardless of definition shape. Startup and launch preflight remove it through the resolved Claude CLI under a process-local lock, force the child `HOME` to the validated discovery root, and rediscover the same provider state after success, non-zero exit, or an explicitly terminated timeout. Only verified absence continues launch; project/local entries, other providers, near names, and `ralphx_internal` remain fail-closed collisions. See [Provider-Native MCP Policy](provider-native-mcp-policy.md).
 
 ## Spawn Safety
 
