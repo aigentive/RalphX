@@ -67,6 +67,7 @@ interface AgentsTaskDetailPanelProps {
   viewConversationId?: string | undefined;
   /** Agent run ID for historical state context */
   viewAgentRunId?: string | undefined;
+  readOnly?: boolean;
 }
 
 /**
@@ -387,6 +388,7 @@ export function AgentsTaskDetailPanel({
   viewTimestamp,
   viewConversationId,
   viewAgentRunId,
+  readOnly = false,
 }: AgentsTaskDetailPanelProps) {
   const [showContext, setShowContext] = useState(showContextProp);
 
@@ -405,8 +407,9 @@ export function AgentsTaskDetailPanel({
     const ViewComponent =
       TASK_DETAIL_VIEWS[statusForView] ?? BasicTaskDetail;
     // Pass isHistorical when viewing a historical state (viewAsStatus is set)
-    const isHistorical = viewAsStatus !== undefined;
-    const viewMode: TaskDetailViewMode = isHistorical
+    const isHistoricalView = viewAsStatus !== undefined;
+    const actionsReadOnly = isHistoricalView || readOnly;
+    const viewMode: TaskDetailViewMode = isHistoricalView
       ? {
           kind: "historical",
           status: statusForView,
@@ -419,9 +422,9 @@ export function AgentsTaskDetailPanel({
       return (
         <TaskDetailContextProvider task={task} viewMode={viewMode}>
           <ReviewingTaskDetail
-            key={`reviewing-${isHistorical ? "hist" : "curr"}`}
+            key={`reviewing-${actionsReadOnly ? "readonly" : "current"}`}
             task={task}
-            isHistorical={isHistorical}
+            isHistorical={actionsReadOnly}
             viewTimestamp={viewMode.kind === "historical" ? viewMode.timestamp : undefined}
           />
         </TaskDetailContextProvider>
@@ -430,9 +433,9 @@ export function AgentsTaskDetailPanel({
     return (
       <TaskDetailContextProvider task={task} viewMode={viewMode}>
         <ViewComponent
-          key={`${statusForView}-${isHistorical ? "hist" : "curr"}`}
+          key={`${statusForView}-${actionsReadOnly ? "readonly" : "current"}`}
           task={task}
-          isHistorical={isHistorical}
+          isHistorical={actionsReadOnly}
           viewStatus={statusForView}
         />
       </TaskDetailContextProvider>

@@ -3,6 +3,11 @@
 import { z } from "zod";
 import { TaskSchema } from "@/types/task";
 
+export const TaskHistoryAvailabilityResponseSchemaRaw = z.object({
+  has_history: z.boolean(),
+  task_count: z.number().int().nonnegative(),
+});
+
 /**
  * Inject task response schema from Rust (snake_case)
  * Backend outputs snake_case (Rust default). Transform layer converts to camelCase for UI.

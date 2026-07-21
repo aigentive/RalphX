@@ -31,7 +31,7 @@ async fn test_update_settings() {
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
     assert_eq!(updated.plan_mode, IdeationPlanMode::Required);
-    assert!(updated.tasks_enabled);
+    assert!(!updated.tasks_enabled);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
@@ -43,6 +43,7 @@ async fn test_update_settings() {
 async fn test_with_settings() {
     let initial_settings = IdeationSettings {
         tasks_enabled: true,
+        tasks_feature_state: TasksFeatureState::Enabled,
         plan_mode: IdeationPlanMode::Parallel,
         require_plan_approval: true,
         suggest_plans_for_complex: false,

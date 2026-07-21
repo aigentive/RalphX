@@ -94,6 +94,7 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
   useIdeationSettings: () => ({
     settings: {
       tasksEnabled: tasksEnabledRef.current,
+      tasksFeatureState: tasksEnabledRef.current ? "enabled" : "disabled",
       autoVerifyPlans: false,
       autoVerifyDraftPlans: true,
       requireAcceptForFinalize: false,
@@ -3367,7 +3368,8 @@ describe("AgentsActiveConversationPanel", () => {
     ).not.toBeInTheDocument();
     expect(
       within(row).getByTestId("agents-plan-composer-cta-hint"),
-    ).toHaveTextContent(/Tasks is off/i);
+    ).toHaveTextContent("Recommended: Implement Directly");
+    expect(within(row).queryByText("why?")).not.toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 

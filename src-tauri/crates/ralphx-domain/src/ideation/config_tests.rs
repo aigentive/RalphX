@@ -9,6 +9,7 @@ fn test_ideation_plan_mode_default() {
 fn test_ideation_settings_default() {
     let settings = IdeationSettings::default();
     assert!(!settings.tasks_enabled);
+    assert_eq!(settings.tasks_feature_state, TasksFeatureState::Disabled);
     assert_eq!(settings.plan_mode, IdeationPlanMode::Optional);
     assert!(!settings.require_plan_approval);
     assert!(settings.suggest_plans_for_complex);
@@ -38,6 +39,7 @@ fn test_ideation_plan_mode_serialization() {
 fn test_ideation_settings_serialization() {
     let settings = IdeationSettings {
         tasks_enabled: true,
+        tasks_feature_state: TasksFeatureState::Enabled,
         plan_mode: IdeationPlanMode::Required,
         require_plan_approval: true,
         suggest_plans_for_complex: false,
@@ -58,6 +60,7 @@ fn test_ideation_settings_serialization() {
 
     assert_eq!(deserialized.plan_mode, IdeationPlanMode::Required);
     assert!(deserialized.tasks_enabled);
+    assert_eq!(deserialized.tasks_feature_state, TasksFeatureState::Enabled);
     assert!(deserialized.require_plan_approval);
     assert!(!deserialized.suggest_plans_for_complex);
     assert!(!deserialized.auto_link_proposals);
@@ -87,4 +90,11 @@ fn missing_completion_trigger_defaults_enabled_during_deserialization() {
 
     assert!(settings.auto_verify_draft_plans);
     assert!(!settings.auto_verify_plans);
+}
+
+#[test]
+fn tasks_feature_state_derives_legacy_boolean() {
+    assert!(TasksFeatureState::Enabled.tasks_enabled());
+    assert!(!TasksFeatureState::Draining.tasks_enabled());
+    assert!(!TasksFeatureState::Disabled.tasks_enabled());
 }

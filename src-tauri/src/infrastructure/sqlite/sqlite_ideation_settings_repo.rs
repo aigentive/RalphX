@@ -1,5 +1,8 @@
 use super::DbConnection;
-use crate::domain::ideation::{ExternalIdeationOverrides, IdeationPlanMode, IdeationSettings};
+use crate::domain::ideation::{
+    ExternalIdeationOverrides, IdeationPlanMode, IdeationSettings, TasksFeatureAction,
+    TasksFeatureState,
+};
 use crate::domain::repositories::IdeationSettingsRepository;
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
@@ -38,8 +41,17 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     let ext_require_accept_for_finalize: Option<i64> = row.get(9)?;
     let auto_verify_plans: i64 = row.get(10)?;
     let ext_auto_verify_plans: Option<i64> = row.get(11)?;
-    let tasks_enabled: i64 = row.get(12)?;
-    let auto_verify_draft_plans: i64 = row.get(13)?;
+    let _legacy_tasks_enabled: i64 = row.get(12)?;
+    let tasks_feature_state_raw: String = row.get(13)?;
+    let tasks_feature_state: TasksFeatureState =
+        tasks_feature_state_raw.parse().map_err(|error: String| {
+            rusqlite::Error::FromSqlConversionFailure(
+                13,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+            )
+        })?;
+    let auto_verify_draft_plans: i64 = row.get(14)?;
 
     let plan_mode = match plan_mode_str.as_str() {
         "required" => IdeationPlanMode::Required,
@@ -49,7 +61,8 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     };
 
     Ok(IdeationSettings {
-        tasks_enabled: tasks_enabled != 0,
+        tasks_enabled: tasks_feature_state.tasks_enabled(),
+        tasks_feature_state,
         plan_mode,
         require_plan_approval: require_plan_approval != 0,
         suggest_plans_for_complex: suggest_plans_for_complex != 0,
@@ -82,6 +95,7 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
                 auto_verify_plans,
                 ext_auto_verify_plans,
                 tasks_enabled,
+                tasks_feature_state,
                 auto_verify_draft_plans
          FROM ideation_settings WHERE id = 1
          LIMIT 1",
@@ -98,36 +112,21 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
 
 pub(crate) fn authorize_tasks_session_sync(
     conn: &Connection,
-    session_id: Option<&str>,
+    _session_id: Option<&str>,
+    action: TasksFeatureAction,
 ) -> AppResult<()> {
-    let settings = get_settings_sync(conn)?;
-    if settings.tasks_enabled {
+    if action == TasksFeatureAction::Quiesce {
         return Ok(());
     }
-
-    let session_id = session_id.ok_or_else(|| tasks_disabled_error("standalone Task"))?;
-    let entitled = conn
-        .query_row(
-            "SELECT EXISTS(
-                SELECT 1
-                FROM agent_conversation_workspaces workspace
-                INNER JOIN ideation_sessions session
-                    ON session.id = workspace.task_pipeline_session_id
-                WHERE workspace.task_pipeline_session_id = ?1
-                  AND workspace.status = 'active'
-                  AND workspace.project_id = session.project_id
-             )",
-            [session_id],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    if entitled {
-        Ok(())
-    } else {
-        Err(tasks_disabled_error(
-            "Task is not attached to an active Agent pipeline",
-        ))
+    let settings = get_settings_sync(conn)?;
+    if settings.tasks_feature_state == TasksFeatureState::Enabled {
+        return Ok(());
     }
+    Err(tasks_disabled_error(&format!(
+        "{:?} is blocked while Tasks are {}",
+        action,
+        settings.tasks_feature_state.as_str()
+    )))
 }
 
 fn tasks_disabled_error(detail: &str) -> AppError {
@@ -173,8 +172,7 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                  ext_require_accept_for_finalize = ?10,
                  auto_verify_plans = ?11,
                  ext_auto_verify_plans = ?12,
-                 tasks_enabled = ?13,
-                 auto_verify_draft_plans = ?14,
+                 auto_verify_draft_plans = ?13,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -202,12 +200,36 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                             .external_overrides
                             .auto_verify_plans
                             .map(|v| v as i64),
-                        settings.tasks_enabled as i64,
                         settings.auto_verify_draft_plans as i64,
                     ],
                 )?;
 
-                Ok(settings)
+                get_settings_sync(conn)
+            })
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
+
+    async fn compare_and_set_tasks_feature_state(
+        &self,
+        expected: TasksFeatureState,
+        next: TasksFeatureState,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE ideation_settings
+                     SET tasks_feature_state = ?1,
+                         tasks_enabled = ?2,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+                     WHERE id = 1 AND tasks_feature_state = ?3",
+                    rusqlite::params![
+                        next.as_str(),
+                        next.tasks_enabled() as i64,
+                        expected.as_str(),
+                    ],
+                )?;
+                Ok(changed == 1)
             })
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)

@@ -843,6 +843,51 @@ fn stopped_recovery_metadata(auto_recovery_count: u32) -> String {
 }
 
 #[tokio::test]
+async fn failed_restart_step_cleanup_resets_only_failed_steps() {
+    let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+    let task_id = TaskId::new();
+    let mut failed = TaskStep::new(
+        task_id.clone(),
+        "Retry this step".to_string(),
+        0,
+        "test".to_string(),
+    );
+    failed.status = TaskStepStatus::Failed;
+    failed.started_at = Some(chrono::Utc::now());
+    failed.completed_at = Some(chrono::Utc::now());
+    failed.completion_note = Some("failed".to_string());
+    let failed = task_step_repo.create(failed).await.unwrap();
+    let mut completed = TaskStep::new(
+        task_id.clone(),
+        "Keep this step".to_string(),
+        1,
+        "test".to_string(),
+    );
+    completed.status = TaskStepStatus::Completed;
+    let completed = task_step_repo.create(completed).await.unwrap();
+
+    let cleared = clear_failed_steps_for_failed_restart(&task_step_repo, &task_id)
+        .await
+        .expect("failed-step cleanup should succeed");
+
+    assert_eq!(cleared, 1);
+    let failed = task_step_repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(failed.status, TaskStepStatus::Pending);
+    assert!(failed.started_at.is_none());
+    assert!(failed.completed_at.is_none());
+    assert!(failed.completion_note.is_none());
+    assert_eq!(
+        task_step_repo
+            .get_by_id(&completed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStepStatus::Completed
+    );
+}
+
+#[tokio::test]
 async fn failed_ready_restart_clears_stale_refs_and_preserves_completed_steps() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
     let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());

@@ -923,6 +923,10 @@ async function seedAgentsTaskDetailVisualState(page: Page) {
         ["stateTransitions", mergedTaskId],
         mergedTransitions,
       );
+      queryClient.setQueryData(
+        ["tasks", "session-history", seededProjectId, linkedSessionId],
+        { hasHistory: true, taskCount: seededTasks.length },
+      );
       queryClient.setQueryData(["tasks", "list", seededProjectId], (existing: Task[] | undefined) => {
         const withoutSeeded = (existing ?? []).filter(
           (task) => !taskStates.some((visualTask) => visualTask.id === task.id),

@@ -3,6 +3,20 @@
 
 import { z } from "zod";
 
+export const TasksFeatureStateSchema = z.enum(["enabled", "draining", "disabled"]);
+export type TasksFeatureState = z.infer<typeof TasksFeatureStateSchema>;
+
+export const TasksDisableImpactSchema = z.object({
+  activeStandaloneTasks: z.number().int().nonnegative(),
+  activeAttachedAgentWorkspaces: z.number().int().nonnegative(),
+  pausedOrBlockedTasks: z.number().int().nonnegative(),
+  activeBranchUpdateOperations: z.number().int().nonnegative(),
+  affectedTaskIds: z.array(z.string()),
+  affectedConversationIds: z.array(z.string()),
+  affectedProjectIds: z.array(z.string()),
+});
+export type TasksDisableImpact = z.infer<typeof TasksDisableImpactSchema>;
+
 // ============================================================================
 // Ideation Settings
 // ============================================================================
@@ -21,6 +35,7 @@ export type ExternalIdeationOverrides = z.infer<typeof ExternalIdeationOverrides
 export const IdeationSettingsSchema = z.object({
   tasksEnabled: z.boolean(),
   autoVerifyDraftPlans: z.boolean(),
+  tasksFeatureState: TasksFeatureStateSchema,
   autoVerifyPlans: z.boolean(),
   requireAcceptForFinalize: z.boolean(),
   requireVerificationForAccept: z.boolean(),
@@ -35,6 +50,7 @@ export type IdeationSettings = z.infer<typeof IdeationSettingsSchema>;
 export const defaultIdeationSettings: IdeationSettings = {
   tasksEnabled: false,
   autoVerifyDraftPlans: true,
+  tasksFeatureState: "disabled",
   autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
@@ -54,6 +70,7 @@ export const defaultIdeationSettings: IdeationSettings = {
  */
 export const IdeationSettingsResponseSchema = z.object({
   tasks_enabled: z.boolean().default(false),
+  tasks_feature_state: TasksFeatureStateSchema.default("disabled"),
   plan_mode: z.string().optional(),
   require_plan_approval: z.boolean().optional(),
   suggest_plans_for_complex: z.boolean().optional(),
