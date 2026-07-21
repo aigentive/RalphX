@@ -1895,6 +1895,29 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it("keeps one workspace toolbar fixed between the tabs and scrolling content", async () => {
+    const user = userEvent.setup();
+    renderControlledPane("publish", workspace({ mode: "edit" }));
+
+    const tabRow = screen.getByTestId("agents-artifact-tab-row");
+    const toolbar = screen.getByTestId("agents-workspace-toolbar");
+    const publishContent = screen.getByTestId(
+      "agents-artifact-content-publish",
+    );
+    expect(tabRow.nextElementSibling).toBe(toolbar);
+    expect(toolbar.nextElementSibling).toBe(publishContent);
+    expect(
+      screen.queryByTestId("agents-publish-metadata-strip"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-artifact-tab-plan"));
+
+    expect(screen.getByTestId("agents-workspace-toolbar")).toBe(toolbar);
+    expect(toolbar.nextElementSibling).toBe(
+      screen.getByTestId("agents-artifact-content-plan"),
+    );
+  });
+
   it.each([
     ["alpha", "beta"],
     ["beta", "alpha"],
@@ -2842,6 +2865,89 @@ describe("AgentsArtifactPane", () => {
       ),
     );
     expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+  });
+
+  it("fails closed when a focused automation run has no workspace", async () => {
+    getConversationWorkspaceMock.mockResolvedValue(null);
+
+    renderPane(
+      "plan",
+      workspace({
+        conversationId: "conversation-setup",
+        branchName: "parent-workspace-branch",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-without-workspace",
+          conversationId: "conversation-run-without-workspace",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByText("Workspace status unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading workspace status…")).not.toBeInTheDocument();
+  });
+
+  it("does not render cached focused workspace metadata after its refresh fails", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace("conversation-run-stale"),
+      workspace({
+        conversationId: "conversation-run-stale",
+        branchName: "stale-focused-branch",
+        mode: "plan",
+      }),
+      { updatedAt: 0 },
+    );
+    getConversationWorkspaceMock.mockRejectedValue(
+      new Error("Focused workspace refresh failed"),
+    );
+
+    renderPane(
+      "plan",
+      workspace({
+        conversationId: "conversation-setup",
+        branchName: "parent-workspace-branch",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-stale",
+          conversationId: "conversation-run-stale",
+        },
+      },
+      queryClient,
+    );
+
+    expect(
+      await screen.findByText("Workspace status unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("stale-focused-branch")).not.toBeInTheDocument();
+    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
   });
 
   it("keeps the empty Plan tab visible when Review is also available", async () => {
@@ -5011,7 +5117,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText(/Auto Publish is waiting/i)).toBeInTheDocument();
     expect(screen.getByText("PR conflicts")).toBeInTheDocument();
     expect(
-      screen.getByTestId("agents-publish-push-status-pill"),
+      screen.getByTestId("agents-workspace-sync-status"),
     ).toHaveTextContent("Conflicting");
     await user.click(screen.getByRole("button", { name: "Resolve conflicts" }));
     await user.click(
@@ -8942,14 +9048,18 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    fireEvent.click(await screen.findByTestId("agents-open-pr-url"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open PR #78 in GitHub" }),
+    );
 
-    expect(openUrlMock).toHaveBeenCalledWith(
-      "https://github.com/mock/project/pull/78",
+    await waitFor(() =>
+      expect(openUrlMock).toHaveBeenCalledWith(
+        "https://github.com/mock/project/pull/78",
+      ),
     );
   });
 
-  it("shows the PR link with readable URL in the compact metadata strip", async () => {
+  it("shows the PR link in the persistent workspace toolbar", async () => {
     renderPane(
       "publish",
       workspace({
@@ -8959,15 +9069,17 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    expect(
-      screen.getByTestId("agents-publish-metadata-strip"),
-    ).toBeInTheDocument();
-    const prUrl = await screen.findByTestId("agents-open-pr-url");
+    expect(screen.getByTestId("agents-workspace-toolbar")).toBeInTheDocument();
+    const prUrl = await screen.findByRole("button", {
+      name: "Open PR #78 in GitHub",
+    });
     expect(prUrl).toHaveTextContent("PR #78");
     fireEvent.click(prUrl);
 
-    expect(openUrlMock).toHaveBeenCalledWith(
-      "https://github.com/mock/project/pull/78",
+    await waitFor(() =>
+      expect(openUrlMock).toHaveBeenCalledWith(
+        "https://github.com/mock/project/pull/78",
+      ),
     );
   });
 
@@ -9297,11 +9409,11 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
       "feature/agent-screen",
     );
-    expect(screen.getByTestId("agents-publish-status-pill")).toHaveAttribute(
+    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
       "style",
-      expect.stringContaining("border-color: var(--overlay-weak)"),
+      expect.stringContaining("border-color: var(--border-subtle)"),
     );
-    expect(screen.getByTestId("agents-publish-status-pill")).toHaveAttribute(
+    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
       "style",
       expect.stringContaining("color: var(--text-secondary)"),
     );
@@ -10069,7 +10181,7 @@ describe("AgentsArtifactPane", () => {
       "agents-publish-repair-state",
     );
     const actionbar = screen.getByTestId("agents-publish-actionbar");
-    const metadataStrip = screen.getByTestId("agents-publish-metadata-strip");
+    const workspaceToolbar = screen.getByTestId("agents-workspace-toolbar");
     expect(repairState).toBeInTheDocument();
     expect(
       within(actionbar).getByText(/RalphX routed this workspace to the agent/),
@@ -10087,7 +10199,7 @@ describe("AgentsArtifactPane", () => {
     ).toHaveLength(1);
     expect(screen.queryByTestId("agents-base-stale")).not.toBeInTheDocument();
     expect(
-      within(metadataStrip).getByTestId("agents-publish-push-status-pill"),
+      within(workspaceToolbar).getByTestId("agents-workspace-sync-status"),
     ).toHaveTextContent("Repair pending");
     await waitFor(() =>
       expect(
