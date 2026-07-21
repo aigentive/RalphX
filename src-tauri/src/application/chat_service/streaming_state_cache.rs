@@ -242,6 +242,32 @@ impl StreamingStateCache {
                 ConversationStreamingState::new()
             });
 
+        Self::upsert_task_state(state, conversation_id, task);
+    }
+
+    /// Add a streaming task only when the conversation cache still belongs to `run_id`.
+    pub async fn add_task_for_run(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        task: CachedStreamingTask,
+    ) -> bool {
+        let mut states = self.states.lock().await;
+        let Some(state) = states.get_mut(conversation_id) else {
+            return false;
+        };
+        if state.run_id.as_deref() != Some(run_id) {
+            return false;
+        }
+        Self::upsert_task_state(state, conversation_id, task);
+        true
+    }
+
+    fn upsert_task_state(
+        state: &mut ConversationStreamingState,
+        conversation_id: &str,
+        task: CachedStreamingTask,
+    ) {
         if let Some(existing) = state
             .streaming_tasks
             .iter_mut()

@@ -117,6 +117,7 @@ const CTX_ID = "ctx-123";
 
 interface DefaultProps {
   activeConversationId: string | null;
+  activeAgentRunId?: string | null;
   contextId: string | null;
   contextType: ContextType | null;
   streamingToolCalls?: ToolCall[];
@@ -131,6 +132,7 @@ interface DefaultProps {
 function makeProps(overrides?: Partial<DefaultProps>): DefaultProps {
   return {
     activeConversationId: CONV_ID,
+    activeAgentRunId: null,
     contextId: CTX_ID,
     contextType: "task_execution" as ContextType,
     setStreamingToolCalls: vi.fn(),
@@ -203,6 +205,49 @@ describe("useChatEvents", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("rejects delegated lifecycle events from a stale parent run", () => {
+    const props = makeProps({ activeAgentRunId: "parent-run-current" });
+    renderAndClear(props);
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-old",
+        tool_name: "delegate_start",
+        run_id: "parent-run-stale",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-old",
+      });
+    });
+
+    expect(props.setStreamingTasks).not.toHaveBeenCalled();
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-missing-run",
+        tool_name: "delegate_start",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-missing-run",
+      });
+    });
+
+    expect(props.setStreamingTasks).not.toHaveBeenCalled();
+
+    act(() => {
+      fireEvent("agent:task_started", {
+        tool_use_id: "delegate-current",
+        tool_name: "delegate_start",
+        run_id: "parent-run-current",
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        delegated_job_id: "job-current",
+      });
+    });
+
+    expect(props.setStreamingTasks).toHaveBeenCalledTimes(1);
   });
 
   // --------------------------------------------------------------------------

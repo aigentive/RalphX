@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 
 use super::coordination::{
-    build_delegated_session_status_response, cancel_delegate_impl, start_delegate_impl,
+    build_delegated_session_status_response, cancel_delegate_impl,
+    start_delegate_impl_with_parent_run,
 };
 use crate::application::agent_workflow_runner::{AgentWorkflowHost, AgentWorkflowRunAuthority};
 use crate::application::chat_service::ChatService;
@@ -1110,7 +1111,7 @@ impl HttpWorkflowHost {
             ));
         }
         let delegated_prompt = workflow_delegate_prompt(prompt, schema.as_ref())?;
-        let snapshot = start_delegate_impl(
+        let snapshot = start_delegate_impl_with_parent_run(
             &self.state,
             DelegateStartRequest {
                 caller_agent_name: Some(self.caller_agent_name.clone()),
@@ -1137,6 +1138,7 @@ impl HttpWorkflowHost {
                 approval_policy: None,
                 sandbox_mode: None,
             },
+            Some(&authority.run_id),
         )
         .await
         .map_err(|error| {
@@ -1429,6 +1431,7 @@ impl HttpWorkflowHost {
                 delegated_session_id.as_str(),
                 true,
                 Some(1),
+                None,
             )
             .await
             .map_err(|error| {

@@ -78,6 +78,33 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
 }
 
 #[tokio::test]
+async fn test_add_task_for_run_rejects_stale_run_and_accepts_current_run() {
+    let cache = StreamingStateCache::new();
+    cache
+        .set_run_id("conv-123", Some("run-current".to_string()))
+        .await;
+
+    assert!(
+        !cache
+            .add_task_for_run("conv-123", "run-stale", cached_streaming_task("task-stale"),)
+            .await
+    );
+    assert!(
+        cache
+            .add_task_for_run(
+                "conv-123",
+                "run-current",
+                cached_streaming_task("task-current"),
+            )
+            .await
+    );
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(state.streaming_tasks.len(), 1);
+    assert_eq!(state.streaming_tasks[0].tool_use_id, "task-current");
+}
+
+#[tokio::test]
 async fn test_upsert_tool_call_creates_state() {
     let cache = StreamingStateCache::new();
     let tool_call = CachedToolCall {

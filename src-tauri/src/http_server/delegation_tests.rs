@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::delegation::{persist_terminal_projection, DelegationJobSnapshot};
+use super::delegation::{persist_terminal_projection, DelegationJobSnapshot, DelegationService};
 use crate::domain::entities::{ChatConversation, ProjectId};
 use crate::domain::repositories::{ChatConversationRepository, ChatTimelineRepository};
 use crate::infrastructure::sqlite::{
@@ -26,6 +26,7 @@ async fn terminal_projection_is_idempotent_and_fully_hydrated() {
         parent_turn_id: None,
         parent_message_id: None,
         parent_conversation_id: Some(conversation_id.to_string()),
+        parent_agent_run_id: Some("parent-run".to_string()),
         parent_tool_use_id: Some("call-delegate-start".to_string()),
         delegated_session_id: "delegated-session".to_string(),
         delegated_conversation_id: Some("delegated-conversation".to_string()),
@@ -80,4 +81,127 @@ async fn terminal_projection_is_idempotent_and_fully_hydrated() {
     assert_eq!(result["job_id"], "job-terminal-projection");
     assert_eq!(result["status"], "completed");
     assert_eq!(result["content"].as_str().map(str::len), Some(2_000));
+}
+
+#[tokio::test]
+async fn cancellation_blocks_competing_failure_until_cancelled_projection_is_committed() {
+    let service = DelegationService::new();
+    service
+        .register_running(
+            "job-cancel".to_string(),
+            "project".to_string(),
+            "project-1".to_string(),
+            None,
+            None,
+            Some("parent-conversation".to_string()),
+            Some("parent-run".to_string()),
+            Some("tool-delegate".to_string()),
+            "delegated-session".to_string(),
+            Some("delegated-conversation".to_string()),
+            Some("delegated-run".to_string()),
+            "reviewer".to_string(),
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    service
+        .begin_cancellation("job-cancel")
+        .await
+        .expect("running job accepts cancellation intent");
+
+    assert!(
+        service
+            .terminal_candidate(
+                "job-cancel",
+                "failed",
+                None,
+                Some("Agent stopped by user".to_string()),
+            )
+            .await
+            .is_none(),
+        "the monitor must not publish the stop-induced failed state while cancellation owns settlement"
+    );
+
+    let candidate = service
+        .terminal_candidate("job-cancel", "cancelled", None, None)
+        .await
+        .expect("authoritative cancelled run produces a terminal candidate");
+    assert_eq!(
+        service.snapshot("job-cancel").await.unwrap().status,
+        "running",
+        "terminal state must not become observable before durable persistence"
+    );
+    assert!(service.commit_terminal(candidate.clone()).await);
+    assert!(!service.commit_terminal(candidate).await);
+    assert_eq!(
+        service.snapshot("job-cancel").await.unwrap().status,
+        "cancelled"
+    );
+}
+
+#[tokio::test]
+async fn terminal_candidate_reserves_settlement_against_competing_cancellation() {
+    let service = DelegationService::new();
+    service
+        .register_running(
+            "job-complete".to_string(),
+            "project".to_string(),
+            "project-1".to_string(),
+            None,
+            None,
+            Some("parent-conversation".to_string()),
+            Some("parent-run".to_string()),
+            Some("tool-delegate".to_string()),
+            "delegated-session".to_string(),
+            Some("delegated-conversation".to_string()),
+            Some("delegated-run".to_string()),
+            "reviewer".to_string(),
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let candidate = service
+        .terminal_candidate("job-complete", "completed", Some("done".to_string()), None)
+        .await
+        .expect("completed run reserves terminal settlement");
+
+    assert!(
+        service.begin_cancellation("job-complete").await.is_none(),
+        "cancellation must not claim a job while terminal persistence is in flight"
+    );
+    assert!(
+        service
+            .terminal_candidate(
+                "job-complete",
+                "failed",
+                None,
+                Some("late failure".to_string())
+            )
+            .await
+            .is_none(),
+        "a different terminal status must not overwrite the reserved settlement"
+    );
+    assert!(service.commit_terminal(candidate).await);
+    assert_eq!(
+        service.snapshot("job-complete").await.unwrap().status,
+        "completed"
+    );
 }

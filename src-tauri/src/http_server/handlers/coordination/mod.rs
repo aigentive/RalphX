@@ -1,4 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use chrono::Utc;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -12,6 +16,7 @@ use crate::application::agent_lane_resolution::{
 use crate::application::chat_service::{
     chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
     AgentTaskStartedPayload, CachedStreamingTask, ChatService, SendMessageOptions,
+    StreamingStateCache,
 };
 use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
@@ -738,9 +743,11 @@ mod native_delegation;
 
 pub use native_delegation::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload,
-    cancel_delegate, get_delegated_session_status, start_delegate, wait_delegate,
+    cancel_delegate, get_delegated_session_status, start_delegate,
+    start_delegate_with_runtime_context, wait_delegate,
 };
 pub(crate) use native_delegation::{
-    build_delegated_session_status_response, cancel_delegate_impl, start_delegate_impl,
+    build_delegated_session_status_response, cancel_delegate_impl,
+    start_delegate_impl_with_parent_run,
 };
 use native_delegation::resolve_parent_conversation_id;

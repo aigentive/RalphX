@@ -27,6 +27,7 @@ pub struct DelegationJobSnapshot {
     pub parent_turn_id: Option<String>,
     pub parent_message_id: Option<String>,
     pub parent_conversation_id: Option<String>,
+    pub parent_agent_run_id: Option<String>,
     pub parent_tool_use_id: Option<String>,
     pub delegated_session_id: String,
     pub delegated_conversation_id: Option<String>,
@@ -54,6 +55,8 @@ pub struct DelegationJobSnapshot {
 #[derive(Debug, Clone)]
 struct DelegationJobRecord {
     snapshot: DelegationJobSnapshot,
+    cancel_requested: bool,
+    settlement_status: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -74,6 +77,7 @@ impl DelegationService {
         parent_turn_id: Option<String>,
         parent_message_id: Option<String>,
         parent_conversation_id: Option<String>,
+        parent_agent_run_id: Option<String>,
         parent_tool_use_id: Option<String>,
         delegated_session_id: String,
         delegated_conversation_id: Option<String>,
@@ -98,6 +102,7 @@ impl DelegationService {
             parent_turn_id,
             parent_message_id,
             parent_conversation_id,
+            parent_agent_run_id,
             parent_tool_use_id,
             delegated_session_id,
             delegated_conversation_id,
@@ -130,6 +135,8 @@ impl DelegationService {
             job_id,
             DelegationJobRecord {
                 snapshot: snapshot.clone(),
+                cancel_requested: false,
+                settlement_status: None,
             },
         );
 
@@ -144,62 +151,97 @@ impl DelegationService {
             .map(|record| record.snapshot.clone())
     }
 
-    pub async fn mark_completed(
-        &self,
-        job_id: &str,
-        content: String,
-    ) -> Option<DelegationJobSnapshot> {
+    pub async fn begin_cancellation(&self, job_id: &str) -> Option<DelegationJobSnapshot> {
         let mut jobs = self.jobs.write().await;
         let record = jobs.get_mut(job_id)?;
-        if record.snapshot.status != "running" {
-            return Some(record.snapshot.clone());
-        }
-        record.snapshot.status = "completed".to_string();
-        record.snapshot.content = Some(content);
-        record.snapshot.error = None;
-        let completed_at = Utc::now().to_rfc3339();
-        record.snapshot.completed_at = Some(completed_at.clone());
-        record.snapshot.history.push(DelegationHistoryEntry {
-            status: "completed".to_string(),
-            timestamp: completed_at,
-            detail: None,
-        });
-        Some(record.snapshot.clone())
-    }
-
-    pub async fn mark_failed(&self, job_id: &str, error: String) -> Option<DelegationJobSnapshot> {
-        let mut jobs = self.jobs.write().await;
-        let record = jobs.get_mut(job_id)?;
-        if record.snapshot.status != "running" {
-            return Some(record.snapshot.clone());
-        }
-        record.snapshot.status = "failed".to_string();
-        let completed_at = Utc::now().to_rfc3339();
-        record.snapshot.error = Some(error.clone());
-        record.snapshot.completed_at = Some(completed_at.clone());
-        record.snapshot.history.push(DelegationHistoryEntry {
-            status: "failed".to_string(),
-            timestamp: completed_at,
-            detail: Some(error),
-        });
-        Some(record.snapshot.clone())
-    }
-
-    pub async fn cancel(&self, job_id: &str) -> Option<DelegationJobSnapshot> {
-        let mut jobs = self.jobs.write().await;
-        let record = jobs.get_mut(job_id)?;
-        if record.snapshot.status != "running" {
+        if record.snapshot.status != "running"
+            || record.cancel_requested
+            || record.settlement_status.is_some()
+        {
             return None;
         }
-        record.snapshot.status = "cancelled".to_string();
-        let completed_at = Utc::now().to_rfc3339();
-        record.snapshot.completed_at = Some(completed_at.clone());
-        record.snapshot.history.push(DelegationHistoryEntry {
-            status: "cancelled".to_string(),
-            timestamp: completed_at,
-            detail: None,
-        });
+        record.cancel_requested = true;
         Some(record.snapshot.clone())
+    }
+
+    pub async fn is_cancellation_pending(&self, job_id: &str) -> bool {
+        self.jobs
+            .read()
+            .await
+            .get(job_id)
+            .is_some_and(|record| record.cancel_requested)
+    }
+
+    pub async fn abort_cancellation(&self, job_id: &str) {
+        let mut jobs = self.jobs.write().await;
+        if let Some(record) = jobs.get_mut(job_id) {
+            if record.snapshot.status == "running" {
+                record.cancel_requested = false;
+            }
+        }
+    }
+
+    pub async fn terminal_candidate(
+        &self,
+        job_id: &str,
+        status: &str,
+        content: Option<String>,
+        error: Option<String>,
+    ) -> Option<DelegationJobSnapshot> {
+        if !matches!(status, "completed" | "failed" | "cancelled") {
+            return None;
+        }
+        let mut jobs = self.jobs.write().await;
+        let record = jobs.get_mut(job_id)?;
+        if record.snapshot.status != "running" || (record.cancel_requested && status != "cancelled")
+        {
+            return None;
+        }
+        match record.settlement_status.as_deref() {
+            Some(claimed_status) if claimed_status != status => return None,
+            Some(_) => {}
+            None => record.settlement_status = Some(status.to_string()),
+        }
+        let mut candidate = record.snapshot.clone();
+        candidate.status = status.to_string();
+        candidate.content = if status == "completed" { content } else { None };
+        candidate.error = if status == "failed" {
+            error.clone()
+        } else {
+            None
+        };
+        let completed_at = Utc::now().to_rfc3339();
+        candidate.completed_at = Some(completed_at.clone());
+        candidate.history.push(DelegationHistoryEntry {
+            status: status.to_string(),
+            timestamp: completed_at,
+            detail: if status == "failed" { error } else { None },
+        });
+        Some(candidate)
+    }
+
+    pub async fn commit_terminal(&self, candidate: DelegationJobSnapshot) -> bool {
+        let mut jobs = self.jobs.write().await;
+        let Some(record) = jobs.get_mut(&candidate.job_id) else {
+            return false;
+        };
+        if record.snapshot.status != "running" {
+            return false;
+        }
+        if record.snapshot.delegated_agent_run_id != candidate.delegated_agent_run_id
+            || (record.cancel_requested && candidate.status != "cancelled")
+            || record.settlement_status.as_deref() != Some(candidate.status.as_str())
+            || !matches!(
+                candidate.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            )
+        {
+            return false;
+        }
+        record.snapshot = candidate;
+        record.cancel_requested = false;
+        record.settlement_status = None;
+        true
     }
 }
 

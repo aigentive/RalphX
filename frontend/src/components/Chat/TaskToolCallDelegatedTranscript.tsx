@@ -113,6 +113,7 @@ export function TaskToolCallDelegatedTranscript({
     string | null
   >(null);
   const [activeStateSettled, setActiveStateSettled] = useState(false);
+  const [activeStateError, setActiveStateError] = useState(false);
   const [isChildActive, setIsChildActive] = useState(false);
   const [liveToolCalls, setLiveToolCalls] = useState<ToolCall[]>([]);
 
@@ -122,6 +123,7 @@ export function TaskToolCallDelegatedTranscript({
     setLiveText("");
     setFinalizedLiveMessageId(null);
     setActiveStateSettled(false);
+    setActiveStateError(false);
     setIsChildActive(false);
     setLiveToolCalls([]);
 
@@ -167,7 +169,9 @@ export function TaskToolCallDelegatedTranscript({
         }
       })
       .catch(() => {
-        // Best-effort recovery only. Persisted history and live events remain authoritative.
+        if (!cancelled) {
+          setActiveStateError(true);
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -364,7 +368,7 @@ export function TaskToolCallDelegatedTranscript({
     );
   }
 
-  if (delegatedConversation.isError) {
+  if (delegatedConversation.isError || activeStateError) {
     return fallbackText ? (
       <FallbackText text={fallbackText} />
     ) : (
@@ -375,7 +379,9 @@ export function TaskToolCallDelegatedTranscript({
           color: "var(--status-error)",
         }}
       >
-        Unable to load delegated conversation.
+        {activeStateError
+          ? "Unable to recover the delegated live state."
+          : "Unable to load delegated conversation."}
       </div>
     );
   }

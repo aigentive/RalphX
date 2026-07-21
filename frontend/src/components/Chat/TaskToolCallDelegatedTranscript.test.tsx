@@ -43,6 +43,47 @@ afterEach(() => {
 });
 
 describe("TaskToolCallDelegatedTranscript", () => {
+  it("surfaces active-state recovery failure instead of an empty transcript", async () => {
+    vi.spyOn(chatApi, "getConversationActiveState").mockRejectedValue(
+      new Error("active-state unavailable"),
+    );
+    vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
+      conversation: {
+        id: "child-conv-error",
+        contextType: "project",
+        contextId: "project-1",
+        claudeSessionId: null,
+        providerSessionId: null,
+        providerHarness: "codex",
+        upstreamProvider: null,
+        providerProfile: null,
+        title: "Delegated reviewer",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-04-12T10:00:00Z",
+        updatedAt: "2026-04-12T10:00:00Z",
+      },
+      messages: [],
+      limit: 40,
+      offset: 0,
+      totalMessageCount: 0,
+      hasOlder: false,
+    });
+
+    renderWithQueryClient(
+      <TaskToolCallDelegatedTranscript
+        conversationId="child-conv-error"
+        delegatedAgentRunId="child-run-error"
+        fallbackText={undefined}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Unable to recover the delegated live state."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No delegated output available.")).not.toBeInTheDocument();
+  });
+
   it("refetches when the delegated conversation receives a new message_created event", async () => {
     const getConversationMessagesPageSpy = vi
       .spyOn(chatApi, "getConversationMessagesPage")

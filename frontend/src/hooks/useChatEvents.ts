@@ -497,6 +497,7 @@ function buildFinalizedMessageForCache(
 
 interface UseChatEventsProps {
   activeConversationId: string | null;
+  activeAgentRunId?: string | null;
   contextId: string | null;
   contextType: ContextType | null;
   streamingToolCalls?: ToolCall[];
@@ -516,6 +517,7 @@ interface UseChatEventsProps {
 
 export function useChatEvents({
   activeConversationId,
+  activeAgentRunId,
   contextId,
   contextType,
   streamingToolCalls = [],
@@ -573,9 +575,14 @@ export function useChatEvents({
     const unsubscribes: Unsubscribe[] = [];
 
     // Helper: check if event matches current context
-    const isRelevant = (payload: { conversation_id?: string; context_id?: string }) =>
+    const isRelevant = (payload: {
+      conversation_id?: string;
+      context_id?: string;
+      run_id?: string | null;
+    }) =>
       payload.conversation_id === activeConversationId &&
-      (!contextId || payload.context_id === contextId);
+      (!contextId || payload.context_id === contextId) &&
+      (!activeAgentRunId || !payload.run_id || payload.run_id === activeAgentRunId);
 
     const isDelegatedTaskEventPayload = (payload: {
       tool_name?: string | undefined;
@@ -1009,6 +1016,7 @@ export function useChatEvents({
           approval_policy?: string;
           sandbox_mode?: string;
           conversation_id: string;
+          run_id?: string | null;
           context_id?: string;
           context_type?: string;
           seq?: number;
@@ -1016,6 +1024,7 @@ export function useChatEvents({
           const receivedAt = Date.now();
           if (!isRelevant(payload)) return;
           const isDelegated = isDelegatedTaskEventPayload(payload);
+          if (isDelegated && activeAgentRunId && payload.run_id !== activeAgentRunId) return;
           if (!supportsSubagentTasks && !isDelegated) return;
           setStreamingContentBlocks((prev) => {
             const alreadyHasMarker = prev.some(
@@ -1136,12 +1145,18 @@ export function useChatEvents({
           text_output?: string;
           error?: string;
           conversation_id: string;
+          run_id?: string | null;
           context_id?: string;
           context_type?: string;
           seq?: number;
       }>("agent:task_completed", (payload) => {
           if (!isRelevant(payload)) return;
           const isDelegatedPayload = isDelegatedTaskEventPayload(payload);
+          if (
+            isDelegatedPayload
+            && activeAgentRunId
+            && payload.run_id !== activeAgentRunId
+          ) return;
           if (!supportsSubagentTasks && !isDelegatedPayload) return;
           setStreamingTasks((prev) => {
             const taskKey = findDelegationTaskKey(
@@ -1515,7 +1530,7 @@ export function useChatEvents({
       unsubscribes.forEach((unsub) => unsub());
     };
   }, [
-    bus, queryClient, activeConversationId, contextId, contextType,
+    bus, queryClient, activeConversationId, activeAgentRunId, contextId, contextType,
     supportsStreamingText, supportsSubagentTasks,
     setStreamingToolCalls, setStreamingContentBlocks, setStreamingTasks,
     setIsFinalizing, storeKey,

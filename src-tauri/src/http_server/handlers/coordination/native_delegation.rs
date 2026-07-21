@@ -120,6 +120,21 @@ fn cached_streaming_task_from_completed_payload(
     }
 }
 
+async fn cache_delegated_parent_task(
+    cache: &StreamingStateCache,
+    conversation_id: &str,
+    parent_run_id: Option<&str>,
+    task: CachedStreamingTask,
+) {
+    if let Some(parent_run_id) = parent_run_id {
+        let _ = cache
+            .add_task_for_run(conversation_id, parent_run_id, task)
+            .await;
+    } else {
+        cache.add_task(conversation_id, task).await;
+    }
+}
+
 #[doc(hidden)]
 pub fn build_delegated_task_started_payload(
     snapshot: &DelegationJobSnapshot,
@@ -136,7 +151,7 @@ pub fn build_delegated_task_started_payload(
         .unwrap_or_else(|| format!("delegate-job:{}", snapshot.job_id));
     Some(AgentTaskStartedPayload {
         tool_use_id,
-        run_id: None,
+        run_id: snapshot.parent_agent_run_id.clone(),
         tool_name: "delegate_start".to_string(),
         description: Some(snapshot.agent_name.clone()),
         subagent_type: Some("delegated".to_string()),
@@ -196,7 +211,7 @@ pub fn build_delegated_task_completed_payload(
     let latest_run_id = latest_run.map(|run| run.agent_run_id.clone());
     Some(AgentTaskCompletedPayload {
         tool_use_id,
-        run_id: None,
+        run_id: snapshot.parent_agent_run_id.clone(),
         agent_id: latest_run_id.or_else(|| snapshot.delegated_agent_run_id.clone()),
         status: Some(status.to_string()),
         total_duration_ms: latest_run.and_then(delegated_duration_ms),
@@ -276,6 +291,95 @@ fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
         cache_read_tokens: run.cache_read_tokens,
         estimated_usd: run.estimated_usd,
     }
+}
+
+async fn settle_delegation_from_run(
+    state: &HttpServerState,
+    job_id: &str,
+    run: AgentRun,
+    completed_content: Option<String>,
+) -> crate::error::AppResult<Option<DelegationJobSnapshot>> {
+    let (status, error) = match run.status {
+        crate::domain::entities::AgentRunStatus::Running => return Ok(None),
+        crate::domain::entities::AgentRunStatus::Completed => ("completed", None),
+        crate::domain::entities::AgentRunStatus::Failed => (
+            "failed",
+            Some(
+                run.error_message
+                    .clone()
+                    .unwrap_or_else(|| "Delegated run failed".to_string()),
+            ),
+        ),
+        crate::domain::entities::AgentRunStatus::Cancelled => ("cancelled", None),
+    };
+    if let Some(snapshot) = state.delegation_service.snapshot(job_id).await {
+        if snapshot.status != "running" {
+            return Ok(Some(snapshot));
+        }
+    }
+    let latest_run = delegated_run_summary(run);
+    let Some(candidate) = state
+        .delegation_service
+        .terminal_candidate(job_id, status, completed_content, error.clone())
+        .await
+    else {
+        return Ok(None);
+    };
+
+    persist_terminal_projection(
+        &state.app_state.chat_timeline_repo,
+        &candidate,
+        Some(&latest_run),
+    )
+    .await?;
+    state
+        .app_state
+        .delegated_session_repo
+        .update_status(
+            &DelegatedSessionId::from_string(candidate.delegated_session_id.clone()),
+            status,
+            error.clone(),
+            Some(Utc::now()),
+        )
+        .await?;
+
+    if !state
+        .delegation_service
+        .commit_terminal(candidate.clone())
+        .await
+    {
+        return Ok(None);
+    }
+
+    if let Some(payload) = build_delegated_task_completed_payload(
+        &candidate,
+        Some(&latest_run),
+        status,
+        candidate.content.as_deref(),
+        error.as_deref(),
+        delegated_event_seq(),
+    ) {
+        cache_delegated_parent_task(
+            &state.app_state.streaming_state_cache,
+            &payload.conversation_id,
+            payload.run_id.as_deref(),
+            cached_streaming_task_from_completed_payload(&payload),
+        )
+        .await;
+        if let Err(error) = ralphx_events::emit_serialized(
+            state.app_state.events.as_ref(),
+            events::AGENT_TASK_COMPLETED,
+            &payload,
+        ) {
+            tracing::warn!(
+                event = events::AGENT_TASK_COMPLETED,
+                %error,
+                "Failed to serialize delegated task completion event payload"
+            );
+        }
+    }
+
+    Ok(Some(candidate))
 }
 
 fn latest_delegated_handoff_message(messages: Vec<ChatMessage>) -> Option<ChatMessage> {
@@ -380,6 +484,7 @@ pub(crate) async fn build_delegated_session_status_response(
     delegated_session_id: &str,
     include_messages: bool,
     message_limit: Option<u32>,
+    delegated_agent_run_id: Option<&str>,
 ) -> Result<DelegatedSessionStatusResponse, JsonError> {
     let session_id = DelegatedSessionId::from_string(delegated_session_id.to_string());
     let session = state
@@ -459,18 +564,42 @@ pub(crate) async fn build_delegated_session_status_response(
                 format!("Failed to load delegated conversation: {error}"),
             )
         })? {
-        let latest_run = state
-            .app_state
-            .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
-            .await
-            .map_err(|error| {
-                json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to load delegated run: {error}"),
-                )
-            })?
-            .map(delegated_run_summary);
+        let latest_run = if let Some(agent_run_id) = delegated_agent_run_id {
+            let run = state
+                .app_state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(agent_run_id.to_string()))
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to load delegated run: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    json_error(StatusCode::NOT_FOUND, "Delegated agent run not found")
+                })?;
+            if run.conversation_id != conversation.id {
+                return Err(json_error(
+                    StatusCode::CONFLICT,
+                    "Delegated agent run does not belong to the delegated conversation",
+                ));
+            }
+            Some(delegated_run_summary(run))
+        } else {
+            state
+                .app_state
+                .agent_run_repo
+                .get_latest_for_conversation(&conversation.id)
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to load delegated run: {error}"),
+                    )
+                })?
+                .map(delegated_run_summary)
+        };
         (Some(conversation.id.as_str()), latest_run)
     } else {
         (None, None)
@@ -502,13 +631,72 @@ pub async fn get_delegated_session_status(
     axum::extract::Path(delegated_session_id): axum::extract::Path<String>,
 ) -> Result<Json<DelegatedSessionStatusResponse>, JsonError> {
     let status =
-        build_delegated_session_status_response(&state, &delegated_session_id, false, None).await?;
+        build_delegated_session_status_response(&state, &delegated_session_id, false, None, None)
+            .await?;
     Ok(Json(status))
 }
 
-pub(crate) async fn start_delegate_impl(
+async fn resolve_trusted_parent_agent_run_id(
+    state: &HttpServerState,
+    parent: &ResolvedDelegateParent,
+    trusted_parent_run_id: Option<&str>,
+) -> Result<Option<String>, JsonError> {
+    let Some(parent_conversation_id) = parent.parent_conversation_id.as_deref() else {
+        if trusted_parent_run_id.is_some() {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "Trusted parent run requires a resolved parent conversation",
+            ));
+        }
+        return Ok(None);
+    };
+    let parent_conversation_id = ChatConversationId::from_string(parent_conversation_id);
+    let active_run = state
+        .app_state
+        .agent_run_repo
+        .get_active_for_conversation(&parent_conversation_id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to resolve current parent agent run: {error}"),
+            )
+        })?;
+
+    let Some(trusted_parent_run_id) = trusted_parent_run_id else {
+        return Ok(active_run.map(|run| run.id.as_str()));
+    };
+    let trusted_run = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(trusted_parent_run_id.to_string()))
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to validate trusted parent agent run: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted parent agent run not found"))?;
+    if trusted_run.conversation_id != parent_conversation_id {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Trusted parent agent run does not belong to the parent conversation",
+        ));
+    }
+    if active_run.as_ref().map(|run| &run.id) != Some(&trusted_run.id) {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Trusted parent agent run is not the active parent run",
+        ));
+    }
+    Ok(Some(trusted_run.id.as_str()))
+}
+
+pub(crate) async fn start_delegate_impl_with_parent_run(
     state: &HttpServerState,
     req: DelegateStartRequest,
+    trusted_parent_run_id: Option<&str>,
 ) -> Result<DelegationJobSnapshot, JsonError> {
     let caller_agent_name = req.caller_agent_name.as_deref().ok_or_else(|| {
         json_error(
@@ -517,6 +705,8 @@ pub(crate) async fn start_delegate_impl(
         )
     })?;
     let parent = resolve_delegate_parent(state, &req).await?;
+    let parent_agent_run_id =
+        resolve_trusted_parent_agent_run_id(state, &parent, trusted_parent_run_id).await?;
     let requested_harness = req.harness.or(parent.inherited_harness);
     let project = state
         .app_state
@@ -672,6 +862,7 @@ pub(crate) async fn start_delegate_impl(
             req.parent_turn_id.clone(),
             req.parent_message_id.clone(),
             parent.parent_conversation_id.clone(),
+            parent_agent_run_id,
             req.parent_tool_use_id.clone(),
             delegated_session_id.clone(),
             Some(delegated_conversation.id.as_str()),
@@ -722,32 +913,32 @@ pub(crate) async fn start_delegate_impl(
         sandbox_mode.as_deref(),
         delegated_event_seq(),
     ) {
-        state
-            .app_state
-            .streaming_state_cache
-            .add_task(
-                &payload.conversation_id,
-                cached_streaming_task_from_started_payload(&payload),
-            )
-            .await;
+        if let Some(parent_run_id) = payload.run_id.clone() {
+            state
+                .app_state
+                .streaming_state_cache
+                .set_run_id(&payload.conversation_id, Some(parent_run_id))
+                .await;
+        }
+        cache_delegated_parent_task(
+            &state.app_state.streaming_state_cache,
+            &payload.conversation_id,
+            payload.run_id.as_deref(),
+            cached_streaming_task_from_started_payload(&payload),
+        )
+        .await;
         crate::http_server::emit_serialized_http_event(state, events::AGENT_TASK_STARTED, &payload);
     }
 
-    let delegation_service = state.delegation_service.clone();
-    let delegated_session_repo = state.app_state.delegated_session_repo.clone();
-    let chat_message_repo = state.app_state.chat_message_repo.clone();
-    let chat_timeline_repo = state.app_state.chat_timeline_repo.clone();
-    let agent_run_repo = state.app_state.agent_run_repo.clone();
-    let app_events = Arc::clone(&state.app_state.events);
-    let streaming_state_cache = state.app_state.streaming_state_cache.clone();
-    let snapshot_for_events = snapshot.clone();
+    let monitor_state = state.clone();
     let agent_run_id = send_result.agent_run_id.clone();
     let conversation_id = delegated_conversation.id;
-    let delegated_session_id_for_task = delegated_session_id.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let run = match agent_run_repo
+            let run = match monitor_state
+                .app_state
+                .agent_run_repo
                 .get_by_id(&crate::domain::entities::AgentRunId::from_string(
                     agent_run_id.clone(),
                 ))
@@ -756,54 +947,8 @@ pub(crate) async fn start_delegate_impl(
                 Ok(Some(run)) => run,
                 Ok(None) => continue,
                 Err(error) => {
-                    let settled_snapshot = delegation_service
-                        .mark_failed(&job_id, error.to_string())
-                        .await
-                        .unwrap_or_else(|| snapshot_for_events.clone());
-                    if let Err(update_error) = delegated_session_repo
-                        .update_status(
-                            &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),
-                            "failed",
-                            Some(error.to_string()),
-                            Some(Utc::now()),
-                        )
-                        .await
-                    {
-                        warn!(job_id, %update_error, "Failed to persist delegated session failure");
-                    }
-                    if let Err(projection_error) =
-                        persist_terminal_projection(&chat_timeline_repo, &settled_snapshot, None)
-                            .await
-                    {
-                        warn!(job_id, %projection_error, "Failed to persist delegated terminal projection");
-                    }
-                    if let Some(payload) = build_delegated_task_completed_payload(
-                        &settled_snapshot,
-                        None,
-                        "failed",
-                        None,
-                        Some(&error.to_string()),
-                        delegated_event_seq(),
-                    ) {
-                        streaming_state_cache
-                            .add_task(
-                                &payload.conversation_id,
-                                cached_streaming_task_from_completed_payload(&payload),
-                            )
-                            .await;
-                        if let Err(error) = ralphx_events::emit_serialized(
-                            app_events.as_ref(),
-                            events::AGENT_TASK_COMPLETED,
-                            &payload,
-                        ) {
-                            tracing::warn!(
-                                event = events::AGENT_TASK_COMPLETED,
-                                %error,
-                                "Failed to serialize delegated task completion event payload"
-                            );
-                        }
-                    }
-                    break;
+                    warn!(job_id, %error, "Delegated run state read failed; settlement remains pending");
+                    continue;
                 }
             };
 
@@ -811,13 +956,13 @@ pub(crate) async fn start_delegate_impl(
                 continue;
             }
 
-            let latest_run = delegated_run_summary(run.clone());
-
-            match run.status {
-                crate::domain::entities::AgentRunStatus::Completed => {
+            let completed_content =
+                if run.status == crate::domain::entities::AgentRunStatus::Completed {
                     let mut content = String::new();
                     for _ in 0..10 {
-                        content = chat_message_repo
+                        content = monitor_state
+                            .app_state
+                            .chat_message_repo
                             .get_by_conversation(&conversation_id)
                             .await
                             .ok()
@@ -829,174 +974,31 @@ pub(crate) async fn start_delegate_impl(
                         }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
-                    let settled_snapshot = delegation_service
-                        .mark_completed(&job_id, content.clone())
-                        .await
-                        .unwrap_or_else(|| snapshot_for_events.clone());
-                    if let Err(update_error) = delegated_session_repo
-                        .update_status(
-                            &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),
-                            "completed",
-                            None,
-                            Some(Utc::now()),
-                        )
-                        .await
-                    {
-                        warn!(job_id, %update_error, "Failed to persist delegated session completion");
-                    }
-                    if let Err(projection_error) = persist_terminal_projection(
-                        &chat_timeline_repo,
-                        &settled_snapshot,
-                        Some(&latest_run),
-                    )
-                    .await
-                    {
-                        warn!(job_id, %projection_error, "Failed to persist delegated terminal projection");
-                    }
-                    if let Some(payload) = build_delegated_task_completed_payload(
-                        &settled_snapshot,
-                        Some(&latest_run),
-                        "completed",
-                        Some(&content),
-                        None,
-                        delegated_event_seq(),
-                    ) {
-                        streaming_state_cache
-                            .add_task(
-                                &payload.conversation_id,
-                                cached_streaming_task_from_completed_payload(&payload),
-                            )
-                            .await;
-                        if let Err(error) = ralphx_events::emit_serialized(
-                            app_events.as_ref(),
-                            events::AGENT_TASK_COMPLETED,
-                            &payload,
-                        ) {
-                            tracing::warn!(
-                                event = events::AGENT_TASK_COMPLETED,
-                                %error,
-                                "Failed to serialize delegated task completion event payload"
-                            );
-                        }
-                    }
+                    Some(content)
+                } else {
+                    None
+                };
+
+            match settle_delegation_from_run(&monitor_state, &job_id, run, completed_content).await
+            {
+                Ok(Some(_)) => break,
+                Ok(None) => continue,
+                Err(error) => {
+                    warn!(job_id, %error, "Delegated terminal settlement remains pending");
+                    continue;
                 }
-                crate::domain::entities::AgentRunStatus::Failed => {
-                    let detail = run
-                        .error_message
-                        .unwrap_or_else(|| "Delegated run failed".to_string());
-                    let settled_snapshot = delegation_service
-                        .mark_failed(&job_id, detail.clone())
-                        .await
-                        .unwrap_or_else(|| snapshot_for_events.clone());
-                    if let Err(update_error) = delegated_session_repo
-                        .update_status(
-                            &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),
-                            "failed",
-                            Some(detail.clone()),
-                            Some(Utc::now()),
-                        )
-                        .await
-                    {
-                        warn!(job_id, %update_error, "Failed to persist delegated session failure");
-                    }
-                    if let Err(projection_error) = persist_terminal_projection(
-                        &chat_timeline_repo,
-                        &settled_snapshot,
-                        Some(&latest_run),
-                    )
-                    .await
-                    {
-                        warn!(job_id, %projection_error, "Failed to persist delegated terminal projection");
-                    }
-                    if let Some(payload) = build_delegated_task_completed_payload(
-                        &settled_snapshot,
-                        Some(&latest_run),
-                        "failed",
-                        None,
-                        Some(&detail),
-                        delegated_event_seq(),
-                    ) {
-                        streaming_state_cache
-                            .add_task(
-                                &payload.conversation_id,
-                                cached_streaming_task_from_completed_payload(&payload),
-                            )
-                            .await;
-                        if let Err(error) = ralphx_events::emit_serialized(
-                            app_events.as_ref(),
-                            events::AGENT_TASK_COMPLETED,
-                            &payload,
-                        ) {
-                            tracing::warn!(
-                                event = events::AGENT_TASK_COMPLETED,
-                                %error,
-                                "Failed to serialize delegated task completion event payload"
-                            );
-                        }
-                    }
-                }
-                crate::domain::entities::AgentRunStatus::Cancelled => {
-                    let settled_snapshot = match delegation_service.cancel(&job_id).await {
-                        Some(snapshot) => snapshot,
-                        None => delegation_service
-                            .snapshot(&job_id)
-                            .await
-                            .unwrap_or_else(|| snapshot_for_events.clone()),
-                    };
-                    if let Err(update_error) = delegated_session_repo
-                        .update_status(
-                            &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),
-                            "cancelled",
-                            None,
-                            Some(Utc::now()),
-                        )
-                        .await
-                    {
-                        warn!(job_id, %update_error, "Failed to persist delegated session cancellation");
-                    }
-                    if let Err(projection_error) = persist_terminal_projection(
-                        &chat_timeline_repo,
-                        &settled_snapshot,
-                        Some(&latest_run),
-                    )
-                    .await
-                    {
-                        warn!(job_id, %projection_error, "Failed to persist delegated terminal projection");
-                    }
-                    if let Some(payload) = build_delegated_task_completed_payload(
-                        &settled_snapshot,
-                        Some(&latest_run),
-                        "cancelled",
-                        None,
-                        None,
-                        delegated_event_seq(),
-                    ) {
-                        streaming_state_cache
-                            .add_task(
-                                &payload.conversation_id,
-                                cached_streaming_task_from_completed_payload(&payload),
-                            )
-                            .await;
-                        if let Err(error) = ralphx_events::emit_serialized(
-                            app_events.as_ref(),
-                            events::AGENT_TASK_COMPLETED,
-                            &payload,
-                        ) {
-                            tracing::warn!(
-                                event = events::AGENT_TASK_COMPLETED,
-                                %error,
-                                "Failed to serialize delegated task completion event payload"
-                            );
-                        }
-                    }
-                }
-                crate::domain::entities::AgentRunStatus::Running => {}
             }
-            break;
         }
     });
 
     Ok(snapshot)
+}
+
+pub(crate) async fn start_delegate_impl(
+    state: &HttpServerState,
+    req: DelegateStartRequest,
+) -> Result<DelegationJobSnapshot, JsonError> {
+    start_delegate_impl_with_parent_run(state, req, None).await
 }
 
 pub async fn start_delegate(
@@ -1004,6 +1006,38 @@ pub async fn start_delegate(
     Json(req): Json<DelegateStartRequest>,
 ) -> Result<Json<DelegationJobSnapshot>, JsonError> {
     Ok(Json(start_delegate_impl(&state, req).await?))
+}
+
+pub async fn start_delegate_with_runtime_context(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+    Json(req): Json<DelegateStartRequest>,
+) -> Result<Json<DelegationJobSnapshot>, JsonError> {
+    let trusted_parent_run_id = headers
+        .get("x-ralphx-agent-run-id")
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Delegation start requires trusted parent agent run context",
+            )
+        })?
+        .to_str()
+        .map_err(|_| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Trusted parent agent run context is invalid",
+            )
+        })?
+        .trim();
+    if trusted_parent_run_id.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Delegation start requires trusted parent agent run context",
+        ));
+    }
+    Ok(Json(
+        start_delegate_impl_with_parent_run(&state, req, Some(trusted_parent_run_id)).await?,
+    ))
 }
 
 pub async fn wait_delegate(
@@ -1020,27 +1054,15 @@ pub async fn wait_delegate(
         .or(req.include_child_status)
         .unwrap_or(true)
     {
-        match build_delegated_session_status_response(
+        let delegated_status = build_delegated_session_status_response(
             &state,
             &snapshot.delegated_session_id,
             req.include_messages.unwrap_or(false),
             req.message_limit,
+            snapshot.delegated_agent_run_id.as_deref(),
         )
-        .await
-        {
-            Ok(delegated_status) => {
-                snapshot.delegated_status = Some(delegated_status);
-            }
-            Err((status, error)) => {
-                warn!(
-                    job_id = snapshot.job_id,
-                    delegated_session_id = snapshot.delegated_session_id,
-                    status = status.as_u16(),
-                    error = %error.0["error"].as_str().unwrap_or("unknown error"),
-                    "Failed to hydrate delegated session status"
-                );
-            }
-        }
+        .await?;
+        snapshot.delegated_status = Some(delegated_status);
     }
     Ok(Json(snapshot))
 }
@@ -1067,50 +1089,176 @@ pub(crate) async fn cancel_delegate_impl(
             "Delegation job is no longer cancellable",
         ));
     }
-    let chat_service = state
+    let cancellation_already_pending = state
+        .delegation_service
+        .is_cancellation_pending(job_id)
+        .await;
+    if !cancellation_already_pending {
+        state
+            .delegation_service
+            .begin_cancellation(job_id)
+            .await
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Delegation job cancellation is already being settled",
+                )
+            })?;
+
+        let chat_service = state
+            .app_state
+            .build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
+        let stopped = match chat_service
+            .stop_agent(ChatContextType::Delegation, &snapshot.delegated_session_id)
+            .await
+        {
+            Ok(stopped) => stopped,
+            Err(error) => {
+                state.delegation_service.abort_cancellation(job_id).await;
+                return Err(json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to stop delegated agent: {error}"),
+                ));
+            }
+        };
+        if !stopped {
+            state.delegation_service.abort_cancellation(job_id).await;
+            return Err(json_error(
+                StatusCode::NOT_FOUND,
+                "Delegation job is no longer running",
+            ));
+        }
+    }
+
+    let delegated_run_id = snapshot.delegated_agent_run_id.as_deref().ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Delegation job has no authoritative agent run",
+        )
+    })?;
+    let run_id = AgentRunId::from_string(delegated_run_id.to_string());
+    let run = state
         .app_state
-        .build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
-    let stopped = chat_service
-        .stop_agent(ChatContextType::Delegation, &snapshot.delegated_session_id)
+        .agent_run_repo
+        .get_by_id(&run_id)
         .await
         .map_err(|error| {
             json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to stop delegated agent: {error}"),
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Cancellation accepted; delegated run reconciliation is pending: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Cancellation accepted; delegated run reconciliation is pending",
             )
         })?;
-    if !stopped {
+
+    match run.status {
+        crate::domain::entities::AgentRunStatus::Completed => {
+            state.delegation_service.abort_cancellation(job_id).await;
+            let settled = settle_delegation_from_run(state, job_id, run, None)
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Delegated completion settlement is pending: {error}"),
+                    )
+                })?;
+            return settled.ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Delegation completed before cancellation was accepted",
+                )
+            });
+        }
+        crate::domain::entities::AgentRunStatus::Failed
+            if run.error_message.as_deref() != Some("Agent stopped by user") =>
+        {
+            state.delegation_service.abort_cancellation(job_id).await;
+            let settled = settle_delegation_from_run(state, job_id, run, None)
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Delegated failure settlement is pending: {error}"),
+                    )
+                })?;
+            return settled.ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Delegation failed before cancellation was accepted",
+                )
+            });
+        }
+        crate::domain::entities::AgentRunStatus::Running
+        | crate::domain::entities::AgentRunStatus::Failed => {
+            state
+                .app_state
+                .agent_run_repo
+                .cancel(&run_id)
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!(
+                            "Cancellation accepted; delegated run settlement is pending: {error}"
+                        ),
+                    )
+                })?;
+        }
+        crate::domain::entities::AgentRunStatus::Cancelled => {}
+    }
+
+    let cancelled_run = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Cancellation accepted; delegated run settlement is pending: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Cancellation accepted; delegated run settlement is pending",
+            )
+        })?;
+    if cancelled_run.status != crate::domain::entities::AgentRunStatus::Cancelled {
+        if matches!(
+            cancelled_run.status,
+            crate::domain::entities::AgentRunStatus::Completed
+        ) || (cancelled_run.status == crate::domain::entities::AgentRunStatus::Failed
+            && cancelled_run.error_message.as_deref() != Some("Agent stopped by user"))
+        {
+            state.delegation_service.abort_cancellation(job_id).await;
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "Delegation reached a terminal state before cancellation settlement",
+            ));
+        }
         return Err(json_error(
-            StatusCode::NOT_FOUND,
-            "Delegation job is no longer running",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Cancellation accepted; delegated run has not reached cancelled state",
         ));
     }
-    let snapshot = match state.delegation_service.cancel(job_id).await {
-        Some(snapshot) => snapshot,
-        None => state
-            .delegation_service
-            .snapshot(job_id)
-            .await
-            .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?,
-    };
-    if snapshot.status != "cancelled" {
-        return Ok(snapshot);
-    }
-    state
-        .app_state
-        .delegated_session_repo
-        .update_status(
-            &DelegatedSessionId::from_string(snapshot.delegated_session_id.clone()),
-            "cancelled",
-            None,
-            Some(Utc::now()),
-        )
+
+    settle_delegation_from_run(state, job_id, cancelled_run, None)
         .await
         .map_err(|error| {
             json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to update delegated session cancellation: {error}"),
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Cancellation accepted; terminal projection is pending: {error}"),
             )
-        })?;
-    Ok(snapshot)
+        })?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Cancellation accepted; terminal projection is pending",
+            )
+        })
 }
