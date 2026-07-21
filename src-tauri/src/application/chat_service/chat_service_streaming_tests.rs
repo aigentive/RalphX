@@ -164,7 +164,7 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
         record_agent_waiting_if_user_attended(
             handle,
             ChatContextType::Project,
-            &project_id.as_str(),
+            project_id.as_str(),
             &conversation.id,
             Some(&verifier_run_id),
         )
@@ -172,7 +172,7 @@ async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
         record_agent_waiting_if_user_attended(
             handle,
             ChatContextType::Project,
-            &project_id.as_str(),
+            project_id.as_str(),
             &conversation.id,
             Some(&ordinary_run_id),
         )
