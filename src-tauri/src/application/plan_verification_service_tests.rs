@@ -1,8 +1,15 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
 use crate::application::chat_service::MockChatService;
+use crate::application::chat_service::SendQueuePolicy;
 use crate::application::plan_verification_service::{
     admit_automatic_plan_verification, ensure_plan_verification_for_acceptance,
-    request_plan_verification, source_allows_verified_retry, AutomaticPlanVerificationDisposition,
-    PlanVerificationRequestSource,
+    get_plan_verification_status, request_plan_verification, source_allows_verified_retry,
+    AutomaticPlanVerificationDisposition, PlanVerificationRequestOutcome,
+    PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -10,6 +17,62 @@ use crate::domain::entities::{
     ArtifactId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, ProjectId,
 };
 use crate::domain::services::EffectiveGatePolicy;
+use crate::domain::services::{QueueKey, QueuedMessage};
+use crate::error::{AppError, AppResult};
+use crate::infrastructure::memory::MemoryQueuedMessageRepository;
+
+struct FailSecondQueueList {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl crate::domain::repositories::QueuedMessageRepository for FailSecondQueueList {
+    async fn enqueue_back(&self, _key: &QueueKey, _message: &QueuedMessage) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn enqueue_front(&self, _key: &QueueKey, _message: &QueuedMessage) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list(&self, _key: &QueueKey) -> AppResult<Vec<QueuedMessage>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(Vec::new())
+        } else {
+            Err(AppError::Infrastructure(
+                "injected queue read failure".to_string(),
+            ))
+        }
+    }
+
+    async fn list_keys(&self) -> AppResult<Vec<QueueKey>> {
+        Ok(Vec::new())
+    }
+
+    async fn delete(&self, _key: &QueueKey, _message_id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn delete_by_id(&self, _message_id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn clear(&self, _key: &QueueKey) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn pop_front(&self, _key: &QueueKey) -> AppResult<Option<QueuedMessage>> {
+        Ok(None)
+    }
+
+    async fn remove_stale(
+        &self,
+        _key: &QueueKey,
+        _threshold_secs: u64,
+    ) -> AppResult<Vec<QueuedMessage>> {
+        Ok(Vec::new())
+    }
+}
 
 fn mock_chat(state: &AppState) -> MockChatService {
     MockChatService::with_agent_run_repo(std::sync::Arc::clone(&state.agent_run_repo))
@@ -140,6 +203,10 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
     assert!(metadata.contains(session.id.as_str()));
     assert!(metadata.contains("plan-current"));
     assert_eq!(options[0].conversation_id_override, None);
+    assert_eq!(
+        options[0].queue_policy,
+        SendQueuePolicy::RequireImmediateStart
+    );
     assert_eq!(options[0].harness_override, None);
     assert_eq!(options[0].model_override, None);
     assert_eq!(options[0].logical_effort_override, None);
@@ -273,6 +340,63 @@ async fn nominal_send_without_typed_run_or_durable_queue_fails_closed() {
 }
 
 #[tokio::test]
+async fn stale_admission_marker_is_not_reported_as_durable_queue_success() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    state
+        .plan_verification_admissions
+        .insert(session.id.as_str().to_string(), "plan-current".to_string());
+    let chat = mock_chat(&state);
+
+    let outcome = request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, PlanVerificationRequestOutcome::Queued);
+    assert_eq!(chat.call_count(), 1);
+    assert!(state.plan_verification_admissions.is_empty());
+}
+
+#[tokio::test]
+async fn post_insert_repository_failure_clears_marker_and_allows_retry() {
+    let mut state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    state.queued_message_repo = Arc::new(FailSecondQueueList {
+        calls: AtomicUsize::new(0),
+    });
+
+    let error = request_plan_verification(
+        &state,
+        &MockChatService::new(),
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .expect_err("the second durable queue read should fail");
+
+    assert!(error.to_string().contains("injected queue read failure"));
+    assert!(state.plan_verification_admissions.is_empty());
+
+    state.queued_message_repo = Arc::new(MemoryQueuedMessageRepository::new());
+    let retry_chat = mock_chat(&state);
+    let retry = request_plan_verification(
+        &state,
+        &retry_chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry, PlanVerificationRequestOutcome::Queued);
+    assert_eq!(retry_chat.call_count(), 1);
+}
+
+#[tokio::test]
 async fn manual_reverification_preserves_exact_proof_while_automatic_is_idempotent() {
     let state = AppState::new_test();
     let mut session = IdeationSession::new(ProjectId::new());
@@ -355,4 +479,50 @@ async fn automatic_admission_rejects_typed_and_non_winning_finalizers() {
         );
     }
     assert_eq!(chat.call_count(), 0);
+}
+
+#[tokio::test]
+async fn detached_verification_actions_cannot_poison_owner_status_or_admission() {
+    let state = AppState::new_test();
+    let (session, _conversation, _) = completed_plan_workspace_run(&state, None).await;
+    let detached_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(session.project_id.clone()))
+        .await
+        .unwrap();
+    let mut detached_failed = AgentRun::new(detached_conversation.id);
+    detached_failed.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_failed.action_context_id = Some(session.id.as_str().to_string());
+    detached_failed.action_target_id = Some("plan-current".to_string());
+    let detached_failed = state.agent_run_repo.create(detached_failed).await.unwrap();
+    state
+        .agent_run_repo
+        .fail(&detached_failed.id, "detached failure")
+        .await
+        .unwrap();
+
+    let status = get_plan_verification_status(&state, &session.id)
+        .await
+        .unwrap();
+    assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
+    assert_eq!(status.error, None);
+
+    let mut detached_running = AgentRun::new(detached_conversation.id);
+    detached_running.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_running.action_context_id = Some(session.id.as_str().to_string());
+    detached_running.action_target_id = Some("plan-current".to_string());
+    state.agent_run_repo.create(detached_running).await.unwrap();
+    let chat = mock_chat(&state);
+
+    let outcome = request_plan_verification(
+        &state,
+        &chat,
+        &session.id,
+        PlanVerificationRequestSource::Manual,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, PlanVerificationRequestOutcome::Queued);
+    assert_eq!(chat.call_count(), 1);
 }

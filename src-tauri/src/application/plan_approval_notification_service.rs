@@ -17,6 +17,21 @@ pub enum PlanApprovalNotificationDisposition {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlanApprovalPublishAuthority {
+    pub(crate) run_id: AgentRunId,
+    pub(crate) conversation_id: ChatConversationId,
+}
+
+impl PlanApprovalPublishAuthority {
+    pub(crate) fn new(run_id: AgentRunId, conversation_id: ChatConversationId) -> Self {
+        Self {
+            run_id,
+            conversation_id,
+        }
+    }
+}
+
 async fn set_deferred_marker(
     state: &AppState,
     session_id: &IdeationSessionId,
@@ -112,25 +127,61 @@ async fn session_is_notification_eligible(
         && !resolver.session_has_implementation_task(session).await?)
 }
 
-async fn should_defer_on_publish(state: &AppState, session: &IdeationSession) -> AppResult<bool> {
-    if !state
-        .ideation_settings_repo
-        .get_settings()
-        .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?
-        .auto_verify_draft_plans
-    {
-        return Ok(false);
+async fn should_defer_on_publish(
+    state: &AppState,
+    session: &IdeationSession,
+    artifact_id: &str,
+    authority: Option<&PlanApprovalPublishAuthority>,
+) -> bool {
+    let Some(authority) = authority else {
+        return false;
+    };
+    let settings = match state.ideation_settings_repo.get_settings().await {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(error = %error, session_id = %session.id, "Failed to inspect plan auto-verification setting; publishing approval attention immediately");
+            return false;
+        }
+    };
+    if !settings.auto_verify_draft_plans {
+        return false;
     }
-    let Some(workspace) = state
+    let workspace = match state
         .agent_conversation_workspace_repo
         .get_by_linked_ideation_session_id(&session.id)
-        .await?
-    else {
-        return Ok(false);
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(error = %error, session_id = %session.id, "Failed to inspect plan workspace authority; publishing approval attention immediately");
+            return false;
+        }
     };
-    Ok(workspace.status == AgentConversationWorkspaceStatus::Active
-        && workspace.mode == AgentConversationWorkspaceMode::Plan)
+    if workspace.status != AgentConversationWorkspaceStatus::Active
+        || workspace.mode != AgentConversationWorkspaceMode::Plan
+        || workspace.conversation_id != authority.conversation_id
+    {
+        return false;
+    }
+    let run = match state.agent_run_repo.get_by_id(&authority.run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(error = %error, run_id = %authority.run_id, "Failed to inspect plan publish run authority; publishing approval attention immediately");
+            return false;
+        }
+    };
+    if run.conversation_id != authority.conversation_id || run.status != AgentRunStatus::Running {
+        return false;
+    }
+    match run.action_kind {
+        None => true,
+        Some(AgentRunActionKind::VerifyPlan) => {
+            run.action_context_id.as_deref() == Some(session.id.as_str())
+                && run.action_target_id.as_deref() == Some(artifact_id)
+        }
+    }
 }
 
 async fn record_plan_approval(
@@ -172,11 +223,12 @@ async fn record_plan_approval(
     Ok(PlanApprovalNotificationDisposition::Recorded)
 }
 
-pub async fn reconcile_plan_approval_on_publish(
+pub(crate) async fn reconcile_plan_approval_on_publish(
     state: &AppState,
     prior_artifact_id: Option<&str>,
     artifact_id: &str,
     sessions: &[IdeationSession],
+    authority: Option<&PlanApprovalPublishAuthority>,
 ) {
     for session in sessions {
         if let Some(prior_artifact_id) = prior_artifact_id {
@@ -193,7 +245,7 @@ pub async fn reconcile_plan_approval_on_publish(
                 clear_deferred_marker(state, &session.id).await?;
                 return Ok(PlanApprovalNotificationDisposition::Skipped);
             }
-            if should_defer_on_publish(state, session).await? {
+            if should_defer_on_publish(state, session, artifact_id, authority).await {
                 set_deferred_marker(state, &session.id, artifact_id).await?;
                 return Ok(PlanApprovalNotificationDisposition::Deferred);
             }

@@ -559,8 +559,9 @@ fn build_queued_preflight_failure_run(
     run
 }
 
-async fn persist_failed_queued_run(
+async fn persist_failed_queued_run<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
+    app_handle: Option<&AppHandle<R>>,
     run: AgentRun,
     error: &str,
 ) -> Option<String> {
@@ -583,6 +584,7 @@ async fn persist_failed_queued_run(
             "Failed to mark queued preflight run failed"
         );
     }
+    settle_terminal_queued_plan_verification(app_handle, &run_id).await;
     Some(run_id)
 }
 
@@ -829,10 +831,28 @@ async fn resolve_queue_resume_persona<R: Runtime>(
     .map_err(|error| error.to_string())
 }
 
-async fn fail_queued_agent_run(
+pub(super) async fn settle_terminal_queued_plan_verification<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    run_id: &str,
+) {
+    let Some(state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) else {
+        return;
+    };
+    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+        state.inner(),
+        &AgentRunId::from_string(run_id.to_string()),
+    )
+    .await
+    {
+        tracing::warn!(error = %error, queued_run_id = run_id, "Failed to release deferred plan approval for terminal queued verification run");
+    }
+}
+
+async fn fail_queued_agent_run<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     registry_key: &RunningAgentKey,
+    app_handle: Option<&AppHandle<R>>,
     run_id: &str,
     error: &str,
 ) {
@@ -842,6 +862,7 @@ async fn fail_queued_agent_run(
     running_agent_registry
         .unregister(registry_key, run_id)
         .await;
+    settle_terminal_queued_plan_verification(app_handle, run_id).await;
 }
 
 async fn reconcile_queued_verification_child_completion<R: Runtime>(
@@ -1406,8 +1427,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_msg.metadata_override.as_deref(),
                             &queued_msg,
                         );
-                        let failed_run_id =
-                            persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
                         emit_queued_preflight_error(
                             app_handle.as_ref(),
                             &conversation_id,
@@ -1442,8 +1468,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_msg.metadata_override.as_deref(),
                             &queued_msg,
                         );
-                        let failed_run_id =
-                            persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                        let failed_run_id = persist_failed_queued_run(
+                            agent_run_repo,
+                            app_handle.as_ref(),
+                            failed_run,
+                            &error,
+                        )
+                        .await;
                         emit_queued_preflight_error(
                             app_handle.as_ref(),
                             &conversation_id,
@@ -1498,8 +1529,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         &queued_msg,
                         launch_security,
                     );
-                    let failed_run_id =
-                        persist_failed_queued_run(agent_run_repo, failed_run, &error).await;
+                    let failed_run_id = persist_failed_queued_run(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        failed_run,
+                        &error,
+                    )
+                    .await;
                     emit_queued_preflight_error(
                         app_handle.as_ref(),
                         &conversation_id,
@@ -1612,6 +1648,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error,
                         )
@@ -1656,6 +1693,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error,
                     )
@@ -1949,6 +1987,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -2003,6 +2042,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -2043,6 +2083,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     agent_run_repo,
                     running_agent_registry,
                     &queue_registry_key,
+                    app_handle.as_ref(),
                     &queued_run_id,
                     &error_string,
                 )
@@ -2116,6 +2157,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             agent_run_repo,
                             running_agent_registry,
                             &queue_registry_key,
+                            app_handle.as_ref(),
                             &queued_run_id,
                             &error_string,
                         )
@@ -2153,6 +2195,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -2170,6 +2213,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     agent_run_repo,
                     running_agent_registry,
                     &queue_registry_key,
+                    app_handle.as_ref(),
                     &queued_run_id,
                     error_string,
                 )
@@ -2192,6 +2236,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )
@@ -2580,6 +2625,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         .await;
                                 }
                             }
+                            settle_terminal_queued_plan_verification(
+                                app_handle.as_ref(),
+                                &queued_run_id,
+                            )
+                            .await;
                             // Emit error event
                             if let Some(ref handle) = app_handle {
                                 let _ = handle.emit(
@@ -2620,6 +2670,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
+                        app_handle.as_ref(),
                         &queued_run_id,
                         &error_string,
                     )

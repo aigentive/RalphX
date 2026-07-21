@@ -12,7 +12,10 @@ export const verificationRefetchInterval = (
   query: Query<VerificationStatusResponse, Error>,
 ) => (query.state.data?.inProgress ? 2_000 : false);
 
-export function useVerificationStatus(sessionId: string | undefined) {
+export function useVerificationStatus(
+  sessionId: string | undefined,
+  ownerConversationId: string | null | undefined,
+) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const query = useQuery<VerificationStatusResponse, Error>({
@@ -44,12 +47,11 @@ export function useVerificationStatus(sessionId: string | undefined) {
     };
     const invalidateMatchingLifecycle = (payload: unknown) => {
       if (
+        ownerConversationId &&
         payload &&
         typeof payload === "object" &&
-        "context_type" in payload &&
-        payload.context_type === "ideation" &&
-        "context_id" in payload &&
-        payload.context_id === sessionId
+        "conversation_id" in payload &&
+        payload.conversation_id === ownerConversationId
       ) {
         invalidate();
       }
@@ -60,11 +62,13 @@ export function useVerificationStatus(sessionId: string | undefined) {
         invalidateMatchingStatus,
       ),
       bus.subscribe("agent:run_started", invalidateMatchingLifecycle),
+      bus.subscribe("agent:message_queued", invalidateMatchingLifecycle),
       bus.subscribe("agent:turn_completed", invalidateMatchingLifecycle),
       bus.subscribe("agent:run_completed", invalidateMatchingLifecycle),
+      bus.subscribe("agent:stopped", invalidateMatchingLifecycle),
       bus.subscribe("agent:error", invalidateMatchingLifecycle),
     ];
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-  }, [bus, queryClient, sessionId]);
+  }, [bus, ownerConversationId, queryClient, sessionId]);
   return query;
 }

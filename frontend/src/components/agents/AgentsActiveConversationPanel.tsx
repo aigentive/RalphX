@@ -1979,6 +1979,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
   const planVerificationQuery = useVerificationStatus(
     planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
+    activeWorkspace?.conversationId,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =

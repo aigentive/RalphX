@@ -433,6 +433,18 @@ async fn active_action_query_ignores_detached_conversation() {
         .unwrap()
         .expect("owner action");
     assert_eq!(found.id, owner_id);
+
+    let latest = repo
+        .get_latest_action(
+            &owner.id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("latest owner action");
+    assert_eq!(latest.id, owner_id);
 }
 
 #[tokio::test]

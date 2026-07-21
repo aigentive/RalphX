@@ -71,11 +71,21 @@ pub trait AgentRunRepository: Send + Sync {
     /// Get the latest run for one backend-owned action authority tuple.
     async fn get_latest_action(
         &self,
-        _action_kind: AgentRunActionKind,
-        _action_context_id: &str,
-        _action_target_id: &str,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
     ) -> AppResult<Option<AgentRun>> {
-        Ok(None)
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|run| {
+                run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at))
     }
 
     /// Get a running action for one exact owner conversation and action tuple.

@@ -79,8 +79,10 @@ pub(crate) fn is_user_attended_turn_completion(
     context_type: ChatContextType,
     automation_run_owned: bool,
     ideation_session_has_parent: bool,
+    backend_action_owned: bool,
 ) -> bool {
-    !automation_run_owned
+    !backend_action_owned
+        && !automation_run_owned
         && !ideation_session_has_parent
         && matches!(
             context_type,
@@ -96,10 +98,11 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
-) {
+    agent_run_id: Option<&str>,
+) -> bool {
     let Some(state) = app_handle.try_state::<AppState>() else {
         tracing::warn!("Agent turn completed without managed AppState; agent_waiting skipped");
-        return;
+        return false;
     };
     let conversation = match state
         .chat_conversation_repo
@@ -107,11 +110,27 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         .await
     {
         Ok(Some(conversation)) => conversation,
-        Ok(None) => return,
+        Ok(None) => return false,
         Err(error) => {
             tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to load conversation for agent_waiting");
-            return;
+            return false;
         }
+    };
+    let backend_action_owned = if let Some(run_id) = agent_run_id {
+        match state
+            .agent_run_repo
+            .get_by_id(&AgentRunId::from_string(run_id.to_string()))
+            .await
+        {
+            Ok(Some(run)) => run.action_kind.is_some(),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(error = %error, run_id, "Failed to load run action authority for agent_waiting");
+                return false;
+            }
+        }
+    } else {
+        false
     };
 
     let (project_id, ideation_session_has_parent, context_title) = match context_type {
@@ -123,10 +142,10 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
                     session.parent_session_id.is_some(),
                     session.title,
                 ),
-                Ok(None) => return,
+                Ok(None) => return false,
                 Err(error) => {
                     tracing::warn!(error = %error, session_id = %session_id, "Failed to load ideation session for agent_waiting");
-                    return;
+                    return false;
                 }
             }
         }
@@ -136,10 +155,10 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
             let task_id = TaskId::from_string(context_id.to_string());
             match state.task_repo.get_by_id(&task_id).await {
                 Ok(Some(task)) => (Some(task.project_id.to_string()), false, Some(task.title)),
-                Ok(None) => return,
+                Ok(None) => return false,
                 Err(error) => {
                     tracing::warn!(error = %error, task_id = %task_id, "Failed to load task for agent_waiting");
-                    return;
+                    return false;
                 }
             }
         }
@@ -147,15 +166,16 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         | ChatContextType::TaskExecution
         | ChatContextType::Review
         | ChatContextType::Merge
-        | ChatContextType::BranchUpdate => return,
+        | ChatContextType::BranchUpdate => return false,
     };
 
     if !is_user_attended_turn_completion(
         context_type,
         conversation.automation_run_id.is_some(),
         ideation_session_has_parent,
+        backend_action_owned,
     ) {
-        return;
+        return false;
     }
     state
         .notification_service()
@@ -165,6 +185,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
             conversation.title.as_deref().or(context_title.as_deref()),
         ))
         .await;
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2342,6 +2363,7 @@ pub async fn process_stream_background<R: Runtime>(
                                         context_type,
                                         context_id,
                                         conversation_id,
+                                        agent_run_id.as_deref(),
                                     )
                                     .await;
                                 }

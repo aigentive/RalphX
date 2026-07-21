@@ -98,6 +98,7 @@ impl AgentRunRepository for MemoryAgentRunRepository {
 
     async fn get_latest_action(
         &self,
+        conversation_id: &ChatConversationId,
         action_kind: AgentRunActionKind,
         action_context_id: &str,
         action_target_id: &str,
@@ -106,7 +107,8 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(runs
             .values()
             .filter(|run| {
-                run.action_kind == Some(action_kind)
+                run.conversation_id == *conversation_id
+                    && run.action_kind == Some(action_kind)
                     && run.action_context_id.as_deref() == Some(action_context_id)
                     && run.action_target_id.as_deref() == Some(action_target_id)
             })

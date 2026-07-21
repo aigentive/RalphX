@@ -4,6 +4,15 @@ pub async fn create_plan_artifact(
     State(state): State<HttpServerState>,
     Json(req): Json<CreatePlanArtifactRequest>,
 ) -> Result<Json<ArtifactResponse>, HttpError> {
+    create_plan_artifact_with_headers(State(state), axum::http::HeaderMap::new(), Json(req)).await
+}
+
+pub async fn create_plan_artifact_with_headers(
+    State(state): State<HttpServerState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<CreatePlanArtifactRequest>,
+) -> Result<Json<ArtifactResponse>, HttpError> {
+    let mutation_authority = resolve_artifact_mutation_authority(&headers);
     let session_id_str = req.session_id.clone();
     let title = req.title.clone();
     let content = req.content.clone();
@@ -71,6 +80,7 @@ pub async fn create_plan_artifact(
         prior_artifact_id.as_deref(),
         &created,
         std::slice::from_ref(&notification_session),
+        mutation_authority.as_ref(),
     )
     .await;
 

@@ -85,7 +85,7 @@ describe("verificationRefetchInterval", () => {
 });
 
 describe("useVerificationStatus", () => {
-  it("refreshes the exact session on verification and ideation lifecycle events", async () => {
+  it("refreshes the exact session on status and owner conversation lifecycle events", async () => {
     getStatusMock.mockResolvedValue({
       sessionId: "session-1",
       status: "unverified",
@@ -98,20 +98,26 @@ describe("useVerificationStatus", () => {
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, children);
 
-    renderHook(() => useVerificationStatus("session-1"), { wrapper });
+    renderHook(
+      () => useVerificationStatus("session-1", "conversation-owner"),
+      { wrapper },
+    );
 
     await waitFor(() => expect(getStatusMock).toHaveBeenCalledWith("session-1"));
     expect([...subscribers.keys()]).toEqual([
       "plan_verification:status_changed",
       "agent:run_started",
+      "agent:message_queued",
       "agent:turn_completed",
       "agent:run_completed",
+      "agent:stopped",
       "agent:error",
     ]);
 
     subscribers.get("agent:turn_completed")?.({
-      context_type: "ideation",
-      context_id: "session-1",
+      conversation_id: "conversation-owner",
+      context_type: "project",
+      context_id: "project-1",
     });
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: verificationStatusKey("session-1"),
@@ -119,9 +125,17 @@ describe("useVerificationStatus", () => {
 
     invalidate.mockClear();
     subscribers.get("agent:error")?.({
+      conversation_id: "conversation-detached",
       context_type: "ideation",
-      context_id: "another-session",
+      context_id: "session-1",
     });
     expect(invalidate).not.toHaveBeenCalled();
+
+    subscribers.get("plan_verification:status_changed")?.({
+      session_id: "session-1",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: verificationStatusKey("session-1"),
+    });
   });
 });

@@ -1472,6 +1472,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       planArtifactId
       ? (attachedSessionId ?? undefined)
       : undefined,
+    conversationId,
   );
   const dependencyGraph =
     attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;

@@ -11,6 +11,7 @@ use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::error::{AppError, AppResult};
 
 const MAX_LIMIT: u32 = 100;
+const RETENTION_PROTECTED_PREDICATE: &str = "category = 'plan_approval' AND read_at IS NULL";
 const VISIBLE_NOTIFICATION_PREDICATE: &str = r#"
     NOT EXISTS (
         SELECT 1
@@ -329,10 +330,30 @@ impl NotificationRepository for SqliteNotificationRepository {
     }
 
     async fn prune(&self, read_before: DateTime<Utc>, max_rows: u32) -> AppResult<()> {
-        self.db.run(move |conn| {
-            conn.execute("DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < ?1", [read_before.to_rfc3339()])?;
-            conn.execute("DELETE FROM notifications WHERE id NOT IN (SELECT id FROM notifications ORDER BY created_at DESC, id DESC LIMIT ?1)", [max_rows])?;
-            Ok(())
-        }).await
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    &format!(
+                        "DELETE FROM notifications
+                     WHERE read_at IS NOT NULL AND read_at < ?1
+                       AND NOT ({RETENTION_PROTECTED_PREDICATE})"
+                    ),
+                    [read_before.to_rfc3339()],
+                )?;
+                conn.execute(
+                    &format!(
+                        "DELETE FROM notifications
+                     WHERE NOT ({RETENTION_PROTECTED_PREDICATE})
+                       AND id NOT IN (
+                         SELECT id FROM notifications
+                         WHERE NOT ({RETENTION_PROTECTED_PREDICATE})
+                         ORDER BY created_at DESC, id DESC LIMIT ?1
+                       )"
+                    ),
+                    [max_rows],
+                )?;
+                Ok(())
+            })
+            .await
     }
 }

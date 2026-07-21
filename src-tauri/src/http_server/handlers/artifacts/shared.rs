@@ -188,6 +188,20 @@ pub(super) struct ArtifactMutationAuthority {
     conversation_id: String,
 }
 
+impl ArtifactMutationAuthority {
+    fn plan_approval_authority(
+        &self,
+    ) -> Option<crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority>
+    {
+        Some(
+            crate::application::plan_approval_notification_service::PlanApprovalPublishAuthority::new(
+                self.agent_run_id.parse().ok()?,
+                self.conversation_id.parse().ok()?,
+            ),
+        )
+    }
+}
+
 pub(super) fn resolve_artifact_mutation_authority(
     headers: &axum::http::HeaderMap,
 ) -> Option<ArtifactMutationAuthority> {
@@ -211,12 +225,15 @@ pub(super) async fn reconcile_plan_notifications(
     prior_artifact_id: Option<&str>,
     current_artifact: &Artifact,
     sessions: &[IdeationSession],
+    mutation_authority: Option<&ArtifactMutationAuthority>,
 ) {
+    let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
     crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
         &state.app_state,
         prior_artifact_id,
         current_artifact.id.as_str(),
         sessions,
+        publish_authority.as_ref(),
     )
     .await;
 }

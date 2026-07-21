@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::application::chat_service::{
-    decode_pending_initial_prompt, ChatService, SendMessageOptions,
+    decode_pending_initial_prompt, ChatService, SendMessageOptions, SendQueuePolicy,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -15,6 +15,17 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 
 const VERIFY_PLAN_PROMPT: &str = "Verify the current linked plan now. Re-read the linked draft and relevant repository evidence; challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing. Choose context-specific reasoning lenses or allowed general-purpose exploration delegates only when useful. Update the same linked plan if you find material gaps. When the resulting current draft is genuinely implementation-ready, call complete_plan_verification exactly once. Report what changed or why no material changes were needed. Do not approve or implement the plan.";
+
+struct AdmissionMarkerGuard {
+    admissions: std::sync::Arc<dashmap::DashMap<String, String>>,
+    key: String,
+}
+
+impl Drop for AdmissionMarkerGuard {
+    fn drop(&mut self) {
+        self.admissions.remove(&self.key);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanVerificationRequestSource {
@@ -336,14 +347,19 @@ pub async fn get_plan_verification_status(
     if let Some(verified) = exact_verified_status(&session) {
         return Ok(verified);
     }
-    let latest = state
-        .agent_run_repo
-        .get_latest_action(
-            AgentRunActionKind::VerifyPlan,
-            session.id.as_str(),
-            artifact_id.as_str(),
-        )
-        .await?;
+    let latest = if let Some(conversation_id) = target.conversation_id.as_ref() {
+        state
+            .agent_run_repo
+            .get_latest_action(
+                conversation_id,
+                AgentRunActionKind::VerifyPlan,
+                session.id.as_str(),
+                artifact_id.as_str(),
+            )
+            .await?
+    } else {
+        None
+    };
     Ok(status_from_run(&session, latest))
 }
 
@@ -385,17 +401,6 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         {
             return Ok(PlanVerificationRequestOutcome::AlreadyRunning);
         }
-    } else if state
-        .agent_run_repo
-        .get_latest_action(
-            AgentRunActionKind::VerifyPlan,
-            session.id.as_str(),
-            artifact_id.as_str(),
-        )
-        .await?
-        .is_some_and(|run| run.status == AgentRunStatus::Running)
-    {
-        return Ok(PlanVerificationRequestOutcome::AlreadyRunning);
     }
     if action_is_queued(
         state,
@@ -422,19 +427,24 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         .get(&admission_key)
         .is_some_and(|target| target.value() == artifact_id.as_str())
     {
+        tracing::warn!(session_id = %session.id, artifact_id = %artifact_id, "Clearing stale in-memory plan verification admission marker");
         state.plan_verification_admissions.remove(&admission_key);
-        return Ok(PlanVerificationRequestOutcome::AlreadyQueued);
     }
 
     state
         .plan_verification_admissions
         .insert(admission_key.clone(), artifact_id.as_str().to_string());
+    let _admission_marker_guard = AdmissionMarkerGuard {
+        admissions: std::sync::Arc::clone(&state.plan_verification_admissions),
+        key: admission_key.clone(),
+    };
     let send_result = chat_service
         .send_message(
             target.context_type,
             &target.context_id,
             VERIFY_PLAN_PROMPT,
             SendMessageOptions {
+                queue_policy: SendQueuePolicy::RequireImmediateStart,
                 metadata: Some(action_metadata(session.id.as_str(), artifact_id.as_str())),
                 conversation_id_override: target.conversation_id,
                 is_external_mcp: source == PlanVerificationRequestSource::External,

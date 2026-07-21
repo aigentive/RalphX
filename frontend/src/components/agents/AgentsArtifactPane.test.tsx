@@ -5544,7 +5544,10 @@ describe("AgentsArtifactPane", () => {
       expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"),
     );
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
   });
 
   it("hydrates a Plan workspace from a plan artifact tool result when the workspace link is stale", async () => {
@@ -8251,7 +8254,10 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(
+      undefined,
+      "conversation-1",
+    );
     expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
       "session-1",
       "verification",

@@ -31,7 +31,7 @@ mod shared;
 mod update;
 
 pub use approval::approve_plan_artifact;
-pub use create::create_plan_artifact;
+pub use create::{create_plan_artifact, create_plan_artifact_with_headers};
 pub use edit::edit_plan_artifact;
 pub use linking::link_proposals_to_plan;
 pub use query::{get_artifact_history, get_session_plan};
