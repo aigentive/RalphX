@@ -861,6 +861,12 @@ export function AgentsSidebar({
   );
   const showAllProjects = useAgentSessionStore((s) => s.showAllProjects);
   const setShowAllProjects = useAgentSessionStore((s) => s.setShowAllProjects);
+  const showEmptyProjectGroups = useAgentSessionStore(
+    (s) => s.showEmptyProjectGroups
+  );
+  const setShowEmptyProjectGroups = useAgentSessionStore(
+    (s) => s.setShowEmptyProjectGroups
+  );
   const projectSort = useAgentSessionStore((s) => s.projectSort);
   const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
   const sidebarGroupBy = useAgentSessionStore((s) => s.sidebarGroupBy);
@@ -1197,9 +1203,11 @@ export function AgentsSidebar({
           selectedPublicationStates={selectedPublicationStates}
           setProjectSort={setProjectSort}
           setShowAllProjects={setShowAllProjects}
+          setShowEmptyProjectGroups={setShowEmptyProjectGroups}
           setSidebarGroupBy={setSidebarGroupBy}
           setSidebarProjectFilterIds={setSidebarProjectFilterIds}
           showAllProjects={showAllProjects}
+          showEmptyProjectGroups={showEmptyProjectGroups}
           showArchived={showArchived}
           sidebarGroupBy={sidebarGroupBy}
           toggleSidebarProjectFilter={toggleSidebarProjectFilter}
@@ -1314,7 +1322,7 @@ export function AgentsSidebar({
               pinnedConversationIds={pinnedConversationIds}
               selectedPublicationStates={selectedPublicationStates}
               showArchived={showArchived}
-              showAllProjects={showAllProjects}
+              showEmptyProjectGroups={showEmptyProjectGroups}
               showProjectHeader
               showProjectNameInMeta={false}
               fillAvailableHeight={expandedProjectIdForFill === project.id}
@@ -1376,9 +1384,11 @@ interface AgentsSidebarToolbarProps {
   selectedPublicationStates: AgentSidebarPublicationState[];
   setProjectSort: (projectSort: AgentProjectSort) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
+  setShowEmptyProjectGroups: (showEmptyProjectGroups: boolean) => void;
   setSidebarGroupBy: (groupBy: AgentSidebarGroupBy) => void;
   setSidebarProjectFilterIds: (projectIds: string[]) => void;
   showAllProjects: boolean;
+  showEmptyProjectGroups: boolean;
   showArchived: boolean;
   sidebarGroupBy: AgentSidebarGroupBy;
   toggleSidebarProjectFilter: (projectId: string) => void;
@@ -1399,9 +1409,11 @@ function AgentsSidebarToolbar({
   selectedPublicationStates,
   setProjectSort,
   setShowAllProjects,
+  setShowEmptyProjectGroups,
   setSidebarGroupBy,
   setSidebarProjectFilterIds,
   showAllProjects,
+  showEmptyProjectGroups,
   showArchived,
   sidebarGroupBy,
   toggleSidebarProjectFilter,
@@ -1582,6 +1594,15 @@ function AgentsSidebarToolbar({
                     {totalArchivedCount}
                   </span>
                 }
+              />
+              <FilterToggleRow
+                selected={showEmptyProjectGroups}
+                onToggle={() =>
+                  setShowEmptyProjectGroups(!showEmptyProjectGroups)
+                }
+                label="Show empty groups"
+                ariaLabel="Show empty groups"
+                testId="agents-filter-empty-project-groups"
               />
             </div>
 
@@ -3068,7 +3089,7 @@ interface ProjectSessionGroupProps {
   pinnedConversationIds: Record<string, true>;
   selectedPublicationStates: AgentSidebarPublicationState[];
   showArchived: boolean;
-  showAllProjects: boolean;
+  showEmptyProjectGroups: boolean;
   showProjectHeader: boolean;
   showProjectNameInMeta: boolean;
   fillAvailableHeight?: boolean;
@@ -3094,7 +3115,7 @@ function ProjectSessionGroup({
   pinnedConversationIds,
   selectedPublicationStates,
   showArchived,
-  showAllProjects,
+  showEmptyProjectGroups,
   showProjectHeader,
   showProjectNameInMeta,
   fillAvailableHeight = false,
@@ -3346,7 +3367,10 @@ function ProjectSessionGroup({
   if (
     !groupQuery.isLoading &&
     visibleConversations.length === 0 &&
-    (!showProjectHeader || showArchived || searchQuery.length > 0 || !showAllProjects)
+    (!showProjectHeader ||
+      showArchived ||
+      searchQuery.length > 0 ||
+      !showEmptyProjectGroups)
   ) {
     return null;
   }
