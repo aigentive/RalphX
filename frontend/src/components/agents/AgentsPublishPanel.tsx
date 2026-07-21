@@ -1335,7 +1335,7 @@ export function AgentPublishPanel({
                 </label>
                 <PublishSwitchInfoTooltip
                   label="About Autofix CI and Reviews"
-                  settingsSection="execution"
+                  settingsSection="workspace"
                 >
                   RalphX monitors this PR for failing checks and review feedback, then
                   publishes follow-up fixes from the workspace automatically.
@@ -1363,7 +1363,7 @@ export function AgentPublishPanel({
                 </label>
                 <PublishSwitchInfoTooltip
                   label="About GitHub auto-merge"
-                  settingsSection="execution"
+                  settingsSection="workspace"
                 >
                   RalphX asks GitHub to merge the PR after required checks and review
                   requirements pass.

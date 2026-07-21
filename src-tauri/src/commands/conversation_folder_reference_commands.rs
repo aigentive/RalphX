@@ -8,10 +8,7 @@ use crate::application::conversation_folder_reference_service::ConversationFolde
 use crate::application::AppState;
 use crate::domain::entities::{ChatContextType, ChatConversationId, ConversationFolderReferenceId};
 use crate::error::AppError;
-use crate::infrastructure::agents::{composer_folder_references_enabled, limits_config};
-
-pub const COMPOSER_FOLDER_REFERENCES_DISABLED: &str =
-    "[Composer folder references disabled: enable composer_folder_references to use folder references]";
+use crate::infrastructure::agents::limits_config;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,25 +62,14 @@ pub async fn add_conversation_folder_reference(
     input: AddConversationFolderReferenceInput,
     state: State<'_, AppState>,
 ) -> Result<ConversationFolderReferenceResponse, AppError> {
-    add_conversation_folder_reference_for_state(
-        input,
-        state.inner(),
-        composer_folder_references_enabled(),
-    )
-    .await
+    add_conversation_folder_reference_for_state(input, state.inner()).await
 }
 
 #[doc(hidden)]
 pub async fn add_conversation_folder_reference_for_state(
     input: AddConversationFolderReferenceInput,
     state: &AppState,
-    enabled: bool,
 ) -> Result<ConversationFolderReferenceResponse, AppError> {
-    if !enabled {
-        return Err(AppError::FeatureDisabled(
-            COMPOSER_FOLDER_REFERENCES_DISABLED.to_string(),
-        ));
-    }
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
     let conversation = state
         .chat_conversation_repo
@@ -111,25 +97,14 @@ pub async fn remove_conversation_folder_reference(
     input: RemoveConversationFolderReferenceInput,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    remove_conversation_folder_reference_for_state(
-        input,
-        state.inner(),
-        composer_folder_references_enabled(),
-    )
-    .await
+    remove_conversation_folder_reference_for_state(input, state.inner()).await
 }
 
 #[doc(hidden)]
 pub async fn remove_conversation_folder_reference_for_state(
     input: RemoveConversationFolderReferenceInput,
     state: &AppState,
-    enabled: bool,
 ) -> Result<(), AppError> {
-    if !enabled {
-        return Err(AppError::FeatureDisabled(
-            COMPOSER_FOLDER_REFERENCES_DISABLED.to_string(),
-        ));
-    }
     service(state)
         .remove(
             &ConversationFolderReferenceId::from_string(input.folder_reference_id),
@@ -143,25 +118,14 @@ pub async fn list_conversation_folder_references(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<ConversationFolderReferenceResponse>, AppError> {
-    list_conversation_folder_references_for_state(
-        conversation_id,
-        state.inner(),
-        composer_folder_references_enabled(),
-    )
-    .await
+    list_conversation_folder_references_for_state(conversation_id, state.inner()).await
 }
 
 #[doc(hidden)]
 pub async fn list_conversation_folder_references_for_state(
     conversation_id: String,
     state: &AppState,
-    enabled: bool,
 ) -> Result<Vec<ConversationFolderReferenceResponse>, AppError> {
-    if !enabled {
-        return Err(AppError::FeatureDisabled(
-            COMPOSER_FOLDER_REFERENCES_DISABLED.to_string(),
-        ));
-    }
     service(state)
         .list_live(&ChatConversationId::from_string(conversation_id))
         .await
