@@ -317,6 +317,8 @@ vi.mock("./useAgentSidebarRunningStates", () => ({
 
 vi.mock("./useAgentSidebarPublicationPolling", () => ({
   useAgentSidebarPublicationPolling: publicationPollingHook,
+  workspacePublicationFingerprint: (state: string, label: string | null | undefined) =>
+    `${state}\u0000${label?.trim().toLowerCase() ?? ""}`,
 }));
 
 vi.mock("./PrTemplateEditorDialog", () => {

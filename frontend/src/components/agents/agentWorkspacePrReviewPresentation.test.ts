@@ -93,7 +93,7 @@ describe("getAgentWorkspacePrReviewPresentation", () => {
       submitBlockedMessage: null,
       consistencyMessage: null,
     });
-    expect(shouldPollForPrReviewContext(current)).toBe(false);
+    expect(shouldPollForPrReviewContext(current)).toBe(true);
   });
 
   it("keeps polling a current action until its Review artifact is restored", () => {
@@ -173,5 +173,61 @@ describe("getAgentWorkspacePrReviewPresentation", () => {
       "The reviewer proposal is temporarily unavailable. RalphX will keep trying to restore it.",
     );
     expect(shouldPollForPrReviewContext(value)).toBe(true);
+  });
+
+  it.each(["merged", "closed"] as const)(
+    "treats terminal workspace status %s as authoritative over a stale pending action",
+    (publicationPrStatus) => {
+      const value = context({
+        workspace: conversationWorkspaceFixture({
+          conversationId: "conversation-1",
+          mode: "review_pr",
+          publicationPrNumber: 411,
+          publicationPrStatus,
+        }),
+      });
+
+      expect(getAgentWorkspacePrReviewPresentation(value)).toMatchObject({
+        pendingAction: null,
+        canSubmit: false,
+        consistencyMessage: null,
+        isTerminal: true,
+      });
+      expect(shouldPollForPrReviewContext(value)).toBe(false);
+    },
+  );
+
+  it("treats a terminal monitor as authoritative over stale actionability", () => {
+    const value = context({
+      monitor: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        prNumber: 411,
+        status: "terminal",
+        monitorEnabled: false,
+        autoApproveEnabled: false,
+        firstReviewCompleted: true,
+        firstActionResolved: false,
+        lastSeenHeadSha: "reviewed-head-a",
+        lastReviewedHeadSha: "reviewed-head-a",
+        lastReviewRunId: "run-1",
+        lastReviewOutcome: "merged",
+        lastSubmittedReviewId: null,
+        reviewArtifactId: "artifact-1",
+        reviewArtifactHeadSha: "reviewed-head-a",
+        reviewArtifactVersion: 1,
+        reviewArtifactUpdatedAt: now,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+
+    expect(getAgentWorkspacePrReviewPresentation(value)).toMatchObject({
+      pendingAction: null,
+      canSubmit: false,
+      isTerminal: true,
+    });
+    expect(shouldPollForPrReviewContext(value)).toBe(false);
   });
 });

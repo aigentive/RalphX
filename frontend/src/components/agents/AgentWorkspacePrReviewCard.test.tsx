@@ -363,6 +363,38 @@ describe("AgentWorkspacePrReviewCard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("suppresses stale proposal controls when terminal workspace authority is present", () => {
+    renderCard({
+      context: reviewContext({
+        workspace: conversationWorkspaceFixture({
+          conversationId: "conversation-1",
+          mode: "review_pr",
+          publicationPrNumber: 411,
+          publicationPrStatus: "merged",
+        }),
+        monitor: monitor({
+          status: "awaiting_user",
+          monitorEnabled: true,
+          lastReviewOutcome: "approve",
+        }),
+        recentActions: [
+          reviewAction({
+            status: "superseded",
+            resolvedAt: now,
+          }),
+        ],
+      }),
+    });
+
+    expect(screen.getByText("Complete")).toBeInTheDocument();
+    expect(screen.getByText("Last action: Superseded")).toBeInTheDocument();
+    expect(screen.queryByText("Needs approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Request Changes/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows retry guidance when a pending action has a saved submit failure", () => {
     renderCard({
       context: reviewContext({

@@ -34,85 +34,18 @@ pub(in crate::http_server::handlers::agent_workspaces) async fn maybe_start_pr_r
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspacePrReviewMonitor,
 ) {
-    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr
-        || !monitor.monitor_enabled
-        || matches!(
-            monitor.status,
-            AgentWorkspacePrReviewMonitorStatus::Paused
-                | AgentWorkspacePrReviewMonitorStatus::Terminal
+    if let Err(error) =
+        crate::application::services::pr_merge_poller::start_review_pr_lifecycle_polling(
+            state, workspace, monitor,
         )
+        .await
     {
-        return;
-    }
-    if state
-        .pr_poller_registry
-        .is_agent_workspace_polling(&workspace.conversation_id)
-    {
-        return;
-    }
-
-    let Some(pr_number) = review_pr_number(workspace) else {
         tracing::warn!(
             conversation_id = workspace.conversation_id.as_str(),
-            "Review PR monitor could not start because the workspace has no PR number"
+            error = %error,
+            "Review PR lifecycle polling could not start"
         );
-        return;
-    };
-    if monitor.pr_number != pr_number {
-        tracing::warn!(
-            conversation_id = workspace.conversation_id.as_str(),
-            monitor_pr_number = monitor.pr_number,
-            workspace_pr_number = pr_number,
-            "Review PR monitor could not start because monitor/workspace PR numbers differ"
-        );
-        return;
     }
-
-    let project = match state.project_repo.get_by_id(&workspace.project_id).await {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            tracing::warn!(
-                conversation_id = workspace.conversation_id.as_str(),
-                project_id = workspace.project_id.as_str(),
-                "Review PR monitor could not start because the project was not found"
-            );
-            return;
-        }
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = workspace.conversation_id.as_str(),
-                project_id = workspace.project_id.as_str(),
-                error = %error,
-                "Review PR monitor failed to load project before poller start"
-            );
-            return;
-        }
-    };
-    let worktree_path =
-        match resolve_valid_agent_conversation_workspace_path(&project, workspace).await {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    pr_number,
-                    error = %error,
-                    "Review PR monitor could not start because the workspace path is not usable"
-                );
-                return;
-            }
-        };
-
-    let chat_service: Arc<dyn crate::application::chat_service::ChatService> =
-        Arc::new(state.build_chat_service());
-    state.pr_poller_registry.start_agent_workspace_polling(
-        workspace.conversation_id.clone(),
-        pr_number,
-        project,
-        worktree_path,
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        Arc::clone(&state.agent_run_repo),
-        chat_service,
-    );
 }
 
 pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_review_pr_remote_context(
@@ -143,35 +76,68 @@ pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_review_pr_
     Ok((health, review_feedback))
 }
 
-pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_current_review_pr_head_sha(
-    state: &AppState,
+pub(in crate::http_server::handlers::agent_workspaces) async fn fetch_review_pr_health_for_mutation(
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
     github: &dyn GithubServiceTrait,
-) -> Result<Option<String>, JsonError> {
-    let working_dir = std::path::Path::new(&workspace.worktree_path);
-    let remote_head = github
-        .fetch_pr_health(working_dir, pr_number)
+) -> Result<PrHealth, JsonError> {
+    github
+        .fetch_pr_health(std::path::Path::new(&workspace.worktree_path), pr_number)
         .await
         .map_err(|error| {
             json_error(
                 StatusCode::BAD_GATEWAY,
-                "Could not verify the current pull request head",
+                "Could not verify the current pull request state",
                 Some(error.to_string()),
             )
-        })?
-        .sync_state
-        .head_ref_oid;
-    let head_sha = remote_head;
-    if head_sha.is_none() {
+        })
+}
+
+pub(in crate::http_server::handlers::agent_workspaces) async fn reconcile_terminal_review_pr_health(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+    health: &PrHealth,
+) -> Result<bool, JsonError> {
+    let (status, summary) = match &health.sync_state.status {
+        PrStatus::Merged { .. } => ("merged", "Pull request merged"),
+        PrStatus::Closed => ("closed", "Pull request closed without merging"),
+        PrStatus::Open => return Ok(false),
+    };
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Project not found", None))?;
+    let chat_service: Arc<dyn crate::application::chat_service::ChatService> =
+        Arc::new(state.build_chat_service());
+    let outcome = crate::application::agent_workspace_terminal_cleanup::settle_review_pr_terminal_observation(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Some(Arc::clone(&state.plan_branch_repo)),
+        Some(chat_service),
+        Some(state.notification_service()),
+        &workspace.conversation_id,
+        &project,
+        pr_number,
+        status,
+        summary,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if let Err(error) = outcome.require_runtime_shutdown() {
         tracing::warn!(
             conversation_id = workspace.conversation_id.as_str(),
             pr_number,
-            "Review PR submit could not resolve current head SHA"
+            error,
+            "Review PR terminal authority committed while local cleanup remains pending"
         );
     }
-    let _ = state;
-    Ok(head_sha)
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&workspace.conversation_id);
+    Ok(true)
 }
 
 pub(in crate::http_server::handlers::agent_workspaces) async fn load_or_create_pr_review_monitor(

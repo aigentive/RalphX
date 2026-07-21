@@ -4617,7 +4617,9 @@ describe("AgentsArtifactPane", () => {
         true,
       ),
     );
-    expect(toastSuccessMock).toHaveBeenCalledWith("PR review monitoring paused");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "New-head PR reviews paused; lifecycle monitoring continues",
+    );
   });
 
   it("asks whether to finish or cancel an active PR review before stopping", async () => {

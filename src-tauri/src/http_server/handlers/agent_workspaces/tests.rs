@@ -1335,6 +1335,10 @@
             .mark_pr_review_first_action_resolved(&conversation_id)
             .await
             .unwrap();
+        // Proposal consumes the configured health response; automatic signed submission then
+        // falls back to the configured sync-state response for its separate head check.
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
+        github.state().check_pr_sync_state_result = Some(Ok(open_review_pr_health().sync_state));
 
         let Json(response) = propose_agent_workspace_pr_review_action(
             State(state),

@@ -9,6 +9,13 @@ pub async fn submit_agent_workspace_pr_review_action(
 ) -> Result<Json<SubmitAgentWorkspacePrReviewActionResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.has_terminal_publication_pr_status() {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
     let action = state
         .app_state
         .agent_conversation_workspace_repo
@@ -61,13 +68,18 @@ pub async fn submit_agent_workspace_pr_review_action(
             None,
         )
     })?;
-    let current_head_sha = fetch_current_review_pr_head_sha(
-        state.app_state.as_ref(),
-        &workspace,
-        pr_number,
-        github.as_ref(),
-    )
-    .await?;
+    let health =
+        fetch_review_pr_health_for_mutation(&workspace, pr_number, github.as_ref()).await?;
+    if reconcile_terminal_review_pr_health(state.app_state.as_ref(), &workspace, pr_number, &health)
+        .await?
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
+    let current_head_sha = health.sync_state.head_ref_oid;
     if current_head_sha.as_deref() != Some(action.head_sha.as_str()) {
         return Err(json_error(
             StatusCode::CONFLICT,
@@ -85,10 +97,21 @@ pub async fn submit_agent_workspace_pr_review_action(
     .await?;
     ensure_review_artifact_for_head(&monitor, &action.head_sha)?;
 
-    let claimed = state
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
+    monitor.last_error = None;
+    let transition = state
         .app_state
         .agent_conversation_workspace_repo
-        .claim_pending_pr_review_action(&action.id)
+        .transition_pr_review_state_if_nonterminal(
+            monitor,
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id: action.id.clone(),
+                expected: AgentWorkspacePrReviewActionStatus::Pending,
+                status: AgentWorkspacePrReviewActionStatus::Submitting,
+                submitted_review_id: None,
+            }),
+        )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let claim_conflict = json_error(
@@ -96,18 +119,10 @@ pub async fn submit_agent_workspace_pr_review_action(
         "PR review action is already being submitted",
         None,
     );
-    if !claimed {
+    let Some(transition) = transition else {
         return Err(claim_conflict);
-    }
-    monitor.monitor_enabled = true;
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
-    monitor.last_error = None;
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    };
+    let monitor = transition.monitor;
     let outbound_review_body = append_ralphx_generated_footer(&action.review_body);
     let submitted = match github
         .submit_pr_review(
@@ -121,29 +136,33 @@ pub async fn submit_agent_workspace_pr_review_action(
         Ok(submitted) => submitted,
         Err(error) => {
             let error_message = error.to_string();
-            state
+            let mut retry_monitor =
+                monitor_for_retryable_submission_failure(monitor, error_message.clone());
+            retry_monitor.last_seen_head_sha = Some(action.head_sha.clone());
+            let restored = state
                 .app_state
                 .agent_conversation_workspace_repo
-                .update_pr_review_action_status(
-                    &action.id,
-                    AgentWorkspacePrReviewActionStatus::Pending,
-                    None,
+                .transition_pr_review_state_if_nonterminal(
+                    retry_monitor,
+                    Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                        action_id: action.id.clone(),
+                        expected: AgentWorkspacePrReviewActionStatus::Submitting,
+                        status: AgentWorkspacePrReviewActionStatus::Pending,
+                        submitted_review_id: None,
+                    }),
                 )
                 .await
                 .map_err(|error| {
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
-            let mut retry_monitor =
-                monitor_for_retryable_submission_failure(monitor, error_message.clone());
-            retry_monitor.last_seen_head_sha = Some(action.head_sha.clone());
-            let retry_monitor = state
-                .app_state
-                .agent_conversation_workspace_repo
-                .upsert_pr_review_monitor(retry_monitor)
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?;
+            let Some(restored) = restored else {
+                return Err(json_error(
+                    StatusCode::CONFLICT,
+                    "PR review action was superseded while submission was in flight",
+                    Some(error_message),
+                ));
+            };
+            let retry_monitor = restored.monitor;
             state
                 .app_state
                 .notification_service()
@@ -178,51 +197,45 @@ pub async fn submit_agent_workspace_pr_review_action(
             ));
         }
     };
-    state
+    let mut final_monitor = monitor;
+    final_monitor.first_review_completed = true;
+    final_monitor.first_action_resolved = true;
+    final_monitor.last_seen_head_sha = Some(action.head_sha.clone());
+    final_monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
+    final_monitor.last_review_outcome = Some(action_kind.to_string());
+    final_monitor.last_submitted_review_id = Some(submitted.id.clone());
+    final_monitor.last_error = None;
+    final_monitor.status = final_monitor.settlement_status();
+    let finalized = state
         .app_state
         .agent_conversation_workspace_repo
-        .update_pr_review_action_status(
-            &action.id,
-            AgentWorkspacePrReviewActionStatus::Submitted,
-            Some(&submitted.id),
+        .transition_pr_review_state_if_nonterminal(
+            final_monitor,
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id: action.id.clone(),
+                expected: AgentWorkspacePrReviewActionStatus::Submitting,
+                status: AgentWorkspacePrReviewActionStatus::Submitted,
+                submitted_review_id: Some(submitted.id.clone()),
+            }),
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let mut monitor = load_or_create_pr_review_monitor(
-        state.app_state.as_ref(),
-        &workspace,
-        pr_number,
-        Some(action.head_sha.clone()),
-        true,
-    )
-    .await?;
-    monitor.first_review_completed = true;
-    monitor.last_seen_head_sha = Some(action.head_sha.clone());
-    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
-    monitor.last_review_outcome = Some(action_kind.to_string());
-    monitor.last_submitted_review_id = Some(submitted.id.clone());
-    monitor.last_error = None;
-    monitor.status = monitor.settlement_status();
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .mark_pr_review_first_action_resolved(&monitor.conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let Some(finalized) = finalized else {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "PR review action was superseded while submission was in flight",
+            Some(format!("GitHub review {} was submitted", submitted.id)),
+        ));
+    };
+    let monitor = finalized.monitor;
     maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
-    let action = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .get_pr_review_action(&action.id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    let action = finalized.action.ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Review PR submission transition did not return its action",
+            None,
+        )
+    })?;
     state
         .app_state
         .notification_service()
@@ -249,6 +262,13 @@ pub async fn skip_agent_workspace_pr_review_action(
 ) -> Result<Json<SkipAgentWorkspacePrReviewActionResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.has_terminal_publication_pr_status() {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request is already merged or closed",
+            None,
+        ));
+    }
     let action = state
         .app_state
         .agent_conversation_workspace_repo
@@ -284,16 +304,6 @@ pub async fn skip_agent_workspace_pr_review_action(
             None,
         ));
     }
-    state
-        .app_state
-        .agent_conversation_workspace_repo
-        .update_pr_review_action_status(
-            &action.id,
-            AgentWorkspacePrReviewActionStatus::Skipped,
-            None,
-        )
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let mut monitor = load_or_create_pr_review_monitor(
         state.app_state.as_ref(),
         &workspace,
@@ -303,6 +313,7 @@ pub async fn skip_agent_workspace_pr_review_action(
     )
     .await?;
     monitor.first_review_completed = true;
+    monitor.first_action_resolved = true;
     monitor.last_seen_head_sha = Some(action.head_sha.clone());
     monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
     monitor.last_review_outcome = Some("skipped".to_string());
@@ -312,26 +323,36 @@ pub async fn skip_agent_workspace_pr_review_action(
     } else {
         AgentWorkspacePrReviewMonitorStatus::Paused
     };
-    let monitor = state
+    let transition = state
         .app_state
         .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
+        .transition_pr_review_state_if_nonterminal(
+            monitor,
+            Some(AgentWorkspacePrReviewActionMutation::CompareAndSet {
+                action_id: action.id.clone(),
+                expected: AgentWorkspacePrReviewActionStatus::Pending,
+                status: AgentWorkspacePrReviewActionStatus::Skipped,
+                submitted_review_id: None,
+            }),
+        )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .mark_pr_review_first_action_resolved(&monitor.conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let transition = transition.ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "PR review action is no longer pending",
+            None,
+        )
+    })?;
+    let monitor = transition.monitor;
     maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
-    let action = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .get_pr_review_action(&action.id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    let action = transition.action.ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Review PR skip transition did not return its action",
+            None,
+        )
+    })?;
     state
         .app_state
         .notification_service()
