@@ -1208,6 +1208,9 @@ pub async fn process_stream_background<R: Runtime>(
     interactive_process_key: Option<InteractiveProcessKey>,
     interactive_process_token: Option<InteractiveProcessToken>,
 ) -> Result<StreamOutcome, StreamError> {
+    streaming_state_cache
+        .set_run_id(&conversation_id.as_str(), agent_run_id.clone())
+        .await;
     if stream_mode_for_harness(harness) == HarnessStreamMode::CodexJsonl {
         return process_codex_stream_background(
             child,
@@ -1751,6 +1754,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_CHUNK,
                                 AgentChunkPayload {
                                     text: text.clone(),
+                                    run_id: agent_run_id.clone(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -1866,6 +1870,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: id.clone(),
                                     arguments: serde_json::Value::Null,
                                     result: None,
+                                    run_id: agent_run_id.clone(),
                                     preview: AgentToolCallPreviewFields::default(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
@@ -1972,6 +1977,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     &conversation_id_str,
                                     &context_type_str,
                                     &context_id_str,
+                                    agent_run_id.as_deref(),
                                     diff_context_value,
                                     parent_tool_use_id.clone(),
                                     stream_seq,
@@ -2453,6 +2459,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_TASK_STARTED,
                                 AgentTaskStartedPayload {
                                     tool_use_id,
+                                    run_id: agent_run_id.clone(),
                                     tool_name,
                                     description,
                                     subagent_type,
@@ -2538,6 +2545,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
                                     tool_use_id,
+                                    run_id: agent_run_id.clone(),
                                     agent_id,
                                     status: Some("completed".to_string()),
                                     total_duration_ms,
@@ -2874,6 +2882,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     &conversation_id_str,
                                     &context_type_str,
                                     &context_id_str,
+                                    agent_run_id.as_deref(),
                                     parent_tool_use_id,
                                     stream_seq,
                                 ),
@@ -3625,6 +3634,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         events::AGENT_CHUNK,
                         AgentChunkPayload {
                             text,
+                            run_id: agent_run_id.clone(),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),
@@ -3739,6 +3749,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             &conversation_id_str,
                             &context_type_str,
                             &context_id_str,
+                            agent_run_id.as_deref(),
                             diff_context_value,
                             None,
                             stream_seq,

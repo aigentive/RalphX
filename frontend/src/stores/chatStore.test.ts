@@ -56,6 +56,7 @@ describe("chatStore", () => {
       toolCallCompletionTimestamps: {},
       effectiveModel: {},
       composerDraftsByKey: {},
+      delegateExpansionByConversation: {},
     });
   });
 
@@ -454,6 +455,23 @@ describe("chatStore", () => {
     it("returns undefined for unknown storeKey", () => {
       const state = useChatStore.getState();
       expect(state.activeConversationIds["unknown:key"]).toBeUndefined();
+    });
+
+    it("preserves delegate expansion within a conversation and prunes it on switch", () => {
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-old");
+      useChatStore.getState().setDelegateExpanded("conv-old", "call-delegate", true);
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"]?.[
+          "call-delegate"
+        ],
+      ).toBe(true);
+
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-new");
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"],
+      ).toBeUndefined();
     });
   });
 
