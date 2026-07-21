@@ -3,7 +3,7 @@ import { useCallback, useRef } from "react";
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { useAgentModels } from "@/hooks/useAgentModels";
-import { useConfirmation } from "@/hooks/useConfirmation";
+import { useConfirmation, type ConfirmOptions } from "@/hooks/useConfirmation";
 import { usePersonas } from "@/hooks/usePersonas";
 import { extractErrorMessage } from "@/lib/errors";
 import {
@@ -44,7 +44,11 @@ export function useRoleRuntimeConfirmation({
       confirmText: string;
       pendingText?: string;
       prepareDescription?: () => Promise<string>;
-      recoverFromError?: (error: unknown) => Promise<{ description: string } | null>;
+      recoverFromError?: (
+        error: unknown,
+      ) => Promise<
+        Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">> | null
+      >;
       onConfirm: (selection: ManualRoleRuntimeSelection) => Promise<unknown>;
     }) => {
       if (!conversationId) return Promise.resolve(false);

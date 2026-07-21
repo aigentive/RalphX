@@ -35,6 +35,34 @@ function isWorkspaceReviewStartConflict(error: unknown): boolean {
   return error instanceof AgentWorkspaceHttpError && error.status === 409;
 }
 
+function fixerConfirmation(
+  context: AgentWorkspaceReviewContext,
+): AgentWorkspaceReviewFixerConfirmation | null {
+  const target = context.target;
+  const monitor = context.monitor;
+  if (
+    !target ||
+    !monitor.reviewArtifactId ||
+    !monitor.reviewArtifactVersion ||
+    !monitor.reviewBlockingFingerprint
+  ) {
+    return null;
+  }
+  return {
+    targetScope: target.scope,
+    diffFingerprint: target.diffFingerprint,
+    artifactId: monitor.reviewArtifactId,
+    artifactVersion: monitor.reviewArtifactVersion,
+    blockingFingerprint: monitor.reviewBlockingFingerprint,
+  };
+}
+
+function fixerDescription(context: AgentWorkspaceReviewContext): string {
+  return context.monitor.reviewBlockingSummary
+    ? `The Repair agent will address: ${context.monitor.reviewBlockingSummary}`
+    : "The Repair agent will address the current blocking findings.";
+}
+
 export function useWorkspaceReviewActions({
   conversationId,
   projectId,
@@ -99,31 +127,41 @@ export function useWorkspaceReviewActions({
   const startFixer = useCallback(
     (context: AgentWorkspaceReviewContext) => {
       if (!conversationId) return;
-      const target = context.target;
-      const monitor = context.monitor;
-      if (
-        !target ||
-        !monitor.reviewArtifactId ||
-        !monitor.reviewArtifactVersion ||
-        !monitor.reviewBlockingFingerprint
-      ) return;
-      const confirmation: AgentWorkspaceReviewFixerConfirmation = {
-        targetScope: target.scope,
-        diffFingerprint: target.diffFingerprint,
-        artifactId: monitor.reviewArtifactId,
-        artifactVersion: monitor.reviewArtifactVersion,
-        blockingFingerprint: monitor.reviewBlockingFingerprint,
-      };
+      let fixerContext = context;
+      let confirmation = fixerConfirmation(fixerContext);
+      if (!confirmation) return;
       void confirmRoleRuntime({
         role: "workspace_repair",
         title: "Fix blocking Workspace Review issues?",
-        description: monitor.reviewBlockingSummary
-          ? `The Repair agent will address: ${monitor.reviewBlockingSummary}`
-          : "The Repair agent will address the current blocking findings.",
+        description: fixerDescription(fixerContext),
         confirmText: "Fix issues",
         pendingText: "Starting repair…",
-        onConfirm: (runtimeOverride) =>
-          onStartFixer({ confirmation, runtimeOverride }),
+        onConfirm: (runtimeOverride) => {
+          if (!confirmation) {
+            throw new Error("Workspace Review blocker is no longer actionable");
+          }
+          return onStartFixer({ confirmation, runtimeOverride });
+        },
+        recoverFromError: async (error) => {
+          if (!isWorkspaceReviewStartConflict(error)) {
+            return null;
+          }
+          fixerContext = await chatApi.getAgentWorkspaceReviewContext(
+            conversationId,
+            { refreshTarget: true },
+          );
+          confirmation = fixerConfirmation(fixerContext);
+          if (!confirmation) {
+            return {
+              description:
+                "The blocking Review changed and is no longer actionable. Refresh the Review tab before trying again.",
+              confirmDisabled: true,
+            };
+          }
+          return {
+            description: `The blocking Review changed. ${fixerDescription(fixerContext)} Confirm the updated details to start the repair.`,
+          };
+        },
       });
     },
     [confirmRoleRuntime, conversationId, onStartFixer],
