@@ -615,7 +615,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260720200633;
+pub const SCHEMA_VERSION: i64 = 20260721190000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
