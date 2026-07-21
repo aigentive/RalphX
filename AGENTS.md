@@ -29,6 +29,7 @@ Primary project docs:
 - `.claude/rules/release-script-validation.md` for safe validation of release proposal/wrapper scripts without triggering real publish steps
 - `.claude/rules/icon-only-buttons.md` for accessible tooltip requirements on icon-only controls
 - `.claude/rules/frontend-interaction-performance.md` for non-negotiable lazy loading, first-paint-safe UI transitions, deferred hydration/teardown, and decoupled panel/drawer interactions
+- `.claude/rules/visual-testing.md` for Playwright-first visual QA, scoped dev-server use, and the explicit-request-only Computer Use boundary
 - `.claude/rules/pr-descriptions.md` for reviewer-focused PR bodies: context, impact, decisions, risks; validation logs stay secondary
 
 ## Codex Rules
@@ -94,8 +95,9 @@ Primary project docs:
 - Coverage is a byproduct of real tests: close gaps by testing uncovered BEHAVIOR (error arms, guard rejections, round-trips on the concrete repo impl that lacks them), never by executing lines without assertions.
 - Worktree safety (NON-NEGOTIABLE): worktree-mode flows must never silently fall back to the main checkout.
 - Verify before commit: review `git diff` against `HEAD` for every touched file.
-- Frontend Playwright visual runs (NON-NEGOTIABLE): run them from `frontend/`, not repo root.
-- UI design/theme changes (NON-NEGOTIABLE): verify native Tauri/WKWebView in addition to Chromium, and use explicit WebKit-safe bg/border longhands for themed surfaces. Source: `.claude/rules/wkwebview-css-vars.md`.
+- Frontend visual QA (NON-NEGOTIABLE): prefer automated Playwright visual tests, run them from `frontend/`, and start/stop only the scoped dev servers they require.
+- Native Tauri QA through Computer Use is prohibited unless the user explicitly requests it in the current request; never infer permission from UI/theme scope or other repository guidance.
+- UI design/theme changes (NON-NEGOTIABLE): use explicit WebKit-safe bg/border longhands for themed surfaces; prefer Playwright visual coverage, and perform Native Tauri/WKWebView QA through Computer Use only when explicitly requested. Source: `.claude/rules/wkwebview-css-vars.md`.
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.
