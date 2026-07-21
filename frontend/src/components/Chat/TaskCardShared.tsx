@@ -204,3 +204,60 @@ export function TaskCardSummary({
     </span>
   );
 }
+
+export function TaskCardRuntimeDetails({
+  providerMetadata,
+}: {
+  providerMetadata: ProviderMetadata;
+}) {
+  const rows: Array<[string, string | null | undefined]> = [
+    ["Harness", formatProviderHarnessLabel(providerMetadata.providerHarness)],
+    ["Upstream provider", providerMetadata.upstreamProvider],
+    ["Provider profile", providerMetadata.providerProfile],
+    ["Logical model", providerMetadata.logicalModel],
+    ["Effective model", providerMetadata.effectiveModelId],
+    ["Logical effort", providerMetadata.logicalEffort],
+    ["Effective effort", providerMetadata.effectiveEffort],
+    ["Approval policy", providerMetadata.approvalPolicy],
+    ["Sandbox mode", providerMetadata.sandboxMode],
+    ["Provider session", providerMetadata.providerSessionId],
+    [
+      "Input tokens",
+      providerMetadata.inputTokens?.toLocaleString("en-US"),
+    ],
+    [
+      "Output tokens",
+      providerMetadata.outputTokens?.toLocaleString("en-US"),
+    ],
+    [
+      "Cache tokens",
+      providerMetadata.cacheCreationTokens != null
+        || providerMetadata.cacheReadTokens != null
+        ? ((providerMetadata.cacheCreationTokens ?? 0)
+          + (providerMetadata.cacheReadTokens ?? 0)).toLocaleString("en-US")
+        : null,
+    ],
+    [
+      "Estimated cost",
+      providerMetadata.estimatedUsd != null
+        ? `$${providerMetadata.estimatedUsd.toFixed(2)}`
+        : null,
+    ],
+  ].filter((row): row is [string, string] => typeof row[1] === "string" && row[1].length > 0);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <dl
+      className="grid grid-cols-[max-content,minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.6875rem] mb-3"
+      data-testid="delegate-runtime-details"
+    >
+      {rows.map(([label, value]) => (
+        <React.Fragment key={label}>
+          <dt style={{ color: "var(--text-muted)" }}>{label}</dt>
+          <dd className="truncate" style={{ color: "var(--text-secondary)" }}>{value}</dd>
+        </React.Fragment>
+      ))}
+    </dl>
+  );
+}
