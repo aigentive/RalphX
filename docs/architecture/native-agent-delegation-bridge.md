@@ -46,9 +46,11 @@
 - The delegated agent uses normal RalphX MCP tools against that delegated session.
 
 ## Continuity Rules
-- Phase 1 continuity is RalphX-session continuity, not provider-session continuity.
-- Final target: delegation jobs return a delegated-session id so later rounds can reuse the same delegated runtime context.
-- Provider-specific resume/session reuse can be added later behind the same MCP contract.
+- Fresh child fields resolve independently: explicit `delegate_start` value → compatible effective Delegated Subagent role/provider value → harness fallback.
+- A parent conversation or delegated-session harness is lineage, not a fresh-child default.
+- Provider-derived model/effort values remain inherited runtime attribution; they are not relabeled as explicit caller choices.
+- Reusing a delegated-session id pins its stored specialist identity and harness; conflicting agent or explicit harness requests fail before status, conversation, process, or job mutation.
+- Compatible reuse preserves existing provider-session continuation precedence behind the same MCP contract.
 
 ## Native vs Provider Delegation
 - Keep provider-native delegation only for generic low-specialization exploration.
