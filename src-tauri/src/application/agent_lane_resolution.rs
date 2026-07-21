@@ -427,14 +427,14 @@ pub async fn resolve_manual_role_spawn_settings(
 
     let model = model_override
         .map(str::to_string)
-        .or_else(|| configured.and_then(|value| value.model.clone()))
+        .or_else(|| selected.and_then(|value| value.model.clone()))
         .or_else(|| {
             harness_defaults
                 .as_ref()
                 .and_then(|settings| settings.model.clone())
         })
         .unwrap_or_else(|| resolve_model(Some(agent_name)));
-    let logical_effort = configured.and_then(|value| value.effort).or_else(|| {
+    let logical_effort = selected.and_then(|value| value.effort).or_else(|| {
         harness_defaults
             .as_ref()
             .and_then(|settings| settings.effort)

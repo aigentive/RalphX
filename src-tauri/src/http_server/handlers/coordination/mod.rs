@@ -119,44 +119,76 @@ struct ResolvedDelegateParent {
     project_id: String,
     working_directory: PathBuf,
     parent_conversation_id: Option<String>,
-    inherited_harness: Option<AgentHarnessKind>,
     ideation_verification: bool,
+}
+
+async fn preflight_requested_delegated_session(
+    state: &HttpServerState,
+    req: &DelegateStartRequest,
+    parent: &ResolvedDelegateParent,
+) -> Result<Option<DelegatedSession>, JsonError> {
+    let requested_id = req
+        .delegated_session_id
+        .as_ref()
+        .or(req.child_session_id.as_ref());
+
+    let Some(delegated_session_id) = requested_id else {
+        return Ok(None);
+    };
+
+    let delegated_id = DelegatedSessionId::from_string(delegated_session_id.clone());
+    let delegated = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&delegated_id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load delegated session: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegated session not found"))?;
+    if delegated.parent_context_type != parent.context_type.to_string()
+        || delegated.parent_context_id != parent.context_id
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Delegated session does not belong to the provided parent context",
+        ));
+    }
+    if delegated.agent_name != req.agent_name {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Delegated session agent '{}' does not match requested agent '{}'",
+                delegated.agent_name, req.agent_name
+            ),
+        ));
+    }
+    if let Some(requested_harness) = req.harness {
+        if requested_harness != delegated.harness {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Delegated session harness '{}' does not match requested harness '{}'",
+                    delegated.harness, requested_harness
+                ),
+            ));
+        }
+    }
+    Ok(Some(delegated))
 }
 
 async fn resolve_delegated_session_id(
     state: &HttpServerState,
     req: &DelegateStartRequest,
     parent: &ResolvedDelegateParent,
+    requested_session: Option<&DelegatedSession>,
     harness: AgentHarnessKind,
 ) -> Result<String, JsonError> {
-    let requested_id = req
-        .delegated_session_id
-        .as_ref()
-        .or(req.child_session_id.as_ref());
-
-    if let Some(delegated_session_id) = requested_id {
-        let delegated_id = DelegatedSessionId::from_string(delegated_session_id.clone());
-        let delegated = state
-            .app_state
-            .delegated_session_repo
-            .get_by_id(&delegated_id)
-            .await
-            .map_err(|error| {
-                json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to load delegated session: {error}"),
-                )
-            })?
-            .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegated session not found"))?;
-        if delegated.parent_context_type != parent.context_type.to_string()
-            || delegated.parent_context_id != parent.context_id
-        {
-            return Err(json_error(
-                StatusCode::BAD_REQUEST,
-                "Delegated session does not belong to the provided parent context",
-            ));
-        }
-        return Ok(delegated_session_id.clone());
+    if let Some(delegated) = requested_session {
+        return Ok(delegated.id.as_str().to_string());
     }
 
     let mut session = DelegatedSession::new(
@@ -306,7 +338,6 @@ async fn resolve_ideation_delegate_parent(
             project_id: project_id.as_str().to_string(),
             working_directory,
             parent_conversation_id,
-            inherited_harness: None,
             ideation_verification: caller_session.session_purpose == SessionPurpose::Verification,
         });
     }
@@ -324,7 +355,6 @@ async fn resolve_ideation_delegate_parent(
         project_id: project_id.as_str().to_string(),
         working_directory,
         parent_conversation_id,
-        inherited_harness: None,
         ideation_verification: false,
     })
 }
@@ -442,17 +472,12 @@ async fn resolve_project_delegate_parent(
     let parent_conversation_id = parent_conversation
         .as_ref()
         .map(|conversation| conversation.id.as_str());
-    let inherited_harness = parent_conversation
-        .as_ref()
-        .and_then(|conversation| conversation.provider_harness);
-
     Ok(ResolvedDelegateParent {
         context_type: ChatContextType::Project,
         context_id: project_id,
         project_id: project.id.as_str().to_string(),
         working_directory,
         parent_conversation_id,
-        inherited_harness,
         ideation_verification: false,
     })
 }
@@ -496,7 +521,6 @@ async fn resolve_task_like_delegate_parent(
         project_id: project.id.as_str().to_string(),
         working_directory,
         parent_conversation_id,
-        inherited_harness: None,
         ideation_verification: false,
     })
 }
@@ -603,7 +627,6 @@ async fn resolve_nested_delegation_parent(
         project_id: project.id.as_str().to_string(),
         working_directory,
         parent_conversation_id: Some(parent_conversation_id),
-        inherited_harness: Some(session.harness),
         ideation_verification: false,
     })
 }
