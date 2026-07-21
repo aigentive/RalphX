@@ -101,6 +101,7 @@ interface AgentReviewPanelProps {
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
   onOpenPublish?: () => void;
+  onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
   onApproveAnyway?: () => Promise<void>;
@@ -356,6 +357,7 @@ export function AgentReviewPanel({
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
   onOpenPublish,
+  onViewTranscript,
   onStartReview,
   onFixIssues,
   onApproveAnyway,
@@ -409,6 +411,7 @@ export function AgentReviewPanel({
     isFixerActive,
   });
   const targetLabel = reviewTargetLabel(displayContext);
+  const canViewTranscript = !isReviewPrWorkspace && Boolean(onViewTranscript);
   const autoMergeGuardDetail = (() => {
     switch (displayContext?.monitor.autoMergeGuardStatus) {
       case "paused_for_review":
@@ -750,13 +753,34 @@ export function AgentReviewPanel({
               >
                 {errorMessage ?? autoMergeGuardDetail ?? status.detail}
               </p>
-              {(targetLabel || reviewUpdatedAt) && (
-                <p
-                  className="mt-2 text-[0.6875rem]"
+              {(targetLabel || canViewTranscript || reviewUpdatedAt) && (
+                <div
+                  className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-[0.6875rem]"
                   style={{ color: "var(--text-subtle)" }}
                 >
-                  {[targetLabel, reviewUpdatedAt].filter(Boolean).join(" · ")}
-                </p>
+                  {targetLabel && <span>{targetLabel}</span>}
+                  {canViewTranscript && (
+                    <span className="inline-flex items-center gap-1">
+                      {targetLabel && <span aria-hidden="true">·</span>}
+                      <Button
+                        type="button"
+                        variant="link"
+                        onClick={onViewTranscript}
+                        className="h-auto p-0 text-[0.6875rem] font-medium text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                      >
+                        View transcript
+                      </Button>
+                    </span>
+                  )}
+                  {reviewUpdatedAt && (
+                    <span className="inline-flex items-center gap-1">
+                      {(targetLabel || canViewTranscript) && (
+                        <span aria-hidden="true">·</span>
+                      )}
+                      <span>{reviewUpdatedAt}</span>
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
