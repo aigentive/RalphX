@@ -7,6 +7,8 @@ import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type {
   AgentConversationWorkspace,
   AgentWorkspaceReviewContext,
+  ComposerIntegrationReference,
+  SendAgentMessageResult,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import {
@@ -104,6 +106,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
+  integratedChatPanelUserMessageSentMock: vi.fn(),
   preloadAgentsArtifactPaneMock: vi.fn(),
   preloadAgentTerminalExperienceMock: vi.fn(),
   artifactPaneModuleLoadedMock: vi.fn(),
@@ -247,6 +250,7 @@ const {
   toastLoadingMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
+  integratedChatPanelUserMessageSentMock,
   preloadAgentsArtifactPaneMock,
   preloadAgentTerminalExperienceMock,
   artifactPaneModuleLoadedMock,
@@ -983,6 +987,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride,
     sendOptions,
     onChildSessionNavigate,
+    onUserMessageSent,
     emptyState,
   }: {
     headerContent?: ReactNode;
@@ -995,6 +1000,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride?: string;
     sendOptions?: Record<string, unknown>;
     onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+    onUserMessageSent?: (payload: {
+      content: string;
+      result: SendAgentMessageResult;
+      composerIntegrationReferences?: ComposerIntegrationReference[];
+    }) => void | Promise<void>;
     emptyState?: ReactNode;
   }) => {
     const agentStatus = useChatStore((state) =>
@@ -1015,6 +1025,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       sendOptions,
       hasChildSessionNavigate: Boolean(onChildSessionNavigate),
     });
+    integratedChatPanelUserMessageSentMock(onUserMessageSent);
     return (
       <div
         data-testid="integrated-chat-panel"
@@ -1632,6 +1643,7 @@ export function setupAgentsViewTest() {
   toastLoadingMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
+  integratedChatPanelUserMessageSentMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
   artifactPaneModuleLoadedMock.mockReset();
   realPublishPanelState.enabled = false;

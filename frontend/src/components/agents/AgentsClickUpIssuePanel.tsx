@@ -1,8 +1,8 @@
-import { ExternalLink, Loader2, Ticket } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { ExternalLink, Loader2, RefreshCw, Ticket } from "lucide-react";
+import type { ReactNode } from "react";
 
-import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { TicketDetailReadOnlyContent } from "@/components/ticketing/TicketDetailReadOnlyContent";
+import { Button } from "@/components/ui/button";
 import { useConversationTicket, useTicketDetail } from "@/hooks/useTicketing";
 
 import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
@@ -28,7 +28,10 @@ export function AgentsClickUpIssuePanel({
   const ticket = detailQuery.data ?? null;
 
   const displayKey =
-    ticket?.ref.key ?? binding?.ticketRef.key ?? ticket?.ref.id ?? binding?.ticketRef.id;
+    ticket?.ref.key ??
+    binding?.ticketRef.key ??
+    ticket?.ref.id ??
+    binding?.ticketRef.id;
   const title = ticket?.title ?? binding?.title ?? null;
   const url = ticket?.url ?? binding?.url ?? null;
 
@@ -57,7 +60,10 @@ export function AgentsClickUpIssuePanel({
           <h2 className="truncate text-sm font-semibold">
             {displayKey ?? "ClickUp"}
           </h2>
-          <p className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
+          <p
+            className="truncate text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
             {title ?? "No ClickUp task assigned"}
           </p>
         </div>
@@ -79,12 +85,33 @@ export function AgentsClickUpIssuePanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {!conversationId ? (
           <PanelStatus label="No conversation selected" />
-        ) : conversationTicketQuery.isLoading || (binding && detailQuery.isLoading) ? (
+        ) : conversationTicketQuery.isLoading ||
+          (binding && detailQuery.isLoading) ? (
           <PanelStatus label="Loading ClickUp task" busy />
         ) : !binding ? (
           <PanelStatus label="No ClickUp task assigned" />
         ) : detailQuery.error ? (
-          <PanelStatus label="Could not load the ClickUp task" />
+          <PanelStatus
+            label="Could not load the ClickUp task"
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Refresh ClickUp task"
+                disabled={detailQuery.isFetching}
+                onClick={() => void detailQuery.refetch()}
+              >
+                <RefreshCw
+                  className={
+                    detailQuery.isFetching ? "animate-spin" : undefined
+                  }
+                  aria-hidden="true"
+                />
+                Refresh
+              </Button>
+            }
+          />
         ) : ticket ? (
           <ArtifactSelectableRegion
             className="space-y-4"
@@ -109,24 +136,7 @@ export function AgentsClickUpIssuePanel({
                 {ticket.state.name}
               </span>
             </div>
-            {ticket.descriptionMarkdown || ticket.descriptionText ? (
-              <div
-                className="rounded-md border p-3 text-sm"
-                style={{
-                  backgroundColor: "var(--bg-surface)",
-                  borderColor: "var(--border-subtle)",
-                  borderStyle: "solid",
-                  borderWidth: 1,
-                }}
-              >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={markdownComponents}
-                >
-                  {ticket.descriptionMarkdown ?? ticket.descriptionText ?? ""}
-                </ReactMarkdown>
-              </div>
-            ) : null}
+            <TicketDetailReadOnlyContent ticket={ticket} />
           </ArtifactSelectableRegion>
         ) : null}
       </div>
@@ -137,14 +147,22 @@ export function AgentsClickUpIssuePanel({
 function PanelStatus({
   label,
   busy = false,
+  action,
 }: {
   label: string;
   busy?: boolean;
+  action?: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-muted)" }}>
-      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-      <span>{label}</span>
+    <div className="flex items-center justify-between gap-3">
+      <div
+        className="flex items-center gap-2 text-sm"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+        <span>{label}</span>
+      </div>
+      {action}
     </div>
   );
 }
