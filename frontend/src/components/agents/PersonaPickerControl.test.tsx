@@ -90,16 +90,22 @@ describe("PersonaPickerControl", () => {
     } as ReturnType<typeof usePersonas>);
   });
 
-  it("uses an icon-only trigger with an accessible name and tooltip", async () => {
+  it("uses a labeled pill trigger that names the selected persona", async () => {
     renderControl({ personaId: "reviewer" });
 
     const trigger = screen.getByRole("button", { name: "Choose persona" });
-    expect(trigger).toHaveClass("h-8", "w-8");
-    expect(trigger).not.toHaveClass("w-full");
+    expect(screen.getByTestId("persona-picker-label")).toHaveTextContent(
+      "Reviewer Voice",
+    );
     await userEvent.setup().hover(trigger);
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Persona: Reviewer Voice",
     );
+  });
+
+  it("falls back to the generic pill label when nothing is selected", () => {
+    renderControl();
+    expect(screen.getByTestId("persona-picker-label")).toHaveTextContent("Persona");
   });
 
   it("lists active personas and No persona as the default choice", () => {
@@ -110,9 +116,25 @@ describe("PersonaPickerControl", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.getByRole("menuitemradio", { name: "Reviewer Voice" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: "Terse Architect" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^Terse Architect/ })).toBeInTheDocument();
     expect(screen.queryByText("Not ready")).not.toBeInTheDocument();
+  });
+
+  it("shows persona descriptions and a read-only inspect preview per row", () => {
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByText("Careful reviews")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect Reviewer Voice" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Reviewer Voice · v1" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("persona-inspect-content")).toHaveTextContent(
+      "# Reviewer",
+    );
   });
 
   it("groups global and current-project personas and excludes other projects", () => {
@@ -146,10 +168,10 @@ describe("PersonaPickerControl", () => {
   it("changes selection and opens persona settings from the popover", () => {
     const { onOpenPersonas, onValueChange } = renderControl();
     fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     expect(onValueChange).toHaveBeenCalledWith("reviewer");
 
-    fireEvent.click(screen.getByRole("button", { name: "Manage personas" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage personas/ }));
     expect(onOpenPersonas).toHaveBeenCalledOnce();
   });
 
@@ -166,7 +188,7 @@ describe("PersonaPickerControl", () => {
     fireEvent.click(trigger);
 
     expect(screen.getByTestId("persona-picker-popover")).toBeInTheDocument();
-    expect(screen.getByTestId("persona-picker-loading")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-menu-loading")).toBeInTheDocument();
   });
 
   it("shows a retryable error row instead of the empty No persona option", () => {

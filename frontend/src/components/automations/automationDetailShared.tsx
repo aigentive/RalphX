@@ -1,38 +1,52 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 
-function statusClass(status: string): string {
-  if (["active", "running", "published", "merged", "completed", "done"].includes(status)) {
-    return "text-[var(--status-success)]";
+function statusTone(status: string): StatusPillTone {
+  if (["active", "running", "published", "merged", "completed", "done", "executing"].includes(status)) {
+    return "success";
   }
-  if (["paused", "failed", "agent_failed", "pr_closed"].includes(status)) {
-    return "text-[var(--status-warning)]";
+  if (["paused", "failed", "agent_failed", "pr_closed", "attention"].includes(status)) {
+    return "warning";
   }
   if (["stopped", "cancelled"].includes(status)) {
-    return "text-[var(--status-error)]";
+    return "error";
   }
-  return "text-[var(--text-secondary)]";
+  return "neutral";
 }
 
+/** Compatibility shim over the design-system {@link StatusPill}. */
 export function Pill({ label, status }: { label: string; status: string }) {
+  return <StatusPill label={label} size="md" tone={statusTone(status)} />;
+}
+
+export function Section({
+  title,
+  children,
+  testId,
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+}) {
   return (
-    <span
-      className={cn(
-        "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        statusClass(status),
-      )}
+    <section
+      className="rounded-md p-4"
       style={{
-        backgroundColor: "var(--bg-hover)",
+        backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-default)",
         borderStyle: "solid",
         borderWidth: "1px",
       }}
+      {...(testId ? { "data-testid": testId } : {})}
     >
-      {label}
-    </span>
+      <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </h2>
+      <div className="mt-3">{children}</div>
+    </section>
   );
 }
 

@@ -1,5 +1,5 @@
 import { memo, type ReactNode, useCallback, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, FileText } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import {
@@ -8,14 +8,17 @@ import {
   isOpenAutomationRun,
 } from "@/components/automations/automationStage";
 import type { AutomationGoalItem } from "@/components/automations/automationGoalItems";
+import { AutomationPlanDialog } from "@/components/automations/AutomationPlanDialog";
 import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
 import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
+import { getAutomationRunJudgeLabel } from "./automationRunView";
 import { ExpandableText, Pill } from "./automationDetailShared";
 
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
@@ -87,10 +90,12 @@ function RunFactsRow({
   run,
   canOpenConversation,
   onOpenConversation,
+  onOpenPlan,
 }: {
   run: AutomationRun;
   canOpenConversation: boolean;
   onOpenConversation: () => void;
+  onOpenPlan: (() => void) | null;
 }) {
   const facts: RunFact[] = [];
   if (run.prNumber || run.prUrl) {
@@ -107,9 +112,34 @@ function RunFactsRow({
   if (run.finishedAt) {
     facts.push({ label: "Finished", content: formatDate(run.finishedAt) });
   }
+  if (run.branchName) {
+    facts.push({
+      label: "Branch",
+      content: (
+        <code
+          className="font-mono text-[0.8125rem]"
+          data-testid={`automation-run-${run.id}-branch`}
+        >
+          {run.branchName}
+        </code>
+      ),
+    });
+  }
   const base = run.baseRefUsed || run.baseRefKind;
   if (base) {
     facts.push({ label: "Base", content: base });
+  }
+  // A settled judge outcome lives here instead of a header badge — the green
+  // settled status badge already tells the headline story.
+  if (run.judgeState === "done" || run.judgeState === "skipped") {
+    const judgeLabel = getAutomationRunJudgeLabel(run);
+    if (judgeLabel) {
+      facts.push({
+        label: "Judge",
+        content: judgeLabel,
+        testId: `automation-run-${run.id}-judge-fact`,
+      });
+    }
   }
   facts.push({ label: "Prompt", content: PROMPT_AUTHOR_LABELS[run.promptAuthor] });
 
@@ -139,6 +169,24 @@ function RunFactsRow({
           </span>
         ))
       )}
+      {onOpenPlan ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="View run plan"
+              className="h-6 w-6 shrink-0"
+              onClick={onOpenPlan}
+              data-testid={`automation-run-${run.id}-plan-icon`}
+            >
+              <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>View run plan</TooltipContent>
+        </Tooltip>
+      ) : null}
       <Button
         type="button"
         variant="link"
@@ -232,6 +280,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [promptOpen, setPromptOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
+  const openPlan = useCallback(() => setPlanOpen(true), []);
   const canOpenConversation = Boolean(
     projectId &&
       run.conversationId &&
@@ -386,6 +436,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
               run={run}
               canOpenConversation={canOpenConversation}
               onOpenConversation={openConversation}
+              onOpenPlan={run.planArtifactId ? openPlan : null}
             />
             {run.conversationId && (
               <div className="mt-4">
@@ -422,6 +473,14 @@ export const RunTimelineItem = memo(function RunTimelineItem({
           </div>
         )}
       </div>
+      {run.planArtifactId ? (
+        <AutomationPlanDialog
+          planArtifactId={run.planArtifactId}
+          title={`Run ${run.runIndex}`}
+          open={planOpen}
+          onOpenChange={setPlanOpen}
+        />
+      ) : null}
     </div>
   );
 });

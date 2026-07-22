@@ -271,6 +271,34 @@ impl PersonaService {
             .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
     }
 
+    pub async fn unarchive_persona(
+        &self,
+        feature_enabled: bool,
+        id: &PersonaId,
+    ) -> AppResult<Persona> {
+        ensure_enabled(feature_enabled)?;
+        let persona = self.require_status(id, PersonaStatus::Archived).await?;
+        if let Some(conflict) = self
+            .persona_repo
+            .get_active_by_slug(&persona.slug, persona.project_id.as_ref())
+            .await?
+        {
+            if conflict.id != *id {
+                return Err(AppError::Validation(format!(
+                    "Cannot restore persona: active persona `{}` already uses slug `{}` in this scope",
+                    conflict.name, persona.slug
+                )));
+            }
+        }
+        // Bindings cleared at archive time stay cleared; restore never rewrites
+        // chat_conversations.persona_id. The repository re-enforces active-slug
+        // uniqueness (SQLite partial index / memory check) against races.
+        self.persona_repo
+            .set_status(id, PersonaStatus::Active)
+            .await?;
+        self.get_persona(feature_enabled, id).await
+    }
+
     pub async fn archive_persona(
         &self,
         feature_enabled: bool,

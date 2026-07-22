@@ -50,6 +50,10 @@ use crate::application::agent_workspace_review_auto_merge::{
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
 };
+use crate::application::agent_workspace_publish_repair_state::{
+    complete_agent_workspace_repair_claim, current_agent_workspace_repair_claim_for_completion,
+    settle_agent_workspace_failure_without_repair,
+};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -4296,7 +4300,9 @@ fn repair_queued_from_publication_events(
             "repair_requested" | "repair_deferred" | "repair_sent"
         )
     }) {
-        Some(event) if event.step == "repair_sent" => event.status == "succeeded",
+        Some(event) if event.step == "repair_sent" => {
+            matches!(event.status.as_str(), "started" | "succeeded")
+        }
         Some(event) => matches!(event.status.as_str(), "started" | "succeeded"),
         None => false,
     }
@@ -4502,15 +4508,65 @@ pub async fn complete_agent_workspace_repair(
     })
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
 
-    let mut updated_workspace = workspace.clone();
-    updated_workspace.base_commit = Some(freshness.target_base_commit.clone());
-    updated_workspace.publication_push_status = Some("refreshed".to_string());
-    state
+    let publication_events = state
         .app_state
         .agent_conversation_workspace_repo
-        .create_or_update(updated_workspace.clone())
+        .list_publication_events(&conversation_id)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
+    let completion_supervision = if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly
+        && !should_auto_publish_after_update_only_repair(&workspace)
+    {
+        update_only_repair_pr_supervision_state(&workspace)
+    } else if !workspace.auto_publish_enabled {
+        Some((
+            "paused",
+            "Agent workspace repair verified; Auto Publish is paused.",
+        ))
+    } else {
+        Some((
+            "publishing",
+            "Agent workspace repair verified; publication is continuing.",
+        ))
+    };
+    let claim = current_agent_workspace_repair_claim_for_completion(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        Arc::clone(&state.app_state.agent_run_repo),
+        &workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace repair attempt is no longer current",
+            None,
+        )
+    })?;
+    if !complete_agent_workspace_repair_claim(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        &claim,
+        &freshness.target_base_commit,
+        completion_supervision.map(|(status, _)| status),
+        completion_supervision.map(|(_, summary)| summary),
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace repair attempt was replaced before completion",
+            None,
+        ));
+    }
+    let updated_workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
     state
         .app_state
         .agent_conversation_workspace_repo
@@ -4535,14 +4591,6 @@ pub async fn complete_agent_workspace_repair(
     {
         return Ok(response);
     }
-    let publication_events = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .list_publication_events(&conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
-
     let (
         message,
         new_status,
@@ -4681,6 +4729,20 @@ pub async fn complete_agent_workspace_repair(
                                 None,
                             )
                         })?;
+                    settle_agent_workspace_failure_without_repair(
+                        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                        &conversation_id,
+                        "failed",
+                        &message,
+                    )
+                    .await
+                    .map_err(|repo_error| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            repo_error.to_string(),
+                            None,
+                        )
+                    })?;
                     state
                         .app_state
                         .agent_conversation_workspace_repo
@@ -4736,6 +4798,16 @@ pub async fn complete_agent_workspace_repair(
                 .map_err(|error| {
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
+            settle_agent_workspace_failure_without_repair(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                &conversation_id,
+                "failed",
+                &message,
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
             state
                 .app_state
                 .agent_conversation_workspace_repo

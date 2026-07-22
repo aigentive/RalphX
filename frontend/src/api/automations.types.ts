@@ -120,6 +120,7 @@ export interface AutomationRun {
   baseRefKind: AutomationBaseRefKind;
   baseRefUsed: string;
   baseFromRunId: string | null;
+  goalItemId: string | null;
   branchName: string | null;
   prNumber: number | null;
   prUrl: string | null;

@@ -487,6 +487,168 @@ describe("PersonaArtifactPanel", () => {
     });
   });
 
+  it("toggles a read-only diff against the previous artifact version", async () => {
+    const user = userEvent.setup();
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const id = (args as { id?: string } | undefined)?.id;
+      if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") {
+        if (id === "artifact-2") {
+          return {
+            ...rawPersonaArtifact,
+            id: "artifact-2",
+            version: 2,
+            content:
+              "---\nname: support-voice\nkind: persona\ndescription: Calm customer support.\n---\n\n# Support Voice\n\n## Voice\n\nEarlier draft body.",
+          };
+        }
+        return rawPersonaArtifact;
+      }
+      if (command === "get_artifact_version_history") return rawHistory;
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    await screen.findByText("Empathetic, direct.");
+    await user.click(screen.getByTestId("persona-show-changes-toggle"));
+
+    expect(await screen.findByTestId("persona-diff")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_artifact_version_history", {
+        id: "artifact-1",
+      }),
+    );
+    // Read-only proof: no persona/artifact mutation commands fired.
+    for (const command of [
+      "approve_persona",
+      "approve_persona_as_new",
+      "update_persona_draft",
+      "reseed_persona_draft",
+    ]) {
+      expect(invoke).not.toHaveBeenCalledWith(command, expect.anything());
+    }
+
+    await user.click(screen.getByTestId("persona-show-changes-toggle"));
+    expect(await screen.findByText("Empathetic, direct.")).toBeInTheDocument();
+  });
+
+  it("hides the show-changes toggle for first versions", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_persona") return rawDraft;
+      if (command === "get_artifact") return { ...rawPersonaArtifact, version: 1 };
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    await screen.findByText("Empathetic, direct.");
+    expect(
+      screen.queryByTestId("persona-show-changes-toggle"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the stale-source banner for seeded drafts with a hash mismatch and rebases", async () => {
+    const user = userEvent.setup();
+    const seededDraft = {
+      ...rawDraft,
+      source_persona_id: "persona-source",
+      source_content_hash: "seed-hash",
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = (args as { input?: { id?: string } } | undefined)?.input;
+      if (command === "get_persona") {
+        if (input?.id === "persona-source") {
+          return { ...rawApproved, id: "persona-source", content_hash: "moved-on-hash" };
+        }
+        return seededDraft;
+      }
+      if (command === "get_artifact") return rawPersonaArtifact;
+      if (command === "reseed_persona_draft") {
+        return { ...seededDraft, source_content_hash: "moved-on-hash" };
+      }
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    expect(
+      await screen.findByTestId("persona-stale-source-banner"),
+    ).toHaveTextContent("Source persona changed since this draft was seeded.");
+    await user.click(
+      screen.getByRole("button", { name: "Rebase draft on current source" }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("reseed_persona_draft", {
+        input: { id: "draft-1" },
+      }),
+    );
+  });
+
+  it("keeps the stale banner hidden while the seed hash still matches", async () => {
+    const seededDraft = {
+      ...rawDraft,
+      source_persona_id: "persona-source",
+      source_content_hash: "seed-hash",
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = (args as { input?: { id?: string } } | undefined)?.input;
+      if (command === "get_persona") {
+        if (input?.id === "persona-source") {
+          return { ...rawApproved, id: "persona-source", content_hash: "seed-hash" };
+        }
+        return seededDraft;
+      }
+      if (command === "get_artifact") return rawPersonaArtifact;
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    await screen.findByText("Empathetic, direct.");
+    expect(
+      screen.queryByTestId("persona-stale-source-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reveals the rebase action when approval reports the seed conflict", async () => {
+    const user = userEvent.setup();
+    const seededDraft = {
+      ...rawDraft,
+      source_persona_id: "persona-source",
+      source_content_hash: "seed-hash",
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = (args as { input?: { id?: string } } | undefined)?.input;
+      if (command === "get_persona") {
+        if (input?.id === "persona-source") {
+          return { ...rawApproved, id: "persona-source", content_hash: "seed-hash" };
+        }
+        return seededDraft;
+      }
+      if (command === "get_artifact") return rawPersonaArtifact;
+      if (command === "approve_persona") {
+        throw new Error(
+          "SourceChangedSinceSeed: source persona persona-source changed after draft draft-1 was seeded",
+        );
+      }
+      return null;
+    });
+    renderPanel(conversation({ builderDraftId: "draft-1" }));
+
+    await screen.findByText("Empathetic, direct.");
+    expect(
+      screen.queryByTestId("persona-stale-source-banner"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Approve Persona" }));
+    expect(
+      await screen.findByTestId("persona-stale-source-banner"),
+    ).toBeInTheDocument();
+    const alerts = await screen.findAllByRole("alert");
+    expect(
+      alerts.some((alert) =>
+        alert.textContent?.includes("SourceChangedSinceSeed:"),
+      ),
+    ).toBe(true);
+  });
+
   it("paints the Persona shell and skeleton before the persona fetch resolves", () => {
     let resolvePersona: ((value: typeof rawDraft) => void) | undefined;
     const deferredPersona = new Promise<typeof rawDraft>((resolve) => {

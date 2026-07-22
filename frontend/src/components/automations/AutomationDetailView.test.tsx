@@ -143,6 +143,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/test",
     prNumber: 593,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
@@ -231,6 +232,12 @@ function renderDetailWithQuery(onBack = vi.fn()) {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+/** Select the page-level Runs tab and wait for the deferred timeline mount. */
+async function openRunsTab() {
+  await userEvent.click(await screen.findByTestId("automation-tab-runs"));
+  await screen.findByTestId("automation-runs-timeline");
 }
 
 describe("AutomationDetailView", () => {
@@ -332,10 +339,6 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("Estimated cost")).toBeInTheDocument();
     expect(screen.getByText("$0.06")).toBeInTheDocument();
 
-    const runTwo = screen.getByTestId("automation-run-run-2");
-    const runOne = screen.getByTestId("automation-run-run-1");
-    expect(runTwo.compareDocumentPosition(runOne)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(within(runTwo).getByText("Run 2")).toBeInTheDocument();
     const goalCard = screen.getByTestId("automation-goal-card");
     expect(goalCard).toHaveTextContent("Goal line 10");
     expect(goalCard).not.toHaveTextContent("Goal line 11");
@@ -349,6 +352,12 @@ describe("AutomationDetailView", () => {
       "project-1",
       "setup-conversation-1",
     );
+
+    await openRunsTab();
+    const runTwo = screen.getByTestId("automation-run-run-2");
+    const runOne = screen.getByTestId("automation-run-run-1");
+    expect(runTwo.compareDocumentPosition(runOne)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(within(runTwo).getByText("Run 2")).toBeInTheDocument();
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
     expect(onOpenAutomationRun).toHaveBeenCalledWith({
@@ -429,6 +438,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(
       screen.getAllByRole("button", { name: "Open PR #612 in browser" }),
     ).toHaveLength(1);
@@ -461,6 +471,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(
       screen.getAllByRole("button", { name: "Open PR in browser" }),
     ).toHaveLength(1);
@@ -493,6 +504,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const disabledPr = screen.getByTestId("automation-run-run-pr-local-pr-link");
     expect(disabledPr).toHaveTextContent("PR #612");
@@ -511,6 +523,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(
       screen.queryByRole("button", { name: /Open PR #/i }),
@@ -549,6 +562,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     // Latest run (index 3) is expanded even though it is terminal.
     expect(screen.getByTestId("automation-run-run-3-body")).toBeInTheDocument();
@@ -574,6 +588,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
 
@@ -614,6 +629,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const ledger = await screen.findByTestId("automation-run-task-ledger");
     expect(within(ledger).getByText("Refactor scheduler")).toBeInTheDocument();
@@ -776,6 +792,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const openRun = screen.getByTestId("automation-run-run-open");
     expect(
@@ -812,6 +829,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
     expect(successCard.style.backgroundColor).toBe("var(--status-success-muted)");
@@ -854,6 +872,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(
       within(screen.getByTestId("automation-run-run-open")).queryByTestId(
@@ -903,11 +922,16 @@ describe("AutomationDetailView", () => {
     ).toEqual([
       "Mode / model",
       "Setup conversation",
+      "Last PR",
       "Base",
       "Branch",
       "Chain mode",
       "Completion signal",
     ]);
+    // The config PR row reuses the shared PR link for the newest run with a PR.
+    expect(
+      within(execution).getByTestId("automation-config-pr-link"),
+    ).toHaveTextContent("PR #593");
     const limits = within(configPanel).getByTestId("automation-config-group-limits");
     expect(
       within(limits).getAllByRole("term").map((term) => term.textContent),
@@ -1026,7 +1050,6 @@ describe("AutomationDetailView", () => {
     );
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
     expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
     // estimatedUsd is null → the Estimated cost row is omitted instead of
     // rendering a "Not recorded" placeholder.
@@ -1034,6 +1057,9 @@ describe("AutomationDetailView", () => {
     expect(screen.queryByText("Not recorded")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Inputs" }));
     expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+
+    await openRunsTab();
+    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Resume automation"));
 
@@ -1137,6 +1163,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     await userEvent.click(
       await screen.findByRole("button", { name: "Retry terminal judge" }),
     );
@@ -1161,6 +1189,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     await userEvent.click(
       await screen.findByRole("button", { name: "Retry plan judge" }),
     );
@@ -1227,6 +1257,10 @@ describe("AutomationDetailView", () => {
     apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
     renderDetail(detail);
 
+    await screen.findByTestId("automation-detail-view");
+    if (actionName.startsWith("Retry")) {
+      await openRunsTab();
+    }
     await userEvent.click(await screen.findByRole("button", { name: actionName }));
 
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith(errorMessage));
@@ -1246,6 +1280,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(await screen.findAllByText("Plan judge failed")).not.toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Retry plan judge" }));
     await waitFor(() => expect(retryPlanJudgeMock).toHaveBeenCalledWith("automation-1"));
@@ -1257,6 +1293,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(await screen.findAllByText("Terminal judge failed")).not.toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Retry terminal judge" }));
     await waitFor(() => expect(retryJudgeMock).toHaveBeenCalledWith("automation-1"));
@@ -1419,6 +1457,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const failure = screen.getByTestId("automation-run-run-failed-failure");
     expect(failure).toHaveTextContent("Publish step exited with code 1");
@@ -1490,21 +1529,23 @@ describe("AutomationDetailView", () => {
     expect(screen.getAllByText("Stopped").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getByText("Phase 1")).toBeInTheDocument();
-    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
-    expect(screen.getByText("invalid-date")).toBeInTheDocument();
-    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
     // "Not recorded" survives only in the intentional Setup conversation slot;
     // run-card facts omit empty fields entirely.
     const configPanel = screen.getByTestId("automation-config-panel");
     expect(within(configPanel).getByText("Not recorded")).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId("automation-run-run-fallback-card")).queryByText("Not recorded"),
-    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Inputs (1)" }));
     expect(screen.getByText("PR #41")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeDisabled();
     expect(screen.getByLabelText("Cancel automation")).toBeDisabled();
+
+    await openRunsTab();
+    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
+    expect(screen.getByText("invalid-date")).toBeInTheDocument();
+    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
+    expect(
+      within(screen.getByTestId("automation-run-run-fallback-card")).queryByText("Not recorded"),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText("More automation actions"));
     await user.click(screen.getByText("Delete"));
@@ -1622,6 +1663,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     const banner = await screen.findByTestId("automation-idle-after-cancelled");
     expect(banner).toHaveTextContent(
       "The last run was cancelled. Run now starts a new run from that run's prompt; it does not resume the cancelled run.",
@@ -1640,6 +1683,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
     pausedView.unmount();
 
@@ -1650,6 +1694,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
   });
 
@@ -1674,6 +1719,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const body = screen.getByTestId("automation-run-run-1-body");
       const judge = within(body).getByTestId("automation-run-run-1-judge");
@@ -1695,6 +1741,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       expect(screen.queryByText(/Prompt line 1/)).not.toBeInTheDocument();
 
@@ -1723,6 +1770,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const card = screen.getByTestId("automation-run-run-empty-card");
       expect(within(card).queryByText("Not recorded")).not.toBeInTheDocument();
@@ -1737,6 +1785,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const body = screen.getByTestId("automation-run-run-1-body");
       expect(within(body).getByTestId("automation-run-run-1-pr-state")).toHaveTextContent(
@@ -1768,6 +1817,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       expect(
         screen.queryByTestId("automation-run-run-old-failed-body"),
@@ -1796,6 +1846,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
       await userEvent.click(screen.getByRole("button", { name: "Collapse run 1" }));
 
       expect(
