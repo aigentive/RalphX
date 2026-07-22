@@ -110,6 +110,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/test",
     prNumber: null,
     prUrl: null,
@@ -310,6 +311,15 @@ describe("AutomationsView", () => {
     expect(screen.getByText("Paused: review_gate")).toBeInTheDocument();
     expect(screen.getByText("Goal completed")).toBeInTheDocument();
     expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
+    expect(
+      within(screen.getByTestId("automation-row-paused")).getByText("Paused").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "warning");
+    expect(
+      within(screen.getByTestId("automation-row-completed")).getByText("Completed").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "success");
+    expect(
+      within(screen.getByTestId("automation-row-empty-active")).getByText("Approved").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "accent");
     expect(screen.getByText("Waiting for first run")).toBeInTheDocument();
     expect(screen.getByText("Terminal judge running")).toBeInTheDocument();
     expect(screen.getByText("Terminal judge failed")).toBeInTheDocument();

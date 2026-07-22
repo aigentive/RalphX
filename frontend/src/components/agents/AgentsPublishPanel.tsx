@@ -321,7 +321,7 @@ export function AgentPublishPanel({
       inlineDiffsCandidate &&
       !terminalPublicationStatus,
   });
-  const { reviewQuery } = publishWorkspaceActivity;
+  const { reviewQuery, changeSummaryQuery } = publishWorkspaceActivity;
   const publicationEventsQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
     queryFn: () =>
@@ -1561,12 +1561,10 @@ export function AgentPublishPanel({
               isLoading={Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading)}
               annotations={prAnnotations}
               hunkAnnotations={workspaceReviewHunkAnnotations}
-              liveSummary={
-                publishWorkspaceActivity.changeSummaryQuery.data ?? null
-              }
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              liveSummary={changeSummaryQuery.data ?? null}
               {...(inlineDiffDefaultMode !== undefined && {
                 defaultMode: inlineDiffDefaultMode,
               })}

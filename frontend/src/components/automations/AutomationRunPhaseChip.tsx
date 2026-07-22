@@ -1,7 +1,8 @@
-import { cn } from "@/lib/utils";
+import { StatusPill } from "@/components/ui/status-pill";
 
 import type { AutomationGoalItem } from "./automationGoalItems";
 
+/** Accent chip for the active goal item (design-system StatusPill). */
 export function AutomationRunPhaseChip({
   item,
   testId,
@@ -12,21 +13,12 @@ export function AutomationRunPhaseChip({
   className?: string;
 }) {
   return (
-    <span
-      className={cn(
-        "inline-flex min-w-0 max-w-full items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
-        className,
-      )}
-      style={{
-        color: "var(--accent-primary, #ff6a35)",
-        backgroundColor: "var(--accent-muted)",
-        borderColor: "var(--accent-border)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-      {...(testId ? { "data-testid": testId } : {})}
-    >
-      <span className="truncate">{item.title}</span>
-    </span>
+    <StatusPill
+      label={item.title}
+      tone="accent"
+      live
+      {...(className ? { className } : {})}
+      {...(testId ? { testId } : {})}
+    />
   );
 }

@@ -74,6 +74,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/test",
     prNumber: 593,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/593",

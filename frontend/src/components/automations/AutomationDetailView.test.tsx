@@ -18,6 +18,8 @@ const {
   retryPlanJudgeMock,
   triggerRunNowMock,
   skipJudgeMock,
+  deleteRunMock,
+  resumeRunMock,
   deleteAutomationMock,
   useArtifactMock,
   listConversationTasksMock,
@@ -36,6 +38,8 @@ const {
   retryPlanJudgeMock: vi.fn(),
   triggerRunNowMock: vi.fn(),
   skipJudgeMock: vi.fn(),
+  deleteRunMock: vi.fn(),
+  resumeRunMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
   useArtifactMock: vi.fn(),
   listConversationTasksMock: vi.fn(),
@@ -79,6 +83,8 @@ vi.mock("@/api/automations", () => ({
     retryPlanJudge: retryPlanJudgeMock,
     triggerRunNow: triggerRunNowMock,
     skipJudge: skipJudgeMock,
+    deleteRun: deleteRunMock,
+    resumeRun: resumeRunMock,
     delete: deleteAutomationMock,
   },
 }));
@@ -143,6 +149,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/test",
     prNumber: 593,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
@@ -233,6 +240,12 @@ function renderDetailWithQuery(onBack = vi.fn()) {
   );
 }
 
+/** Select the page-level Runs tab and wait for the deferred timeline mount. */
+async function openRunsTab() {
+  await userEvent.click(await screen.findByTestId("automation-tab-runs"));
+  await screen.findByTestId("automation-runs-timeline");
+}
+
 describe("AutomationDetailView", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -253,6 +266,8 @@ describe("AutomationDetailView", () => {
     retryPlanJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
+    deleteRunMock.mockReset().mockResolvedValue(undefined);
+    resumeRunMock.mockReset().mockResolvedValue(undefined);
     deleteAutomationMock.mockReset().mockResolvedValue(undefined);
     useArtifactMock.mockReset().mockReturnValue({
       data: null,
@@ -332,10 +347,6 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("Estimated cost")).toBeInTheDocument();
     expect(screen.getByText("$0.06")).toBeInTheDocument();
 
-    const runTwo = screen.getByTestId("automation-run-run-2");
-    const runOne = screen.getByTestId("automation-run-run-1");
-    expect(runTwo.compareDocumentPosition(runOne)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(within(runTwo).getByText("Run 2")).toBeInTheDocument();
     const goalCard = screen.getByTestId("automation-goal-card");
     expect(goalCard).toHaveTextContent("Goal line 10");
     expect(goalCard).not.toHaveTextContent("Goal line 11");
@@ -349,6 +360,12 @@ describe("AutomationDetailView", () => {
       "project-1",
       "setup-conversation-1",
     );
+
+    await openRunsTab();
+    const runTwo = screen.getByTestId("automation-run-run-2");
+    const runOne = screen.getByTestId("automation-run-run-1");
+    expect(runTwo.compareDocumentPosition(runOne)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(within(runTwo).getByText("Run 2")).toBeInTheDocument();
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
     expect(onOpenAutomationRun).toHaveBeenCalledWith({
@@ -429,6 +446,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(
       screen.getAllByRole("button", { name: "Open PR #612 in browser" }),
     ).toHaveLength(1);
@@ -461,6 +479,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(
       screen.getAllByRole("button", { name: "Open PR in browser" }),
     ).toHaveLength(1);
@@ -493,6 +512,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const disabledPr = screen.getByTestId("automation-run-run-pr-local-pr-link");
     expect(disabledPr).toHaveTextContent("PR #612");
@@ -511,6 +531,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(
       screen.queryByRole("button", { name: /Open PR #/i }),
@@ -549,6 +570,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     // Latest run (index 3) is expanded even though it is terminal.
     expect(screen.getByTestId("automation-run-run-3-body")).toBeInTheDocument();
@@ -574,6 +596,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
 
@@ -614,6 +637,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const ledger = await screen.findByTestId("automation-run-task-ledger");
     expect(within(ledger).getByText("Refactor scheduler")).toBeInTheDocument();
@@ -776,6 +800,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const openRun = screen.getByTestId("automation-run-run-open");
     expect(
@@ -788,7 +813,7 @@ describe("AutomationDetailView", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("matches timeline card and marker highlights to the run outcome", async () => {
+  it("keeps timeline cards neutral while reserving the accent marker for active runs", async () => {
     renderDetail({
       automation: automation(),
       runs: [
@@ -812,26 +837,27 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
-    expect(successCard.style.backgroundColor).toBe("var(--status-success-muted)");
-    expect(successCard.style.borderColor).toBe("var(--status-success-border)");
-    expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toBe(
-      "var(--status-success)",
+    expect(successCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(successCard.style.borderColor).toContain("--border-subtle");
+    expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--text-subtle"),
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
-    expect(progressCard.style.backgroundColor).toBe("var(--accent-muted)");
-    expect(progressCard.style.borderColor).toBe("var(--accent-border)");
-    expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toBe(
-      "var(--accent-primary)",
+    expect(progressCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(progressCard.style.borderColor).toContain("--border-subtle");
+    expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--accent-primary"),
     );
 
     const failedCard = screen.getByTestId("automation-run-run-failed-card");
-    expect(failedCard.style.backgroundColor).toBe("var(--bg-hover)");
-    expect(failedCard.style.borderColor).toBe("var(--border-default)");
-    expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toBe(
-      "var(--text-muted)",
+    expect(failedCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(failedCard.style.borderColor).toContain("--border-subtle");
+    expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--text-subtle"),
     );
   });
 
@@ -854,6 +880,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     expect(
       within(screen.getByTestId("automation-run-run-open")).queryByTestId(
@@ -903,11 +930,16 @@ describe("AutomationDetailView", () => {
     ).toEqual([
       "Mode / model",
       "Setup conversation",
+      "Last PR",
       "Base",
       "Branch",
       "Chain mode",
       "Completion signal",
     ]);
+    // The config PR row reuses the shared PR link for the newest run with a PR.
+    expect(
+      within(execution).getByTestId("automation-config-pr-link"),
+    ).toHaveTextContent("PR #593");
     const limits = within(configPanel).getByTestId("automation-config-group-limits");
     expect(
       within(limits).getAllByRole("term").map((term) => term.textContent),
@@ -919,7 +951,7 @@ describe("AutomationDetailView", () => {
     const timestamps = within(configPanel).getByTestId("automation-config-timestamps");
     expect(timestamps).toHaveTextContent("Created");
     expect(timestamps).toHaveTextContent("Updated");
-    expect(configPanel).toHaveTextContent("Paused: release_freeze - Waiting on base branch");
+    expect(configPanel).toHaveTextContent("Paused: release freeze. Waiting on base branch");
     expect(within(card).queryByText("No spec linked yet.")).not.toBeInTheDocument();
 
     await user.click(within(card).getByRole("tab", { name: "Spec" }));
@@ -928,11 +960,15 @@ describe("AutomationDetailView", () => {
 
     await user.click(within(card).getByRole("tab", { name: "Inputs" }));
     expect(
+      within(card).getByText("Setup references provided when this automation was created."),
+    ).toBeInTheDocument();
+    expect(
       within(card).getByText("No setup input references are attached to this automation record."),
     ).toBeInTheDocument();
   });
 
   it("marks populated Spec and Inputs tabs without mounting spec content before selection", async () => {
+    const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
         id: "artifact-spec-1",
@@ -960,6 +996,17 @@ describe("AutomationDetailView", () => {
     const card = await screen.findByTestId("automation-details-card");
     expect(within(card).getByRole("tab", { name: "Spec" })).toHaveTextContent("•");
     expect(within(card).getByRole("tab", { name: "Inputs (1)" })).toBeInTheDocument();
+    expect(useArtifactMock).not.toHaveBeenCalled();
+
+    await user.click(within(card).getByRole("tab", { name: "Inputs (1)" }));
+    const sourcePr = within(card).getByTestId("automation-source-pr-input");
+    expect(within(sourcePr).getByText("Source pull request")).toBeInTheDocument();
+    expect(within(sourcePr).getByText("PR #593")).toBeInTheDocument();
+    expect(within(sourcePr).getByText("Automation backend")).toBeInTheDocument();
+    expect(within(sourcePr).getByRole("link", { name: "Open PR #593" })).toHaveAttribute(
+      "href",
+      "https://github.com/aigentive/ralphx.app/pull/593",
+    );
     expect(useArtifactMock).not.toHaveBeenCalled();
   });
 
@@ -1026,14 +1073,19 @@ describe("AutomationDetailView", () => {
     );
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
-    expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
+    const pauseNotice = screen.getByTestId("automation-paused-reason");
+    expect(pauseNotice).toHaveTextContent("Paused: release freeze.");
+    expect(pauseNotice).toHaveTextContent("Waiting on base branch");
+    expect(pauseNotice).toHaveAttribute("data-tone", "warning");
     // estimatedUsd is null → the Estimated cost row is omitted instead of
     // rendering a "Not recorded" placeholder.
     expect(screen.queryByText("Estimated cost")).not.toBeInTheDocument();
     expect(screen.queryByText("Not recorded")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Inputs" }));
     expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+
+    await openRunsTab();
+    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Resume automation"));
 
@@ -1137,6 +1189,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     await userEvent.click(
       await screen.findByRole("button", { name: "Retry terminal judge" }),
     );
@@ -1161,6 +1215,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     await userEvent.click(
       await screen.findByRole("button", { name: "Retry plan judge" }),
     );
@@ -1227,6 +1283,10 @@ describe("AutomationDetailView", () => {
     apiMock.mockRejectedValueOnce(new Error(`${actionName} failed`));
     renderDetail(detail);
 
+    await screen.findByTestId("automation-detail-view");
+    if (actionName.startsWith("Retry")) {
+      await openRunsTab();
+    }
     await userEvent.click(await screen.findByRole("button", { name: actionName }));
 
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith(errorMessage));
@@ -1246,6 +1306,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(await screen.findAllByText("Plan judge failed")).not.toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Retry plan judge" }));
     await waitFor(() => expect(retryPlanJudgeMock).toHaveBeenCalledWith("automation-1"));
@@ -1257,6 +1319,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(await screen.findAllByText("Terminal judge failed")).not.toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Retry terminal judge" }));
     await waitFor(() => expect(retryJudgeMock).toHaveBeenCalledWith("automation-1"));
@@ -1419,9 +1483,140 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
     const failure = screen.getByTestId("automation-run-run-failed-failure");
     expect(failure).toHaveTextContent("Publish step exited with code 1");
+  });
+
+  it("deletes the latest failed run after confirmation and invalidates automation queries", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getAutomationMock.mockResolvedValue({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-delete"));
+
+    expect(screen.getByText("Delete run?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(deleteRunMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-failed",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Run deleted");
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ["automations", "detail", "automation-1"],
+        }),
+      ),
+    );
+  });
+
+  it("does not delete the latest failed run when confirmation is canceled", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-delete"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(deleteRunMock).not.toHaveBeenCalled();
+  });
+
+  it("resumes the latest failed run after confirmation and invalidates automation queries", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getAutomationMock.mockResolvedValue({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-resume"));
+
+    expect(screen.getByText("Resume run?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+
+    await waitFor(() =>
+      expect(resumeRunMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-failed",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Run resumed");
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ["automations", "detail", "automation-1"],
+        }),
+      ),
+    );
+  });
+
+  it("does not resume the latest failed run when confirmation is canceled", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-resume"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(resumeRunMock).not.toHaveBeenCalled();
   });
 
   it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {
@@ -1490,21 +1685,25 @@ describe("AutomationDetailView", () => {
     expect(screen.getAllByText("Stopped").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getByText("Phase 1")).toBeInTheDocument();
-    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
-    expect(screen.getByText("invalid-date")).toBeInTheDocument();
-    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
     // "Not recorded" survives only in the intentional Setup conversation slot;
     // run-card facts omit empty fields entirely.
     const configPanel = screen.getByTestId("automation-config-panel");
     expect(within(configPanel).getByText("Not recorded")).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId("automation-run-run-fallback-card")).queryByText("Not recorded"),
-    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Inputs (1)" }));
+    expect(screen.getByText("Setup references provided when this automation was created.")).toBeInTheDocument();
+    expect(screen.getByText("Source pull request")).toBeInTheDocument();
     expect(screen.getByText("PR #41")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeDisabled();
     expect(screen.getByLabelText("Cancel automation")).toBeDisabled();
+
+    await openRunsTab();
+    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
+    expect(screen.getByText("invalid-date")).toBeInTheDocument();
+    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeDisabled();
+    expect(
+      within(screen.getByTestId("automation-run-run-fallback-card")).queryByText("Not recorded"),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText("More automation actions"));
     await user.click(screen.getByText("Delete"));
@@ -1622,6 +1821,8 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     const banner = await screen.findByTestId("automation-idle-after-cancelled");
     expect(banner).toHaveTextContent(
       "The last run was cancelled. Run now starts a new run from that run's prompt; it does not resume the cancelled run.",
@@ -1640,6 +1841,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
     pausedView.unmount();
 
@@ -1650,6 +1852,7 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
     expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
   });
 
@@ -1674,6 +1877,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const body = screen.getByTestId("automation-run-run-1-body");
       const judge = within(body).getByTestId("automation-run-run-1-judge");
@@ -1695,6 +1899,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       expect(screen.queryByText(/Prompt line 1/)).not.toBeInTheDocument();
 
@@ -1723,6 +1928,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const card = screen.getByTestId("automation-run-run-empty-card");
       expect(within(card).queryByText("Not recorded")).not.toBeInTheDocument();
@@ -1737,6 +1943,7 @@ describe("AutomationDetailView", () => {
       renderDetail({ automation: automation(), runs: [run()], usage });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       const body = screen.getByTestId("automation-run-run-1-body");
       expect(within(body).getByTestId("automation-run-run-1-pr-state")).toHaveTextContent(
@@ -1744,6 +1951,9 @@ describe("AutomationDetailView", () => {
       );
       expect(within(body).getByText("3 files, +12 / -4")).toBeInTheDocument();
       expect(within(body).getByText("Setup agent")).toBeInTheDocument();
+      expect(
+        within(body).getByRole("button", { name: "Copy branch" }),
+      ).toBeInTheDocument();
       expect(
         within(body).getByRole("button", { name: "Open conversation" }),
       ).toBeInTheDocument();
@@ -1768,16 +1978,16 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
 
       expect(
         screen.queryByTestId("automation-run-run-old-failed-body"),
       ).not.toBeInTheDocument();
-      expect(screen.getByTestId("automation-run-run-old-failed-failure")).toHaveTextContent(
-        "Publish step exited with code 1",
+      const collapsedOutcome = screen.getByTestId("automation-run-run-old-failed-failure");
+      expect(collapsedOutcome).toHaveTextContent("Publish step exited with code 1");
+      expect(collapsedOutcome).toHaveTextContent(
+        "Attempted the migration but publish failed.",
       );
-      expect(
-        screen.getByTestId("automation-run-run-old-failed-summary-teaser"),
-      ).toHaveTextContent("Attempted the migration but publish failed.");
     });
 
     it("suppresses the summary teaser while a run is open", async () => {
@@ -1796,6 +2006,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
       await userEvent.click(screen.getByRole("button", { name: "Collapse run 1" }));
 
       expect(

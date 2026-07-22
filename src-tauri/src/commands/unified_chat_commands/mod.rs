@@ -76,6 +76,11 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, repair_run_event_classification,
+    settle_agent_workspace_failure_without_repair, settle_agent_workspace_repair_failure,
+    AgentWorkspaceRepairClaim, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+};
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::tool_result_preview::{
@@ -84,6 +89,7 @@ use crate::application::chat_service::tool_result_preview::{
 use crate::application::chat_service::{
     message_metadata_hidden_from_ui, running_state_from_run_status_and_idle,
     AgentConversationCreatedPayload, AgentRunningState, AgentRuntimeStatus, SendMessageOptions,
+    SendQueuePolicy,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -1655,6 +1661,24 @@ impl AgentWorkspacePostRepairAction {
             _ => None,
         }
     }
+}
+
+fn repair_dispatch_authority_error(
+    result: &SendResult,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+) -> Option<String> {
+    if result.was_queued
+        || result.queued_as_pending
+        || result.conversation_id != conversation_id.as_str()
+        || result.agent_run_id != run_id.to_string()
+    {
+        return Some(
+            "Workspace repair launch did not preserve its reserved immediate-start authority"
+                .to_string(),
+        );
+    }
+    None
 }
 
 #[doc(hidden)]
@@ -7914,6 +7938,7 @@ where
         runtime_overrides,
         target,
         AgentWorkspacePostRepairAction::Publish,
+        None,
     )
     .await
 }
@@ -7925,6 +7950,7 @@ async fn send_agent_workspace_repair_message_for_target<S>(
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
+    preallocated_agent_run_id: Option<AgentRunId>,
 ) -> Result<SendResult, ChatServiceError>
 where
     S: ChatService + ?Sized,
@@ -7940,6 +7966,8 @@ where
                 post_repair_action,
             ),
             SendMessageOptions {
+                preallocated_agent_run_id,
+                queue_policy: SendQueuePolicy::RequireImmediateStart,
                 conversation_id_override: Some(workspace.conversation_id),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 harness_override: runtime_overrides.harness,
@@ -8118,10 +8146,37 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     if !route_fixable_failures_to_agent
         || !matches!(failure_class, PublishFailureClass::AgentFixable)
     {
+        let _ = settle_agent_workspace_failure_without_repair(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            &workspace.conversation_id,
+            push_status,
+            error,
+        )
+        .await;
         return;
     }
 
-    let _ = append_agent_workspace_publication_event(
+    let claim = match claim_agent_workspace_repair(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        &workspace.conversation_id,
+        post_repair_action.repair_requested_summary(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to claim agent workspace repair state"
+            );
+            return;
+        }
+    };
+
+    if let Err(event_error) = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
         AGENT_WORKSPACE_REPAIR_REQUESTED_STEP,
@@ -8129,7 +8184,12 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         post_repair_action.repair_requested_summary(),
         Some(post_repair_action.classification()),
     )
-    .await;
+    .await
+    {
+        let summary = format!("Failed to record workspace repair request: {event_error}");
+        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
+        return;
+    }
 
     let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
     if should_defer_agent_workspace_repair_message(state, workspace).await {
@@ -8140,8 +8200,26 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             runtime_overrides,
             target.clone(),
             post_repair_action,
+            claim,
         )
         .await;
+        return;
+    }
+
+    let repair_run_id = AgentRunId::new();
+    let repair_run_classification = repair_run_event_classification(&repair_run_id);
+    if let Err(event_error) = append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        AGENT_WORKSPACE_REPAIR_SENT_STEP,
+        "started",
+        post_repair_action.repair_sent_summary(),
+        Some(repair_run_classification.clone()),
+    )
+    .await
+    {
+        let summary = format!("Failed to reserve workspace repair dispatch: {event_error}");
+        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
         return;
     }
 
@@ -8152,19 +8230,37 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         runtime_overrides,
         target,
         post_repair_action,
+        Some(repair_run_id.clone()),
     )
     .await
     {
-        Ok(_) => {
-            let _ = append_agent_workspace_publication_event(
+        Ok(result) => {
+            if let Some(authority_error) = repair_dispatch_authority_error(
+                &result,
+                &workspace.conversation_id,
+                &repair_run_id,
+            ) {
+                let repair_summary =
+                    post_repair_action.repair_send_failed_summary(&authority_error);
+                settle_agent_workspace_repair_dispatch_failure(state, &claim, &repair_summary).await;
+                return;
+            }
+            if let Err(event_error) = append_agent_workspace_publication_event(
                 state,
                 &workspace.conversation_id,
                 AGENT_WORKSPACE_REPAIR_SENT_STEP,
                 "succeeded",
                 post_repair_action.repair_sent_summary(),
-                Some("agent_fixable".to_string()),
+                Some(repair_run_classification),
             )
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    conversation_id = %workspace.conversation_id,
+                    error = %event_error,
+                    "Failed to record successful agent workspace repair dispatch; reserved run authority remains current"
+                );
+            }
         }
         Err(repair_error) => {
             tracing::warn!(
@@ -8174,15 +8270,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             );
             let repair_summary =
                 post_repair_action.repair_send_failed_summary(&repair_error.to_string());
-            let _ = append_agent_workspace_publication_event(
-                state,
-                &workspace.conversation_id,
-                AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                "failed",
-                &repair_summary,
-                Some("operational".to_string()),
-            )
-            .await;
+            settle_agent_workspace_repair_dispatch_failure(state, &claim, &repair_summary).await;
         }
     }
 }
@@ -8251,12 +8339,13 @@ async fn spawn_deferred_agent_workspace_repair_message(
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
     target: AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
+    claim: AgentWorkspaceRepairClaim,
 ) {
     let Some(app_handle) = state.app_handle.clone() else {
         return;
     };
 
-    let _ = append_agent_workspace_publication_event(
+    if let Err(event_error) = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
         AGENT_WORKSPACE_REPAIR_DEFERRED_STEP,
@@ -8264,7 +8353,12 @@ async fn spawn_deferred_agent_workspace_repair_message(
         "Waiting for the active workspace agent turn to finish before sending repair",
         Some("agent_fixable".to_string()),
     )
-    .await;
+    .await
+    {
+        let summary = format!("Failed to record deferred workspace repair: {event_error}");
+        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
+        return;
+    }
 
     tauri::async_runtime::spawn(async move {
         let conversation_id = workspace.conversation_id;
@@ -8295,16 +8389,13 @@ async fn spawn_deferred_agent_workspace_repair_message(
             {
                 break;
             }
-            if wait_started.elapsed() >= Duration::from_secs(300) {
-                let _ = append_agent_workspace_publication_event(
-                    state.inner(),
-                    &conversation_id,
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
-                    "Timed out waiting for active workspace agent turn before sending repair",
-                    Some("operational".to_string()),
-                )
-                .await;
+            if wait_started.elapsed()
+                >= Duration::from_secs(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS)
+            {
+                let summary =
+                    "Timed out waiting for active workspace agent turn before sending repair";
+                settle_agent_workspace_repair_dispatch_failure(state.inner(), &claim, summary)
+                    .await;
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
                     elapsed_ms = wait_started.elapsed().as_millis(),
@@ -8336,6 +8427,23 @@ async fn spawn_deferred_agent_workspace_repair_message(
             repair_service = repair_service.with_team_service(team_service);
         }
 
+        let repair_run_id = AgentRunId::new();
+        let repair_run_classification = repair_run_event_classification(&repair_run_id);
+        if let Err(event_error) = append_agent_workspace_publication_event(
+            state.inner(),
+            &conversation_id,
+            AGENT_WORKSPACE_REPAIR_SENT_STEP,
+            "started",
+            post_repair_action.deferred_repair_sent_summary(),
+            Some(repair_run_classification.clone()),
+        )
+        .await
+        {
+            let summary = format!("Failed to reserve deferred workspace repair dispatch: {event_error}");
+            settle_agent_workspace_repair_dispatch_failure(state.inner(), &claim, &summary).await;
+            return;
+        }
+
         match send_agent_workspace_repair_message_for_target(
             &repair_service,
             &workspace,
@@ -8343,19 +8451,42 @@ async fn spawn_deferred_agent_workspace_repair_message(
             runtime_overrides,
             &target,
             post_repair_action,
+            Some(repair_run_id.clone()),
         )
         .await
         {
-            Ok(_) => {
-                let _ = append_agent_workspace_publication_event(
+            Ok(result) => {
+                if let Some(authority_error) = repair_dispatch_authority_error(
+                    &result,
+                    &conversation_id,
+                    &repair_run_id,
+                ) {
+                    let repair_summary =
+                        post_repair_action.repair_send_failed_summary(&authority_error);
+                    settle_agent_workspace_repair_dispatch_failure(
+                        state.inner(),
+                        &claim,
+                        &repair_summary,
+                    )
+                    .await;
+                    return;
+                }
+                if let Err(event_error) = append_agent_workspace_publication_event(
                     state.inner(),
                     &conversation_id,
                     AGENT_WORKSPACE_REPAIR_SENT_STEP,
                     "succeeded",
                     post_repair_action.deferred_repair_sent_summary(),
-                    Some("agent_fixable".to_string()),
+                    Some(repair_run_classification),
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        error = %event_error,
+                        "Failed to record successful deferred workspace repair dispatch; reserved run authority remains current"
+                    );
+                }
             }
             Err(repair_error) => {
                 tracing::warn!(
@@ -8365,13 +8496,10 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 );
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&repair_error.to_string());
-                let _ = append_agent_workspace_publication_event(
+                settle_agent_workspace_repair_dispatch_failure(
                     state.inner(),
-                    &conversation_id,
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
+                    &claim,
                     &repair_summary,
-                    Some("operational".to_string()),
                 )
                 .await;
             }
@@ -8399,6 +8527,47 @@ async fn append_agent_workspace_publication_event(
         .append_publication_event(event.clone())
         .await?;
     Ok(event)
+}
+
+async fn settle_agent_workspace_repair_dispatch_failure(
+    state: &AppState,
+    claim: &AgentWorkspaceRepairClaim,
+    summary: &str,
+) {
+    match settle_agent_workspace_repair_failure(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        claim,
+        summary,
+    )
+    .await
+    {
+        Ok(true) => {
+            if let Err(error) = append_agent_workspace_publication_event(
+                state,
+                &claim.conversation_id,
+                AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                "failed",
+                summary,
+                Some("operational".to_string()),
+            )
+            .await
+            {
+                tracing::warn!(
+                    conversation_id = %claim.conversation_id,
+                    error = %error,
+                    "Failed to record settled agent workspace repair dispatch failure"
+                );
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %claim.conversation_id,
+                error = %error,
+                "Failed to settle agent workspace repair dispatch failure"
+            );
+        }
+    }
 }
 
 fn publication_event_status_for_push_status(push_status: &str) -> &'static str {

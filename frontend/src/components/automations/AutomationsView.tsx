@@ -13,7 +13,7 @@ import {
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
-import { cn } from "@/lib/utils";
+import { Pill } from "./automationDetailShared";
 
 interface AutomationsViewProps {
   projectId: string | null;
@@ -101,25 +101,8 @@ function AutomationsListSkeleton() {
   );
 }
 
-function StatusPill({ status }: { status: Automation["status"] }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        status === "active" && "text-[var(--status-success)]",
-        status === "paused" && "text-[var(--status-warning)]",
-        status === "completed" && "text-[var(--accent-primary)]",
-      )}
-      style={{
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {STATUS_LABELS[status]}
-    </span>
-  );
+function AutomationStatusPill({ status }: { status: Automation["status"] }) {
+  return <Pill label={STATUS_LABELS[status]} status={status} />;
 }
 
 function AutomationRow({
@@ -163,7 +146,7 @@ function AutomationRow({
           {formatGoalMetadata(automation)}
         </div>
       </div>
-      <StatusPill status={automation.status} />
+      <AutomationStatusPill status={automation.status} />
       <div className="truncate text-sm" style={{ color: "var(--text-secondary)" }}>
         {projectName}
       </div>

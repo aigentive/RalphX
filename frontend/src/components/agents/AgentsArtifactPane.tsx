@@ -37,6 +37,7 @@ import { atlassianApi } from "@/api/atlassian";
 import { clickupApi } from "@/api/clickup";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
+import { ticketingApi } from "@/api/ticketing";
 import {
   ideationApi,
   toTaskProposal,
@@ -95,6 +96,7 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import {
   taskKeys,
   useSessionTaskHistoryAvailability,
@@ -816,11 +818,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     queryFn: () => clickupApi.getSettings(),
     staleTime: 30_000,
   });
-  const showClickUpTab = Boolean(
+  const clickupIntegrationAvailable = Boolean(
     clickupSettingsQuery.data?.enabled &&
     clickupSettingsQuery.data.hasApiToken &&
     clickupSettingsQuery.data.validationStatus === "valid" &&
     clickupSettingsQuery.data.taskSearchAvailable,
+  );
+  const clickupTicketQuery = useQuery({
+    queryKey: ticketingKeys.conversationTicket(conversationId ?? "none"),
+    queryFn: () => ticketingApi.getConversationTicket(conversationId!),
+    enabled: Boolean(conversationId && clickupIntegrationAvailable),
+    staleTime: 5_000,
+  });
+  const showClickUpTab = Boolean(
+    clickupIntegrationAvailable &&
+    clickupTicketQuery.data?.ticketRef.provider === "clickup",
   );
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],

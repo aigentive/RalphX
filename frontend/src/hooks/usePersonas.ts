@@ -9,9 +9,13 @@ import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
 import { personaArtifactKeys } from "@/hooks/personaArtifactQueries";
 import {
+  PersonaOverlayPreviewSchema,
   PersonaResponseSchema,
+  PersonaUsageSchema,
   transformPersona,
   type Persona,
+  type PersonaOverlayPreview,
+  type PersonaUsage,
 } from "@/types/persona";
 
 export const personaKeys = {
@@ -21,6 +25,9 @@ export const personaKeys = {
       ? ([...personaKeys.all, "list", scope] as const)
       : ([...personaKeys.all, "list"] as const),
   detail: (id: string) => [...personaKeys.all, "detail", id] as const,
+  usage: () => [...personaKeys.all, "usage"] as const,
+  overlayPreview: (conversationId: string) =>
+    [...personaKeys.all, "overlayPreview", conversationId] as const,
 };
 
 export type CreatePersonaDraftInput = {
@@ -122,6 +129,30 @@ export async function approvePersonaAsNew(
 export async function archivePersona(id: string): Promise<Persona> {
   const raw = await invoke<unknown>("archive_persona", { input: { id } });
   return parsePersona(raw);
+}
+
+export async function unarchivePersona(id: string): Promise<Persona> {
+  const raw = await invoke<unknown>("unarchive_persona", { input: { id } });
+  return parsePersona(raw);
+}
+
+export async function reseedPersonaDraft(id: string): Promise<Persona> {
+  const raw = await invoke<unknown>("reseed_persona_draft", { input: { id } });
+  return parsePersona(raw);
+}
+
+export async function fetchPersonaUsage(): Promise<PersonaUsage[]> {
+  const raw = await invoke<unknown>("list_persona_usage");
+  return z.array(PersonaUsageSchema).parse(raw);
+}
+
+export async function fetchPersonaOverlayPreview(
+  conversationId: string,
+): Promise<PersonaOverlayPreview | null> {
+  const raw = await invoke<unknown>("preview_persona_overlay", {
+    input: { conversationId },
+  });
+  return raw === null ? null : PersonaOverlayPreviewSchema.parse(raw);
 }
 
 export async function deletePersonaDraft(id: string): Promise<void> {
@@ -226,10 +257,57 @@ export function useApprovePersonaAsNew() {
 }
 
 export function useArchivePersona() {
+  const queryClient = useQueryClient();
   const invalidateList = usePersonaListInvalidation();
   return useMutation<Persona, Error, string>({
     mutationFn: archivePersona,
-    onSuccess: invalidateList,
+    onSuccess: () => {
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: personaKeys.usage() });
+    },
+  });
+}
+
+export function useUnarchivePersona() {
+  const queryClient = useQueryClient();
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, string>({
+    mutationFn: unarchivePersona,
+    onSuccess: () => {
+      invalidateList();
+      void queryClient.invalidateQueries({ queryKey: personaKeys.usage() });
+    },
+  });
+}
+
+export function useReseedPersonaDraft() {
+  const queryClient = useQueryClient();
+  const invalidateList = usePersonaListInvalidation();
+  return useMutation<Persona, Error, string>({
+    mutationFn: reseedPersonaDraft,
+    onSuccess: (persona) => {
+      invalidateList();
+      publishPersonaUpdate(queryClient, persona);
+    },
+  });
+}
+
+/** Derived usage for settings rows; errors surface as query errors (em-dash UI), never zeros. */
+export function usePersonaUsage(enabled = true) {
+  return useQuery<PersonaUsage[], Error>({
+    queryKey: personaKeys.usage(),
+    queryFn: fetchPersonaUsage,
+    enabled,
+  });
+}
+
+/** Fetch-on-open preview of the exact overlay the next send would inject. */
+export function usePersonaOverlayPreview(conversationId: string, enabled: boolean) {
+  return useQuery<PersonaOverlayPreview | null, Error>({
+    queryKey: personaKeys.overlayPreview(conversationId),
+    queryFn: () => fetchPersonaOverlayPreview(conversationId),
+    enabled: enabled && Boolean(conversationId),
+    staleTime: 30_000,
   });
 }
 
@@ -245,9 +323,13 @@ export function useSwitchConversationPersona() {
   const queryClient = useQueryClient();
   return useMutation<void, Error, SwitchConversationPersonaInput>({
     mutationFn: switchConversationPersona,
-    onSuccess: () => {
+    onSuccess: (_result, input) => {
       void queryClient.invalidateQueries({ queryKey: personaKeys.list() });
       void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+      void queryClient.invalidateQueries({ queryKey: personaKeys.usage() });
+      void queryClient.invalidateQueries({
+        queryKey: personaKeys.overlayPreview(input.conversationId),
+      });
     },
   });
 }

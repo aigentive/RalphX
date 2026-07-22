@@ -16,11 +16,15 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, repair_run_event_classification,
+    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr_with_observation,
     TerminalAgentWorkspaceCause, TerminalPrObservation,
 };
-use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -31,7 +35,7 @@ use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
     ChatConversationId, IdeationSessionId, ProjectId,
 };
@@ -1710,6 +1714,25 @@ async fn mark_agent_workspace_pr_merge_conflict_if_needed(
     Ok(!already_blocked || !already_recorded)
 }
 
+async fn settle_pr_conflict_repair_dispatch_failure(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    summary: &str,
+) -> crate::AppResult<()> {
+    if settle_agent_workspace_repair_failure(Arc::clone(&workspace_repo), claim, summary).await? {
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                claim.conversation_id.clone(),
+                AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                "failed",
+                summary,
+                Some("operational".to_string()),
+            ))
+            .await?;
+    }
+    Ok(())
+}
+
 async fn route_agent_workspace_pr_conflict_repair_if_needed(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -1775,24 +1798,17 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
 
     let repair_summary =
         format!("Auto Publish routed PR #{pr_number} merge conflicts to workspace repair.");
-    workspace_repo
-        .update_publication(
-            conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            Some("open"),
-            Some("needs_agent"),
-        )
-        .await?;
-    workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            Some(auto_merge_current),
-            Some("fixing"),
-            Some(&repair_summary),
-        )
-        .await?;
-    workspace_repo
+    let Some(claim) = claim_agent_workspace_repair(
+        Arc::clone(&workspace_repo),
+        conversation_id,
+        &repair_summary,
+        Some(auto_merge_current),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    if let Err(error) = workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
             "pr_conflict_repair",
@@ -1800,8 +1816,14 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
             &repair_summary,
             Some(classification),
         ))
-        .await?;
-    workspace_repo
+        .await
+    {
+        let summary = format!("Failed to record PR conflict repair request: {error}");
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
+        return Err(error);
+    }
+    if let Err(error) = workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
             AGENT_WORKSPACE_REPAIR_REQUESTED_STEP,
@@ -1809,15 +1831,41 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
             "Workspace agent repair requested before the base update can complete",
             Some(AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY_CLASSIFICATION.to_string()),
         ))
-        .await?;
+        .await
+    {
+        let summary = format!("Failed to record workspace repair request: {error}");
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
+        return Err(error);
+    }
 
     let message = build_agent_workspace_pr_conflict_repair_message(pr_number, &workspace, &details);
+    let repair_run_id = AgentRunId::new();
+    let repair_run_id_value = repair_run_id.to_string();
+    let repair_run_classification = repair_run_event_classification(&repair_run_id);
+    if let Err(error) = workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            AGENT_WORKSPACE_REPAIR_SENT_STEP,
+            "started",
+            "Starting workspace repair agent for base update failure",
+            Some(repair_run_classification.clone()),
+        ))
+        .await
+    {
+        let summary = format!("Failed to reserve workspace repair dispatch: {error}");
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
+        return Err(error);
+    }
     match chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
             &message,
             SendMessageOptions {
+                preallocated_agent_run_id: Some(repair_run_id),
+                queue_policy: SendQueuePolicy::RequireImmediateStart,
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
@@ -1828,16 +1876,39 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         )
         .await
     {
-        Ok(_) => {
-            workspace_repo
+        Ok(result)
+            if !result.was_queued
+                && !result.queued_as_pending
+                && result.conversation_id == conversation_id.as_str()
+                && result.agent_run_id == repair_run_id_value =>
+        {
+            if let Err(error) = workspace_repo
                 .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                     conversation_id.clone(),
                     AGENT_WORKSPACE_REPAIR_SENT_STEP,
                     "succeeded",
                     "Sent base update failure to workspace agent",
-                    Some("agent_fixable".to_string()),
+                    Some(repair_run_classification),
                 ))
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Failed to record successful PR conflict repair dispatch; reserved run authority remains current"
+                );
+            }
+        }
+        Ok(_) => {
+            let summary =
+                "Workspace repair launch did not preserve its reserved immediate-start authority";
+            settle_pr_conflict_repair_dispatch_failure(
+                Arc::clone(&workspace_repo),
+                &claim,
+                summary,
+            )
+            .await?;
         }
         Err(error) => {
             tracing::warn!(
@@ -1846,15 +1917,13 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
                 error = %error,
                 "Failed to send GitHub PR conflict repair message"
             );
-            workspace_repo
-                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                    conversation_id.clone(),
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
-                    format!("Failed to send base update failure to workspace agent: {error}"),
-                    Some("operational".to_string()),
-                ))
-                .await?;
+            let summary = format!("Failed to send base update failure to workspace agent: {error}");
+            settle_pr_conflict_repair_dispatch_failure(
+                Arc::clone(&workspace_repo),
+                &claim,
+                &summary,
+            )
+            .await?;
         }
     }
 

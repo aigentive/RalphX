@@ -46,6 +46,7 @@ import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
 import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
+import { hasClickUpIntegrationReference } from "./agentClickUpTicketQueries";
 import { hasGranolaIntegrationReference } from "./agentGranolaNoteQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
@@ -1105,6 +1106,12 @@ export function useAgentsViewController({
     },
     [seedArtifactTab],
   );
+  const seedClickUpTabForConversation = useCallback(
+    (conversationId: string) => {
+      seedArtifactTab(conversationId, "clickup");
+    },
+    [seedArtifactTab],
+  );
   const seedGranolaTabForConversation = useCallback(
     (conversationId: string) => {
       seedArtifactTab(conversationId, "granola");
@@ -1303,6 +1310,7 @@ export function useAgentsViewController({
     setRuntimeForConversation,
     onJiraLinked: seedJiraTabForConversation,
     onLinearLinked: seedLinearTabForConversation,
+    onClickUpLinked: seedClickUpTabForConversation,
     onGranolaLinked: seedGranolaTabForConversation,
   });
 
@@ -1506,6 +1514,8 @@ export function useAgentsViewController({
         seedJiraTabForConversation(event.result.conversationId);
       } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
         seedLinearTabForConversation(event.result.conversationId);
+      } else if (hasClickUpIntegrationReference(event.composerIntegrationReferences)) {
+        seedClickUpTabForConversation(event.result.conversationId);
       } else if (hasGranolaIntegrationReference(event.composerIntegrationReferences)) {
         seedGranolaTabForConversation(event.result.conversationId);
       }
@@ -1513,6 +1523,7 @@ export function useAgentsViewController({
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
+      seedClickUpTabForConversation,
       seedJiraTabForConversation,
       seedGranolaTabForConversation,
       seedLinearTabForConversation,

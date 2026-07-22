@@ -63,6 +63,7 @@ function runResponse(overrides: Record<string, unknown> = {}) {
     base_ref_kind: "project_default",
     base_ref_used: "main",
     base_from_run_id: null,
+    goal_item_id: null,
     branch_name: "agent/docs",
     pr_number: 593,
     pr_url: "https://github.com/example/repo/pull/593",
@@ -232,6 +233,8 @@ describe("automationsApi", () => {
         reason: "judge already started",
       })
       .mockResolvedValueOnce(runResponse({ status: "cancelled" }))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
 
     await expect(automationsApi.triggerRunNow("automation-1")).resolves.toEqual({
@@ -252,7 +255,21 @@ describe("automationsApi", () => {
         id: "automation-1",
         runId: "automation-run-1",
       }),
-    ).resolves.toEqual(expect.objectContaining({ status: "cancelled" }));
+    ).resolves.toEqual(
+      expect.objectContaining({ status: "cancelled", goalItemId: null }),
+    );
+    await expect(
+      automationsApi.deleteRun({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      automationsApi.resumeRun({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toBeUndefined();
     await expect(automationsApi.delete("automation-1")).resolves.toBeUndefined();
 
     expect(invoke).toHaveBeenNthCalledWith(1, "trigger_automation_run_now", {
@@ -264,7 +281,13 @@ describe("automationsApi", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "cancel_automation_run", {
       input: { id: "automation-1", runId: "automation-run-1" },
     });
-    expect(invoke).toHaveBeenNthCalledWith(4, "delete_automation", {
+    expect(invoke).toHaveBeenNthCalledWith(4, "delete_automation_run", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "resume_automation_run", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, "delete_automation", {
       input: { id: "automation-1" },
     });
   });
@@ -317,6 +340,7 @@ describe("automationsApi", () => {
           plan_approved_by: "judge",
           plan_approved_artifact_version: 3,
           plan_approved_at: "2026-07-09T13:45:00Z",
+          goal_item_id: "phase-1",
         }),
       ],
       usage: usageResponse(),
@@ -363,6 +387,7 @@ describe("automationsApi", () => {
             planApprovedBy: "judge",
             planApprovedArtifactVersion: 3,
             planApprovedAt: "2026-07-09T13:45:00Z",
+            goalItemId: "phase-1",
             prNumber: 593,
             signalCheckFailures: 0,
           }),

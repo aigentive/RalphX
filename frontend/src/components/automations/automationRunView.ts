@@ -45,7 +45,12 @@ export const AUTOMATION_RUN_STATUS_LABELS: Record<AutomationRun["status"], strin
   cancelled: "Cancelled",
 };
 
-export type AutomationRunStatusTone = "success" | "warning" | "error" | "neutral";
+export type AutomationRunStatusTone =
+  | "success"
+  | "warning"
+  | "error"
+  | "neutral"
+  | "accent";
 
 /**
  * Whether an automation can be deleted. Delete is allowed only from terminal or
@@ -132,6 +137,24 @@ export function isAutomationRunCancellable(run: AutomationRun | null): run is Au
   return Boolean(run && OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status));
 }
 
+/** A run may be deleted from the timeline only when it is the latest run AND its
+ *  status is failed, running, or stopped. A `running` run is stopped-then-deleted
+ *  by the backend. Completed/published/merged/pending/provisioning/awaiting_plan_approval
+ *  are never deletable. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunDeletable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && (
+    run.status === "agent_failed"
+    || run.status === "running"
+    || run.status === "cancelled"
+  );
+}
+
+/** A run may be resumed (reopened in place) only when it is the latest run AND
+ *  it failed. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunResumable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && run.status === "agent_failed";
+}
+
 /**
  * Frontend mirror of backend `latest_run_holds_goal_authority`, intentionally
  * independent from `isOpenAutomationRun`.
@@ -190,13 +213,17 @@ export function getAutomationRunStatusTone(
   if (!run) {
     return "neutral";
   }
-  if (["running", "published", "merged", "completed"].includes(run.status)) {
+  // Accent marks live activity; green is reserved for settled success states.
+  if (run.status === "running") {
+    return "accent";
+  }
+  if (["published", "merged", "completed"].includes(run.status)) {
     return "success";
   }
-  if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(run.status)) {
+  if (run.status === "awaiting_plan_approval") {
     return "warning";
   }
-  if (run.status === "cancelled") {
+  if (["agent_failed", "pr_closed"].includes(run.status)) {
     return "error";
   }
   return "neutral";

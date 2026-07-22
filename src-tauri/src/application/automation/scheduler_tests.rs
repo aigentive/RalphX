@@ -1035,6 +1035,7 @@ fn automation_run(
         base_ref_kind: "project_default".to_string(),
         base_ref_used: "main".to_string(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: Some("ralphx/automation-run-1".to_string()),
         pr_number: None,
         pr_url: None,
@@ -8115,6 +8116,100 @@ async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed()
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("no_changes"));
+}
+
+async fn observe_publication_push_status_with_agent(
+    publication_push_status: &str,
+    agent_status: AgentRunStatus,
+) -> (
+    AutomationSchedulerTickSummary,
+    Arc<MemoryAutomationRunRepository>,
+    AutomationId,
+) {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_push_status = Some(publication_push_status.to_string());
+    workspace.publication_pr_number = None;
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let mut agent_run = AgentRun::new(conversation_id);
+    agent_run.status = agent_status;
+    agent_run_repo.create(agent_run).await.unwrap();
+    let scheduler = scheduler_with_judge_and_agent_runs(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    (summary, run_repo, automation_id)
+}
+
+#[tokio::test]
+async fn automation_scheduler_refreshed_push_status_fails_promptly_when_agent_failed() {
+    let (summary, run_repo, automation_id) =
+        observe_publication_push_status_with_agent("refreshed", AgentRunStatus::Failed).await;
+
+    assert_eq!(summary.failed_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(latest.error_code.as_deref(), Some("agent_failed"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_refreshed_push_status_completed_agent_stays_running() {
+    let (summary, run_repo, automation_id) =
+        observe_publication_push_status_with_agent("refreshed", AgentRunStatus::Completed).await;
+
+    assert_eq!(summary.failed_runs, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+}
+
+#[tokio::test]
+async fn automation_scheduler_refreshed_push_status_pushed_dead_agent_is_not_raced() {
+    let (summary, run_repo, automation_id) =
+        observe_publication_push_status_with_agent("pushed", AgentRunStatus::Failed).await;
+
+    assert_eq!(summary.failed_runs, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
 }
 
 #[tokio::test]

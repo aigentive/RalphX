@@ -1,38 +1,81 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import { cn } from "@/lib/utils";
 
-function statusClass(status: string): string {
-  if (["active", "running", "published", "merged", "completed", "done"].includes(status)) {
-    return "text-[var(--status-success)]";
+function statusTone(status: string): StatusPillTone {
+  if (["active", "running", "in_progress", "executing"].includes(status)) {
+    return "accent";
   }
-  if (["paused", "failed", "agent_failed", "pr_closed"].includes(status)) {
-    return "text-[var(--status-warning)]";
+  if (["published", "merged", "completed", "done", "success"].includes(status)) {
+    return "success";
   }
-  if (["stopped", "cancelled"].includes(status)) {
-    return "text-[var(--status-error)]";
+  if (["paused", "awaiting_plan_approval", "revision_pending", "attention"].includes(status)) {
+    return "warning";
   }
-  return "text-[var(--text-secondary)]";
+  if (["failed", "agent_failed", "pr_closed", "dropped"].includes(status)) {
+    return "error";
+  }
+  return "neutral";
 }
 
+/** Compatibility shim over the design-system {@link StatusPill}. */
 export function Pill({ label, status }: { label: string; status: string }) {
+  return <StatusPill label={label} size="md" tone={statusTone(status)} />;
+}
+
+export function FieldLabel({
+  children,
+  variant = "field",
+  className,
+}: {
+  children: ReactNode;
+  variant?: "field" | "group";
+  className?: string;
+}) {
   return (
     <span
       className={cn(
-        "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        statusClass(status),
+        "text-[0.6875rem] font-semibold uppercase tracking-[0.08em]",
+        variant === "group" && "opacity-60",
+        className,
       )}
       style={{
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
+        color: variant === "group" ? "var(--text-secondary)" : "var(--text-muted)",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+export function Section({
+  title,
+  children,
+  testId,
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <section
+      className="rounded-lg p-5 shadow-[var(--shadow-xs)]"
+      style={{
+        backgroundColor: "var(--bg-elevated, #232329)",
+        borderColor: "var(--border-subtle, #2e2e36)",
         borderStyle: "solid",
         borderWidth: "1px",
       }}
+      {...(testId ? { "data-testid": testId } : {})}
     >
-      {label}
-    </span>
+      <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </h2>
+      <div className="mt-3">{children}</div>
+    </section>
   );
 }
 
@@ -63,10 +106,13 @@ export function ExpandableText({
   return (
     <div className="space-y-2">
       <pre
-        className="whitespace-pre-wrap break-words rounded-md p-3 text-xs leading-5"
+        className="whitespace-pre-wrap break-words rounded-md p-3 text-[0.8125rem] leading-6"
         style={{
-          backgroundColor: "var(--bg-hover)",
-          color: "var(--text-secondary)",
+          backgroundColor: "var(--bg-surface, #1e1e23)",
+          borderColor: "var(--border-subtle, #2e2e36)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-secondary, #c7c7cc)",
         }}
       >
         {renderedText}

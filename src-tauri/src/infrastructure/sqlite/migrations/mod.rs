@@ -527,6 +527,9 @@ mod v20260720131416_review_pr_disable_pr_automation_tests;
 mod v20260720200633_auto_verify_draft_plans;
 #[cfg(test)]
 mod v20260720200633_auto_verify_draft_plans_tests;
+mod v20260722132100_automation_run_goal_item;
+#[cfg(test)]
+mod v20260722132100_automation_run_goal_item_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -621,7 +624,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260722090527;
+pub const SCHEMA_VERSION: i64 = 20260722132100;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1710,6 +1713,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260722090527,
         name: "project_skill_schema_versioning",
         migrate: v20260722090527_project_skill_schema_versioning::migrate,
+    },
+    Migration {
+        version: 20260722132100,
+        name: "automation_run_goal_item",
+        migrate: v20260722132100_automation_run_goal_item::migrate,
     },
 ];
 

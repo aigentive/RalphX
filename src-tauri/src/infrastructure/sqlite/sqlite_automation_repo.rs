@@ -490,12 +490,13 @@ impl SqliteAutomationRunRepository {
                 branch_name, pr_number, pr_url, pr_title, pr_head_ref_name, pr_base_ref_name,
                 pr_merged_at, merge_commit_sha, diff_stats_json, agent_summary,
                 judge_verdict_json, judge_model_id, error_code, error_detail,
-                signal_check_failures, started_at, finished_at, created_at, updated_at
+                signal_check_failures, started_at, finished_at, created_at, updated_at,
+                goal_item_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-                ?36, ?37, ?38, ?39
+                ?36, ?37, ?38, ?39, ?40
             )",
             params![
                 run.id.as_str(),
@@ -537,6 +538,7 @@ impl SqliteAutomationRunRepository {
                 run.finished_at.map(|dt| dt.to_rfc3339()),
                 run.created_at.to_rfc3339(),
                 run.updated_at.to_rfc3339(),
+                run.goal_item_id.as_deref(),
             ],
         )
         .map_err(|error| match error {
@@ -581,6 +583,7 @@ impl SqliteAutomationRunRepository {
             base_from_run_id: row
                 .get::<_, Option<String>>(19)?
                 .map(AutomationRunId::from_string),
+            goal_item_id: row.get(39)?,
             branch_name: row.get(20)?,
             pr_number: row.get(21)?,
             pr_url: row.get(22)?,
@@ -612,7 +615,8 @@ const SELECT_RUN: &str = "SELECT
     prompt_author, base_ref_kind, base_ref_used, base_from_run_id, branch_name, pr_number,
     pr_url, pr_title, pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
     diff_stats_json, agent_summary, judge_verdict_json, judge_model_id, error_code,
-    error_detail, signal_check_failures, started_at, finished_at, created_at, updated_at
+    error_detail, signal_check_failures, started_at, finished_at, created_at, updated_at,
+    goal_item_id
 FROM automation_runs";
 const AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT: &str =
     "UNIQUE constraint failed: automation_runs.automation_id";
@@ -1217,6 +1221,23 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE automation_runs
+                     SET judge_state = 'none',
+                         judge_verdict_json = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
         let id = id.as_str().to_string();
         self.db
@@ -1372,6 +1393,22 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn clear_finished_at(&self, id: &AutomationRunId) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE automation_runs
+                     SET finished_at = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn create_judge_successor_run(
         &self,
         automation_id: &AutomationId,
@@ -1487,6 +1524,39 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                 conn.execute(
                     "DELETE FROM automation_runs WHERE automation_id = ?1",
                     [automation_id],
+                )
+                .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn delete_run_if_deletable(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<usize> {
+        let automation_id = automation_id.as_str().to_string();
+        let run_id = run_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM automation_runs
+                     WHERE id = ?1
+                       AND automation_id = ?2
+                       AND status IN (?3, ?4)
+                       AND (judge_state IS NULL OR judge_state <> ?5)
+                       AND run_index = (
+                           SELECT MAX(run_index)
+                           FROM automation_runs
+                           WHERE automation_id = ?2
+                       )",
+                    params![
+                        run_id,
+                        automation_id,
+                        AutomationRunStatus::AgentFailed.as_str(),
+                        AutomationRunStatus::Cancelled.as_str(),
+                        AutomationJudgeState::InProgress.as_str(),
+                    ],
                 )
                 .map_err(AppError::from)
             })

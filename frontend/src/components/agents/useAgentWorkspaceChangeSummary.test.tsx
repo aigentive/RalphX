@@ -144,6 +144,56 @@ describe("useAgentWorkspaceChangeSummary", () => {
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
   });
 
+  it("refreshes the unstaged file list when its live bucket changes", async () => {
+    const firstFile: FileChange = {
+      path: "src/first.ts",
+      status: "modified",
+      additions: 2,
+      deletions: 1,
+      isGenerated: false,
+    };
+    const secondFile: FileChange = {
+      path: "src/second.ts",
+      status: "added",
+      additions: 4,
+      deletions: 0,
+      isGenerated: false,
+    };
+    mockGetUnstagedFiles.mockResolvedValue([firstFile]);
+
+    const { result, rerender } = renderHook(
+      ({ liveSummary }: { liveSummary: AgentWorkspaceChangeSummary }) =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview(),
+          liveSummary,
+        }),
+      {
+        initialProps: {
+          liveSummary: makeLiveSummary({
+            unstaged: { fileCount: 1, additions: 2, deletions: 1 },
+          }),
+        },
+        wrapper: makeWrapper(),
+      },
+    );
+
+    await waitFor(() => expect(result.current.currentFiles).toEqual([firstFile]));
+    mockGetUnstagedFiles.mockResolvedValue([firstFile, secondFile]);
+
+    rerender({
+      liveSummary: makeLiveSummary({
+        unstaged: { fileCount: 2, additions: 6, deletions: 1 },
+      }),
+    });
+
+    await waitFor(() => expect(mockGetUnstagedFiles).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(result.current.currentFiles).toEqual([firstFile, secondFile]),
+    );
+    expect(result.current.currentFileCount).toBe(2);
+  });
+
   it("uses the default mode when no user-selected mode exists", async () => {
     const cumulativeFile: FileChange = {
       path: "src/merged.ts",

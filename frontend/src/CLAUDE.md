@@ -127,6 +127,8 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Review-Mode Boundary** — Workspace Review displays the local publish gate; Review PR displays linked remote GitHub head/lifecycle/action state and suppresses stale actions on terminal durable state. See `../../.claude/rules/agent-workspace-review-modes.md`.
 - **Timeline Canonical, Live Supplementary** — persisted timeline pages are the transcript authority (legacy logical history only when no page exists); keep live streamed output visible until the matching persisted message arrives, then release the live duplicate. An incomplete live tail never replaces full persisted history.
 - **Stale-Event Rejection** — chat event handlers validate payloads and reject terminations/updates keyed by BOTH conversation and active run identity, not conversation alone.
+- **Shared Persona Menu** — `src/components/personas/PersonaMenuList.tsx` is the single writer for persona choose-menus (picker + chip); it owns the scoped `globalAndProject` query, grouping, and inspect preview. ❌ New flat/unscoped persona lists.
+- **StatusPill** — `src/components/ui/status-pill.tsx` is the single pill surface for status/stage/judge badges (tone-based, WKWebView-safe longhands). ❌ New ad-hoc `rounded-full px-2 py-0.5` status spans; automation run-card badge dedupe lives in `automations/automationRunBadges.ts`.
 
 ### Composition Over Props
 ```tsx
