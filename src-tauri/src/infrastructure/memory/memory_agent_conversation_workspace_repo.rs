@@ -48,6 +48,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     next_publication_event_error: Mutex<Option<String>>,
     #[cfg(test)]
+    matching_publication_event_error: Mutex<Option<(String, String, String)>>,
+    #[cfg(test)]
     next_publication_update_error: Mutex<Option<String>>,
     #[cfg(test)]
     next_worktree_path_list_error: Mutex<Option<String>>,
@@ -73,6 +75,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             #[cfg(test)]
             next_publication_event_error: Mutex::new(None),
             #[cfg(test)]
+            matching_publication_event_error: Mutex::new(None),
+            #[cfg(test)]
             next_publication_update_error: Mutex::new(None),
             #[cfg(test)]
             next_worktree_path_list_error: Mutex::new(None),
@@ -89,6 +93,17 @@ impl MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     pub fn fail_next_publication_event(&self, message: impl Into<String>) {
         *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_matching_publication_event(
+        &self,
+        step: impl Into<String>,
+        status: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        *self.matching_publication_event_error.lock().unwrap() =
+            Some((step.into(), status.into(), message.into()));
     }
 
     #[cfg(test)]
@@ -548,6 +563,37 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn compare_and_set_repair_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
+        transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_push_status != expected.publication_push_status
+            || workspace.pr_supervision_status != expected.pr_supervision_status
+            || workspace.pr_supervision_updated_at != expected.pr_supervision_updated_at
+        {
+            return Ok(false);
+        }
+
+        workspace.publication_push_status = transition.publication_push_status.clone();
+        workspace.pr_supervision_status = transition.pr_supervision_status.clone();
+        workspace.pr_supervision_summary = transition.pr_supervision_summary.clone();
+        workspace.pr_supervision_updated_at = Some(transition.pr_supervision_updated_at);
+        if let Some(auto_merge_current) = transition.pr_auto_merge_current {
+            workspace.pr_auto_merge_current = Some(auto_merge_current);
+        }
+        if let Some(base_commit) = transition.base_commit.as_ref() {
+            workspace.base_commit = Some(base_commit.clone());
+        }
+        workspace.updated_at = transition.pr_supervision_updated_at;
+        Ok(true)
+    }
+
     async fn list_worktree_paths_by_project_id(
         &self,
         project_id: &ProjectId,
@@ -720,6 +766,17 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         #[cfg(test)]
         if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
             return Err(AppError::Infrastructure(message));
+        }
+        #[cfg(test)]
+        {
+            let mut matching_error = self.matching_publication_event_error.lock().unwrap();
+            if matching_error
+                .as_ref()
+                .is_some_and(|(step, status, _)| step == &event.step && status == &event.status)
+            {
+                let (_, _, message) = matching_error.take().expect("matching event error");
+                return Err(AppError::Infrastructure(message));
+            }
         }
         self.publication_events
             .write()
