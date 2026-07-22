@@ -18,7 +18,6 @@ import {
   PanelRightOpen,
   Play,
   ShieldCheck,
-  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -672,13 +671,6 @@ function PlanComposerCtaRow({
   );
 }
 
-function formatAutomationRunStatus(
-  automation: Automation,
-  run: AutomationRun,
-): string {
-  return getAutomationRunView(automation, run).statusLabel;
-}
-
 function hasPersistedAutomationPhaseSpec(goalItemsJson: string | null): boolean {
   const trimmed = goalItemsJson?.trim() ?? "";
   if (!trimmed) {
@@ -725,91 +717,6 @@ function hasOpenAutomationRun(
   runs: readonly AutomationRun[],
 ): boolean {
   return runs.some((run) => getAutomationRunView(automation, run).isOpen);
-}
-
-function AutomationRunsWidget({
-  automationId,
-  automation,
-  runs,
-  currentRunId,
-  onOpenRun,
-}: {
-  automationId: string;
-  automation: Automation;
-  runs: readonly AutomationRun[];
-  currentRunId: string | null;
-  onOpenRun: (automationId: string, run: AutomationRun) => void;
-}) {
-  if (runs.length === 0) {
-    return null;
-  }
-
-  return (
-    <div
-      className="mx-2 mb-2 rounded-md border px-3 py-2"
-      style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-      data-testid="agents-automation-runs-widget"
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <Workflow
-          className="h-4 w-4 shrink-0"
-          style={{ color: "var(--accent-primary)" }}
-          aria-hidden="true"
-        />
-        <span
-          className="text-[0.8125rem] font-medium"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Runs
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {runs.map((run) => {
-          const disabled = !run.conversationId;
-          const isCurrent = run.id === currentRunId;
-          return (
-            <button
-              key={run.id}
-              type="button"
-              disabled={disabled}
-              onClick={() => onOpenRun(automationId, run)}
-              className="inline-flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[0.75rem] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-              style={{
-                backgroundColor: isCurrent
-                  ? "var(--bg-surface-hover)"
-                  : "transparent",
-                borderColor: isCurrent
-                  ? "var(--accent-primary)"
-                  : "var(--border-subtle)",
-                borderStyle: "solid",
-                borderWidth: "1px",
-                color: "var(--text-primary)",
-              }}
-              data-testid={`agents-automation-run-${run.id}`}
-            >
-              <Clock
-                className="h-3.5 w-3.5 shrink-0"
-                style={{ color: "var(--text-muted)" }}
-                aria-hidden="true"
-              />
-              <span className="shrink-0 font-medium">Run {run.runIndex}</span>
-              <span
-                className="min-w-0 truncate"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {formatAutomationRunStatus(automation, run)}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 interface AgentsActiveConversationPanelProps {
@@ -2875,6 +2782,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     isFocusedChildChat={isFocusedChildChat}
                     currentFocus={chatFocus}
                     taskLedgerContext={composerTaskLedgerContext}
+                    automationDetail={automationSetupDetail}
+                    currentAutomationRunId={activeAutomationRunId}
                     isAgentGenerating={composerProps.agentStatus === "generating"}
                     pauseHydration={isComposerHydrationPaused}
                     onViewWorkspace={handleViewRuntimeWorkspace}
@@ -2882,18 +2791,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onViewVerification={onFocusVerificationSession}
                     onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
                     onViewTaskRuntime={handleViewRuntimeTask}
+                    onViewAutomationRun={handleOpenAutomationRun}
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
-                  {automationSetupConversationId && automationSetupDetail && (
-                    <AutomationRunsWidget
-                      automationId={automationSetupDetail.automation.id}
-                      automation={automationSetupDetail.automation}
-                      runs={automationSetupDetail.runs}
-                      currentRunId={activeAutomationRunId}
-                      onOpenRun={handleOpenAutomationRun}
-                    />
-                  )}
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow
                       hint={planComposerHint}
