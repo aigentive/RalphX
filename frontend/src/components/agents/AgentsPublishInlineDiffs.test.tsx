@@ -99,6 +99,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     onModeChange,
     workspaceChangeCount,
     workspaceChangeLabel,
+    cumulativeModeLabel,
     stagedCount,
     unstagedCount,
     conflictedCount,
@@ -108,6 +109,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     onModeChange: (m: string) => void;
     workspaceChangeCount: number;
     workspaceChangeLabel?: string;
+    cumulativeModeLabel?: string;
     stagedCount?: number;
     unstagedCount?: number;
     conflictedCount?: number;
@@ -119,6 +121,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
       data-mode={mode}
       data-count={workspaceChangeCount}
       data-label={workspaceChangeLabel ?? ""}
+      data-cumulative-label={cumulativeModeLabel ?? ""}
       data-staged-count={stagedCount ?? ""}
       data-unstaged-count={unstagedCount ?? ""}
       data-conflicted-count={conflictedCount ?? ""}
@@ -1307,7 +1310,11 @@ describe("AgentsPublishInlineDiffs", () => {
     });
 
     it("does not fetch off-range expanded files", async () => {
-      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      virtuosoMockState.range = { startIndex: 0, endIndex: 0 };
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+      ];
       render(
         withProviders(
           <AgentsPublishInlineDiffs
@@ -1319,7 +1326,6 @@ describe("AgentsPublishInlineDiffs", () => {
           />,
         ),
       );
-      fireVirtualRange(0, 0);
       await waitFor(() =>
         expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-42", "src/Foo.tsx"),
       );
@@ -3002,7 +3008,7 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("lazy hydration — virtual range", () => {
-    it("initially passes shouldHydrate=false for all files", () => {
+    it("self-hydrates a mounted row without an initial range callback", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -3015,7 +3021,83 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       const card = screen.getByTestId("mock-file-diff-src-Foo.tsx");
-      expect(card).toHaveAttribute("data-should-hydrate", "false");
+      await waitFor(() =>
+        expect(card).toHaveAttribute("data-should-hydrate", "true"),
+      );
+      await waitFor(() =>
+        expect(mockGetDiffPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            conversationId: "conv-1",
+            path: "src/Foo.tsx",
+          }),
+        ),
+      );
+    });
+
+    it("re-registers a mounted row when the hydration generation changes", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+          client,
+        ),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("mock-file-diff-src-Foo.tsx"),
+        ).toHaveAttribute("data-should-hydrate", "true"),
+      );
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-2"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() => {
+        const card = screen.getByTestId("mock-file-diff-src-Foo.tsx");
+        expect(card).toHaveAttribute("data-conversation-id", "conv-2");
+        expect(card).toHaveAttribute("data-should-hydrate", "true");
+      });
+    });
+
+    it("does not probe paged summaries for an unmounted off-range file", async () => {
+      virtuosoMockState.range = { startIndex: 0, endIndex: 0 };
+      const changes = [
+        makeFileChange("src/Visible.tsx", { additions: 800 }),
+        makeFileChange("src/Offscreen.tsx", { additions: 900 }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockGetDiffPage).toHaveBeenCalledWith(
+          expect.objectContaining({ path: "src/Visible.tsx" }),
+        ),
+      );
+      expect(mockGetDiffPage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ path: "src/Offscreen.tsx" }),
+      );
     });
 
     it("sets shouldHydrate=true when the virtual range includes a file", async () => {

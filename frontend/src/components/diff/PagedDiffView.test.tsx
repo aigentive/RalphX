@@ -179,6 +179,30 @@ describe("PagedDiffView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("announces the initial paged loading state", () => {
+    mockGetDiffPage.mockImplementation(() => new Promise(() => {}));
+
+    render(
+      <PagedDiffView
+        conversationId="conv-loading"
+        filePath="src/Loading.tsx"
+        refKind={{ kind: "head" }}
+      />
+    );
+
+    expect(screen.getByTestId("paged-diff-loading")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.getByTestId("paged-diff-loading")).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    expect(screen.getByTestId("paged-diff-loading")).toHaveTextContent(
+      "Loading diff rows"
+    );
+  });
+
   it("renders inline rows through Virtuoso attached to the outer scroll parent", async () => {
     render(
       <div data-testid="outer-scroll" style={{ overflowY: "auto" }}>
