@@ -365,6 +365,39 @@ describe("AgentsView artifact pane", () => {
         "publish",
       ),
     );
+    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-publish-sub-tab",
+      "review",
+    );
+  });
+
+  it("keeps local Workspace Review out of flat header shortcuts", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: false,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalled(),
+    );
+    expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-workspace")).toBeInTheDocument();
   });
 
   it("does not query or open Workspace Review for a PLAN workspace", async () => {
