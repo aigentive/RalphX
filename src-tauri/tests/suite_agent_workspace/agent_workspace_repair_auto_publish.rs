@@ -59,6 +59,18 @@ async fn disable_workspace_review_gate(app_state: &AppState) {
 }
 
 async fn seed_current_repair_attempt(app_state: &AppState, conversation_id: ChatConversationId) {
+    let mut workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load repair workspace")
+        .expect("repair workspace exists");
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed accepted repair claim timestamp");
     app_state
         .agent_run_repo
         .create(AgentRun::new(conversation_id))
