@@ -74,6 +74,7 @@ const defaultReviewSettings = {
 
 const {
   getWorkspaceChangesMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
@@ -144,6 +145,7 @@ const {
   tasksEnabledRef,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
@@ -313,6 +315,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceChangeSummary: (...args: unknown[]) =>
+      getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
@@ -984,6 +988,7 @@ const automationRunFixture = (
   baseRefKind: "project_default",
   baseRefUsed: "main",
   baseFromRunId: "run-0",
+  goalItemId: null,
   branchName: "ralphx/release/agent-1",
   prNumber: 593,
   prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
@@ -1513,6 +1518,11 @@ describe("AgentsArtifactPane", () => {
         deletions: 1,
       },
     ]);
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    });
     getWorkspaceReviewMock.mockResolvedValue({
       changes: [
         {

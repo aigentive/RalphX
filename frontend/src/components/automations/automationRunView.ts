@@ -45,7 +45,12 @@ export const AUTOMATION_RUN_STATUS_LABELS: Record<AutomationRun["status"], strin
   cancelled: "Cancelled",
 };
 
-export type AutomationRunStatusTone = "success" | "warning" | "error" | "neutral";
+export type AutomationRunStatusTone =
+  | "success"
+  | "warning"
+  | "error"
+  | "neutral"
+  | "accent";
 
 /**
  * Whether an automation can be deleted. Delete is allowed only from terminal or
@@ -190,7 +195,11 @@ export function getAutomationRunStatusTone(
   if (!run) {
     return "neutral";
   }
-  if (["running", "published", "merged", "completed"].includes(run.status)) {
+  // Accent marks live activity; green is reserved for settled success states.
+  if (run.status === "running") {
+    return "accent";
+  }
+  if (["published", "merged", "completed"].includes(run.status)) {
     return "success";
   }
   if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(run.status)) {

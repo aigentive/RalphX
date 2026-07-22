@@ -77,6 +77,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/test",
     prNumber: null,
     prUrl: null,
@@ -231,7 +232,7 @@ describe("automationRunView", () => {
         holdsGoalAuthority: true,
         composerReadOnly: true,
         statusLabel: "Running",
-        statusTone: "success",
+        statusTone: "accent",
         judgeLabel: null,
         stageLabel: "Run 1 planning",
         pr: {
@@ -304,6 +305,7 @@ describe("automationRunView", () => {
   it("keeps components from calling describeAutomationStage directly", () => {
     const allowedFiles = new Set([
       join(process.cwd(), "src/components/automations/automationRunView.ts"),
+      join(process.cwd(), "src/components/automations/automationRunBadges.ts"),
       join(process.cwd(), "src/components/automations/automationStage.ts"),
     ]);
     const offenders = collectSourceFiles(join(process.cwd(), "src/components"))
