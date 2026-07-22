@@ -34,6 +34,7 @@ fn run_with_status(
         base_ref_kind: "local_branch".to_string(),
         base_ref_used: "main".to_string(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: None,
         pr_number: None,
         pr_url: None,

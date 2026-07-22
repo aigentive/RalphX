@@ -125,6 +125,7 @@ fn automation_run(
         base_ref_kind: "project_default".to_string(),
         base_ref_used: String::new(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: Some(format!("ralphx/run-{run_index}")),
         pr_number: Some(100 + run_index),
         pr_url: None,

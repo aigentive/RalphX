@@ -228,6 +228,7 @@ function automationRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/release/run-1",
     prNumber: null,
     prUrl: null,

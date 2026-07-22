@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import { AgentsAutomationPanel } from "@/components/agents/AgentsAutomationPanel
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AutomationDetailView } from "./AutomationDetailView";
 import { AutomationRunStatusHeader } from "./AutomationRunStatusHeader";
+import { getRunCardBadges } from "./automationRunBadges";
 import { getAutomationRunView } from "./automationRunView";
 
 const {
@@ -194,6 +195,7 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "main",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: "ralphx/release/agent-1",
     prNumber: 593,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
@@ -325,15 +327,34 @@ function collectRunPresentation(detail: AutomationDetail) {
       onOpenAutomationRun={vi.fn()}
     />,
   );
+  // Timeline lives behind the page-level Runs tab (deferred mount is mocked
+  // synchronous via useAfterPaintMounted above). Radix tab triggers activate
+  // on mousedown, so fire that alongside click.
+  const runsTabTrigger = within(detailRender.container).getByTestId(
+    "automation-tab-runs",
+  );
+  fireEvent.mouseDown(runsTabTrigger);
+  fireEvent.click(runsTabTrigger);
+  // The timeline card renders the de-duplicated badge contract instead of the
+  // raw status/stage pair: assert its badges match `getRunCardBadges` exactly.
+  const expectedBadges = getRunCardBadges(detail.automation, candidate);
+  for (const key of ["status", "judge", "stage"] as const) {
+    const badge = expectedBadges.find((entry) => entry.key === key);
+    const rendered = within(detailRender.container).queryByTestId(
+      `automation-run-${candidate.id}-header-${key}`,
+    );
+    if (badge) {
+      expect(rendered?.textContent, `timeline ${key} badge`).toBe(badge.label);
+    } else {
+      expect(rendered, `timeline ${key} badge suppressed`).toBeNull();
+    }
+  }
   const timeline: RunPresentation = {
     status: textByTestId(
       detailRender.container,
       `automation-run-${candidate.id}-header-status`,
     ),
-    stage: textByTestId(
-      detailRender.container,
-      `automation-run-${candidate.id}-header-stage`,
-    ),
+    stage: expected.stage,
     pr: textByTestId(
       detailRender.container,
       `automation-run-${candidate.id}-pr-state`,

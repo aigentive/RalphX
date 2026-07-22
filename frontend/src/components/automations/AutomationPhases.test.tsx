@@ -1,7 +1,17 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { AutomationPhaseProgress } from "./AutomationPhases";
+
+const { useArtifactMock } = vi.hoisted(() => ({
+  useArtifactMock: vi.fn(),
+}));
+
+vi.mock("@/hooks/useArtifacts", () => ({
+  useArtifact: (...args: unknown[]) => useArtifactMock(...args),
+}));
 
 const phasesJson = JSON.stringify([
   { id: "p1", title: "Model context", status: "done" },
@@ -61,5 +71,53 @@ describe("AutomationPhaseProgress", () => {
     expect(screen.getAllByTestId("phases-item")).toHaveLength(6);
     // Count reflects the full (unsliced) list.
     expect(screen.getByTestId("phases-count")).toHaveTextContent("3/8 done");
+  });
+
+  it("shows a plan icon only for items with a mapped plan artifact", () => {
+    render(
+      <TooltipProvider>
+        <AutomationPhaseProgress
+          value={phasesJson}
+          testId="phases"
+          planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
+        />
+      </TooltipProvider>,
+    );
+
+    const icons = screen.getAllByTestId("phases-plan-icon");
+    expect(icons).toHaveLength(1);
+    expect(icons[0]).toHaveAccessibleName("View plan for Judge signal");
+    const items = screen.getAllByTestId("phases-item");
+    expect(within(items[0]!).queryByTestId("phases-plan-icon")).toBeNull();
+  });
+
+  it("renders no plan icons without a plan map (fail-closed for unmapped runs)", () => {
+    render(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
+    expect(screen.queryByTestId("phases-plan-icon")).toBeNull();
+  });
+
+  it("opens the plan dialog for the clicked item", async () => {
+    useArtifactMock.mockReturnValue({
+      data: null,
+      isLoading: true,
+      isError: false,
+    });
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider>
+        <AutomationPhaseProgress
+          value={phasesJson}
+          testId="phases"
+          planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.queryByTestId("automation-plan-dialog")).toBeNull();
+    await user.click(screen.getByTestId("phases-plan-icon"));
+
+    const dialog = screen.getByTestId("automation-plan-dialog");
+    expect(within(dialog).getByText("Judge signal")).toBeInTheDocument();
+    expect(useArtifactMock).toHaveBeenCalledWith("plan-artifact-3");
   });
 });

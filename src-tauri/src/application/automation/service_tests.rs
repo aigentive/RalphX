@@ -429,6 +429,7 @@ fn automation_run(
         base_ref_kind: "local_branch".to_string(),
         base_ref_used: "main".to_string(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: Some(format!("ralphx/run-{run_index}")),
         pr_number: Some(100 + run_index),
         pr_url: Some(format!(
@@ -5153,4 +5154,82 @@ async fn trusted_decomposition_verification_rejects_stale_agent_output() {
             .verification_status,
         AutomationDecompositionVerificationStatus::Verified
     );
+}
+
+#[tokio::test]
+async fn service_create_run_stamps_current_goal_item() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-goal-stamp", AutomationStatus::Active);
+    active.goal_items_json = Some(
+        r#"[
+            {"id":"item-1","title":"Done phase","status":"done"},
+            {"id":"item-2","title":"Current phase","status":"pending"},
+            {"id":"item-3","title":"Later phase","status":"pending"}
+        ]"#
+        .to_string(),
+    );
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Advance the current phase".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: "main".to_string(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(run.goal_item_id.as_deref(), Some("item-2"));
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.goal_item_id.as_deref(), Some("item-2"));
+}
+
+#[tokio::test]
+async fn service_create_run_stamps_none_without_goal_items() {
+    let (service, automation_repo, _run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-goal-stamp-phaseless", AutomationStatus::Active);
+    active.goal_items_json = None;
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Run without phases".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: "main".to_string(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(run.goal_item_id, None);
+}
+
+#[tokio::test]
+async fn service_create_run_stamps_none_for_invalid_goal_items_json() {
+    let (service, automation_repo, _run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-goal-stamp-invalid", AutomationStatus::Active);
+    active.goal_items_json = Some("not-json".to_string());
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Run with unparseable phases".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: "main".to_string(),
+            base_from_run_id: None,
+        })
+        .await
+        .expect("invalid goal items must not block run creation");
+
+    assert_eq!(run.goal_item_id, None);
 }
