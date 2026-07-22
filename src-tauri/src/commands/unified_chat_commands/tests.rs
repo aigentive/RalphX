@@ -8221,12 +8221,6 @@ async fn seed_delegated_timeline_tool(
         .create(ChatConversation::new_project(project_id.clone()))
         .await
         .expect("create parent conversation");
-    let child = state
-        .chat_conversation_repo
-        .create(ChatConversation::new_project(project_id.clone()))
-        .await
-        .expect("create child conversation");
-
     let mut session = DelegatedSession::new(
         project_id,
         "agent_conversation",
@@ -8242,6 +8236,12 @@ async fn seed_delegated_timeline_tool(
         .create(session)
         .await
         .expect("create delegated session");
+
+    let child = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(session.id.clone()))
+        .await
+        .expect("create delegated child conversation");
 
     let mut run = AgentRun::new(child.id);
     run.status = status;
