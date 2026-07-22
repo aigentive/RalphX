@@ -402,6 +402,7 @@ function personaRunBadgeProps(
   }
   return {
     agentPersonasEnabled: true,
+    personaId: agentRun.personaId ?? null,
     personaSlug: agentRun.personaSlug ?? null,
     personaVersion: agentRun.personaVersion ?? null,
     personaInjected: agentRun.personaInjected ?? null,
