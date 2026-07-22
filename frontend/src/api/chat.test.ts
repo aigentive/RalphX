@@ -3746,7 +3746,23 @@ describe("getConversationActiveState", () => {
         }),
     });
 
-    const result = await startAgentWorkspaceReviewFixer("conversation/1");
+    const result = await startAgentWorkspaceReviewFixer("conversation/1", {
+      confirmation: {
+        targetScope: "workspace_delta",
+        diffFingerprint: "fingerprint-1",
+        artifactId: "artifact-1",
+        artifactVersion: 3,
+        blockingFingerprint: "blocking-1",
+      },
+      runtimeOverride: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "high",
+        serviceTier: "standard",
+        coordinationMode: "solo",
+        personaId: null,
+      },
+    });
 
     expect(mockFetch).toHaveBeenCalledWith(
       backendApiUrl(
@@ -3755,6 +3771,23 @@ describe("getConversationActiveState", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          confirmation: {
+            target_scope: "workspace_delta",
+            diff_fingerprint: "fingerprint-1",
+            artifact_id: "artifact-1",
+            artifact_version: 3,
+            blocking_fingerprint: "blocking-1",
+          },
+          runtime_override: {
+            provider: "codex",
+            model: "gpt-5.5",
+            effort: "high",
+            service_tier: "standard",
+            coordination_mode: "solo",
+            persona_id: null,
+          },
+        }),
       },
     );
     expect(result.started).toBe(true);

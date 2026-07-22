@@ -5,8 +5,11 @@ import {
   chatApi,
   type AgentWorkspaceReviewStartConfirmation,
   type AgentWorkspaceReviewStartPreview,
+  type AgentWorkspaceReviewContext,
+  type AgentWorkspaceReviewFixerConfirmation,
 } from "@/api/chat";
-import { useConfirmation } from "@/hooks/useConfirmation";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
+import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
 
 function reviewTargetLabel(preview: AgentWorkspaceReviewStartPreview): string {
   const target = preview.target;
@@ -32,6 +35,33 @@ function isWorkspaceReviewStartConflict(error: unknown): boolean {
   return error instanceof AgentWorkspaceHttpError && error.status === 409;
 }
 
+function fixerConfirmation(
+  context: AgentWorkspaceReviewContext,
+): AgentWorkspaceReviewFixerConfirmation | null {
+  const target = context.target;
+  const monitor = context.monitor;
+  if (
+    !target ||
+    !monitor.reviewArtifactId ||
+    !monitor.reviewArtifactVersion ||
+    !monitor.reviewBlockingFingerprint
+  ) {
+    return null;
+  }
+  return {
+    targetScope: target.scope,
+    diffFingerprint: target.diffFingerprint,
+    artifactId: monitor.reviewArtifactId,
+    artifactVersion: monitor.reviewArtifactVersion,
+    blockingFingerprint: monitor.reviewBlockingFingerprint,
+  };
+}
+
+function fixerDescription(context: AgentWorkspaceReviewContext): string {
+  return context.monitor.reviewBlockingSummary
+    ? `The Repair agent will address: ${context.monitor.reviewBlockingSummary}`
+    : "The Repair agent will address the current blocking findings.";
+}
 function blockedWorkspaceReviewCopy(error: unknown): string | null {
   return error instanceof AgentWorkspaceHttpError &&
     error.status === 409 &&
@@ -45,39 +75,52 @@ const GENERIC_PREPARATION_ERROR =
 
 export function useWorkspaceReviewActions({
   conversationId,
+  projectId,
   onStartReview,
+  onStartFixer,
 }: {
   conversationId: string | null;
+  projectId: string | null;
   onStartReview: (input: {
     force: boolean;
     confirmation: AgentWorkspaceReviewStartConfirmation;
+    runtimeOverride: ManualRoleRuntimeSelection;
+  }) => Promise<unknown>;
+  onStartFixer: (input: {
+    confirmation: AgentWorkspaceReviewFixerConfirmation;
+    runtimeOverride: ManualRoleRuntimeSelection;
   }) => Promise<unknown>;
 }) {
-  const { confirm, confirmationDialogProps, ConfirmationDialog } =
-    useConfirmation();
+  const { confirmRoleRuntime, confirmationDialogProps, ConfirmationDialog } =
+    useRoleRuntimeConfirmation({ conversationId, projectId });
 
   const startReview = useCallback(
     (force: boolean) => {
       if (!conversationId) return;
       let preview: AgentWorkspaceReviewStartPreview | null = null;
-      void confirm({
+      void confirmRoleRuntime({
+        role: "workspace_reviewer",
         title: "Start Workspace Review?",
         description: "Checking the current review target and GitHub auto-merge state…",
         confirmText: "Start review",
         pendingText: "Starting review…",
-        prepare: async () => {
+        prepareDescription: async () => {
           preview = await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
-          return { description: reviewStartDescription(preview) };
+          return reviewStartDescription(preview);
         },
         recoverFromPrepareError: (error) => {
           const description = blockedWorkspaceReviewCopy(error);
           return description ? { description, confirmDisabled: true } : null;
         },
-        onConfirm: async () => {
+        onConfirm: async (runtimeOverride) => {
           if (!preview) {
             throw new Error("Workspace Review preparation did not finish");
           }
-          await onStartReview({ force, confirmation: preview.confirmation });
+          await onStartReview({
+            force,
+            confirmation: preview.confirmation,
+            runtimeOverride,
+          });
         },
         recoverFromError: async (error) => {
           if (!isWorkspaceReviewStartConflict(error)) {
@@ -102,11 +145,64 @@ export function useWorkspaceReviewActions({
         },
       });
     },
-    [confirm, conversationId, onStartReview],
+    [confirmRoleRuntime, conversationId, onStartReview],
+  );
+
+  const startFixer = useCallback(
+    (context: AgentWorkspaceReviewContext) => {
+      if (!conversationId) return;
+      let fixerContext = context;
+      let confirmation = fixerConfirmation(fixerContext);
+      if (!confirmation) return;
+      void confirmRoleRuntime({
+        role: "workspace_repair",
+        title: "Fix blocking Workspace Review issues?",
+        description: fixerDescription(fixerContext),
+        confirmText: "Fix issues",
+        pendingText: "Starting repair…",
+        onConfirm: (runtimeOverride) => {
+          if (!confirmation) {
+            throw new Error("Workspace Review blocker is no longer actionable");
+          }
+          return onStartFixer({ confirmation, runtimeOverride });
+        },
+        recoverFromError: async (error) => {
+          if (!isWorkspaceReviewStartConflict(error)) {
+            return null;
+          }
+          try {
+            fixerContext = await chatApi.getAgentWorkspaceReviewContext(
+              conversationId,
+              { refreshTarget: true },
+            );
+          } catch (refreshError) {
+            confirmation = null;
+            return {
+              description:
+                blockedWorkspaceReviewCopy(refreshError) ?? GENERIC_PREPARATION_ERROR,
+              confirmDisabled: true,
+            };
+          }
+          confirmation = fixerConfirmation(fixerContext);
+          if (!confirmation) {
+            return {
+              description:
+                "The blocking Review changed and is no longer actionable. Refresh the Review tab before trying again.",
+              confirmDisabled: true,
+            };
+          }
+          return {
+            description: `The blocking Review changed. ${fixerDescription(fixerContext)} Confirm the updated details to start the repair.`,
+          };
+        },
+      });
+    },
+    [confirmRoleRuntime, conversationId, onStartFixer],
   );
 
   return {
     startReview,
+    startFixer,
     confirmationDialogProps,
     ConfirmationDialog,
   };

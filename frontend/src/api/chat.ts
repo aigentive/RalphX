@@ -26,6 +26,7 @@ import {
   transformArtifactResponse,
 } from "@/api/artifact";
 import type { Artifact } from "@/types/artifact";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 import {
   RunningIdeationSessionSchema,
@@ -1988,6 +1989,7 @@ export interface SendAgentMessageOptions {
   modelId?: string | null;
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
+  runtimeOverride?: ManualRoleRuntimeSelection;
   suppressUserMessage?: boolean;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
@@ -2108,6 +2110,7 @@ export interface SwitchAgentConversationModeInput {
   conversationId: string;
   mode: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  runtimeOverride?: ManualRoleRuntimeSelection;
 }
 
 export interface SwitchAgentConversationModeResult {
@@ -2440,6 +2443,36 @@ export interface StartAgentWorkspaceReviewFixerResult {
   shouldShowTab: boolean;
   started: boolean;
   skippedReason: string | null;
+}
+
+export interface AgentWorkspaceReviewFixerConfirmation {
+  targetScope: AgentWorkspaceReviewTargetScope;
+  diffFingerprint: string;
+  artifactId: string;
+  artifactVersion: number;
+  blockingFingerprint: string;
+}
+
+function roleRuntimeOverrideInvokeInput(value: ManualRoleRuntimeSelection) {
+  return {
+    harness: value.provider,
+    model: value.model,
+    effort: value.effort,
+    serviceTier: value.serviceTier,
+    coordinationMode: value.coordinationMode,
+    personaId: value.personaId,
+  };
+}
+
+function roleRuntimeOverrideHttpInput(value: ManualRoleRuntimeSelection) {
+  return {
+    provider: value.provider,
+    model: value.model,
+    effort: value.effort,
+    service_tier: value.serviceTier,
+    coordination_mode: value.coordinationMode,
+    persona_id: value.personaId,
+  };
 }
 
 export interface ApproveAgentWorkspaceReviewAnywayInput {
@@ -3720,6 +3753,7 @@ export async function startAgentWorkspaceReview(
   options: {
     force?: boolean;
     confirmation?: AgentWorkspaceReviewStartConfirmation;
+    runtimeOverride?: ManualRoleRuntimeSelection;
   } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
@@ -3743,6 +3777,9 @@ export async function startAgentWorkspaceReview(
                 options.confirmation.restoreAfterPublish,
             }
           : undefined,
+        runtime_override: options.runtimeOverride
+          ? roleRuntimeOverrideHttpInput(options.runtimeOverride)
+          : undefined,
       }),
     },
   );
@@ -3751,6 +3788,10 @@ export async function startAgentWorkspaceReview(
 
 export async function startAgentWorkspaceReviewFixer(
   conversationId: string,
+  input: {
+    confirmation: AgentWorkspaceReviewFixerConfirmation;
+    runtimeOverride?: ManualRoleRuntimeSelection;
+  },
 ): Promise<StartAgentWorkspaceReviewFixerResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-fixer-runs`,
@@ -3758,6 +3799,18 @@ export async function startAgentWorkspaceReviewFixer(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmation: {
+          target_scope: input.confirmation.targetScope,
+          diff_fingerprint: input.confirmation.diffFingerprint,
+          artifact_id: input.confirmation.artifactId,
+          artifact_version: input.confirmation.artifactVersion,
+          blocking_fingerprint: input.confirmation.blockingFingerprint,
+        },
+        runtime_override: input.runtimeOverride
+          ? roleRuntimeOverrideHttpInput(input.runtimeOverride)
+          : undefined,
+      }),
     },
   );
   return transformStartAgentWorkspaceReviewFixerResponse(raw);
@@ -4270,6 +4323,9 @@ export async function switchAgentConversationMode(
       input: {
         conversationId: input.conversationId,
         mode: input.mode,
+        ...(input.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          : {}),
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
@@ -4349,6 +4405,7 @@ export async function importAgentConversationPlan(
 export async function activateAgentTaskPipeline(input: {
   conversationId: string;
   sessionId: string;
+  runtimeOverride?: ManualRoleRuntimeSelection;
 }): Promise<AgentConversationWorkspace> {
   const raw = await typedInvoke(
     "activate_agent_task_pipeline",
@@ -4356,6 +4413,9 @@ export async function activateAgentTaskPipeline(input: {
       input: {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
+        ...(input.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          : {}),
       },
     },
     AgentConversationWorkspaceResponseSchema,
@@ -4434,6 +4494,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.codexFastMode != null
           ? { codexFastMode: options.codexFastMode }
+          : {}),
+        ...(options?.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.capabilityIntent

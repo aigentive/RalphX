@@ -148,9 +148,9 @@ describe("AgentRoleDefaultRow", () => {
     });
 
     expect(screen.getByRole("alert")).toHaveTextContent("An unstructured backend diagnostic");
-    expect(screen.getByRole("combobox", { name: "Workspace Project provider" }))
+    expect(screen.getByRole("button", { name: /^Runtime:/ }))
       .toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Persona & access" }))
+    expect(screen.getByRole("button", { name: "Permissions" }))
       .toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("combobox", { name: "Workspace Project approval policy" }))
       .toBeInTheDocument();

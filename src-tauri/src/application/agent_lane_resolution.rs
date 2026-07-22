@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     generic_harness_lane_defaults, generic_harness_role_defaults, AgentHarnessKind, AgentLane,
-    AgentLaneSettings, LogicalEffort, ManualServiceTier, RoutingRole, RoutingRoleFamily,
-    StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
+    AgentLaneSettings, LogicalEffort, ManualRoleDefault, ManualRoleRuntimeOverride,
+    ManualServiceTier, RoutingRole, RoutingRoleFamily, StoredAgentLaneSettings,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
 use crate::domain::repositories::AgentLaneSettingsRepository;
@@ -166,6 +167,7 @@ impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for Manual
             project_id,
             project_root,
             role,
+            None,
             None,
             None,
             self,
@@ -408,12 +410,52 @@ pub async fn resolve_manual_role_spawn_settings(
     project_id: Option<&str>,
     project_root: Option<&Path>,
     role: RoutingRole,
+    runtime_override: Option<&ManualRoleRuntimeOverride>,
     harness_override: Option<AgentHarnessKind>,
     model_override: Option<&str>,
     service: &ManualRoleDefaultService,
 ) -> AppResult<ResolvedAgentSpawnSettings> {
-    let resolved = service.resolve(project_id, project_root, role).await?;
-    let effective_harness = harness_override.unwrap_or(resolved.value.harness);
+    if runtime_override.is_some() && (harness_override.is_some() || model_override.is_some()) {
+        return Err(crate::error::AppError::Validation(
+            "A complete role runtime override cannot be mixed with legacy provider or model overrides"
+                .to_string(),
+        ));
+    }
+    let resolved = if runtime_override.is_some() {
+        service
+            .resolve_for_explicit_runtime(project_id, project_root, role)
+            .await?
+    } else {
+        service.resolve(project_id, project_root, role).await?
+    };
+    let selected_runtime = if let Some(runtime_override) = runtime_override {
+        Some(ManualRoleDefault {
+            harness: runtime_override.harness,
+            model: runtime_override.model.clone(),
+            effort: runtime_override.effort,
+            service_tier: runtime_override.service_tier,
+            coordination_mode: runtime_override.coordination_mode,
+            persona_id: runtime_override.persona_id.clone(),
+            approval_policy: resolved.value.approval_policy.clone(),
+            sandbox_mode: resolved.value.sandbox_mode.clone(),
+        })
+    } else {
+        None
+    };
+    let effective_harness = selected_runtime
+        .as_ref()
+        .map(|value| value.harness)
+        .or(harness_override)
+        .unwrap_or(resolved.value.harness);
+    let selected_provider = if selected_runtime.is_some() {
+        Some(
+            service
+                .resolve_enabled_provider_settings(effective_harness, "manual role runtime")
+                .await?,
+        )
+    } else {
+        None
+    };
     let settings_match_effective_harness = resolved.value.harness == effective_harness;
     let utility_legacy_harness_only = resolved.source == ManualDefaultSource::LegacyLane
         && role.metadata().family == RoutingRoleFamily::Utility;
@@ -432,21 +474,77 @@ pub async fn resolve_manual_role_spawn_settings(
     };
     let harness_defaults = manual_role_harness_defaults(role, effective_harness);
 
-    let model = model_override
-        .map(str::to_string)
-        .or_else(|| model_and_effort.and_then(|value| value.model.clone()))
+    let model = selected_runtime
+        .as_ref()
+        .and_then(|value| value.model.clone())
+        .or_else(|| {
+            selected_provider
+                .as_ref()
+                .and_then(|provider| provider.model.clone())
+        })
+        .or_else(|| model_override.map(str::to_string))
+        .or_else(|| {
+            selected_runtime
+                .is_none()
+                .then(|| model_and_effort.and_then(|value| value.model.clone()))
+                .flatten()
+        })
         .or_else(|| {
             harness_defaults
                 .as_ref()
                 .and_then(|settings| settings.model.clone())
         })
         .unwrap_or_else(|| resolve_model(Some(agent_name)));
-    let logical_effort = model_and_effort.and_then(|value| value.effort).or_else(|| {
-        harness_defaults
-            .as_ref()
-            .and_then(|settings| settings.effort)
-    });
-    let service_tier = selected.and_then(|value| manual_service_tier(value.service_tier));
+    if selected_runtime.is_some() {
+        validate_model_harness_compatibility(effective_harness, &model)
+            .map_err(crate::error::AppError::Validation)?;
+    }
+    let logical_effort = selected_runtime
+        .as_ref()
+        .and_then(|value| value.effort)
+        .or_else(|| {
+            selected_provider
+                .as_ref()
+                .and_then(|provider| provider.effort)
+        })
+        .or_else(|| {
+            selected_runtime
+                .is_none()
+                .then(|| model_and_effort.and_then(|value| value.effort))
+                .flatten()
+        })
+        .or_else(|| {
+            harness_defaults
+                .as_ref()
+                .and_then(|settings| settings.effort)
+        });
+    let service_tier = match selected_runtime.as_ref() {
+        Some(value) => match value.service_tier {
+            ManualServiceTier::ProviderDefault => selected_provider
+                .as_ref()
+                .and_then(|provider| provider.service_tier.as_deref())
+                .and_then(manual_provider_service_tier),
+            tier => manual_service_tier(tier),
+        },
+        None => selected.and_then(|value| manual_service_tier(value.service_tier)),
+    };
+    if let Some(selected_runtime) = selected_runtime.as_ref() {
+        let complete_runtime = ManualRoleDefault {
+            harness: effective_harness,
+            model: Some(model.clone()),
+            effort: logical_effort,
+            service_tier: manual_service_tier_from_resolved(service_tier.as_deref()),
+            coordination_mode: selected_runtime.coordination_mode,
+            persona_id: selected_runtime.persona_id.clone(),
+            approval_policy: selected_runtime.approval_policy.clone(),
+            sandbox_mode: selected_runtime.sandbox_mode.clone(),
+        };
+        service
+            .validate_explicit_value(role, &complete_runtime)
+            .await?;
+        validate_model_harness_compatibility(effective_harness, &model)
+            .map_err(crate::error::AppError::Validation)?;
+    }
     let (configured_subagent_model_cap, subagent_model_cap) =
         resolve_manual_subagent_model(project_id, project_root, role, effective_harness, service)
             .await?;
@@ -572,6 +670,22 @@ fn manual_service_tier(tier: ManualServiceTier) -> Option<String> {
         ManualServiceTier::ProviderDefault => None,
         ManualServiceTier::Standard => Some("standard".to_string()),
         ManualServiceTier::Fast => Some("fast".to_string()),
+    }
+}
+
+fn manual_provider_service_tier(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn manual_service_tier_from_resolved(service_tier: Option<&str>) -> ManualServiceTier {
+    match service_tier {
+        Some(value) if value.eq_ignore_ascii_case("fast") => ManualServiceTier::Fast,
+        Some(_) => ManualServiceTier::Standard,
+        None => ManualServiceTier::ProviderDefault,
     }
 }
 

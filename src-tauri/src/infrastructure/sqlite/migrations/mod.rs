@@ -516,8 +516,11 @@ mod v20260720131416_review_pr_disable_pr_automation;
 #[cfg(test)]
 mod v20260720131416_review_pr_disable_pr_automation_tests;
 mod v20260720200633_auto_verify_draft_plans;
+mod v20260721190000_workspace_review_fixer_attempt;
 #[cfg(test)]
 mod v20260720200633_auto_verify_draft_plans_tests;
+#[cfg(test)]
+mod v20260721190000_workspace_review_fixer_attempt_tests;
 mod v20260722022339_usage_capture_provenance_and_raw_snapshots;
 #[cfg(test)]
 mod v20260722022339_usage_capture_provenance_and_raw_snapshots_tests;
@@ -1692,6 +1695,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260720200633,
         name: "auto_verify_draft_plans",
         migrate: v20260720200633_auto_verify_draft_plans::migrate,
+    },
+    Migration {
+        version: 20260721190000,
+        name: "workspace_review_fixer_attempt",
+        migrate: v20260721190000_workspace_review_fixer_attempt::migrate,
     },
     Migration {
         version: 20260722022339,

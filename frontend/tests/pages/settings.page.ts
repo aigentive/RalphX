@@ -8,6 +8,7 @@ export class SettingsPage extends BasePage {
   readonly closeButton: Locator;
   readonly savingIndicator: Locator;
   readonly errorBanner: Locator;
+  readonly agentRuntimePicker: Locator;
 
   // Execution Section
   readonly executionSection: Locator;
@@ -41,6 +42,7 @@ export class SettingsPage extends BasePage {
     this.closeButton = this.settingsDialog.getByRole("button", { name: "Close settings" });
     this.savingIndicator = page.locator("text=Saving...");
     this.errorBanner = page.locator('[role="alert"]');
+    this.agentRuntimePicker = this.settingsDialog.getByTestId("agent-composer-runtime-pill");
 
     // Execution Section
     this.executionSection = page.locator("text=Control task execution behavior and concurrency").locator("..");
