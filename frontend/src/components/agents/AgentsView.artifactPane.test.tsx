@@ -10,7 +10,7 @@ import {
 } from "./AgentsView.testSetup";
 import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationKeys } from "@/hooks/useIdeation";
 import {
@@ -102,6 +102,13 @@ function workspaceReviewContext(overrides: {
 
 describe("AgentsView artifact pane", () => {
   beforeEach(setupAgentsViewTest);
+
+  // Warm the lazily imported pane module so the first pane-mounting test does
+  // not pay the one-time dynamic-import transform cost inside findBy's 1s
+  // timeout on loaded CI runners.
+  beforeAll(async () => {
+    await import("./AgentsArtifactPane");
+  });
 
   it("restores persisted artifact width, enforces pane and chat minimums, and resets to default on double click", async () => {
     window.localStorage.setItem("ralphx-agents-artifact-width", "720");
