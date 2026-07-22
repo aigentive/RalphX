@@ -1147,7 +1147,7 @@ function renderPanel(
     onSelectChatFocus: vi.fn(),
     onStartPersonaBuilder: vi.fn(),
     publishShortcutLabel: "P",
-    publishingConversationId: null,
+    publishAttemptsByConversationId: {},
     selectedConversationId: "conversation-1",
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn(),
@@ -1503,7 +1503,14 @@ describe("AgentsActiveConversationPanel", () => {
     composerPersonaControlRef.current = (
       <CountingPersonaControl slug="design-voice" />
     );
-    rerenderPanel({ publishingConversationId: "another-conversation" });
+    rerenderPanel({
+      publishAttemptsByConversationId: {
+        "another-conversation": {
+          conversationId: "another-conversation",
+          startedAtMs: 1,
+        },
+      },
+    });
 
     expect(CountingPersonaControl).toHaveBeenCalledTimes(2);
   });

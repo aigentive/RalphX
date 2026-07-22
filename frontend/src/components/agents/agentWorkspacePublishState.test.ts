@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
+  classifyAgentWorkspacePublishTerminalEvent,
+  getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
@@ -15,6 +18,21 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+function publicationEvent(
+  overrides: Partial<AgentConversationWorkspacePublicationEvent> = {},
+): AgentConversationWorkspacePublicationEvent {
+  return {
+    id: "event-1",
+    conversationId: "conversation-1",
+    step: "checking",
+    status: "started",
+    summary: "Checking workspace",
+    classification: null,
+    createdAt: "2026-04-23T09:00:01Z",
+    ...overrides,
+  };
+}
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -77,6 +95,165 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("getPostBaselinePublicationEvents", () => {
+  const startedAtMs = new Date("2026-04-23T09:00:00Z").getTime();
+  const events = [
+    publicationEvent({ id: "old", createdAt: "2026-04-23T08:59:59Z" }),
+    publicationEvent({ id: "checking" }),
+    publicationEvent({
+      id: "published",
+      step: "published",
+      status: "succeeded",
+      createdAt: "2026-04-23T09:00:02Z",
+    }),
+  ];
+
+  it("returns only the ordered suffix after an exact event baseline", () => {
+    expect(
+      getPostBaselinePublicationEvents(events, "old", startedAtMs)?.map(
+        (event) => event.id,
+      ),
+    ).toEqual(["checking", "published"]);
+  });
+
+  it("accepts all valid later events after an authoritatively empty baseline", () => {
+    expect(
+      getPostBaselinePublicationEvents(events.slice(1), null, startedAtMs)?.map(
+        (event) => event.id,
+      ),
+    ).toEqual(["checking", "published"]);
+  });
+
+  it("fails closed when the non-empty baseline disappears", () => {
+    expect(
+      getPostBaselinePublicationEvents(events.slice(1), "old", startedAtMs),
+    ).toBeNull();
+  });
+
+  it("excludes malformed and implausibly old timestamps from terminal authority", () => {
+    const suffix = getPostBaselinePublicationEvents(
+      [
+        publicationEvent({ id: "baseline" }),
+        publicationEvent({
+          id: "malformed",
+          step: "published",
+          status: "succeeded",
+          createdAt: "not-a-date",
+        }),
+        publicationEvent({
+          id: "stale",
+          step: "published",
+          status: "succeeded",
+          createdAt: "2026-04-23T08:00:00Z",
+        }),
+      ],
+      "baseline",
+      startedAtMs,
+    );
+
+    expect(suffix).toEqual([]);
+  });
+});
+
+describe("classifyAgentWorkspacePublishTerminalEvent", () => {
+  const currentWorkspace = workspace({
+    publicationPrNumber: 78,
+    publicationPushStatus: "pushed",
+  });
+  const currentFreshness = freshness({
+    isBaseAhead: false,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+  });
+
+  it("authorizes published success only with current workspace and full freshness", () => {
+    const published = publicationEvent({
+      step: "published",
+      status: "succeeded",
+    });
+
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        currentWorkspace,
+        currentFreshness,
+      ),
+    ).toEqual({ event: published, kind: "success" });
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        workspace({ publicationPushStatus: "pushed" }),
+        currentFreshness,
+      ),
+    ).toBeNull();
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        currentWorkspace,
+        undefined,
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["needs_agent", "failed", "agent_fixable", "needs_agent"],
+    ["failed", "failed", "operational", "failure"],
+    ["description_failed", "failed", "operational", "failure"],
+    ["no_changes", "skipped", null, "no_changes"],
+  ] as const)(
+    "classifies %s/%s as %s",
+    (step, status, classification, expectedKind) => {
+      const event = publicationEvent({ step, status, classification });
+      expect(
+        classifyAgentWorkspacePublishTerminalEvent(
+          [event],
+          workspace({ publicationPushStatus: step }),
+          undefined,
+        ),
+      ).toEqual({ event, kind: expectedKind });
+    },
+  );
+
+  it("keeps a terminal failure visible when later repair events are appended", () => {
+    const failure = publicationEvent({
+      id: "failure",
+      step: "needs_agent",
+      status: "failed",
+      classification: "agent_fixable",
+    });
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [
+          publicationEvent({ step: "checking", status: "started" }),
+          failure,
+          publicationEvent({
+            id: "repair",
+            step: "repair_sent",
+            status: "succeeded",
+          }),
+        ],
+        workspace({ publicationPushStatus: "needs_agent" }),
+        undefined,
+      ),
+    ).toEqual({ event: failure, kind: "needs_agent" });
+  });
+
+  it("ignores progress, repair-only, unknown, and mismatched needs-agent evidence", () => {
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [
+          publicationEvent({ step: "checking", status: "started" }),
+          publicationEvent({ step: "repair_sent", status: "succeeded" }),
+          publicationEvent({ step: "future_step", status: "succeeded" }),
+          publicationEvent({ step: "needs_agent", status: "succeeded" }),
+        ],
+        workspace(),
+        undefined,
+      ),
+    ).toBeNull();
+  });
+});
 
 describe("getAgentWorkspaceEffectiveBaseLabel", () => {
   it("uses the actual base ref for linked workspaces when the stored display name is the source branch", () => {

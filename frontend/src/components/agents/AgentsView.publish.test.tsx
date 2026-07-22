@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
 import { useChatStore } from "@/stores/chatStore";
@@ -38,11 +39,13 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  listAgentConversationWorkspacePublicationEventsMock,
   preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
   realPublishPanelState,
   sendAgentMessageMock,
   toastErrorMock,
+  toastSuccessMock,
   updateWorkspaceFromBaseMock,
 } = getAgentsViewTestMocks();
 
@@ -508,6 +511,91 @@ describe("AgentsView publish", () => {
         prUrl: "https://github.com/mock/project/pull/78",
       }),
     );
+  });
+
+  it("settles an unresolved publish from durable evidence after the publish pane unmounts", async () => {
+    const baselineEvent: AgentConversationWorkspacePublicationEvent = {
+      id: "baseline-event",
+      conversationId: "conversation-1",
+      step: "checking",
+      status: "succeeded",
+      summary: "Previous publish check",
+      classification: null,
+      createdAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    const publishedEvent: AgentConversationWorkspacePublicationEvent = {
+      id: "published-event",
+      conversationId: "conversation-1",
+      step: "published",
+      status: "succeeded",
+      summary: "Published pull request",
+      classification: null,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    };
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([
+      baselineEvent,
+    ]);
+    publishAgentConversationWorkspaceMock.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    configurePublishPane();
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit & Publish" }));
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-publish-dialog-close"));
+    fireEvent.click(screen.getByTestId("agents-artifact-pane-close"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-publish-pane")).not.toBeInTheDocument(),
+    );
+
+    const publishedWorkspace = conversationWorkspace({
+      mode: "edit",
+      publicationPushStatus: "pushed",
+      publicationPrNumber: 78,
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(publishedWorkspace);
+    getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(
+      fullFreshness({ unpublishedCommitCount: 0 }),
+    );
+    act(() => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.publicationEvents("conversation-1"),
+        [baselineEvent, publishedEvent],
+      );
+    });
+
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Published #78", {
+        description: "Untitled agent",
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:publish",
+      }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    const currentActionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    expect(
+      within(currentActionbar).getByRole("button", { name: "PR is up to date" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps loaded inline annotations while removing redundant sync summaries", async () => {

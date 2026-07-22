@@ -98,6 +98,7 @@ import type {
 } from "@/api/manual-role-defaults.types";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 
 import {
   getAgentConversationStoreKey,
@@ -774,7 +775,7 @@ interface AgentsActiveConversationPanelProps {
   onStartPersonaBuilder: () => void;
   publishShortcutLabel: string;
   promotePublishShortcut?: boolean;
-  publishingConversationId: string | null;
+  publishAttemptsByConversationId: Record<string, AgentWorkspacePublishAttempt>;
   selectedConversationId: string;
   selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
@@ -826,7 +827,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onStartPersonaBuilder,
   publishShortcutLabel,
   promotePublishShortcut = false,
-  publishingConversationId,
+  publishAttemptsByConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
   setTerminalChatDockElement,
@@ -3262,7 +3263,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   promotePublishShortcut ? activeWorkspace : null
                 }
                 promotePublishShortcut={promotePublishShortcut}
-                isPublishingWorkspace={publishingConversationId === selectedConversationId}
+                isPublishingWorkspace={Boolean(
+                  publishAttemptsByConversationId[selectedConversationId],
+                )}
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}
                 {...(isFocusedChildChat
