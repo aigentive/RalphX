@@ -72,15 +72,22 @@ struct ReopenFixture {
     events: Arc<RecordingEventSink>,
 }
 
-fn automation(project_id: &ProjectId) -> Automation {
+fn automation(project_id: &ProjectId, status: AutomationStatus) -> Automation {
     let now = Utc::now();
+    let (paused_reason_code, paused_reason_detail) = match status {
+        AutomationStatus::Paused => (
+            Some("workspace_review_blocked".to_string()),
+            Some("workspace review must be retried".to_string()),
+        ),
+        _ => (None, None),
+    };
     Automation {
         id: AutomationId::from_string("automation-reopen"),
         project_id: project_id.clone(),
         name: "Resume in place".to_string(),
-        status: AutomationStatus::Active,
-        paused_reason_code: None,
-        paused_reason_detail: None,
+        status,
+        paused_reason_code,
+        paused_reason_detail,
         goal_prompt: "Finish the existing implementation".to_string(),
         setup_conversation_id: None,
         provider_harness: "claude".to_string(),
@@ -161,6 +168,13 @@ fn run(
 }
 
 async fn setup(status: AutomationRunStatus) -> ReopenFixture {
+    setup_with_automation_status(status, AutomationStatus::Paused).await
+}
+
+async fn setup_with_automation_status(
+    run_status: AutomationRunStatus,
+    automation_status: AutomationStatus,
+) -> ReopenFixture {
     let temp = tempfile::tempdir().expect("tempdir");
     let worktree = temp.path().join("existing-worktree");
     std::fs::create_dir_all(worktree.join(".git")).expect("existing worktree");
@@ -174,7 +188,7 @@ async fn setup(status: AutomationRunStatus) -> ReopenFixture {
     state.events = events.clone();
     state.project_repo.create(project).await.expect("project");
 
-    let automation = automation(&project_id);
+    let automation = automation(&project_id, automation_status);
     state
         .automation_repo
         .create(automation.clone())
@@ -248,7 +262,7 @@ async fn setup(status: AutomationRunStatus) -> ReopenFixture {
         run_id.as_str(),
         &automation.id,
         1,
-        status,
+        run_status,
         Some(conversation_id),
     );
     state
@@ -268,6 +282,22 @@ async fn setup(status: AutomationRunStatus) -> ReopenFixture {
 }
 
 async fn assert_not_redriven(fixture: &ReopenFixture) {
+    let automation = fixture
+        .state
+        .automation_repo
+        .get_by_id(&fixture.automation.id)
+        .await
+        .expect("automation read")
+        .expect("automation");
+    assert_eq!(automation.status, fixture.automation.status);
+    assert_eq!(
+        automation.paused_reason_code,
+        fixture.automation.paused_reason_code
+    );
+    assert_eq!(
+        automation.paused_reason_detail,
+        fixture.automation.paused_reason_detail
+    );
     let messages = fixture
         .state
         .chat_message_repo
@@ -324,6 +354,17 @@ async fn reopen_automation_run_reuses_failed_run_conversation_and_resets_stale_s
     assert!(reopened
         .agent_phase_started_at
         .is_some_and(|started_at| started_at >= before && started_at <= after));
+
+    let reactivated = fixture
+        .state
+        .automation_repo
+        .get_by_id(&fixture.automation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reactivated.status, AutomationStatus::Active);
+    assert!(reactivated.paused_reason_code.is_none());
+    assert!(reactivated.paused_reason_detail.is_none());
 
     let workspace = fixture
         .state
@@ -394,6 +435,35 @@ async fn reopen_automation_run_reuses_failed_run_conversation_and_resets_stale_s
             AUTOMATION_UPDATED_EVENT.to_string()
         ]
     );
+}
+
+#[tokio::test]
+async fn reopen_automation_run_keeps_active_automation_active() {
+    let fixture =
+        setup_with_automation_status(AutomationRunStatus::AgentFailed, AutomationStatus::Active)
+            .await;
+    let redriver = RecordingRedriver::default();
+
+    reopen_automation_run_with_redriver(
+        &fixture.state,
+        &fixture.automation.id,
+        &fixture.run.id,
+        &redriver,
+    )
+    .await
+    .expect("active automation should reopen without a status transition");
+
+    let automation = fixture
+        .state
+        .automation_repo
+        .get_by_id(&fixture.automation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    assert!(automation.paused_reason_code.is_none());
+    assert!(automation.paused_reason_detail.is_none());
+    assert_eq!(redriver.redrives().len(), 1);
 }
 
 #[tokio::test]

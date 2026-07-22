@@ -14,7 +14,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AutomationId, AutomationRun, AutomationRunId, AutomationRunStatus,
-    ChatContextType, ChatConversationId,
+    AutomationStatus, ChatContextType, ChatConversationId,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::error::{AppError, AppResult};
@@ -23,6 +23,7 @@ pub(crate) const AUTOMATION_RUN_CONTINUATION_PROMPT: &str = "This run was interr
 
 struct ReopenContext {
     run: AutomationRun,
+    automation_status: AutomationStatus,
     workspace: AgentConversationWorkspace,
     conversation_id: ChatConversationId,
 }
@@ -102,6 +103,21 @@ pub(crate) async fn reopen_automation_run_with_redriver(
         ));
     }
 
+    if matches!(
+        context.automation_status,
+        AutomationStatus::Paused | AutomationStatus::Stopped
+    ) {
+        let _ = transition_service
+            .transition_automation_status(
+                automation_id,
+                context.automation_status,
+                AutomationStatus::Active,
+                None,
+                None,
+            )
+            .await?;
+    }
+
     reset_reopen_state(state, &context).await?;
     state
         .automation_run_repo
@@ -126,7 +142,7 @@ async fn load_reopen_context(
     automation_id: &AutomationId,
     run_id: &AutomationRunId,
 ) -> AppResult<ReopenContext> {
-    state
+    let automation = state
         .automation_repo
         .get_by_id(automation_id)
         .await?
@@ -184,6 +200,7 @@ async fn load_reopen_context(
 
     Ok(ReopenContext {
         run,
+        automation_status: automation.status,
         workspace,
         conversation_id,
     })
