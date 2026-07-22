@@ -33,7 +33,7 @@ When disabled:
 4. Review staged skills.
 5. Click **Approve** for skills you want agents to use.
 6. Optionally **Pin** important approved skills.
-7. Use **Preview export** before writing `.claude/skills` files.
+7. Use **Preview export** before writing project skill files to `.claude/skills` and `.agents/skills`.
 
 Approved skills are eligible for runtime injection and export. Staged skills are review candidates only.
 
@@ -45,14 +45,15 @@ The conversation Skills tab shows skills connected to that conversation by:
 - provenance from a generated/staged skill
 - usage events from injected approved skills
 
-Clicking refresh/process on that tab processes the current conversation on demand. This is intended for older chats that ran before automatic skill processing existed.
+Click **Process conversation skills** on that tab to process the current conversation on demand. Processing runs only when you choose this action.
 
-## Export To `.claude/skills`
+## Export To Provider Skill Directories
 
-Export is an explicit opt-in sink. It writes approved or pinned project skills into the active target repo at:
+Export is an explicit opt-in sink. It writes the same canonical `SKILL.md` for each approved or pinned project skill into both provider directories in the active target repo:
 
 ```text
 .claude/skills/<skill-slug-hash>/SKILL.md
+.agents/skills/<skill-slug-hash>/SKILL.md
 ```
 
 Export is designed as a reviewable git change, not a silent runtime dependency.
@@ -90,8 +91,8 @@ After export:
 
 ```bash
 git status --short
-git diff -- .claude/skills
-git add .claude/skills
+git diff -- .claude/skills .agents/skills
+git add .claude/skills .agents/skills
 git commit -m "docs: export RalphX project skills"
 ```
 
@@ -106,7 +107,7 @@ git commit -m "docs: export RalphX project skills"
 | "requires a clean review branch" | Uncommitted or untracked files exist | Commit, stash, or delete the files, then retry |
 | Preview shows 0 files | No approved or pinned skills are export-eligible | Approve or pin skills first |
 
-If export wrote files once, your worktree is now dirty by design. Commit or remove those `.claude/skills` files before running export again.
+If export wrote files once, your worktree is now dirty by design. Commit or remove the generated files under `.claude/skills` and `.agents/skills` before running export again.
 
 ## Create Skill From Memory
 
@@ -207,7 +208,7 @@ Preview is fail-closed: invalid rows stay invalid until fixed. Apply stages only
 | Reject | Keeps provenance but prevents use |
 | Pin | Keeps an approved skill prominent and export-eligible |
 | Archive | Hides a skill from active lists |
-| Export | Writes approved/pinned skills to `.claude/skills` on a clean review branch |
+| Export | Writes approved/pinned skills to `.claude/skills` and `.agents/skills` on a clean review branch |
 | Create skill from memory | Creates a staged skill candidate from rewritten procedural guidance |
 
 Project skills are still conservative: reporting is descriptive, underpowered skills should not be treated as proven winners, and export remains opt-in.
