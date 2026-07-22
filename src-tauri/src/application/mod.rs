@@ -44,6 +44,7 @@ mod agent_workspace_terminal_cleanup_tests;
 mod agent_workspace_pr_autofix_attempt_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
@@ -417,6 +418,8 @@ mod agent_workspace_external_pr_reconciliation_tests;
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_publish_repair_state_tests;
 #[cfg(test)]
 mod agent_workspace_review_publish_handoff_tests;
 #[cfg(test)]
