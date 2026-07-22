@@ -20,6 +20,8 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 
 ## Non-Conflation Rules
 
+- Local Workspace Review eligibility is `Edit | Ideation` only; PLAN and Review PR suppress all local review reads/actions, while PLAN may perform idempotent cleanup of authority that was already live before the mode transition.
+- Entering PLAN must quiesce reviewer/fixer runtime state and cancel any review-owned auto-merge guard before persisting the mode; cleanup preserves history, leaves auto-merge disabled, and cannot consume reviewer output or authorize publication.
 - Never describe Workspace Review as reviewing or approving a GitHub PR; it is a local quality/publish gate and has no GitHub review-action tool.
 - Workspace-delta Review authority requires a settled index with no unfinished merge/rebase; block with completion-or-abort guidance and recompute target/fingerprint/receipt after settlement.
 - Never describe Review PR as merely reviewing local branch changes; its authority is the linked remote PR identity, head, and lifecycle.

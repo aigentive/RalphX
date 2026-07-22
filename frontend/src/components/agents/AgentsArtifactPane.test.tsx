@@ -3164,6 +3164,24 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
   });
 
+  it("hides local Review and falls back from a persisted Review tab in PLAN mode", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        reviewArtifactId: "stale-review-artifact",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "plan", linkedIdeationSessionId: null }),
+    );
+
+    expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-review")).not.toBeInTheDocument();
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
+  });
+
   it("shows the PR artifact tab for DB-backed workspace pull requests", async () => {
     renderPane(
       "pr",

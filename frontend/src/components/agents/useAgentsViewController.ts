@@ -1130,7 +1130,11 @@ export function useAgentsViewController({
       payload: PrReviewArtifactEventPayload,
     ) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
-      if (!conversationId) {
+      if (
+        !conversationId ||
+        !workspaceReviewConversationId ||
+        conversationId !== workspaceReviewConversationId
+      ) {
         return;
       }
       void refreshWorkspaceReviewAfterSignal(
@@ -1165,7 +1169,11 @@ export function useAgentsViewController({
         (payload) => {
           refreshWorkspaceReviewArtifact(payload);
           const conversationId = payload.conversationId ?? payload.conversation_id;
-          if (conversationId && conversationId === selectedConversationId) {
+          if (
+            conversationId &&
+            conversationId === workspaceReviewConversationId &&
+            conversationId === selectedConversationId
+          ) {
             openArtifactTab(conversationId, "review");
           }
         },
@@ -1182,7 +1190,13 @@ export function useAgentsViewController({
       unsubscribeWorkspaceCreated();
       unsubscribeWorkspaceUpdated();
     };
-  }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
+  }, [
+    eventBus,
+    openArtifactTab,
+    queryClient,
+    selectedConversationId,
+    workspaceReviewConversationId,
+  ]);
 
   useEffect(() => {
     const invalidateConversationIssues = (
