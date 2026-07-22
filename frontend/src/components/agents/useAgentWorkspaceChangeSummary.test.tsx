@@ -260,6 +260,45 @@ describe("useAgentWorkspaceChangeSummary", () => {
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
   });
 
+  it("does not reuse active cumulative cache for terminal review history", () => {
+    const queryClient = makeQueryClient();
+    const activeFile: FileChange = {
+      path: "src/active-only.ts",
+      status: "modified",
+      additions: 9,
+      deletions: 2,
+      isGenerated: false,
+    };
+    const publishedFile: FileChange = {
+      path: "src/published.ts",
+      status: "modified",
+      additions: 3,
+      deletions: 1,
+      isGenerated: false,
+    };
+    queryClient.setQueryData(
+      ["agents", "workspace-diff", "conversation-1", "cumulative-files"],
+      [activeFile],
+    );
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview([publishedFile], {
+            baseRef: "base-sha",
+            headRef: "refs/ralphx/pr-heads/451",
+            supportsWorktreeModes: false,
+          }),
+          defaultMode: "cumulative",
+        }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    expect(result.current.currentFiles).toEqual([publishedFile]);
+    expect(result.current.currentFiles).not.toContainEqual(activeFile);
+  });
+
   it("disables every query and neutralizes cached results when the surface is disabled", () => {
     const queryClient = makeQueryClient();
     const cachedFile = {

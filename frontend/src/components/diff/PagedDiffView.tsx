@@ -454,9 +454,12 @@ export function PagedDiffView({
     return (
       <div
         data-testid="paged-diff-loading"
+        role="status"
+        aria-busy="true"
         className="space-y-px px-3 py-3"
         style={{ backgroundColor: "var(--bg-base)" }}
       >
+        <span className="sr-only">Loading diff rows</span>
         {Array.from({ length: PLACEHOLDER_ROWS }).map((_, index) => (
           <div
             key={index}

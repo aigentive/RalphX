@@ -241,7 +241,13 @@ export function useAgentWorkspaceChangeSummary({
   });
 
   const cumulativeFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "cumulative-files"],
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      "cumulative-files",
+      ...(!supportsWorktreeModes
+        ? ["read-only", review?.baseRef ?? "", review?.headRef ?? ""]
+        : []),
+    ],
     queryFn: () =>
       diffApi.getAgentConversationWorkspaceCumulativeFileChanges(
         conversationId,

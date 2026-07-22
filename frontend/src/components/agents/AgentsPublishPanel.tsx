@@ -343,8 +343,9 @@ export function AgentPublishPanel({
   });
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
-  const inlineDiffDefaultMode =
-    terminalPublicationStatus === "merged" ? "cumulative" : undefined;
+  const inlineDiffDefaultMode = terminalPublicationStatus
+    ? "cumulative"
+    : undefined;
   const cumulativeModeLabel =
     terminalPublicationStatus === "merged"
       ? "Published changes"
@@ -1545,6 +1546,7 @@ export function AgentPublishPanel({
             }}
           >
             <AgentsPublishInlineDiffs
+              key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
               conversationId={conversationId ?? ""}
               review={reviewQuery.data ?? null}
               commits={commits}

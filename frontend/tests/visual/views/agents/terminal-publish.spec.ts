@@ -20,9 +20,7 @@ test.describe("Agents terminal publish history", () => {
       page.getByText("a new workspace branch will be created automatically."),
     ).toBeVisible();
     await expect(publish.historicalFilter).toContainText("Published changes");
-    await expect(
-      publish.inlineDiffs.getByText("inlineRowsArePaged = true"),
-    ).toBeVisible();
+    await expect(publish.pagedDiffContent).toBeVisible();
     await expect(
       publish.inlineDiffs.getByTestId("file-diff-pre-hydration"),
     ).toHaveCount(0);

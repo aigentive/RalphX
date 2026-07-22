@@ -11,6 +11,7 @@ export class AgentsPublishPage extends BasePage {
   readonly terminalHeading: Locator;
   readonly historicalFilter: Locator;
   readonly inlineDiffs: Locator;
+  readonly pagedDiffContent: Locator;
   readonly composerContext: Locator;
 
   constructor(page: Page) {
@@ -18,6 +19,9 @@ export class AgentsPublishPage extends BasePage {
     this.terminalHeading = page.getByRole("heading", { name: "Pull Request Merged" });
     this.historicalFilter = page.getByTestId("diff-filter-trigger");
     this.inlineDiffs = page.getByTestId("agents-publish-inline-diffs");
+    this.pagedDiffContent = this.inlineDiffs
+      .getByText("inlineRowsArePaged = true")
+      .first();
     this.composerContext = page.getByTestId("agents-composer-workspace-changes");
   }
 
@@ -78,16 +82,23 @@ export class AgentsPublishPage extends BasePage {
           },
         },
       ];
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "200");
+      const pageRows = rows.slice(offset, offset + limit);
+      const nextOffset =
+        offset + pageRows.length < rows.length
+          ? offset + pageRows.length
+          : null;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           file_path: filePath,
           language: "tsx",
-          rows,
-          offset: 0,
-          limit: Number(url.searchParams.get("limit") ?? "200"),
-          next_offset: null,
+          rows: pageRows,
+          offset,
+          limit,
+          next_offset: nextOffset,
           total_rows: rows.length,
           old_total_lines: 2,
           new_total_lines: 3,

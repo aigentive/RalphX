@@ -172,6 +172,11 @@ export function AgentsPublishFileDiff({
     diffPageRefKind,
     isShowAnywayOverridden,
   });
+  const diffPageIdentity = diffPageRefKind
+    ? diffPageRefKind.kind === "commit"
+      ? `${diffPageRefKind.kind}:${diffPageRefKind.sha}`
+      : diffPageRefKind.kind
+    : "none";
   const pathButtonRef = useRef<HTMLButtonElement | null>(null);
   const showReviewOnlyBody = contentMode === "review-only" && !isConflictMode;
   const groupedHunkAnnotations = groupHunkAnnotations(hunkAnnotations);
@@ -536,7 +541,12 @@ export function AgentsPublishFileDiff({
 
               {usePagedDiff && (
                 <PagedDiffView
-                  key={diffPageReloadKey ?? "stable"}
+                  key={[
+                    conversationId,
+                    file.path,
+                    diffPageIdentity,
+                    diffPageReloadKey ?? "stable",
+                  ].join("\u0000")}
                   conversationId={conversationId!}
                   filePath={file.path}
                   refKind={diffPageRefKind!}

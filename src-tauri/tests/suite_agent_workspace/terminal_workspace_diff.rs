@@ -1,3 +1,4 @@
+use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::diff_service::{DiffLineKind, DiffPageRow, DiffRefKind};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::diff_commands::{
@@ -155,4 +156,106 @@ async fn terminal_workspace_diff_pages_use_preserved_pr_head_without_restoring_b
         &repo,
         &format!("refs/heads/{workspace_branch}")
     ));
+}
+
+#[tokio::test]
+async fn terminal_transition_does_not_reuse_cached_active_branch_context() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo should be created");
+
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("base file should be written");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "base"]);
+    let base_commit = git(&repo, &["rev-parse", "HEAD"]);
+
+    let workspace_branch = "ralphx/demo/terminal-cache";
+    git(&repo, &["checkout", "-b", workspace_branch]);
+    std::fs::write(repo.join("published.rs"), "pub fn published() {}\n")
+        .expect("published file should be written");
+    git(&repo, &["add", "published.rs"]);
+    git(&repo, &["commit", "-m", "feat: published change"]);
+    let pr_head = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["update-ref", "refs/ralphx/pr-heads/452", &pr_head]);
+    std::fs::write(repo.join("active-only.rs"), "pub fn active_only() {}\n")
+        .expect("active-only file should be written");
+    git(&repo, &["add", "active-only.rs"]);
+    git(&repo, &["commit", "-m", "feat: unpublished active change"]);
+    git(&repo, &["checkout", "main"]);
+
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Terminal Workspace Cache".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id =
+        ChatConversationId::from_string("00000000-0000-4000-8000-000000000452");
+    let expected_worktree = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("canonical worktree path should resolve");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_commit),
+        workspace_branch.to_string(),
+        expected_worktree.to_string_lossy().to_string(),
+    );
+    workspace.publication_pr_number = Some(452);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let active_changes = get_agent_conversation_workspace_cumulative_file_changes_for_state(
+        &state,
+        &conversation_id,
+    )
+    .await
+    .expect("active cumulative files should load from the workspace branch");
+    assert!(active_changes
+        .iter()
+        .any(|change| change.path == "active-only.rs"));
+
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation_id,
+            Some(452),
+            Some("https://github.com/mock/project/pull/452"),
+            Some("merged"),
+            Some("pushed"),
+        )
+        .await
+        .expect("workspace should transition to merged");
+    git(&repo, &["branch", "-D", workspace_branch]);
+
+    let terminal_changes = get_agent_conversation_workspace_cumulative_file_changes_for_state(
+        &state,
+        &conversation_id,
+    )
+    .await
+    .expect("terminal cumulative files should refresh to the preserved PR head");
+    assert_eq!(
+        terminal_changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["published.rs"]
+    );
 }
