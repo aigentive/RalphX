@@ -4098,6 +4098,7 @@ async fn agent_workspace_review_feedback_final_authorization_rejects_disabled_wo
 
     assert!(!routed);
     assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
     assert!(chat.get_sent_messages().await.is_empty());
     let updated = inner
         .get_by_conversation_id(&conversation_id)
@@ -4105,15 +4106,20 @@ async fn agent_workspace_review_feedback_final_authorization_rejects_disabled_wo
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
     assert!(!updated.pr_autofix_enabled);
-    assert_eq!(updated.pr_auto_merge_current, Some(false));
-    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
-    assert_ne!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(updated.pr_auto_merge_current, Some(true));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("authorization changed"));
     assert!(inner
         .list_publication_events(&conversation_id)
         .await
         .expect("events should list")
         .iter()
-        .all(|event| event.step != "github_review"));
+        .any(|event| event.step == "pr_autofix" && event.status == "failed"));
 }
 
 #[tokio::test]
