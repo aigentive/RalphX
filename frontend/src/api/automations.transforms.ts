@@ -91,6 +91,7 @@ export function transformAutomationRun(raw: RawAutomationRun): AutomationRun {
     baseRefKind: raw.base_ref_kind,
     baseRefUsed: raw.base_ref_used,
     baseFromRunId: raw.base_from_run_id,
+    goalItemId: raw.goal_item_id,
     branchName: raw.branch_name,
     prNumber: raw.pr_number,
     prUrl: raw.pr_url,
