@@ -92,6 +92,27 @@ async fn replace_usage_capture_round_trips_and_can_clear_message_usage() {
     assert_eq!(retrieved.raw_usage_snapshot, Some(raw));
 }
 
+#[tokio::test]
+async fn replace_usage_capture_rejects_missing_message() {
+    let repo = setup_repo();
+
+    let error = repo
+        .replace_usage_capture(
+            &ChatMessageId::new(),
+            &UsageCapture::normalized(
+                AgentRunUsage {
+                    input_tokens: Some(10),
+                    ..AgentRunUsage::default()
+                },
+                UsageProvenance::ProviderTurnDelta,
+            ),
+        )
+        .await
+        .expect_err("a missing canonical teammate message must fail closed");
+
+    assert!(matches!(error, ralphx_lib::error::AppError::NotFound(_)));
+}
+
 // ==================== GET LATEST MESSAGE BY ROLE TESTS ====================
 
 #[tokio::test]

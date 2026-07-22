@@ -232,7 +232,7 @@ fn build_usage_aggregates(
                 .remove(&conversation_id)
                 .unwrap_or_default(),
         );
-        if message_usage.samples.len() > run_usage.samples.len() {
+        if message_usage.usable_sample_count() > run_usage.usable_sample_count() {
             effective_message_conversation_count += 1;
             effective_usage.extend(message_usage);
         } else if !run_usage.samples.is_empty() {
@@ -573,6 +573,15 @@ struct ResolvedUsage {
 }
 
 impl ResolvedUsage {
+    fn usable_sample_count(&self) -> usize {
+        self.samples
+            .iter()
+            .filter(|sample| {
+                processed_tokens(sample.harness, &sample.usage, sample.provenance).is_some()
+            })
+            .count()
+    }
+
     fn extend(&mut self, other: Self) {
         self.samples.extend(other.samples);
         self.legacy_estimated_sample_count += other.legacy_estimated_sample_count;

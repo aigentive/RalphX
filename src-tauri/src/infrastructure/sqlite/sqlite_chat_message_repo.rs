@@ -404,7 +404,7 @@ impl ChatMessageRepository for SqliteChatMessageRepository {
         self.db
             .run(move |conn| {
                 let raw = capture.raw_snapshot.unwrap_or_default();
-                conn.execute(
+                let affected = conn.execute(
                     "UPDATE chat_messages
                      SET input_tokens = ?1,
                          output_tokens = ?2,
@@ -433,6 +433,11 @@ impl ChatMessageRepository for SqliteChatMessageRepository {
                         id,
                     ],
                 )?;
+                if affected == 0 {
+                    return Err(crate::error::AppError::NotFound(format!(
+                        "Chat message not found: {id}"
+                    )));
+                }
                 Ok(())
             })
             .await

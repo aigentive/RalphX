@@ -27,9 +27,6 @@ import {
   type RenderReadyMessageCreatedPayload,
 } from "@/hooks/useChat";
 import { conversationStatsKey } from "@/hooks/useConversationStats";
-import { projectChatUsageStatsKeys } from "@/hooks/useProjectChatUsageStats";
-import { taskChatUsageStatsKeys } from "@/hooks/useTaskChatUsageStats";
-import { insightsChatUsageStatsKeys } from "@/hooks/useInsightsMetrics";
 import { getContextConfig } from "@/lib/chat-context-registry";
 import { isProviderRole } from "@/lib/chat/provider-role";
 import type { ContextType } from "@/types/chat-conversation";
@@ -1556,49 +1553,6 @@ export function useChatEvents({
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),
         });
-      })
-    );
-
-    // ── agent:usage_updated ─────────────────────────────────────────
-    // Usage snapshots are persisted during the live turn; refetch stats immediately.
-    unsubscribes.push(
-      bus.subscribe<{
-        conversation_id: string;
-        context_id?: string;
-        context_type?: string;
-      }>("agent:usage_updated", (payload) => {
-        if (!isRelevant(payload)) return;
-
-        queryClient.invalidateQueries({
-          queryKey: conversationStatsKey(payload.conversation_id),
-        });
-        if (payload.context_type === "project" && payload.context_id) {
-          queryClient.invalidateQueries({
-            queryKey: projectChatUsageStatsKeys.byProject(payload.context_id),
-          });
-          queryClient.invalidateQueries({
-            queryKey: insightsChatUsageStatsKeys.all,
-          });
-        } else if (
-          payload.context_id &&
-          ["task", "task_execution", "review", "merge"].includes(
-            payload.context_type ?? "",
-          )
-        ) {
-          queryClient.invalidateQueries({
-            queryKey: taskChatUsageStatsKeys.byTask(payload.context_id),
-          });
-          queryClient.invalidateQueries({
-            queryKey: projectChatUsageStatsKeys.all,
-          });
-          queryClient.invalidateQueries({
-            queryKey: insightsChatUsageStatsKeys.all,
-          });
-        } else {
-          queryClient.invalidateQueries({
-            queryKey: insightsChatUsageStatsKeys.all,
-          });
-        }
       })
     );
 

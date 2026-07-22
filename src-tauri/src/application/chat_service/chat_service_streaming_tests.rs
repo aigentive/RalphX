@@ -32,6 +32,7 @@ use crate::infrastructure::agents::{
 use crate::infrastructure::memory::MemoryAgentRunRepository;
 use crate::infrastructure::memory::MemoryChatMessageRepository;
 use crate::infrastructure::sqlite::SqliteAgentRunRepository;
+use crate::testing::SqliteTestDb;
 use chrono::{Duration, Utc};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
@@ -1329,6 +1330,67 @@ async fn canonical_run_capture_failure_suppresses_message_mirror() {
         .unwrap();
     assert_eq!(mirrored.input_tokens, None);
     assert_eq!(mirrored.usage_provenance, None);
+}
+
+#[tokio::test]
+async fn codex_cumulative_capture_requires_persisted_session_attribution() {
+    let db = SqliteTestDb::new("codex-session-attribution-capture");
+    let conversation = db.seed_ideation_conversation();
+    let repo_impl = Arc::new(SqliteAgentRunRepository::from_shared(db.shared_conn()));
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id.as_str();
+    repo_impl.create(run).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_codex_session_attribution
+             BEFORE UPDATE OF provider_session_id ON agent_runs
+             BEGIN
+               SELECT RAISE(ABORT, 'session attribution failed');
+             END;",
+        )
+        .unwrap();
+    });
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"thread.started","thread_id":"thread-attribution-failure"}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}"#,
+        r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10}}}"#,
+    ])
+    .await;
+    let repo: Arc<dyn AgentRunRepository> = repo_impl.clone();
+
+    process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        conversation.context_id.as_str(),
+        &conversation.id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        Some(repo),
+        Some(run_id.clone()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("the provider turn can finish even when usage attribution fails");
+
+    let persisted = repo_impl
+        .get_by_id(&AgentRunId::from_string(run_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.provider_session_id, None);
+    assert_eq!(persisted.usage_provenance, None);
+    assert_eq!(persisted.raw_usage_snapshot, None);
 }
 
 #[test]

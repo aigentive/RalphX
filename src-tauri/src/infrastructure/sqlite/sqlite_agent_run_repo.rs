@@ -9,6 +9,22 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+
+fn parse_usage_provenance(
+    value: Option<String>,
+) -> rusqlite::Result<Option<UsageProvenance>> {
+    value
+        .map(|value| {
+            value.parse::<UsageProvenance>().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                )
+            })
+        })
+        .transpose()
+}
 /// Parse datetime string handling both RFC3339 and SQLite's CURRENT_TIMESTAMP formats
 fn parse_datetime(s: &str) -> DateTime<Utc> {
     // Try RFC3339 first (e.g., "2026-01-26T06:42:37.662598+00:00")
@@ -67,9 +83,7 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         cache_creation_tokens: row.get("cache_creation_tokens")?,
         cache_read_tokens: row.get("cache_read_tokens")?,
         estimated_usd: row.get("estimated_usd")?,
-        usage_provenance: row
-            .get::<_, Option<String>>("usage_provenance")?
-            .and_then(|value| value.parse::<UsageProvenance>().ok()),
+        usage_provenance: parse_usage_provenance(row.get("usage_provenance")?)?,
         raw_usage_snapshot: {
             let snapshot = ProviderUsageSnapshot {
                 input_tokens: row.get("raw_usage_input_tokens")?,
@@ -914,9 +928,9 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens: row.get("cache_creation_tokens")?,
                             cache_read_tokens: row.get("cache_read_tokens")?,
                             estimated_usd: row.get("estimated_usd")?,
-                            usage_provenance: row
-                                .get::<_, Option<String>>("usage_provenance")?
-                                .and_then(|value| value.parse::<UsageProvenance>().ok()),
+                            usage_provenance: parse_usage_provenance(
+                                row.get("usage_provenance")?,
+                            )?,
                             raw_usage_snapshot: {
                                 let snapshot = ProviderUsageSnapshot {
                                     input_tokens: row.get("raw_usage_input_tokens")?,

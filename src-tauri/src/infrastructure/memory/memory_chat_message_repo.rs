@@ -13,7 +13,7 @@ use crate::domain::entities::{
     IdeationSessionId, MessageRole, ProjectId, TaskId, UsageCapture,
 };
 use crate::domain::repositories::ChatMessageRepository;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// In-memory implementation of ChatMessageRepository for testing
 pub struct MemoryChatMessageRepository {
@@ -252,9 +252,10 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
         capture: &UsageCapture,
     ) -> AppResult<()> {
         let mut messages = self.messages.write().unwrap();
-        if let Some(message) = messages.get_mut(&id.to_string()) {
-            message.replace_usage_capture(capture);
-        }
+        let message = messages
+            .get_mut(&id.to_string())
+            .ok_or_else(|| AppError::NotFound(format!("Chat message not found: {id}")))?;
+        message.replace_usage_capture(capture);
         Ok(())
     }
 

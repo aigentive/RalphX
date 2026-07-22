@@ -168,6 +168,29 @@ fn terminal_result_usage_replaces_provisional_assistant_maxima() {
 }
 
 #[test]
+fn empty_terminal_result_usage_preserves_provisional_assistant_usage() {
+    let mut processor = StreamProcessor::new();
+    let assistant = StreamProcessor::parse_line(
+        r#"{"type":"assistant","message":{"usage":{"input_tokens":41,"output_tokens":7,"cache_read_input_tokens":30},"content":[]}}"#,
+    )
+    .expect("assistant usage should parse");
+    processor.process_parsed_line(assistant);
+    let result = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"done","usage":{}}"#,
+    )
+    .expect("empty terminal usage should parse");
+    processor.process_parsed_line(result);
+
+    let capture = processor
+        .current_turn_capture()
+        .expect("assistant usage should remain available");
+    assert_eq!(capture.normalized.input_tokens, Some(41));
+    assert_eq!(capture.normalized.output_tokens, Some(7));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(30));
+    assert_eq!(capture.provenance, UsageProvenance::ProviderSnapshotFallback);
+}
+
+#[test]
 fn nested_terminal_result_usage_does_not_replace_lead_usage() {
     let mut processor = StreamProcessor::new();
     processor.process_message(StreamMessage::Assistant {

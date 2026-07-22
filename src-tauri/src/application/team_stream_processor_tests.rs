@@ -141,10 +141,12 @@ async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_l
     let conversations =
         Arc::new(crate::infrastructure::memory::MemoryChatConversationRepository::new());
     let messages = Arc::new(crate::infrastructure::memory::MemoryChatMessageRepository::new());
-    let line = r#"{"type":"result","session_id":"teammate-session","is_error":false,"result":"Done","usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_tokens":127826,"cache_read_tokens":1099251}}"#;
+    let assistant = r#"{"type":"assistant","session_id":"teammate-session","message":{"usage":{"input_tokens":3,"output_tokens":73,"cache_creation_input_tokens":100,"cache_read_input_tokens":500},"content":[{"type":"text","text":"Working"}]}}"#;
+    let result = r#"{"type":"result","session_id":"teammate-session","is_error":false,"result":"Done","usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_tokens":127826,"cache_read_tokens":1099251}}"#;
     let mut child = tokio::process::Command::new("printf")
-        .arg("%s\n")
-        .arg(line)
+        .arg("%s\n%s\n")
+        .arg(assistant)
+        .arg(result)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -160,7 +162,7 @@ async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_l
         "project".to_string(),
         "project-1".to_string(),
         app.handle().clone(),
-        team_tracker,
+        team_tracker.clone(),
         None,
         Some(conversations.clone()),
         Some(messages.clone()),
@@ -181,6 +183,7 @@ async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_l
         .unwrap();
     let message = persisted.first().expect("teammate assistant message");
     assert_eq!(message.provider_harness, Some(AgentHarnessKind::Claude));
+    assert_eq!(message.provider_session_id.as_deref(), Some("teammate-session"));
     assert_eq!(message.input_tokens, Some(13));
     assert_eq!(message.output_tokens, Some(1_434));
     assert_eq!(message.cache_creation_tokens, Some(127_826));
@@ -189,6 +192,21 @@ async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_l
         message.usage_provenance,
         Some(UsageProvenance::ProviderTurnDelta)
     );
+    assert_eq!(
+        conversation.provider_session_ref(),
+        Some(crate::domain::agents::ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "teammate-session".to_string(),
+        })
+    );
+    let cost = team_tracker
+        .get_teammate_cost("team-usage", "worker")
+        .await
+        .unwrap();
+    assert_eq!(cost.input_tokens, 13);
+    assert_eq!(cost.output_tokens, 1_434);
+    assert_eq!(cost.cache_creation_tokens, 127_826);
+    assert_eq!(cost.cache_read_tokens, 1_099_251);
 }
 
 #[test]
@@ -245,140 +263,6 @@ fn teammate_tool_result_event_payload_includes_preview_metadata() {
     assert_eq!(payload["detail_ref"]["message_id"], "msg-1");
     assert_eq!(payload["parent_tool_use_id"], "parent-tool");
     assert_eq!(payload["conversation_id"], "conv-1");
-}
-
-// ============================================================================
-// extract_assistant_usage tests
-// ============================================================================
-
-#[test]
-fn test_extract_assistant_usage_updates_from_message_usage() {
-    let raw = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "usage": {
-                "input_tokens": 1500,
-                "output_tokens": 300
-            },
-            "content": [{"type": "text", "text": "hello"}]
-        }
-    });
-
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(updated, "Should return true when totals increase");
-    assert_eq!(total_input, 1500);
-    assert_eq!(total_output, 300);
-}
-
-#[test]
-fn test_extract_assistant_usage_cumulative_only_increases() {
-    // Assistant usage is cumulative within a turn — later messages have higher counts.
-    // Earlier (lower) values should not reduce the totals.
-    let mut total_input = 2000u64;
-    let mut total_output = 500u64;
-
-    let raw = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "usage": {
-                "input_tokens": 1500,
-                "output_tokens": 300
-            }
-        }
-    });
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(!updated, "Should return false when new values are lower");
-    assert_eq!(total_input, 2000, "Input should stay at higher value");
-    assert_eq!(total_output, 500, "Output should stay at higher value");
-}
-
-#[test]
-fn test_extract_assistant_usage_partial_increase() {
-    // Only input increases, output stays the same
-    let mut total_input = 1000u64;
-    let mut total_output = 500u64;
-
-    let raw = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "usage": {
-                "input_tokens": 2000,
-                "output_tokens": 300
-            }
-        }
-    });
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(
-        updated,
-        "Should return true when at least one total increases"
-    );
-    assert_eq!(total_input, 2000, "Input should update to higher value");
-    assert_eq!(total_output, 500, "Output should stay at higher value");
-}
-
-#[test]
-fn test_extract_assistant_usage_no_usage_field() {
-    let raw = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "content": [{"type": "text", "text": "hello"}]
-        }
-    });
-
-    let mut total_input = 100u64;
-    let mut total_output = 50u64;
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(!updated, "Should return false when no usage field");
-    assert_eq!(total_input, 100, "Input should be unchanged");
-    assert_eq!(total_output, 50, "Output should be unchanged");
-}
-
-#[test]
-fn test_extract_assistant_usage_no_message_field() {
-    let raw = serde_json::json!({
-        "type": "assistant"
-    });
-
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(!updated, "Should return false when no message field");
-}
-
-#[test]
-fn test_extract_assistant_usage_zero_initial_values() {
-    // Even zero → zero should not count as an update
-    let raw = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0
-            }
-        }
-    });
-
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-
-    let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
-
-    assert!(
-        !updated,
-        "Should return false when values are equal (both zero)"
-    );
 }
 
 // ============================================================================

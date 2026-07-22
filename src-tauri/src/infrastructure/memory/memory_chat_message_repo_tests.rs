@@ -135,6 +135,27 @@ async fn replace_usage_capture_clears_stale_memory_message_usage() {
 }
 
 #[tokio::test]
+async fn replace_usage_capture_rejects_missing_memory_message() {
+    let repo = MemoryChatMessageRepository::new();
+
+    let error = repo
+        .replace_usage_capture(
+            &ChatMessageId::new(),
+            &UsageCapture::normalized(
+                AgentRunUsage {
+                    input_tokens: Some(10),
+                    ..AgentRunUsage::default()
+                },
+                UsageProvenance::ProviderTurnDelta,
+            ),
+        )
+        .await
+        .expect_err("a missing canonical teammate message must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
 async fn test_update_attribution_updates_message_attribution_fields() {
     let repo = MemoryChatMessageRepository::new();
     let session_id = IdeationSessionId::new();

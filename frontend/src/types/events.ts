@@ -536,7 +536,8 @@ export interface TeamDisbandedPayload {
 
 export interface TeamCostUpdatePayload {
   team_name: string; teammate_name: string; input_tokens: number;
-  output_tokens: number; estimated_usd: number;
+  output_tokens: number; cache_creation_tokens: number; cache_read_tokens: number;
+  estimated_usd: number;
   context_type: string; context_id: string;
 }
 

@@ -592,6 +592,26 @@ async fn replace_usage_capture_rejects_missing_sqlite_run() {
     assert!(matches!(error, crate::error::AppError::NotFound(_)));
 }
 
+#[tokio::test]
+async fn get_by_id_rejects_unknown_non_null_usage_provenance() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET usage_provenance = 'future_capture_kind' WHERE id = ?1",
+            [run_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    repo.get_by_id(&run_id)
+        .await
+        .expect_err("unknown provenance must not be reclassified as legacy data");
+}
+
 // ─── get_latest / get_active ─────────────────────────────────────────────────
 
 #[tokio::test]

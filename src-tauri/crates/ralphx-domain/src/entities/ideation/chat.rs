@@ -3,12 +3,26 @@
 use chrono::{DateTime, Utc};
 use rusqlite::Row;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{io, str::FromStr};
 
 use super::types::parse_datetime_helper;
 use crate::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use crate::entities::{AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance};
 use crate::entities::{ChatConversationId, ChatMessageId, IdeationSessionId, ProjectId, TaskId};
+
+fn parse_usage_provenance(value: Option<String>) -> rusqlite::Result<Option<UsageProvenance>> {
+    value
+        .map(|value| {
+            value.parse::<UsageProvenance>().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(io::Error::new(io::ErrorKind::InvalidData, error)),
+                )
+            })
+        })
+        .transpose()
+}
 
 // ============================================================================
 // ChatMessage and Related Types
@@ -473,11 +487,9 @@ impl ChatMessage {
         let cache_creation_tokens: Option<u64> = row.get("cache_creation_tokens").ok().flatten();
         let cache_read_tokens: Option<u64> = row.get("cache_read_tokens").ok().flatten();
         let estimated_usd: Option<f64> = row.get("estimated_usd").ok().flatten();
-        let usage_provenance = row
-            .get::<_, Option<String>>("usage_provenance")
-            .ok()
-            .flatten()
-            .and_then(|value| value.parse::<UsageProvenance>().ok());
+        let usage_provenance = parse_usage_provenance(
+            row.get::<_, Option<String>>("usage_provenance").ok().flatten(),
+        )?;
         let raw_usage_snapshot = ProviderUsageSnapshot {
             input_tokens: row.get("raw_usage_input_tokens").ok().flatten(),
             output_tokens: row.get("raw_usage_output_tokens").ok().flatten(),

@@ -247,9 +247,14 @@ impl StreamProcessor {
                 if parent_tool_use_id.is_none() {
                     let estimated_usd = (cost_usd > 0.0).then_some(cost_usd);
                     if let Some(usage) = usage {
-                        self.current_turn_usage = usage.into_agent_run_usage(estimated_usd);
-                        self.current_turn_usage_provenance =
-                            Some(UsageProvenance::ProviderTurnDelta);
+                        let terminal_usage = usage.into_agent_run_usage(estimated_usd);
+                        if !terminal_usage.is_empty() {
+                            self.current_turn_usage = terminal_usage;
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderTurnDelta);
+                        } else if let Some(cost_usd) = estimated_usd {
+                            self.current_turn_usage.estimated_usd = Some(cost_usd);
+                        }
                     } else if let Some(cost_usd) = estimated_usd {
                         self.current_turn_usage.estimated_usd = Some(cost_usd);
                         if self.current_turn_usage_provenance.is_none() {

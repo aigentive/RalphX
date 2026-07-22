@@ -126,6 +126,8 @@ describe("UsageInsightsCard", () => {
     render(<UsageInsightsCard stats={usageStats} />);
 
     expect(screen.getByText("AI Usage")).toBeInTheDocument();
+    expect(screen.getByText("Processed")).toBeInTheDocument();
+    expect(screen.getByText("1,540")).toBeInTheDocument();
     expect(screen.getByText("1,200")).toBeInTheDocument();
     expect(screen.getByText("340")).toBeInTheDocument();
     expect(screen.getByText("$1.23")).toBeInTheDocument();
@@ -133,5 +135,25 @@ describe("UsageInsightsCard", () => {
     expect(screen.getByText("Provider: openai")).toBeInTheDocument();
     expect(screen.getByText("Model: gpt-5.4")).toBeInTheDocument();
     expect(screen.getByText("Conversations: 3")).toBeInTheDocument();
+  });
+
+  it("discloses estimated and uncounted capture quality", () => {
+    render(
+      <UsageInsightsCard
+        stats={{
+          ...usageStats,
+          usageCoverage: {
+            ...usageStats.usageCoverage,
+            legacyEstimatedSampleCount: 2,
+            fallbackEstimatedSampleCount: 1,
+            uncountedSampleCount: 3,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("2 legacy-estimated samples")).toBeInTheDocument();
+    expect(screen.getByText("1 provider-fallback sample")).toBeInTheDocument();
+    expect(screen.getByText("3 uncounted samples")).toBeInTheDocument();
   });
 });
