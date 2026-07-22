@@ -120,13 +120,13 @@ export function AutomationPlanDialog({
         className="max-h-[80vh] max-w-2xl overflow-hidden"
         data-testid="automation-plan-dialog"
       >
-        <DialogHeader>
+        <DialogHeader className="flex-col items-start gap-1 pr-12">
           <DialogTitle>Run plan</DialogTitle>
           <DialogDescription>
             {title?.trim() || "Plan produced by this automation run."}
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 overflow-y-auto pt-2">
+        <div className="min-h-0 overflow-y-auto px-6 py-4">
           {open && planArtifactId ? (
             <PlanDialogBody planArtifactId={planArtifactId} />
           ) : (
