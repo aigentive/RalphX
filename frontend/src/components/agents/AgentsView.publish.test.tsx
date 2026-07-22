@@ -19,6 +19,7 @@ import {
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 import { getAgentConversationStoreKey } from "./agentConversations";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
@@ -610,6 +611,74 @@ describe("AgentsView publish", () => {
       expect(screen.getByTestId("agents-artifact-pane")).toBeInTheDocument()
     );
     expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the right-side unstaged count and files synced to the live conversation summary", async () => {
+    const firstFile: FileChange = {
+      path: "src/First.tsx",
+      status: "modified",
+      additions: 3,
+      deletions: 1,
+      isGenerated: false,
+    };
+    const secondFile: FileChange = {
+      path: "src/Second.tsx",
+      status: "added",
+      additions: 5,
+      deletions: 0,
+      isGenerated: false,
+    };
+    configurePublishPane({ changes: [firstFile] });
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 1, additions: 3, deletions: 1 },
+    });
+    getWorkspaceUnstagedChangesMock.mockResolvedValue([firstFile]);
+
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    await screen.findByTestId(
+      "diff-filter-trigger",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    fireEvent.click(screen.getByTestId("agents-publish-workspace"));
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    await waitFor(() =>
+      expect(within(pane).getByTestId("inline-diffs-file-count")).toHaveTextContent(
+        "1",
+      ),
+    );
+    expect(within(pane).getByTestId("diff-filter-trigger")).toHaveTextContent(
+      "Unstaged (1 file)",
+    );
+    expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledTimes(1);
+
+    getWorkspaceUnstagedChangesMock.mockResolvedValue([firstFile, secondFile]);
+    act(() => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.changeSummary("conversation-1"),
+        {
+          supportsWorktreeModes: true,
+          staged: { fileCount: 0, additions: 0, deletions: 0 },
+          unstaged: { fileCount: 2, additions: 8, deletions: 1 },
+        },
+      );
+    });
+
+    await waitFor(() =>
+      expect(within(pane).getByTestId("diff-filter-trigger")).toHaveTextContent(
+        "Unstaged (2 files)",
+      ),
+    );
+    await waitFor(() =>
+      expect(within(pane).getByTestId("inline-diffs-file-count")).toHaveTextContent(
+        "2",
+      ),
+    );
+    expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledTimes(2);
   });
 
   it("shows a composer workspace changes summary from the compact live path and loads files on expand", async () => {

@@ -72,6 +72,7 @@ const defaultReviewSettings = {
 
 const {
   getWorkspaceChangesMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
@@ -142,6 +143,7 @@ const {
   tasksEnabledRef,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
@@ -311,6 +313,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceChangeSummary: (...args: unknown[]) =>
+      getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
@@ -1470,6 +1474,11 @@ describe("AgentsArtifactPane", () => {
         deletions: 1,
       },
     ]);
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    });
     getWorkspaceReviewMock.mockResolvedValue({
       changes: [
         {
