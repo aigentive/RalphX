@@ -302,6 +302,14 @@ export const automationsApi = {
     );
   },
 
+  resumeRun: async (input: AutomationRunScopedInput): Promise<void> => {
+    await typedInvoke(
+      "resume_automation_run",
+      { input: transformAutomationRunScopedInput(input) },
+      TauriVoidSchema,
+    );
+  },
+
   delete: async (id: string): Promise<void> => {
     await typedInvoke("delete_automation", { input: { id } }, TauriVoidSchema);
   },

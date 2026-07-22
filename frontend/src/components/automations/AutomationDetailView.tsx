@@ -234,6 +234,14 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to delete run"),
   });
+  const resumeRunMutation = useMutation({
+    mutationFn: (runId: string) => automationsApi.resumeRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run resumed");
+    },
+    onError: () => toast.error("Failed to resume run"),
+  });
   const handleDeleteRun = useCallback(async (run: AutomationRun) => {
     const running = run.status === "running";
     const confirmed = await confirm({
@@ -249,6 +257,18 @@ export function AutomationDetailView({
       deleteRunMutation.mutate(run.id);
     }
   }, [confirm, deleteRunMutation]);
+  const handleResumeRun = useCallback(async (run: AutomationRun) => {
+    const confirmed = await confirm({
+      title: "Resume run?",
+      description: `Reopens Run ${run.runIndex} in place and continues the existing agent in its worktree — prior work and conversation history are kept, nothing restarts.`,
+      confirmText: "Resume",
+      pendingText: "Resuming...",
+      variant: "default",
+    });
+    if (confirmed) {
+      resumeRunMutation.mutate(run.id);
+    }
+  }, [confirm, resumeRunMutation]);
   const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
   const activeGoalItem = useMemo(
     () => findInProgressAutomationGoalItem(goalItemsJson),
@@ -314,6 +334,7 @@ export function AutomationDetailView({
     || runNowMutation.isPending
     || skipJudgeMutation.isPending
     || deleteRunMutation.isPending
+    || resumeRunMutation.isPending
     || deleteMutation.isPending;
 
   const handleRunNow = async () => {
@@ -454,6 +475,7 @@ export function AutomationDetailView({
                 onRetryJudge={() => retryJudgeMutation.mutate()}
                 onRunNow={() => void handleRunNow()}
                 onDeleteRun={handleDeleteRun}
+                onResumeRun={handleResumeRun}
                 {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                 {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
               />

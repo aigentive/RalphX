@@ -30,6 +30,7 @@ export interface AutomationRunsTabProps {
   onRetryJudge: () => void;
   onRunNow: () => void;
   onDeleteRun?: (run: AutomationRun) => void;
+  onResumeRun?: (run: AutomationRun) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
@@ -47,6 +48,7 @@ export function AutomationRunsTab({
   onRetryJudge,
   onRunNow,
   onDeleteRun,
+  onResumeRun,
   onOpenRunConversation,
   onOpenAutomationRun,
 }: AutomationRunsTabProps) {
@@ -117,6 +119,7 @@ export function AutomationRunsTab({
                   activeGoalItem={activeGoalItem}
                   isLatest={isLatest}
                   {...(onDeleteRun ? { onDeleteRun } : {})}
+                  {...(onResumeRun ? { onResumeRun } : {})}
                   {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                   {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
                   setupConversationId={automation.setupConversationId}

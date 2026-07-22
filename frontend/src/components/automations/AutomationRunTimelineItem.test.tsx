@@ -108,6 +108,7 @@ function renderItem(
   options: {
     isLatest?: boolean;
     onDeleteRun?: (run: AutomationRun) => void;
+    onResumeRun?: (run: AutomationRun) => void;
     projectId?: string | null;
     onOpenRunConversation?: (projectId: string, conversationId: string) => void;
     defaultExpanded?: boolean;
@@ -128,6 +129,7 @@ function renderItem(
           setupConversationId={null}
           {...(options.isLatest !== undefined && { isLatest: options.isLatest })}
           {...(options.onDeleteRun && { onDeleteRun: options.onDeleteRun })}
+          {...(options.onResumeRun && { onResumeRun: options.onResumeRun })}
           {...(options.onOpenRunConversation && {
             onOpenRunConversation: options.onOpenRunConversation,
           })}
@@ -257,6 +259,60 @@ describe("RunTimelineItem run deletion", () => {
     expect(
       screen.queryByTestId("automation-run-run-10-body"),
     ).not.toBeInTheDocument();
+  });
+
+  it("offers resume for the latest failed run and passes that run to the handler", async () => {
+    const user = userEvent.setup();
+    const candidate = run();
+    const onResumeRun = vi.fn();
+    renderItem(candidate, { isLatest: true, onResumeRun, defaultExpanded: true });
+
+    const resumeButton = screen.getByTestId("automation-run-run-10-resume");
+    expect(resumeButton).toHaveAccessibleName("Resume run 10");
+
+    await user.click(resumeButton);
+
+    expect(onResumeRun).toHaveBeenCalledOnce();
+    expect(onResumeRun).toHaveBeenCalledWith(candidate);
+  });
+
+  it.each(["completed", "merged"] as const)(
+    "does not offer resume for a latest %s run",
+    (status) => {
+      renderItem(run({ status }), {
+        isLatest: true,
+        onResumeRun: vi.fn(),
+        defaultExpanded: true,
+      });
+
+      expect(
+        screen.queryByTestId("automation-run-run-10-resume"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not offer resume for a failed non-latest run", () => {
+    renderItem(run(), {
+      isLatest: false,
+      onResumeRun: vi.fn(),
+      defaultExpanded: true,
+    });
+
+    expect(
+      screen.queryByTestId("automation-run-run-10-resume"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders delete and resume together for the latest failed run", () => {
+    renderItem(run(), {
+      isLatest: true,
+      onDeleteRun: vi.fn(),
+      onResumeRun: vi.fn(),
+      defaultExpanded: true,
+    });
+
+    expect(screen.getByTestId("automation-run-run-10-delete")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-run-run-10-resume")).toBeInTheDocument();
   });
 
   it("renders Run prompt as a minimal inline disclosure", async () => {

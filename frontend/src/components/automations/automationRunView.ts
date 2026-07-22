@@ -149,6 +149,12 @@ export function isAutomationRunDeletable(run: AutomationRun | null): run is Auto
   );
 }
 
+/** A run may be resumed (reopened in place) only when it is the latest run AND
+ *  it failed. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunResumable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && run.status === "agent_failed";
+}
+
 /**
  * Frontend mirror of backend `latest_run_holds_goal_authority`, intentionally
  * independent from `isOpenAutomationRun`.

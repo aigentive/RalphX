@@ -15,6 +15,7 @@ import {
   getAutomationRunStatusTone,
   getAutomationRunView,
   isAutomationRunDeletable,
+  isAutomationRunResumable,
   isAutomationRunComposerReadOnly,
   isIdleAfterCancelledRun,
   latestRunHoldsGoalAuthority,
@@ -173,6 +174,25 @@ describe("automationRunView", () => {
 
   it("rejects deletion when there is no run", () => {
     expect(isAutomationRunDeletable(null)).toBe(false);
+  });
+
+  it("allows resuming an agent-failed run", () => {
+    expect(isAutomationRunResumable(run({ status: "agent_failed" }))).toBe(true);
+  });
+
+  it.each([
+    "running",
+    "completed",
+    "published",
+    "merged",
+    "cancelled",
+    "pending",
+  ] as const)("rejects resuming a %s run", (status) => {
+    expect(isAutomationRunResumable(run({ status }))).toBe(false);
+  });
+
+  it("rejects resume when there is no run", () => {
+    expect(isAutomationRunResumable(null)).toBe(false);
   });
 
   it("mirrors goal authority independently from open-run semantics", () => {

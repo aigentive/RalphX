@@ -1,5 +1,5 @@
 import { memo, type ReactNode, useCallback, useState } from "react";
-import { ChevronDown, ChevronRight, ChevronUp, FileText, Trash2, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, FileText, Play, Trash2, XCircle } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import {
@@ -18,7 +18,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 
 import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
-import { getAutomationRunJudgeLabel, isAutomationRunDeletable } from "./automationRunView";
+import {
+  getAutomationRunJudgeLabel,
+  isAutomationRunDeletable,
+  isAutomationRunResumable,
+} from "./automationRunView";
 import { ExpandableText, FieldLabel, Pill } from "./automationDetailShared";
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
   setup_agent: "Setup agent", judge: "Judge", skip_judge_template: "Skip-judge template",
@@ -186,7 +190,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   projectId,
   defaultExpanded,
   activeGoalItem,
-  isLatest, onDeleteRun,
+  isLatest, onDeleteRun, onResumeRun,
   onOpenRunConversation,
   onOpenAutomationRun,
   setupConversationId,
@@ -198,6 +202,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   activeGoalItem: AutomationGoalItem | null;
   isLatest?: boolean;
   onDeleteRun?: (run: AutomationRun) => void;
+  onResumeRun?: (run: AutomationRun) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
   setupConversationId: string | null;
@@ -474,7 +479,19 @@ export const RunTimelineItem = memo(function RunTimelineItem({
                     Open conversation
                   </Button>
                 )}
-                {/* Future Resume action inserts here as the rightmost accent CTA. */}
+                {isLatest && onResumeRun && isAutomationRunResumable(run) ? (
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    aria-label={`Resume run ${run.runIndex}`}
+                    onClick={() => onResumeRun?.(run)}
+                    data-testid={`automation-run-${run.id}-resume`}
+                  >
+                    <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                    Resume
+                  </Button>
+                ) : null}
               </div>
             </div>
             {/* Prompt content stays unmounted until explicitly opened. */}
