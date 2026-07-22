@@ -213,7 +213,7 @@ describe("AgentsClickUpIssuePanel", () => {
       screen.queryByRole("button", { name: "Select ticket lines" }),
     ).not.toBeInTheDocument();
 
-    const description = screen.getByText("Keep the snapshot frozen.");
+    const description = await screen.findByText("Keep the snapshot frozen.");
     expect(
       description.closest("[data-artifact-selectable-region='true']"),
     ).not.toBeNull();
