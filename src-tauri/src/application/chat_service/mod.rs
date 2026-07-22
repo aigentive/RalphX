@@ -7981,11 +7981,11 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
-    fn old_missing_agent_run_unblocks_send_gate() {
+    fn old_missing_agent_run_does_not_clear_pid_zero_launch_reservation() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
-        assert!(registry_entry_blocks_send_because_run_inactive(
+        assert!(!registry_entry_blocks_send_because_run_inactive(
             &info,
             None,
             now,

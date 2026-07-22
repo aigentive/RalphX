@@ -1456,6 +1456,7 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
     workspace.publication_pr_url = None;
     workspace.publication_pr_status = None;
     workspace.publication_push_status = None;
+    workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     app_state
         .agent_conversation_workspace_repo

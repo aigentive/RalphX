@@ -123,6 +123,16 @@ fn open_sync_state(branch_name: &str, head_sha: &str) -> PrSyncState {
     }
 }
 
+fn healthy_pr_health(branch_name: &str, head_sha: &str) -> PrHealth {
+    PrHealth {
+        sync_state: open_sync_state(branch_name, head_sha),
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
 fn recovery_deps(
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
     project_repo: Arc<MemoryProjectRepository>,
@@ -390,6 +400,8 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
     let deps = recovery_deps(
         workspace_repo,
         project_repo,
@@ -1568,6 +1580,8 @@ async fn startup_recovery_processes_candidates_and_skips_blocked_projects() {
     ));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
 
     recover_recent_agent_workspace_pr_supervision_on_startup(
         recovery_deps(
@@ -1848,6 +1862,8 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
 
     recover_recent_agent_workspace_pr_supervision_on_startup(
         AgentWorkspacePrSupervisionRecoveryDeps {
