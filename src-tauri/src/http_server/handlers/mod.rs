@@ -27,6 +27,8 @@ pub mod issues;
 pub mod learned_skills;
 pub mod learned_skills_export;
 pub mod memory;
+#[cfg(test)]
+mod memory_tests;
 pub mod permissions;
 pub mod personas;
 pub mod plan_complexity;

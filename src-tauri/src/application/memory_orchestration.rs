@@ -60,6 +60,7 @@ pub enum MemoryPipelineSkipReason {
     RecursionGuard,
     Disabled,
     NoEnabledCategory,
+    SettingsLoadFailed,
 }
 
 impl MemoryPipelineSkipReason {
@@ -69,6 +70,7 @@ impl MemoryPipelineSkipReason {
             Self::RecursionGuard => "recursion_guard",
             Self::Disabled => "disabled",
             Self::NoEnabledCategory => "no_enabled_category",
+            Self::SettingsLoadFailed => "settings_load_failed",
         }
     }
 }
@@ -100,7 +102,10 @@ pub fn resolve_pipelines_with_reason(
 
     // Recursion guard: Skip if current agent is a memory agent
     if let Some(name) = agent_name {
-        if name == "ralphx-memory-maintainer" || name == "ralphx-memory-capture" {
+        let normalized_name = name.strip_prefix("ralphx:").unwrap_or(name);
+        if normalized_name == "ralphx-memory-maintainer"
+            || normalized_name == "ralphx-memory-capture"
+        {
             tracing::debug!(
                 agent_name = name,
                 "resolve_pipelines: recursion guard triggered, skipping"
@@ -411,7 +416,7 @@ async fn resolve_project_memory_settings(
                     conversation_id,
                     context_type,
                     context_id,
-                    "settings_load_failed",
+                    MemoryPipelineSkipReason::SettingsLoadFailed.as_str(),
                     Some(error.to_string()),
                 )
                 .await;
@@ -746,7 +751,3 @@ fn memory_agent_runtime_context(
         ..Default::default()
     }
 }
-
-#[cfg(test)]
-#[path = "memory_orchestration_tests.rs"]
-mod tests;
