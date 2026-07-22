@@ -6559,7 +6559,6 @@ describe("AgentsArtifactPane", () => {
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
         undefined,
-        undefined,
         { runtimeOverride: approvedPlanRuntime },
       ),
     );
@@ -6614,7 +6613,6 @@ describe("AgentsArtifactPane", () => {
         "ideation",
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
-        undefined,
         undefined,
         undefined,
       ),
