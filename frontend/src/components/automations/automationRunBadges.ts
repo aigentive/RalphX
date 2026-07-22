@@ -64,6 +64,9 @@ function stageBadge(
   if (!isOpenAutomationRun(run)) {
     return null;
   }
+  if (automation.status === "paused") {
+    return { key: "stage", label: "Paused", tone: "warning", live: false };
+  }
   let label = describeAutomationStage(automation, run);
   if (label === `Run ${run.runIndex} planning`) {
     label = "Planning";

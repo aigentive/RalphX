@@ -116,6 +116,21 @@ function renderItem(
 }
 
 describe("RunTimelineItem run deletion", () => {
+  it("keeps collapsed failures to one compact unboxed outcome line", () => {
+    renderItem(run({
+      judgeState: "done",
+      agentSummary: "The agent stopped after the first step.",
+    }));
+
+    const outcome = screen.getByTestId("automation-run-run-10-failure");
+    expect(outcome.tagName).toBe("P");
+    expect(outcome).toHaveClass("truncate", "text-xs");
+    expect(outcome).toHaveTextContent("Agent exited");
+    expect(outcome).toHaveTextContent("The agent stopped after the first step.");
+    expect(outcome.style.backgroundColor).toBe("");
+    expect(screen.getByTestId("automation-run-run-10-card")).toHaveClass("p-3");
+  });
+
   it("offers deletion for the latest failed run and passes that run to the handler", async () => {
     const user = userEvent.setup();
     const candidate = run();

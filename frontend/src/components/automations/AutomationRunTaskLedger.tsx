@@ -12,6 +12,7 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "@/components/agents/agentWorkspaceQueries";
+import { FieldLabel } from "./automationDetailShared";
 import { automationRunTaskLedgerRefetchInterval } from "./automationRunTaskLedgerPolling";
 
 const STATE_LABELS: Record<AgentTaskState, string> = {
@@ -40,7 +41,8 @@ function TaskStateBadge({ state }: { state: AgentTaskState }) {
     <StatusPill
       label={STATE_LABELS[state]}
       tone={stateTone(state)}
-      className="shrink-0 text-[10px] uppercase tracking-normal"
+      live={state === "active"}
+      className="shrink-0"
     />
   );
 }
@@ -168,12 +170,9 @@ export function AutomationRunTaskLedger({
 
   return (
     <div className="space-y-2" data-testid="automation-run-task-ledger">
-      <div
-        className="text-xs font-medium uppercase tracking-normal"
-        style={{ color: "var(--text-muted)" }}
-      >
+      <FieldLabel className="block">
         Task ledger
-      </div>
+      </FieldLabel>
       {!hasSnapshot ? (
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
           {query.isError ? "Could not load agent tasks." : "Loading agent tasks..."}

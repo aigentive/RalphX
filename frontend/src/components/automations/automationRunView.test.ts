@@ -12,6 +12,7 @@ import {
   describeAutomationRunPrState,
   getAutomationJudgeRecovery,
   getAutomationRunJudgeLabel,
+  getAutomationRunStatusTone,
   getAutomationRunView,
   isAutomationRunDeletable,
   isAutomationRunComposerReadOnly,
@@ -136,6 +137,21 @@ describe("automationRunView", () => {
     "in_progress",
     "failed",
   ];
+
+  it.each([
+    ["running", "accent"],
+    ["pending", "neutral"],
+    ["provisioning", "neutral"],
+    ["published", "success"],
+    ["merged", "success"],
+    ["completed", "success"],
+    ["awaiting_plan_approval", "warning"],
+    ["agent_failed", "error"],
+    ["pr_closed", "error"],
+    ["cancelled", "neutral"],
+  ] as const)("maps %s status to the %s tone", (status, tone) => {
+    expect(getAutomationRunStatusTone(run({ status }))).toBe(tone);
+  });
 
   it.each(["running", "agent_failed", "cancelled"] as const)(
     "allows deleting a %s run",

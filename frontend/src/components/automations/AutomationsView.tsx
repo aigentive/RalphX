@@ -5,7 +5,6 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import {
   getAutomationRunView,
@@ -14,6 +13,7 @@ import {
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
+import { Pill } from "./automationDetailShared";
 
 interface AutomationsViewProps {
   projectId: string | null;
@@ -101,23 +101,8 @@ function AutomationsListSkeleton() {
   );
 }
 
-function statusPillTone(status: Automation["status"]): StatusPillTone {
-  switch (status) {
-    case "active":
-      return "success";
-    case "paused":
-      return "warning";
-    case "completed":
-      return "accent";
-    default:
-      return "neutral";
-  }
-}
-
 function AutomationStatusPill({ status }: { status: Automation["status"] }) {
-  return (
-    <StatusPill label={STATUS_LABELS[status]} size="md" tone={statusPillTone(status)} />
-  );
+  return <Pill label={STATUS_LABELS[status]} status={status} />;
 }
 
 function AutomationRow({

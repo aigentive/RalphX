@@ -836,24 +836,24 @@ describe("AutomationDetailView", () => {
     await openRunsTab();
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
-    expect(successCard.style.backgroundColor).toBe("var(--status-success-muted)");
-    expect(successCard.style.borderColor).toBe("var(--status-success-border)");
-    expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toBe(
-      "var(--status-success)",
+    expect(successCard.style.backgroundColor).toContain("--status-success-muted");
+    expect(successCard.style.borderColor).toContain("--status-success-border");
+    expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--status-success"),
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
-    expect(progressCard.style.backgroundColor).toBe("var(--accent-muted)");
-    expect(progressCard.style.borderColor).toBe("var(--accent-border)");
-    expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toBe(
-      "var(--accent-primary)",
+    expect(progressCard.style.backgroundColor).toContain("--accent-muted");
+    expect(progressCard.style.borderColor).toContain("--accent-border");
+    expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--accent-primary"),
     );
 
     const failedCard = screen.getByTestId("automation-run-run-failed-card");
-    expect(failedCard.style.backgroundColor).toBe("var(--bg-hover)");
-    expect(failedCard.style.borderColor).toBe("var(--border-default)");
-    expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toBe(
-      "var(--text-muted)",
+    expect(failedCard.style.backgroundColor).toContain("--status-error-muted");
+    expect(failedCard.style.borderColor).toContain("--status-error-border");
+    expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toEqual(
+      expect.stringContaining("--status-error"),
     );
   });
 
@@ -947,7 +947,7 @@ describe("AutomationDetailView", () => {
     const timestamps = within(configPanel).getByTestId("automation-config-timestamps");
     expect(timestamps).toHaveTextContent("Created");
     expect(timestamps).toHaveTextContent("Updated");
-    expect(configPanel).toHaveTextContent("Paused: release_freeze - Waiting on base branch");
+    expect(configPanel).toHaveTextContent("Paused: release freeze. Waiting on base branch");
     expect(within(card).queryByText("No spec linked yet.")).not.toBeInTheDocument();
 
     await user.click(within(card).getByRole("tab", { name: "Spec" }));
@@ -1054,7 +1054,10 @@ describe("AutomationDetailView", () => {
     );
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
+    const pauseNotice = screen.getByTestId("automation-paused-reason");
+    expect(pauseNotice).toHaveTextContent("Paused: release freeze.");
+    expect(pauseNotice).toHaveTextContent("Waiting on base branch");
+    expect(pauseNotice).toHaveAttribute("data-tone", "warning");
     // estimatedUsd is null → the Estimated cost row is omitted instead of
     // rendering a "Not recorded" placeholder.
     expect(screen.queryByText("Estimated cost")).not.toBeInTheDocument();
@@ -1863,6 +1866,9 @@ describe("AutomationDetailView", () => {
       expect(within(body).getByText("3 files, +12 / -4")).toBeInTheDocument();
       expect(within(body).getByText("Setup agent")).toBeInTheDocument();
       expect(
+        within(body).getByRole("button", { name: "Copy branch" }),
+      ).toBeInTheDocument();
+      expect(
         within(body).getByRole("button", { name: "Open conversation" }),
       ).toBeInTheDocument();
     });
@@ -1891,12 +1897,11 @@ describe("AutomationDetailView", () => {
       expect(
         screen.queryByTestId("automation-run-run-old-failed-body"),
       ).not.toBeInTheDocument();
-      expect(screen.getByTestId("automation-run-run-old-failed-failure")).toHaveTextContent(
-        "Publish step exited with code 1",
+      const collapsedOutcome = screen.getByTestId("automation-run-run-old-failed-failure");
+      expect(collapsedOutcome).toHaveTextContent("Publish step exited with code 1");
+      expect(collapsedOutcome).toHaveTextContent(
+        "Attempted the migration but publish failed.",
       );
-      expect(
-        screen.getByTestId("automation-run-run-old-failed-summary-teaser"),
-      ).toHaveTextContent("Attempted the migration but publish failed.");
     });
 
     it("suppresses the summary teaser while a run is open", async () => {

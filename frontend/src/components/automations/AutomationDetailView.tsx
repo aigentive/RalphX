@@ -397,18 +397,24 @@ export function AutomationDetailView({
           onValueChange={(value) => setSelectedTab(value as AutomationDetailTab)}
         >
           <TabsList
-            className="mb-4 h-9 justify-start rounded-md bg-transparent p-0"
+            className="mb-4 h-9 justify-start rounded-md p-1"
+            style={{
+              backgroundColor: "var(--bg-surface, #1e1e23)",
+              borderColor: "var(--border-subtle, #2e2e36)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
             aria-label="Automation detail sections"
           >
             <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs"
+              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
               value="overview"
               data-testid="automation-tab-overview"
             >
               Overview
             </TabsTrigger>
             <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs"
+              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
               value="runs"
               data-testid="automation-tab-runs"
             >

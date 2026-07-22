@@ -1,6 +1,5 @@
 import { type ReactNode, useMemo } from "react";
-import { ChevronDown, Copy, ExternalLink, GitPullRequest } from "lucide-react";
-import { toast } from "sonner";
+import { ChevronDown, ExternalLink, GitPullRequest, Pause } from "lucide-react";
 
 import type {
   Automation,
@@ -23,9 +22,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { CopyableRef } from "@/components/ui/copyable-ref";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Separator } from "@/components/ui/separator";
 import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
-import { ExpandableText, Pill, Section } from "./automationDetailShared";
+import { ExpandableText, FieldLabel, Pill, Section } from "./automationDetailShared";
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -90,12 +91,9 @@ function ConfigGroup({
   return (
     <div data-testid={testId}>
       {title ? (
-        <div
-          className="mb-2 text-xs font-semibold uppercase tracking-normal"
-          style={{ color: "var(--text-muted)" }}
-        >
+        <FieldLabel variant="group" className="mb-2 block">
           {title}
-        </div>
+        </FieldLabel>
       ) : null}
       <KeyValueList items={items} />
     </div>
@@ -104,13 +102,14 @@ function ConfigGroup({
 
 function KeyValueList({ items }: { items: Array<[string, ReactNode]> }) {
   return (
-    <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
       {items.map(([label, value]) => (
         <div key={label} className="min-w-0">
-          <dt className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-            {label}
-          </dt>
-          <dd className="mt-1 min-w-0 text-sm" style={{ color: "var(--text-secondary)" }}>
+          <dt><FieldLabel>{label}</FieldLabel></dt>
+          <dd
+            className="mt-0.5 min-w-0 text-sm tabular-nums"
+            style={{ color: "var(--text-primary)" }}
+          >
             {typeof value === "string" || typeof value === "number" ? (
               <span className="block truncate">{value}</span>
             ) : (
@@ -137,9 +136,9 @@ function PipelineProgress({ pipeline }: { pipeline: AutomationPipelineProgressDa
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
+          <FieldLabel variant="group" className="block">
             Task pipeline
-          </div>
+          </FieldLabel>
           <div className="mt-1 text-sm font-medium" style={{ color: "var(--text-primary)" }}>
             {pipeline.taskMerged} / {pipeline.taskTotal} merged
           </div>
@@ -180,47 +179,13 @@ function BranchConfigValue({ automation }: { automation: Automation }) {
   }
   const displayName = automation.baseDisplayName?.trim();
   const showDisplayName = Boolean(displayName && displayName !== branchRef);
-  const copyBranch = async () => {
-    try {
-      if (!navigator.clipboard) {
-        throw new Error("clipboard unavailable");
-      }
-      await navigator.clipboard.writeText(branchRef);
-      toast.success("Branch copied");
-    } catch {
-      toast.error("Failed to copy branch");
-    }
-  };
-
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
-      <span className="min-w-0 truncate">
-        {showDisplayName ? (
-          <span className="mr-1" style={{ color: "var(--text-muted)" }}>
-            {displayName}
-          </span>
-        ) : null}
-        <code className="font-mono text-[0.8125rem]" data-testid="automation-branch-value">
-          {branchRef}
-        </code>
-      </span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Copy branch"
-            className="h-6 w-6 shrink-0"
-            onClick={() => void copyBranch()}
-            data-testid="automation-branch-copy"
-          >
-            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Copy branch</TooltipContent>
-      </Tooltip>
-    </span>
+    <CopyableRef
+      value={branchRef}
+      ariaLabel="Copy branch"
+      testId="automation-branch"
+      {...(showDisplayName && displayName ? { prefixLabel: displayName } : {})}
+    />
   );
 }
 
@@ -275,9 +240,9 @@ function GoalItems({
 
   return (
     <div className="mt-4 space-y-2">
-      <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
+      <FieldLabel className="block">
         {AUTOMATION_PHASES_LABEL}
-      </div>
+      </FieldLabel>
       <AutomationPhaseProgress
         value={value}
         planByGoalItemId={planByGoalItemId}
@@ -369,6 +334,7 @@ export function AutomationOverviewTab({
                     ["Completion signal", automation.completionSignal] as [string, ReactNode],
                   ]}
                 />
+                <Separator className="my-4 bg-[var(--border-subtle)]" />
                 <ConfigGroup
                   title="Limits"
                   testId="automation-config-group-limits"
@@ -384,12 +350,9 @@ export function AutomationOverviewTab({
                       className="group flex w-full items-center gap-1 text-left"
                       data-testid="automation-config-usage-toggle"
                     >
-                      <span
-                        className="text-xs font-semibold uppercase tracking-normal"
-                        style={{ color: "var(--text-muted)" }}
-                      >
+                      <FieldLabel variant="group">
                         Usage
-                      </span>
+                      </FieldLabel>
                       <ChevronDown
                         className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180"
                         style={{ color: "var(--text-muted)" }}
@@ -421,13 +384,15 @@ export function AutomationOverviewTab({
                 </p>
               </div>
               {automation.pausedReasonCode && (
-                <div className="mt-4 rounded-md p-3 text-sm" style={{
-                  backgroundColor: "var(--bg-hover)",
-                  color: "var(--text-secondary)",
-                }}>
-                  Paused: {automation.pausedReasonCode}
-                  {automation.pausedReasonDetail ? ` - ${automation.pausedReasonDetail}` : ""}
-                </div>
+                <NoticeBanner
+                  tone="warning"
+                  icon={<Pause className="h-4 w-4" aria-hidden="true" />}
+                  title={`Paused: ${automation.pausedReasonCode.replace(/_/g, " ")}.`}
+                  className="mt-4"
+                  testId="automation-paused-reason"
+                >
+                  {automation.pausedReasonDetail ?? "Automation scheduling is paused."}
+                </NoticeBanner>
               )}
             </>
           )}

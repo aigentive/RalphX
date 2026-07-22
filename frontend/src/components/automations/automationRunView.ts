@@ -214,10 +214,10 @@ export function getAutomationRunStatusTone(
   if (["published", "merged", "completed"].includes(run.status)) {
     return "success";
   }
-  if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(run.status)) {
+  if (run.status === "awaiting_plan_approval") {
     return "warning";
   }
-  if (run.status === "cancelled") {
+  if (["agent_failed", "pr_closed"].includes(run.status)) {
     return "error";
   }
   return "neutral";
