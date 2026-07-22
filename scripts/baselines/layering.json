@@ -402,11 +402,6 @@
         "text": "use crate::application::question_state::QuestionOption;"
       },
       {
-        "path": "src-tauri/src/domain/services/agent_workspace_outcomes.rs",
-        "target": "crate::infrastructure",
-        "text": "use crate::infrastructure::memory::MemoryTaskOutcomeRepository;"
-      },
-      {
         "path": "src-tauri/src/domain/services/api_key_service_tests.rs",
         "target": "crate::infrastructure",
         "text": "use crate::infrastructure::memory::MemoryApiKeyRepository;"

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 
 use crate::application::agent_conversation_archive::archive_agent_conversation_for_state;
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
+    TerminalPrObservation,
 };
 use crate::application::chat_service::ChatService;
 use crate::application::AppState;
@@ -64,11 +65,14 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                     ))
                 })?;
             let chat_service: Arc<dyn ChatService> = Arc::new(self.state.build_chat_service());
-            let terminalized = terminalize_agent_workspace_after_pr(
+            let observation = TerminalPrObservation::from_persisted_workspace(&workspace);
+            let terminalized = terminalize_agent_workspace_after_pr_with_observation(
                 Arc::clone(&self.state.agent_conversation_workspace_repo),
                 Arc::clone(&self.state.agent_run_repo),
                 Some(Arc::clone(&self.state.plan_branch_repo)),
                 Some(chat_service),
+                Some(Arc::clone(&self.state.task_outcome_repo)),
+                observation,
                 conversation_id,
                 &project,
                 TerminalAgentWorkspaceCause::MergedPr,

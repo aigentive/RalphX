@@ -9,8 +9,9 @@ use crate::domain::entities::{
     TaskOutcomeId,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
-    SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    resolve_task_outcome_upsert, ProjectSkillListOptions, ProjectSkillRepository,
+    SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions,
+    TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
 use crate::error::AppResult;
 
@@ -29,22 +30,45 @@ impl MemoryTaskOutcomeRepository {
 impl TaskOutcomeRepository for MemoryTaskOutcomeRepository {
     async fn upsert(&self, input: UpsertTaskOutcomeInput) -> AppResult<TaskOutcome> {
         let mut rows = self.rows.write().unwrap();
-        if let Some(existing) = rows.iter_mut().find(|row| {
+        if let Some(existing_index) = rows.iter().position(|row| {
             row.project_id == input.outcome.project_id
                 && row.source == input.outcome.source
                 && row.source_ref_kind == input.outcome.source_ref_kind
                 && row.source_ref_id == input.outcome.source_ref_id
         }) {
-            existing.outcome_class = input.outcome.outcome_class;
-            existing.status = input.outcome.status;
-            existing.evidence_json = input.outcome.evidence_json;
-            existing.provider_harness = input.outcome.provider_harness;
-            existing.provider_session_id = input.outcome.provider_session_id;
-            existing.updated_at = Utc::now();
-            return Ok(existing.clone());
+            let resolution =
+                resolve_task_outcome_upsert(Some(&rows[existing_index]), input.outcome);
+            if resolution.should_write {
+                let mut outcome = resolution.outcome;
+                outcome.updated_at = Utc::now();
+                rows[existing_index] = outcome;
+            }
+            return Ok(rows[existing_index].clone());
         }
-        rows.push(input.outcome.clone());
-        Ok(input.outcome)
+        let outcome = resolve_task_outcome_upsert(None, input.outcome).outcome;
+        rows.push(outcome.clone());
+        Ok(outcome)
+    }
+
+    async fn get_by_dedupe(
+        &self,
+        project_id: &ProjectId,
+        source: &str,
+        source_ref_kind: &str,
+        source_ref_id: &str,
+    ) -> AppResult<Option<TaskOutcome>> {
+        Ok(self
+            .rows
+            .read()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                &row.project_id == project_id
+                    && row.source == source
+                    && row.source_ref_kind == source_ref_kind
+                    && row.source_ref_id == source_ref_id
+            })
+            .cloned())
     }
 
     async fn get_by_id(&self, id: &TaskOutcomeId) -> AppResult<Option<TaskOutcome>> {

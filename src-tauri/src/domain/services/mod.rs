@@ -4,6 +4,8 @@
 // use cases and business rules.
 
 pub mod agent_workspace_outcomes;
+#[cfg(test)]
+mod agent_workspace_outcomes_tests;
 pub mod api_key_service;
 pub mod artifact_flow_service;
 pub mod artifact_service;
