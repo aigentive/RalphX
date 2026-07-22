@@ -25,8 +25,6 @@ pub(super) const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 pub(super) const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
 pub(super) const STALE_REPAIR_BLOCKED_SUMMARY: &str =
     "Recovered stale workspace repair state; no active repair run is running.";
-const STALE_PR_AUTOFIX_SUMMARY: &str =
-    "Recovered stale PR autofix state; no active fixer run is running.";
 pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
@@ -288,7 +286,7 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         if !latest_run.status.is_terminal() {
             return Ok(false);
         }
-        (STALE_PR_AUTOFIX_SUMMARY.to_string(), Some(latest_run))
+        (STALE_REPAIR_BLOCKED_SUMMARY.to_string(), Some(latest_run))
     };
 
     if let Some(latest_run) = latest_run.as_ref() {
