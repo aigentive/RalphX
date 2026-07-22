@@ -179,7 +179,7 @@ async fn global_yaml_default_is_used_when_ui_defaults_are_absent() {
 }
 
 #[tokio::test]
-async fn provider_default_preserves_speed_permissions_and_sandbox() {
+async fn provider_default_preserves_service_tier_permissions_and_sandbox() {
     let global_root = tempfile::tempdir().unwrap();
     let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
     let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
@@ -189,7 +189,7 @@ async fn provider_default_preserves_speed_permissions_and_sandbox() {
     provider.enabled = true;
     provider.is_default = true;
     provider.model = Some("gpt-5.6".to_string());
-    provider.service_tier = Some("fast".to_string());
+    provider.service_tier = Some("standard".to_string());
     provider.approval_policy = Some("never".to_string());
     provider.sandbox_mode = Some("danger-full-access".to_string());
     provider_repo.upsert(&provider).await.unwrap();
@@ -211,7 +211,7 @@ async fn provider_default_preserves_speed_permissions_and_sandbox() {
     assert_eq!(resolved.source, ManualDefaultSource::ProviderDefault);
     assert_eq!(resolved.source.key(), "provider_default");
     assert_eq!(resolved.value.model.as_deref(), Some("gpt-5.6"));
-    assert_eq!(resolved.value.service_tier, ManualServiceTier::Fast);
+    assert_eq!(resolved.value.service_tier, ManualServiceTier::Standard);
     assert_eq!(resolved.value.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         resolved.value.sandbox_mode.as_deref(),
