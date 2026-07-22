@@ -7,7 +7,9 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
 
-use crate::application::agent_workspace_review::load_agent_workspace_review_context;
+use crate::application::agent_workspace_review::{
+    load_agent_workspace_review_context, workspace_review_mode_is_eligible,
+};
 use crate::application::agent_workspace_review_auto_merge::{
     start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
 };
@@ -16,9 +18,9 @@ use crate::application::git_service::git_cmd;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRunId, AgentRunStatus, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    ChatContextType, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, ChatContextType,
+    ChatConversationId,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 
@@ -76,7 +78,6 @@ pub(crate) enum AutoReviewSkipReason {
     NotReviewableMode,
     ManualOnlyArchived,
     ManualOnlyTerminalPr,
-    PlanPhaseAutomationRun,
     NoReviewableChanges,
     GateNotRequired,
     AlreadyReviewing,
@@ -94,7 +95,6 @@ impl AutoReviewSkipReason {
             Self::NotReviewableMode => "not_reviewable_mode",
             Self::ManualOnlyArchived => "manual_only_archived",
             Self::ManualOnlyTerminalPr => "manual_only_terminal_pr",
-            Self::PlanPhaseAutomationRun => "plan_phase_automation_run",
             Self::NoReviewableChanges => "no_reviewable_changes",
             Self::GateNotRequired => "gate_not_required",
             Self::AlreadyReviewing => "already_reviewing",
@@ -383,6 +383,13 @@ pub(crate) async fn resolve_auto_review_start_action(
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
 ) -> Result<AutoReviewStartAction, String> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| workspace.clone());
+    let workspace = &workspace;
     if workspace.status == AgentConversationWorkspaceStatus::Archived {
         return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::ManualOnlyArchived,
@@ -393,28 +400,10 @@ pub(crate) async fn resolve_auto_review_start_action(
             AutoReviewSkipReason::InactiveWorkspace,
         ));
     }
-    if !matches!(
-        workspace.mode,
-        AgentConversationWorkspaceMode::Edit
-            | AgentConversationWorkspaceMode::Ideation
-            | AgentConversationWorkspaceMode::Plan
-    ) {
+    if !workspace_review_mode_is_eligible(workspace.mode) {
         return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::NotReviewableMode,
         ));
-    }
-    if workspace.mode == AgentConversationWorkspaceMode::Plan {
-        let is_automation_run = state
-            .chat_conversation_repo
-            .get_by_id(&workspace.conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .is_some_and(|conversation| conversation.automation_run_id.is_some());
-        if is_automation_run {
-            return Ok(AutoReviewStartAction::Skip(
-                AutoReviewSkipReason::PlanPhaseAutomationRun,
-            ));
-        }
     }
     if workspace.has_terminal_publication_pr_status() {
         return Ok(AutoReviewStartAction::Skip(
@@ -481,14 +470,20 @@ pub(crate) async fn maybe_start_auto_review(
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
 ) -> Result<AutoReviewDecision, String> {
-    match resolve_auto_review_start_action(state, execution_state, workspace).await? {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| workspace.clone());
+    match resolve_auto_review_start_action(state, execution_state, &workspace).await? {
         AutoReviewStartAction::Start => {}
         AutoReviewStartAction::Skip(reason) => return Ok(AutoReviewDecision::Skipped(reason)),
     }
 
     let started = start_guarded_agent_workspace_review(
         Arc::new(state.clone()),
-        workspace,
+        &workspace,
         false,
         WorkspaceReviewStartOrigin::Automated,
         None,
