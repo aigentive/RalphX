@@ -1798,7 +1798,6 @@ describe("useChat", () => {
       "session-1",
       "New message content",
       undefined,
-      undefined,
       undefined
     );
   });
@@ -1829,7 +1828,6 @@ describe("useChat", () => {
       "ideation",
       "session-1",
       "New Team message",
-      undefined,
       undefined,
       { teamIntent: { coordinationMode: "rx_native_team" } },
     );
@@ -2028,35 +2026,6 @@ describe("useChat", () => {
     expect(mockStoreState.setAgentRunning).toHaveBeenCalledWith("session:session-1", false);
   });
 
-  it("invalidates the active conversation when target sends skip the optimistic echo", async () => {
-    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce({
-      responseText: "AI response",
-      toolCalls: [],
-      claudeSessionId: "claude-session-123",
-      conversationId: "conv-1",
-    });
-    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
-    const { queryClient, wrapper } = createWrapperWithClient();
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
-
-    await act(async () => {
-      await result.current.sendMessage.mutateAsync({
-        content: "Send to one agent",
-        target: "reviewer",
-      });
-    });
-
-    expect(
-      invalidateSpy.mock.calls.some(
-        ([filters]) =>
-          Array.isArray(filters?.queryKey) &&
-          filters.queryKey.join("|") === chatKeys.conversation("conv-1").join("|")
-      )
-    ).toBe(true);
-  });
-
   it("should send message in task context", async () => {
     // sendAgentMessage now returns SendContextMessageResult
     const mockResult = {
@@ -2081,7 +2050,6 @@ describe("useChat", () => {
       "task",
       "task-1",
       "Task message",
-      undefined,
       undefined,
       undefined
     );

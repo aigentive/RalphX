@@ -323,14 +323,8 @@ pub async fn resume_execution(
         .await;
     scheduler.try_schedule_ready_tasks().await;
 
-    if let Some(ref handle) = app_state.app_handle {
+    if app_state.app_handle.is_some() {
         let execution_state_arc = Arc::clone(execution_state.inner());
-        let team_service = std::sync::Arc::new(crate::application::TeamService::new_with_repos(
-            std::sync::Arc::new(TeamStateTracker::new()),
-            handle.clone(),
-            Arc::clone(&app_state.team_session_repo),
-            Arc::clone(&app_state.team_message_repo),
-        ));
         if let Err(error) = resume_paused_workspace_queues_with_chat_service(
             effective_project_id.as_ref(),
             &app_state,
@@ -338,8 +332,7 @@ pub async fn resume_execution(
             || {
                 Arc::new(
                     app_state
-                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc))
-                        .with_team_service(Arc::clone(&team_service)),
+                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc)),
                 ) as Arc<dyn ChatService>
             },
         )
@@ -358,8 +351,7 @@ pub async fn resume_execution(
             || {
                 Arc::new(
                     app_state
-                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc))
-                        .with_team_service(Arc::clone(&team_service)),
+                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc)),
                 ) as Arc<dyn ChatService>
             },
         )
@@ -375,14 +367,11 @@ pub async fn resume_execution(
             effective_project_id.as_ref(),
             &app_state,
             &execution_state_arc,
-            |is_team_mode| {
-                let mut service = app_state
-                    .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc))
-                    .with_team_service(Arc::clone(&team_service));
-                if is_team_mode {
-                    service = service.with_team_mode(true);
-                }
-                Arc::new(service) as Arc<dyn ChatService>
+            || {
+                Arc::new(
+                    app_state
+                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc)),
+                ) as Arc<dyn ChatService>
             },
         )
         .await
@@ -396,8 +385,7 @@ pub async fn resume_execution(
             || {
                 Arc::new(
                     app_state
-                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc))
-                        .with_team_service(Arc::clone(&team_service)),
+                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc)),
                 ) as Arc<dyn ChatService>
             },
         )

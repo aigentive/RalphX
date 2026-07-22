@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
 };
 use chrono::Utc;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
@@ -21,13 +21,9 @@ use ralphx_lib::http_server::handlers::automations::{
 use ralphx_lib::http_server::types::HttpServerState;
 
 fn test_state() -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state: Arc::new(AppState::new_test()),
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
         delegation_service: Arc::new(DelegationService::new()),
     }
 }

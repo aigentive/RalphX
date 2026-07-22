@@ -15,8 +15,6 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::question_state::QuestionState;
-use crate::application::team_events;
-use crate::application::team_state_tracker::TeammateStatus;
 use crate::domain::agents::{
     standard_harness_behavior, AgentHarnessKind, HarnessStreamMode, ProviderSessionRef,
 };
@@ -982,12 +980,6 @@ pub struct StreamTimeoutConfig {
     pub line_read_timeout: Duration,
     /// Max time to tolerate stdout traffic with no parseable stream events.
     pub parse_stall_timeout: Duration,
-    /// Teammate name (set when streaming a team member's output).
-    #[allow(dead_code)]
-    pub teammate_name: Option<String>,
-    /// Teammate display color (set when streaming a team member's output).
-    #[allow(dead_code)]
-    pub teammate_color: Option<String>,
 }
 
 impl StreamTimeoutConfig {
@@ -998,31 +990,17 @@ impl StreamTimeoutConfig {
             ChatContextType::Merge => Self {
                 line_read_timeout: Duration::from_secs(cfg.merge_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.merge_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
             ChatContextType::Review => Self {
                 line_read_timeout: Duration::from_secs(cfg.review_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.review_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
             // TaskExecution, Ideation, Task, Project — generous defaults
             _ => Self {
                 line_read_timeout: Duration::from_secs(cfg.default_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.default_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
         }
-    }
-
-    /// Attach team member identity to this config (builder pattern).
-    #[allow(dead_code)]
-    pub fn with_teammate(mut self, name: String, color: String) -> Self {
-        self.teammate_name = Some(name);
-        self.teammate_color = Some(color);
-        self
     }
 }
 
@@ -1199,8 +1177,6 @@ pub async fn process_stream_background<R: Runtime>(
     mut assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
-    team_service: Option<std::sync::Arc<crate::application::TeamService>>,
-    team_mode: bool,
     streaming_state_cache: StreamingStateCache,
     running_agent_registry: Option<Arc<dyn RunningAgentRegistry>>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
@@ -1242,13 +1218,8 @@ pub async fn process_stream_background<R: Runtime>(
         .await;
     }
 
-    let mut timeout_config = StreamTimeoutConfig::for_context(&context_type);
-    // Team leads wait long periods while teammates work — use team-specific timeout
+    let timeout_config = StreamTimeoutConfig::for_context(&context_type);
     let stream_cfg = stream_timeouts();
-    if team_mode {
-        timeout_config.line_read_timeout = Duration::from_secs(stream_cfg.team_line_read_secs);
-        timeout_config.parse_stall_timeout = Duration::from_secs(stream_cfg.team_parse_stall_secs);
-    }
     tracing::debug!(
         conversation_id = conversation_id.as_str(),
         %context_type,
@@ -1336,9 +1307,6 @@ pub async fn process_stream_background<R: Runtime>(
         .map(|_| RunningAgentKey::new(context_type.to_string(), context_id));
     let mut last_heartbeat = std::time::Instant::now();
     const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-    // Track Task tool_use_id → (team_name, teammate_name) for teammate lifecycle
-    let mut teammate_task_map: HashMap<String, (String, String)> = HashMap::new();
 
     // Track active subagent tasks (Task tool calls) to prevent timeout during sidechain work.
     // When the lead spawns in-process subagents, stdout goes silent — this tracker
@@ -1636,40 +1604,6 @@ pub async fn process_stream_background<R: Runtime>(
                             "[STREAM_EVT] ToolCallCompleted"
                         );
                     }
-                    StreamEvent::TeamMessageSent {
-                        sender,
-                        recipient,
-                        content,
-                        message_type,
-                    } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            sender = %sender,
-                            recipient = ?recipient,
-                            content_len = content.len(),
-                            message_type = %message_type,
-                            "[STREAM_EVT] TeamMessageSent — lead captured team message"
-                        );
-                    }
-                    StreamEvent::TeamCreated { team_name, .. } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            team_name = %team_name,
-                            "[STREAM_EVT] TeamCreated"
-                        );
-                    }
-                    StreamEvent::TeammateSpawned {
-                        teammate_name,
-                        team_name,
-                        ..
-                    } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            teammate_name = %teammate_name,
-                            team_name = %team_name,
-                            "[STREAM_EVT] TeammateSpawned"
-                        );
-                    }
                     StreamEvent::TurnComplete { session_id } => {
                         tracing::info!(
                             conversation_id = %conversation_id_str,
@@ -1683,16 +1617,12 @@ pub async fn process_stream_background<R: Runtime>(
                     StreamEvent::TaskStarted {
                         tool_use_id,
                         description,
-                        teammate_name,
-                        team_name,
                         ..
                     } => {
                         tracing::debug!(
                             conversation_id = %conversation_id_str,
                             tool_use_id = %tool_use_id,
                             description = ?description,
-                            teammate_name = ?teammate_name,
-                            team_name = ?team_name,
                             "[STREAM_EVT] TaskStarted"
                         );
                     }
@@ -2405,36 +2335,9 @@ pub async fn process_stream_background<R: Runtime>(
                         description,
                         subagent_type,
                         model,
-                        teammate_name: tm_name,
-                        team_name: tm_team,
                     } => {
                         // Track active subagent tasks for timeout bypass
                         active_task_tracker.task_started();
-
-                        // Track teammate Task calls for lifecycle management
-                        if let (Some(ref tn), Some(ref tt)) = (&tm_name, &tm_team) {
-                            teammate_task_map.insert(tool_use_id.clone(), (tt.clone(), tn.clone()));
-
-                            // Update status to Running via TeamService (persistence + events)
-                            if let Some(ref service) = team_service {
-                                let _ = service
-                                    .update_teammate_status(tt, tn, TeammateStatus::Running)
-                                    .await;
-                            }
-
-                            // Emit agent:run_started with teammate_name for frontend
-                            if let Some(ref handle) = app_handle {
-                                let _ = handle.emit(
-                                    events::AGENT_RUN_STARTED,
-                                    serde_json::json!({
-                                        "teammate_name": tn,
-                                        "team_name": tt,
-                                        "context_type": context_type_str,
-                                        "context_id": context_id_str,
-                                    }),
-                                );
-                            }
-                        }
 
                         // Update streaming state cache with new task
                         let cached_task = CachedStreamingTask {
@@ -2444,7 +2347,6 @@ pub async fn process_stream_background<R: Runtime>(
                             model: model.clone(),
                             status: "running".to_string(),
                             agent_id: None,
-                            teammate_name: tm_name.clone(),
                             delegated_job_id: None,
                             delegated_session_id: None,
                             delegated_conversation_id: None,
@@ -2483,7 +2385,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     description,
                                     subagent_type,
                                     model,
-                                    teammate_name: tm_name,
+                                    teammate_name: None,
                                     delegated_job_id: None,
                                     delegated_session_id: None,
                                     delegated_conversation_id: None,
@@ -2531,38 +2433,11 @@ pub async fn process_stream_background<R: Runtime>(
                             )
                             .await;
 
-                        // Check if this completes a teammate Task
-                        let tm_name_for_payload =
-                            if let Some((tt, tn)) = teammate_task_map.remove(&tool_use_id) {
-                                // Update status to Idle via TeamService (persistence + events)
-                                if let Some(ref service) = team_service {
-                                    let _ = service
-                                        .update_teammate_status(&tt, &tn, TeammateStatus::Idle)
-                                        .await;
-                                }
-
-                                // Emit agent:run_completed with teammate_name for frontend
-                                if let Some(ref handle) = app_handle {
-                                    let _ = handle.emit(
-                                        events::AGENT_RUN_COMPLETED,
-                                        serde_json::json!({
-                                            "teammate_name": tn,
-                                            "team_name": tt,
-                                            "context_type": context_type_str,
-                                            "context_id": context_id_str,
-                                        }),
-                                    );
-                                }
-
-                                Some(tn)
-                            } else {
-                                None
-                            };
-
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
+                                    teammate_name: None,
                                     tool_use_id,
                                     run_id: agent_run_id.clone(),
                                     agent_id,
@@ -2570,7 +2445,6 @@ pub async fn process_stream_background<R: Runtime>(
                                     total_duration_ms,
                                     total_tokens,
                                     total_tool_use_count,
-                                    teammate_name: tm_name_for_payload,
                                     delegated_job_id: None,
                                     delegated_session_id: None,
                                     delegated_conversation_id: None,
@@ -2672,163 +2546,6 @@ pub async fn process_stream_background<R: Runtime>(
                                     context_id: context_id_str.clone(),
                                     timestamp: chrono::Utc::now().timestamp_millis(),
                                 },
-                            );
-                        }
-                    }
-
-                    StreamEvent::TeamCreated {
-                        team_name,
-                        config_path: _,
-                    } => {
-                        // Create team via TeamService (persistence + events)
-                        if let Some(ref service) = team_service {
-                            if !service.team_exists(&team_name).await {
-                                let _ = service
-                                    .create_team(&team_name, &context_id_str, &context_type_str)
-                                    .await;
-                            }
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly if no service available
-                            team_events::emit_team_created(
-                                handle,
-                                &team_name,
-                                &context_id_str,
-                                &context_type_str,
-                            );
-                        }
-
-                        // Dynamic team_mode upgrade: when the lead creates a team mid-session,
-                        // upgrade the line-read timeout from default (600s) to team (3600s).
-                        // The lead was spawned before the team existed, so team_mode was false
-                        // at spawn time. Without this, the lead gets killed after 10 min idle.
-                        if !team_mode {
-                            let cfg = stream_timeouts();
-                            let old_secs = timeout_config.line_read_timeout.as_secs();
-                            timeout_config.line_read_timeout =
-                                Duration::from_secs(cfg.team_line_read_secs);
-                            timeout_config.parse_stall_timeout =
-                                Duration::from_secs(cfg.team_parse_stall_secs);
-                            tracing::info!(
-                                conversation_id = %conversation_id_str,
-                                team_name = %team_name,
-                                old_timeout_secs = old_secs,
-                                new_timeout_secs = cfg.team_line_read_secs,
-                                "[TEAM_TIMEOUT] Upgraded line-read timeout on TeamCreated"
-                            );
-                        }
-                    }
-                    StreamEvent::TeammateSpawned {
-                        teammate_name,
-                        team_name,
-                        agent_id: _,
-                        model,
-                        color,
-                        prompt: _,
-                        agent_type: _,
-                    } => {
-                        // Register teammate via TeamService (persistence + events).
-                        // May already exist from approve_team_plan — add_teammate is idempotent.
-                        // NOTE: CLI worker processes are spawned in approve_team_plan (teams.rs),
-                        // NOT here, to avoid double-spawn when both paths fire.
-                        if let Some(ref service) = team_service {
-                            let _ = service
-                                .add_teammate(
-                                    &team_name,
-                                    &teammate_name,
-                                    &color,
-                                    &model,
-                                    "team-member",
-                                )
-                                .await;
-                        }
-                        // Always re-emit team:teammate_spawned so the frontend creates the
-                        // filter tab immediately. The teammate may already be registered from
-                        // approve_team_plan (add_teammate returns TeammateAlreadyExists), but
-                        // we re-emit here so the frontend recovers if it missed the initial event.
-                        // Try to include conversation_id if the stream processor already created one.
-                        let conv_id = if let Some(ref service) = team_service {
-                            service
-                                .tracker()
-                                .get_team_status(&team_name)
-                                .await
-                                .ok()
-                                .and_then(|s| {
-                                    s.teammates
-                                        .iter()
-                                        .find(|t| t.name == teammate_name)
-                                        .and_then(|t| t.conversation_id.clone())
-                                })
-                        } else {
-                            None
-                        };
-                        if let Some(ref handle) = app_handle {
-                            team_events::emit_teammate_spawned(
-                                handle,
-                                &team_name,
-                                &teammate_name,
-                                &color,
-                                &model,
-                                "team-member",
-                                &context_type_str,
-                                &context_id_str,
-                                conv_id.as_deref(),
-                            );
-                        }
-                    }
-                    StreamEvent::TeamMessageSent {
-                        sender,
-                        recipient,
-                        content,
-                        message_type,
-                    } => {
-                        // Persist message and emit full-payload event via TeamService
-                        use crate::application::team_state_tracker::TeamMessageType;
-
-                        let msg_type = match message_type.as_str() {
-                            "broadcast" => TeamMessageType::Broadcast,
-                            _ => TeamMessageType::TeammateMessage,
-                        };
-
-                        if let Some(ref service) = team_service {
-                            let _ = service
-                                .add_teammate_message(
-                                    // Derive team_name from active teams
-                                    &{
-                                        let teams = service.list_teams().await;
-                                        teams.into_iter().next().unwrap_or_default()
-                                    },
-                                    &sender,
-                                    recipient.as_deref(),
-                                    &content,
-                                    msg_type,
-                                )
-                                .await;
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly without persistence
-                            let _ = handle.emit(
-                                events::TEAM_MESSAGE,
-                                serde_json::json!({
-                                    "sender": sender,
-                                    "recipient": recipient,
-                                    "content": content,
-                                    "message_type": message_type,
-                                    "context_type": context_type_str,
-                                    "context_id": context_id_str,
-                                }),
-                            );
-                        }
-                    }
-                    StreamEvent::TeamDeleted { team_name } => {
-                        // Disband team via TeamService (persistence + events)
-                        if let Some(ref service) = team_service {
-                            let _ = service.disband_team(&team_name).await;
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly if no service available
-                            team_events::emit_team_disbanded(
-                                handle,
-                                &team_name,
-                                &context_type_str,
-                                &context_id_str,
                             );
                         }
                     }

@@ -906,43 +906,6 @@ Report only unless workspace intervention is explicit.
 }
 
 #[test]
-fn compose_codex_prompt_does_not_fall_back_to_legacy_prompt_when_canonical_agent_lacks_codex_prompt(
-) {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let root = temp_dir.path();
-    let plugin_dir = create_plugin_dir(root);
-
-    std::fs::create_dir_all(root.join("agents/ralphx-ideation-team-lead/claude"))
-        .expect("create canonical claude dir");
-    std::fs::write(
-        root.join("agents/ralphx-ideation-team-lead/agent.yaml"),
-        "name: ralphx-ideation-team-lead\nrole: ideation_team_lead\n",
-    )
-    .expect("write shared definition");
-    std::fs::write(
-        root.join("agents/ralphx-ideation-team-lead/claude/prompt.md"),
-        "Canonical Claude Prompt",
-    )
-    .expect("write canonical claude prompt");
-    std::fs::write(
-        plugin_dir.join("agents/ralphx-ideation-team-lead.md"),
-        "---\nname: ralphx-ideation-team-lead\n---\nLegacy Claude Prompt",
-    )
-    .expect("write legacy prompt");
-
-    let composed = compose_codex_prompt(
-        "User prompt",
-        Some(&plugin_dir),
-        Some("ralphx-ideation-team-lead"),
-    );
-
-    assert_eq!(
-        composed, "User prompt",
-        "canonical agents without a codex prompt should not silently inherit the legacy claude prompt"
-    );
-}
-
-#[test]
 fn build_codex_mcp_overrides_includes_runtime_feature_flags_from_agent_metadata() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let root = temp_dir.path();

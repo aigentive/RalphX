@@ -153,7 +153,6 @@ export async function activateAgentPlanProposals({
       sessionId,
       PLAN_TO_PROPOSALS_REQUEST,
       undefined,
-      undefined,
       runtimeOverride ? { runtimeOverride } : undefined,
     );
   } catch (error) {

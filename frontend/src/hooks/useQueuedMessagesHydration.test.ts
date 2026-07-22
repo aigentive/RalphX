@@ -31,7 +31,6 @@ describe("useQueuedMessagesHydration", () => {
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},

@@ -119,8 +119,8 @@ impl ReconciliationRunner {
     ///
     /// The IPR (InteractiveProcessRegistry) stores `ChildStdin` handles keyed by
     /// (context_type, context_id). An entry existing does NOT mean the process is alive —
-    /// the cleanup in `spawn_send_message_background` can be skipped (team mode, panic,
-    /// cancellation), leaving a stale entry that blocks reconciliation forever.
+    /// the cleanup in `spawn_send_message_background` can be skipped (panic, cancellation,
+    /// or interrupted teardown), leaving a stale entry that blocks reconciliation forever.
     ///
     /// This method cross-references the IPR entry against the running_agent_registry PID:
     /// - If IPR has no entry → returns false (no interactive process)

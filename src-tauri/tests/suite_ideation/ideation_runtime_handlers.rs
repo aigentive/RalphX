@@ -6,7 +6,7 @@ use axum::{
 use ralphx_lib::application::chat_service::{
     AppChatService, ChatService, ChatServiceError, SendMessageOptions,
 };
-use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
+use ralphx_lib::application::{AppState, InteractiveProcessKey};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::entities::ideation::{SessionPurpose, VerificationStatus};
@@ -30,14 +30,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -1073,7 +1069,6 @@ async fn test_send_ideation_session_message_agent_idle_spawn_blocked_in_test_mod
 
     let mut session = IdeationSessionBuilder::new()
         .project_id(ProjectId::new())
-        .team_mode("research")
         .build();
     session.status = ralphx_lib::domain::entities::ideation::IdeationSessionStatus::Active;
     let session_id = session.id.as_str().to_string();

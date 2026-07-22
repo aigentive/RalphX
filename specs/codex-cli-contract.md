@@ -462,15 +462,13 @@ Required raw metadata:
 Claude remains:
 
 - default execution harness in phase 1
-- the only harness used for team-mode execution/review/merge flows
+- supported through the same RX-native Team contract as other capable harnesses
 
 ### 7.2 Codex
 
-Codex phase-1 constraints:
+Codex constraints:
 
-- explicit solo mode only
-- ideation and verifier lanes only
-- subagents allowed only through Codex-native delegation support
+- subagents flow through provider-neutral delegation support
 - no Claude plugin-dir assumption
 
 ### 7.3 MCP transport

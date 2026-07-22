@@ -60,7 +60,6 @@ function createMockIdeationSession(
     sessionId: "session-1",
     title: "Test Ideation Session",
     elapsedSeconds: 60,
-    teamMode: null,
     isGenerating: true,
     ...overrides,
   };

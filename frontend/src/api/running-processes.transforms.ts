@@ -9,7 +9,6 @@ import {
   RunningWorkspaceSessionSchema,
   ExecutionLaneUsageSchema,
   ExecutionCapacitySummarySchema,
-  TeammateSummarySchema,
 } from "./running-processes.schemas";
 import type {
   StepProgressSummary,
@@ -19,7 +18,6 @@ import type {
   RunningWorkspaceSession,
   ExecutionLaneUsage,
   ExecutionCapacitySummary,
-  TeammateSummary,
 } from "./running-processes.types";
 import { transformTaskStep } from "@/types/task-step";
 import { transformExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
@@ -45,24 +43,6 @@ export function transformStepProgressSummary(
 }
 
 /**
- * Transform TeammateSummarySchema (snake_case) → TeammateSummary (camelCase)
- */
-export function transformTeammateSummary(
-  raw: z.infer<typeof TeammateSummarySchema>
-): TeammateSummary {
-  return {
-    name: raw.name,
-    status: raw.status,
-    ...(raw.step !== undefined && { step: raw.step }),
-    ...(raw.model !== undefined && { model: raw.model }),
-    ...(raw.color !== undefined && { color: raw.color }),
-    ...(raw.steps_completed !== undefined && { stepsCompleted: raw.steps_completed }),
-    ...(raw.steps_total !== undefined && { stepsTotal: raw.steps_total }),
-    ...(raw.wave !== undefined && { wave: raw.wave }),
-  };
-}
-
-/**
  * Transform RunningProcessSchema (snake_case) → RunningProcess (camelCase)
  */
 export function transformRunningProcess(
@@ -83,12 +63,6 @@ export function transformRunningProcess(
         ? transformExecutionTaskAgentWorkspace(raw.agent_workspace)
         : null,
     }),
-    ...(raw.team_name !== undefined && { teamName: raw.team_name }),
-    ...(raw.teammates !== undefined && {
-      teammates: raw.teammates.map(transformTeammateSummary),
-    }),
-    ...(raw.current_wave !== undefined && { currentWave: raw.current_wave }),
-    ...(raw.total_waves !== undefined && { totalWaves: raw.total_waves }),
   };
 }
 
@@ -102,7 +76,6 @@ export function transformRunningIdeationSession(
     sessionId: raw.session_id,
     title: raw.title,
     elapsedSeconds: raw.elapsed_seconds,
-    teamMode: raw.team_mode,
     isGenerating: raw.is_generating,
   };
 }

@@ -28,7 +28,6 @@ import {
 } from "@/components/ui/tooltip";
 import { useAgentTerminalStore } from "@/components/agents/agentTerminalStore";
 import { cn } from "@/lib/utils";
-import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
 import { RunningProcessPopover } from "./RunningProcessPopover";
 import { TerminalsPopover, type ExecutionBarTerminalSession } from "./TerminalsPopover";
 import type {
@@ -194,10 +193,6 @@ export function ExecutionControlBar({
   onNavigateToWorkspace,
   onNavigateToTask,
 }: ExecutionControlBarProps) {
-  const {
-    ideationTeamModeAvailable,
-    executionTeamModeAvailable,
-  } = useTeamModeAvailability(projectId);
   const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
   const workspaceLane = laneByName.get("workspaces");
   const taskLane = laneByName.get("tasks");
@@ -368,8 +363,6 @@ export function ExecutionControlBar({
               alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
               initialTab={activeTab}
               showIdeation={showIdeation}
-              showExecutionTeamUi={executionTeamModeAvailable}
-              showIdeationTeamUi={ideationTeamModeAvailable}
             >
               <button
                 data-testid="running-count"

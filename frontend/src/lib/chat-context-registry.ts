@@ -35,10 +35,6 @@ export interface ChatContextConfig {
   supportsDiffViews: boolean;
   supportsHookEvents: boolean;
   supportsQueue: boolean;
-  /** Whether this context can have an agent team */
-  supportsTeamMode: boolean;
-  /** Where to show the team activity panel (null = not supported) */
-  teamActivityPanelPosition: "right" | "bottom" | null;
 }
 
 // ============================================================================
@@ -56,8 +52,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: true,
-    teamActivityPanelPosition: "right",
   },
   task: {
     storeKeyPrefix: "task",
@@ -69,8 +63,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   project: {
     storeKeyPrefix: "project",
@@ -82,8 +74,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   standalone: {
     storeKeyPrefix: "standalone",
@@ -95,8 +85,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   task_execution: {
     storeKeyPrefix: "task_execution",
@@ -108,8 +96,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: true,
     supportsQueue: true,
-    supportsTeamMode: true,
-    teamActivityPanelPosition: "bottom",
   },
   review: {
     storeKeyPrefix: "review",
@@ -121,8 +107,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   merge: {
     storeKeyPrefix: "merge",
@@ -134,8 +118,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   branch_update: {
     storeKeyPrefix: "branch_update",
@@ -147,8 +129,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: true,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
   delegation: {
     storeKeyPrefix: "delegation",
@@ -160,8 +140,6 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsDiffViews: false,
     supportsHookEvents: false,
     supportsQueue: true,
-    supportsTeamMode: false,
-    teamActivityPanelPosition: null,
   },
 };
 

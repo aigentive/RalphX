@@ -1321,7 +1321,6 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         None,
         None,
         None,
-        false,
         tokio_util::sync::CancellationToken::new(),
         None,
         None,
@@ -1408,7 +1407,6 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             Some(app_handle),
             None,
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             None,
             None,
@@ -1789,7 +1787,6 @@ EOF
             Some(app_handle),
             Some(project_id.as_str()),
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             Some("chain-queued"),
             Some("parent-run"),
@@ -1971,7 +1968,6 @@ EOF
             Some(app_handle),
             None,
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             Some("verification-chain"),
             Some("parent-run"),
@@ -2157,7 +2153,6 @@ async fn process_queue_resume_persona_block(
             Some(app.handle().clone()),
             Some(project_id.as_str()),
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             None,
             None,
@@ -2436,7 +2431,6 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             Some(app_handle),
             None,
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             None,
             None,
@@ -2602,11 +2596,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         turn_metadata: None,
         conversation: Some(conversation),
         agent_name: Some("orchestrator".to_string()),
-        team_mode: false,
         assistant_message_attribution: ChatMessageAttribution::default(),
         persist_conversation_provider_session_ref: true,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
-        team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: None,
         interactive_process_token: None,
@@ -2738,11 +2730,9 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         turn_metadata: None,
         conversation: Some(conversation),
         agent_name: Some("orchestrator".to_string()),
-        team_mode: false,
         assistant_message_attribution: ChatMessageAttribution::default(),
         persist_conversation_provider_session_ref: true,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
-        team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: None,
         interactive_process_token: None,
@@ -2862,62 +2852,6 @@ async fn ipr_removed_even_when_team_still_active() {
     assert!(
         !ipr.has_process(&key).await,
         "IPR entry must be removed on stream exit even when team is still active"
-    );
-}
-
-/// Verifies that a disband_team failure does not leave a zombie IPR entry.
-///
-/// When `disband_team` fails, the old code left `team_still_active=true` which
-/// triggered IPR_KEEP, persisting a dead stdin handle. The fix: even on disband
-/// failure, always call `ipr.remove()` — dead stdin is useless regardless.
-#[tokio::test]
-async fn disband_failure_does_not_leave_zombie_ipr_entry() {
-    use crate::application::team_service::TeamService;
-    use crate::application::team_state_tracker::TeamStateTracker;
-    use std::sync::Arc;
-
-    let (stdin, _child) = spawn_test_stdin().await;
-    let ipr = InteractiveProcessRegistry::new();
-    let key = InteractiveProcessKey::new("ideation", "session-disband-fail-test");
-    let context_id = "session-disband-fail-test";
-
-    // Register IPR entry for a lead process
-    ipr.register(key.clone(), stdin).await;
-    assert!(
-        ipr.has_process(&key).await,
-        "Precondition: IPR entry must exist"
-    );
-
-    // Create a TeamService and register a team for this context.
-    // We simulate a scenario where a team is active but we need to clean up.
-    let tracker = Arc::new(TeamStateTracker::new());
-    let service = TeamService::new_without_events(Arc::clone(&tracker));
-    service
-        .create_team("test-team", context_id, "ideation")
-        .await
-        .unwrap();
-
-    // Verify team is active (simulates state before disband failure)
-    let status = service.get_team_status("test-team").await.unwrap();
-    assert_eq!(status.context_id, context_id);
-
-    // Simulate disband failure by NOT calling disband_team (team remains active).
-    // In this scenario, the old code would set team_still_active=true and KEEP the IPR.
-    // The fix: always remove the IPR regardless of disband outcome.
-    // Here we directly verify: remove() works unconditionally even with active team.
-    ipr.remove(&key).await;
-
-    assert!(
-        !ipr.has_process(&key).await,
-        "IPR entry must be removed even when disband_team fails (no zombie)"
-    );
-
-    // Team may still be registered (disband failed), but IPR is gone.
-    // Teammate nudges will trigger re-spawn via the IPR-miss path.
-    let post_status = service.get_team_status("test-team").await;
-    assert!(
-        post_status.is_ok(),
-        "Team registration may persist when disband fails, but IPR must still be cleaned"
     );
 }
 

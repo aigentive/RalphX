@@ -36,7 +36,7 @@ use crate::application::plan_verification_service::{
     PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
-use crate::application::{AppState, TeamService};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId, VerificationStatus};
 use crate::domain::repositories::{
@@ -56,7 +56,6 @@ const AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(5
 pub struct AgentConversationAutomationRunStarter<R: tauri::Runtime + 'static> {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    team_service: Option<Arc<TeamService>>,
     app_handle: tauri::AppHandle<R>,
 }
 
@@ -64,13 +63,11 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
     pub fn new(
         state: AppState,
         execution_state: Arc<ExecutionState>,
-        team_service: Option<Arc<TeamService>>,
         app_handle: tauri::AppHandle<R>,
     ) -> Self {
         Self {
             state,
             execution_state,
-            team_service,
             app_handle,
         }
     }
@@ -83,7 +80,6 @@ pub(crate) fn automation_run_starter_for_test(
     AgentConversationAutomationRunStarter::new(
         state,
         Arc::new(ExecutionState::new()),
-        None,
         crate::testing::create_mock_app_handle(),
     )
 }
@@ -100,7 +96,6 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
         let result = AgentConversationStartService::new(AgentConversationStartDeps {
             state: &self.state,
             execution_state: &self.execution_state,
-            team_service: self.team_service.clone(),
             app_handle: self.app_handle.clone(),
         })
         .start(start_input)
@@ -456,13 +451,9 @@ pub fn spawn_automation_scheduler(
         tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
         return;
     }
-    let team_service = app_handle
-        .try_state::<Arc<crate::application::TeamService>>()
-        .map(|state| state.inner().clone());
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
         Arc::clone(&execution_state),
-        team_service,
         app_handle.clone(),
     ));
     let resumer = Arc::new(AgentConversationAutomationRunResumer::new(

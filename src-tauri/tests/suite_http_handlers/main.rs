@@ -25,4 +25,3 @@ mod personas_handlers;
 mod projects_handlers;
 mod reliability_tests;
 mod session_linking_handlers;
-mod teams_handlers;

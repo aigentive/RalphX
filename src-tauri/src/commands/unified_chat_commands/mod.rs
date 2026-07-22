@@ -28,7 +28,6 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
-use crate::application::agent_workspace_terminal_cleanup::TerminalAgentWorkspaceOutcome;
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
@@ -83,6 +82,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
+use crate::application::agent_workspace_terminal_cleanup::TerminalAgentWorkspaceOutcome;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
@@ -129,7 +129,7 @@ use crate::domain::entities::{
     ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
     ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
     IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
-    Task, TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
+    Task, TaskCategory, TeamIntent, TeamMessageTarget,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
@@ -212,10 +212,6 @@ pub struct SendAgentMessageInput {
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
-    /// Optional target for team message routing.
-    /// When set to a teammate name, the message is routed to that teammate's stdin
-    /// instead of the lead's. "lead" or None routes to the lead (default behavior).
-    pub target: Option<String>,
 }
 
 fn hidden_user_message_metadata() -> String {
@@ -987,7 +983,6 @@ fn emit_workspace_changed_when_done(
 pub(crate) struct AgentWorkspacePrFixReviewPublishCommandResumer {
     pub app_state: AppState,
     pub execution_state: Arc<ExecutionState>,
-    pub team_service: Option<Arc<crate::application::TeamService>>,
 }
 
 #[async_trait::async_trait]
@@ -999,7 +994,6 @@ impl AgentWorkspacePrFixReviewPublishResumer for AgentWorkspacePrFixReviewPublis
         publish_agent_conversation_workspace_for_app_state(
             &self.app_state,
             &self.execution_state,
-            self.team_service.clone(),
             conversation_id,
             false,
         )
@@ -1734,8 +1728,6 @@ pub struct QueueAgentMessageInput {
     pub content: String,
     /// Client-provided ID for tracking (optional, allows frontend/backend to use same ID)
     pub client_id: Option<String>,
-    /// Optional target for team message routing (teammate name or "lead").
-    pub target: Option<String>,
 }
 
 /// Response for queued message
@@ -2896,14 +2888,8 @@ pub(crate) fn create_chat_service<R: Runtime + 'static>(
     state: &AppState,
     app_handle: tauri::AppHandle<R>,
     execution_state: &Arc<ExecutionState>,
-    team_service: Option<std::sync::Arc<crate::application::TeamService>>,
 ) -> AppChatService<R> {
-    let mut service =
-        state.build_chat_service_for_runtime(Some(Arc::clone(execution_state)), Some(app_handle));
-    if let Some(svc) = team_service {
-        service = service.with_team_service(svc);
-    }
-    service
+    state.build_chat_service_for_runtime(Some(Arc::clone(execution_state)), Some(app_handle))
 }
 
 /// Parse context type string to enum
@@ -2971,11 +2957,6 @@ fn parse_agent_coordination_mode(mode: &str) -> Result<CoordinationMode, String>
 fn normalize_new_agent_coordination_mode(
     mode: CoordinationMode,
 ) -> Result<CoordinationMode, String> {
-    if mode == CoordinationMode::LegacyClaudeTeam {
-        return Err(
-            "Legacy Claude team mode is read-only; use Team mode for new writes".to_string(),
-        );
-    }
     Ok(mode)
 }
 
@@ -3254,17 +3235,9 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     input: StartAgentConversationInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
-    start_agent_conversation_for_state(
-        input,
-        state.inner(),
-        execution_state.inner(),
-        team_service.inner().clone(),
-        app,
-    )
-    .await
+    start_agent_conversation_for_state(input, state.inner(), execution_state.inner(), app).await
 }
 
 #[tauri::command]
@@ -3284,13 +3257,11 @@ pub(crate) async fn start_agent_conversation_for_state<R: Runtime + 'static>(
     input: StartAgentConversationInput,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: std::sync::Arc<crate::application::TeamService>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state,
         execution_state,
-        team_service: Some(team_service),
         app_handle: app,
     })
     .start(input)
@@ -3336,7 +3307,7 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
     switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
         .await
 }
@@ -3349,7 +3320,7 @@ pub async fn switch_agent_conversation_persona<R: Runtime + 'static>(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationPersonaResponse, String> {
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
     switch_agent_conversation_persona_for_state_stopping_running_agent(
         input,
         state.inner(),
@@ -3965,14 +3936,12 @@ pub async fn send_agent_message(
     input: SendAgentMessageInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle,
 ) -> Result<SendAgentMessageResponse, String> {
     tracing::info!(
         context_type = %input.context_type,
         context_id = %input.context_id,
         content_len = input.content.len(),
-        target = ?input.target,
         "[SEND_MSG] send_agent_message command invoked"
     );
     let context_type = parse_context_type(&input.context_type)?;
@@ -4064,43 +4033,7 @@ pub async fn send_agent_message(
         .map_err(|error| error.to_string())?;
     }
 
-    let mut service = create_chat_service(
-        &state,
-        app.clone(),
-        &execution_state,
-        Some(team_service.inner().clone()),
-    );
-
-    // For ideation contexts, check if the session has team_mode enabled
-    if context_type == ChatContextType::Ideation {
-        let session_id = IdeationSessionId::from_string(&input.context_id);
-        if let Ok(Some(session)) = state.ideation_session_repo.get_by_id(&session_id).await {
-            let is_team = session.team_mode.as_deref().is_some_and(|m| m != "solo");
-            if is_team {
-                service = service.with_team_mode(true);
-            }
-        }
-    }
-
-    // For execution contexts, check if the task's metadata has agent_variant = "team"
-    if context_type == ChatContextType::TaskExecution {
-        let task_id = TaskId::from_string(input.context_id.clone());
-        if let Ok(Some(task)) = state.task_repo.get_by_id(&task_id).await {
-            let is_team = task
-                .metadata
-                .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                .and_then(|meta| {
-                    meta.get("agent_variant")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "team")
-                })
-                .unwrap_or(false);
-            if is_team {
-                service = service.with_team_mode(true);
-            }
-        }
-    }
+    let service = create_chat_service(&state, app.clone(), &execution_state);
 
     crate::application::validate_chat_runtime_for_context_with_override(
         &state,
@@ -4114,46 +4047,6 @@ pub async fn send_agent_message(
             .or(legacy_harness_override),
     )
     .await?;
-
-    // Route to teammate stdin when target is a specific teammate (not "lead")
-    let target = input.target.as_deref();
-    if let Some(teammate_name) = target.filter(|t| *t != "lead") {
-        // Find the active team for this context
-        if let Some(team_name) = team_service
-            .find_team_by_context_id(&input.context_id)
-            .await
-        {
-            let formatted =
-                crate::infrastructure::agents::claude::format_stream_json_input(&input.content);
-            team_service
-                .send_stdin_message(&team_name, teammate_name, &formatted)
-                .await
-                .map_err(|e| format!("Failed to send to teammate {}: {}", teammate_name, e))?;
-
-            tracing::info!(
-                teammate = %teammate_name,
-                team = %team_name,
-                "Routed user message to teammate stdin"
-            );
-
-            // Return a synthetic response — the teammate's stream processor handles
-            // conversation persistence and event emission.
-            return Ok(SendAgentMessageResponse {
-                conversation_id: String::new(),
-                agent_run_id: uuid::Uuid::new_v4().to_string(),
-                is_new_conversation: false,
-                was_queued: false,
-                queued_as_pending: false,
-                queued_message_id: None,
-            });
-        }
-        // Team not found for context — fall through to normal lead path
-        tracing::warn!(
-            target = %teammate_name,
-            context_id = %input.context_id,
-            "No active team found for context, falling back to lead"
-        );
-    }
 
     let model_override = input
         .model_override
@@ -4280,7 +4173,7 @@ pub async fn queue_agent_message(
     );
     let context_type = parse_context_type(&input.context_type)?;
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     service
         .queue_message(
@@ -4305,7 +4198,7 @@ pub async fn get_queued_agent_messages(
 ) -> Result<Vec<QueuedMessageResponse>, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     service
         .get_queued_messages(context_type, &context_id)
@@ -4326,7 +4219,7 @@ pub async fn delete_queued_agent_message(
 ) -> Result<bool, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     service
         .delete_queued_message(context_type, &context_id, &message_id)
@@ -4341,40 +4234,10 @@ async fn send_queued_agent_message_now_for_state<R: Runtime + 'static>(
     message_id: String,
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: std::sync::Arc<crate::application::TeamService>,
     app: tauri::AppHandle<R>,
 ) -> Result<SendAgentMessageResponse, String> {
     let context_type = parse_context_type(&context_type)?;
-    let mut service = create_chat_service(state, app, execution_state, Some(team_service));
-
-    if context_type == ChatContextType::Ideation {
-        let session_id = IdeationSessionId::from_string(&context_id);
-        if let Ok(Some(session)) = state.ideation_session_repo.get_by_id(&session_id).await {
-            let is_team = session.team_mode.as_deref().is_some_and(|m| m != "solo");
-            if is_team {
-                service = service.with_team_mode(true);
-            }
-        }
-    }
-
-    if context_type == ChatContextType::TaskExecution {
-        let task_id = TaskId::from_string(context_id.clone());
-        if let Ok(Some(task)) = state.task_repo.get_by_id(&task_id).await {
-            let is_team = task
-                .metadata
-                .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                .and_then(|meta| {
-                    meta.get("agent_variant")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "team")
-                })
-                .unwrap_or(false);
-            if is_team {
-                service = service.with_team_mode(true);
-            }
-        }
-    }
+    let service = create_chat_service(state, app, execution_state);
 
     service
         .send_queued_message_now(context_type, &context_id, &message_id)
@@ -4391,7 +4254,6 @@ pub async fn send_queued_agent_message_now(
     message_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle,
 ) -> Result<SendAgentMessageResponse, String> {
     send_queued_agent_message_now_for_state(
@@ -4400,7 +4262,6 @@ pub async fn send_queued_agent_message_now(
         message_id,
         &state,
         &execution_state,
-        team_service.inner().clone(),
         app,
     )
     .await
@@ -4426,7 +4287,7 @@ pub async fn list_agent_conversations(
             .await
             .map_err(|e| e.to_string())?
     } else {
-        let service = create_chat_service(&state, app, &execution_state, None);
+        let service = create_chat_service(&state, app, &execution_state);
         service
             .list_conversations(context_type_enum, &context_id)
             .await
@@ -5862,7 +5723,6 @@ pub async fn update_agent_conversation_workspace_from_base(
     base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -5883,7 +5743,6 @@ pub async fn update_agent_conversation_workspace_from_base(
     update_agent_conversation_workspace_from_base_for_app_state(
         state.inner(),
         execution_state.inner(),
-        Some(team_service.inner().clone()),
         conversation_id,
         selection,
     )
@@ -5894,7 +5753,6 @@ pub async fn update_agent_conversation_workspace_from_base(
 pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: Option<Arc<crate::application::TeamService>>,
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
@@ -5913,11 +5771,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
             )
         })?;
 
-    let mut repair_service =
-        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
-    if let Some(team_service) = team_service {
-        repair_service = repair_service.with_team_service(team_service);
-    }
+    let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
@@ -6269,7 +6123,6 @@ pub async fn publish_agent_conversation_workspace(
     conversation_id: String,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -6277,7 +6130,6 @@ pub async fn publish_agent_conversation_workspace(
     publish_agent_conversation_workspace_for_app_state(
         state.inner(),
         execution_state.inner(),
-        Some(team_service.inner().clone()),
         conversation_id,
         true,
     )
@@ -6651,7 +6503,6 @@ async fn sync_workspace_publication_from_plan_branch_for_publish(
 async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: Option<Arc<crate::application::TeamService>>,
     mut workspace: AgentConversationWorkspace,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
@@ -6673,11 +6524,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         ));
     }
 
-    let mut repair_service =
-        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
-    if let Some(team_service) = team_service {
-        repair_service = repair_service.with_team_service(team_service);
-    }
+    let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     let project = state
         .project_repo
@@ -7109,7 +6956,6 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
 pub async fn publish_agent_conversation_workspace_for_app_state(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: Option<Arc<crate::application::TeamService>>,
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
@@ -7140,7 +6986,6 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         return publish_linked_ideation_plan_branch_workspace_for_app_state(
             state,
             execution_state,
-            team_service,
             workspace,
             route_fixable_failures_to_agent,
         )
@@ -7182,11 +7027,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         ));
     }
 
-    let mut repair_service =
-        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
-    if let Some(team_service) = team_service {
-        repair_service = repair_service.with_team_service(team_service);
-    }
+    let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     let project = state
         .project_repo
@@ -8478,16 +8319,10 @@ async fn spawn_deferred_agent_workspace_repair_message(
         let execution_state = app_handle
             .try_state::<Arc<ExecutionState>>()
             .map(|state| state.inner().clone());
-        let mut repair_service = match execution_state {
+        let repair_service = match execution_state {
             Some(execution_state) => state.build_chat_service_with_execution_state(execution_state),
             None => state.build_chat_service(),
         };
-        if let Some(team_service) = app_handle
-            .try_state::<Arc<crate::application::TeamService>>()
-            .map(|state| state.inner().clone())
-        {
-            repair_service = repair_service.with_team_service(team_service);
-        }
 
         let repair_run_id = AgentRunId::new();
         let repair_run_classification = repair_run_event_classification(&repair_run_id);
@@ -8667,7 +8502,7 @@ pub async fn get_agent_conversation(
 
     let conversation_id = ChatConversationId::from_string(&conversation_id);
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
     if let Err(error) =
         wake_agent_workspace_for_bridge_events(&state, &service, &conversation_id).await
     {
@@ -8778,7 +8613,7 @@ pub async fn get_agent_conversation_messages_page(
     if let Err(error) = wake_agent_workspace_for_bridge_events_with_service_factory(
         &state,
         &conversation_id,
-        || create_chat_service(&state, app, &execution_state, None),
+        || create_chat_service(&state, app, &execution_state),
     )
     .await
     {
@@ -8889,7 +8724,7 @@ pub async fn get_agent_conversation_timeline_page(
     if let Err(error) = wake_agent_workspace_for_bridge_events_with_service_factory(
         &state,
         &conversation_id,
-        || create_chat_service(&state, app, &execution_state, None),
+        || create_chat_service(&state, app, &execution_state),
     )
     .await
     {
@@ -9055,7 +8890,7 @@ pub async fn get_agent_run_status_unified(
 
     let conv_id = ChatConversationId::from_string(&conversation_id);
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     let Some(run) = service
         .get_active_run(&conv_id)
@@ -9107,7 +8942,7 @@ pub async fn is_chat_service_available(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
     Ok(service.is_available().await)
 }
 
@@ -9129,7 +8964,7 @@ pub async fn stop_agent(
 ) -> Result<bool, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     service
         .stop_agent(context_type, &context_id)
@@ -9148,7 +8983,7 @@ pub async fn is_agent_running(
 ) -> Result<bool, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service = create_chat_service(&state, app, &execution_state);
 
     Ok(service.is_agent_running(context_type, &context_id).await)
 }

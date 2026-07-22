@@ -1,8 +1,6 @@
 use std::fmt;
 
-use crate::application::chat_service::{
-    harness_supports_rx_native_team, harness_supports_team_mode,
-};
+use crate::application::chat_service::harness_supports_rx_native_team;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{CoordinationMode, TeamIntent};
 
@@ -15,7 +13,6 @@ pub struct ResolvedTeamOverlay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeTeamOverlayError {
     Disabled,
-    LegacyReadOnly,
     HarnessUnsupported { harness: AgentHarnessKind },
 }
 
@@ -23,7 +20,6 @@ impl NativeTeamOverlayError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Disabled => "team_mode_disabled",
-            Self::LegacyReadOnly => "legacy_team_read_only",
             Self::HarnessUnsupported { .. } => "harness_unsupported",
         }
     }
@@ -35,10 +31,6 @@ impl fmt::Display for NativeTeamOverlayError {
             Self::Disabled => write!(
                 f,
                 "team_mode_disabled: RX-native team mode is disabled in this build"
-            ),
-            Self::LegacyReadOnly => write!(
-                f,
-                "legacy_team_read_only: legacy Claude team mode is read-only; use Team mode"
             ),
             Self::HarnessUnsupported { harness } => write!(
                 f,
@@ -58,7 +50,6 @@ pub fn validate_native_team_intent(
     validate_native_team_intent_with_capabilities(
         team_intent,
         harness,
-        harness_supports_team_mode(harness),
         harness_supports_rx_native_team(harness),
     )
 }
@@ -66,7 +57,6 @@ pub fn validate_native_team_intent(
 pub(super) fn validate_native_team_intent_with_capabilities(
     team_intent: Option<&TeamIntent>,
     harness: AgentHarnessKind,
-    _supports_legacy_team: bool,
     supports_rx_native_team: bool,
 ) -> Result<Option<ResolvedTeamOverlay>, NativeTeamOverlayError> {
     let Some(team_intent) = team_intent else {
@@ -74,9 +64,6 @@ pub(super) fn validate_native_team_intent_with_capabilities(
     };
     if team_intent.is_solo() {
         return Ok(None);
-    }
-    if team_intent.coordination_mode == CoordinationMode::LegacyClaudeTeam {
-        return Err(NativeTeamOverlayError::LegacyReadOnly);
     }
     if team_intent.coordination_mode != CoordinationMode::RxNativeTeam {
         return Ok(None);

@@ -234,85 +234,6 @@ async fn test_set_active_project_persists_when_project_changes() {
     assert_eq!(persisted, Some(project.id));
 }
 
-#[tokio::test]
-async fn resolve_recovery_prompt_rejects_progress_while_tasks_are_disabled() {
-    let app_state = AppState::new_test();
-    enable_tasks_for_progress(&app_state).await;
-    let project = app_state
-        .project_repo
-        .create(Project::new(
-            "Recovery policy project".into(),
-            "/tmp/recovery-policy-project".into(),
-        ))
-        .await
-        .unwrap();
-    let mut task = Task::new(project.id, "Interrupted execution".into());
-    task.internal_status = InternalStatus::Executing;
-    let task = app_state.task_repo.create(task).await.unwrap();
-    assert!(app_state
-        .ideation_settings_repo
-        .compare_and_set_tasks_feature_state(
-            crate::domain::ideation::TasksFeatureState::Enabled,
-            crate::domain::ideation::TasksFeatureState::Disabled,
-        )
-        .await
-        .unwrap());
-    let error = prepare_recovery_prompt_action(&task.id, "restart", &app_state)
-        .await
-        .expect_err("manual recovery progress must be rejected while Tasks are disabled");
-
-    assert!(error.starts_with("ralphx:tasks_disabled"));
-    assert_eq!(
-        app_state
-            .task_repo
-            .get_by_id(&task.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .internal_status,
-        InternalStatus::Executing
-    );
-}
-
-#[tokio::test]
-async fn recovery_prompt_preparation_validates_action_and_task_before_dispatch() {
-    let app_state = AppState::new_test();
-    let missing_id = TaskId::from_string("missing-recovery-task".to_string());
-
-    let error = prepare_recovery_prompt_action(&missing_id, "unexpected", &app_state)
-        .await
-        .expect_err("unknown recovery actions must be rejected");
-    assert_eq!(error, "Invalid recovery action");
-    assert!(
-        prepare_recovery_prompt_action(&missing_id, "restart", &app_state)
-            .await
-            .expect("a missing recovery task should be a non-error")
-            .is_none()
-    );
-
-    enable_tasks_for_progress(&app_state).await;
-    let project = app_state
-        .project_repo
-        .create(Project::new(
-            "Recovery action project".into(),
-            "/tmp/recovery-action-project".into(),
-        ))
-        .await
-        .unwrap();
-    let task = app_state
-        .task_repo
-        .create(Task::new(project.id, "Cancel interrupted execution".into()))
-        .await
-        .unwrap();
-
-    let (prepared_task, action) = prepare_recovery_prompt_action(&task.id, "cancel", &app_state)
-        .await
-        .expect("cancel preparation should succeed")
-        .expect("persisted task should be prepared");
-    assert_eq!(prepared_task.id, task.id);
-    assert_eq!(action, UserRecoveryAction::Cancel);
-}
-
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();
@@ -1561,7 +1482,7 @@ async fn test_resume_relaunches_one_queued_message_for_active_ideation_session()
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1615,7 +1536,7 @@ async fn test_resume_relaunches_durable_queued_ideation_message() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -1668,7 +1589,7 @@ async fn test_resume_clears_durable_queue_for_inactive_ideation_session() {
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -3475,7 +3396,7 @@ async fn test_resume_respects_project_ideation_cap_for_same_project() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with project cap");
@@ -3576,7 +3497,7 @@ async fn test_resume_skips_project_capped_ideation_queue_and_relaunches_other_pr
 
     let mock = Arc::new(MockChatService::new());
     let resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&mock) as Arc<dyn ChatService>
         })
         .await
@@ -3665,7 +3586,7 @@ async fn test_resume_borrowing_stays_blocked_when_ready_execution_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume paused ideation queue with ready execution");
@@ -3739,7 +3660,7 @@ async fn test_resume_borrowing_stays_blocked_when_workspace_queue_waits() {
         Some(&project.id),
         &app_state,
         &execution_state,
-        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
     )
     .await
     .expect("resume queued ideation with workspace pressure");
@@ -4272,7 +4193,7 @@ async fn test_resume_priority_relaunches_slot_work_before_ideation_when_only_one
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4416,7 +4337,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -4540,7 +4461,7 @@ async fn test_resume_mixed_context_relaunches_workspace_execution_ideation_and_t
 
     let ideation_mock = Arc::new(MockChatService::new());
     let ideation_resumed =
-        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, || {
             Arc::clone(&ideation_mock) as Arc<dyn ChatService>
         })
         .await
@@ -6581,7 +6502,6 @@ async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_sta
         task_id.as_str().to_string(),
         false,
         None,
-        None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6652,7 +6572,6 @@ async fn restart_task_while_tasks_are_off_rejects_without_mutating_the_task() {
     let error = restart_task(
         task.id.as_str().to_string(),
         false,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
@@ -6732,7 +6651,6 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
         task_id.as_str().to_string(),
         true,
         Some("retry failed task".to_string()),
-        Some("team".to_string()),
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6762,9 +6680,6 @@ async fn restart_task_from_failed_without_recovery_proof_starts_fresh_ready_atte
     assert!(stored.task_branch.is_none());
     assert!(stored.worktree_path.is_none());
     assert!(stored.merge_commit_sha.is_none());
-    let metadata: serde_json::Value =
-        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
-    assert_eq!(metadata["agent_variant"], "team");
 }
 
 #[tokio::test]
@@ -6784,7 +6699,6 @@ async fn restart_task_from_failed_with_current_completion_proof_recovers_to_revi
     let result = restart_task(
         task_id.as_str().to_string(),
         false,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
@@ -6860,7 +6774,6 @@ async fn restart_task_from_failed_blocks_when_recovery_authority_is_absent() {
         task_id.as_str().to_string(),
         false,
         None,
-        Some("team".to_string()),
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
     )
@@ -6918,7 +6831,6 @@ async fn restart_task_from_stopped_merge_returns_validation_warning_before_trans
     let result = restart_task(
         task_id.as_str().to_string(),
         true,
-        None,
         None,
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),

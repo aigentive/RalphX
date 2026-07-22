@@ -3487,7 +3487,6 @@ describe("AgentsActiveConversationPanel", () => {
       "planning-session-1",
       expect.stringContaining("Create implementation task proposals"),
       undefined,
-      undefined,
       { runtimeOverride: approvedPlanRuntime },
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
@@ -3630,10 +3629,10 @@ describe("AgentsActiveConversationPanel", () => {
 
     await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalledTimes(2));
     expect(activateAgentTaskPipelineMock).toHaveBeenCalledTimes(1);
-    expect(sendAgentMessageMock.mock.calls[0]?.[5]).toEqual({
+    expect(sendAgentMessageMock.mock.calls[0]?.[4]).toEqual({
       runtimeOverride: approvedPlanRuntime,
     });
-    expect(sendAgentMessageMock.mock.calls[1]?.[5]).toEqual({
+    expect(sendAgentMessageMock.mock.calls[1]?.[4]).toEqual({
       runtimeOverride: approvedPlanRuntime,
     });
   });
@@ -3967,7 +3966,6 @@ describe("AgentsActiveConversationPanel", () => {
           "Planning focus: The CLI surface needs planning before implementation.",
         ),
         undefined,
-        undefined,
         expect.objectContaining({
           conversationId: "conversation-1",
           providerHarness: "claude",
@@ -4151,7 +4149,6 @@ describe("AgentsActiveConversationPanel", () => {
       "project-1",
       expect.stringContaining("Implement the approved plan directly"),
       undefined,
-      undefined,
       {
         conversationId: "conversation-1",
         runtimeOverride: approvedPlanRuntime,
@@ -4269,12 +4266,12 @@ describe("AgentsActiveConversationPanel", () => {
 
     await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalledTimes(2));
     expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
-    expect(sendAgentMessageMock.mock.calls[0]?.[5]).toEqual({
+    expect(sendAgentMessageMock.mock.calls[0]?.[4]).toEqual({
       conversationId: "conversation-1",
       runtimeOverride: approvedPlanRuntime,
       suppressUserMessage: true,
     });
-    expect(sendAgentMessageMock.mock.calls[1]?.[5]).toEqual({
+    expect(sendAgentMessageMock.mock.calls[1]?.[4]).toEqual({
       conversationId: "conversation-1",
       runtimeOverride: approvedPlanRuntime,
       suppressUserMessage: true,
@@ -4389,7 +4386,6 @@ describe("AgentsActiveConversationPanel", () => {
         "project",
         "project-1",
         "continue this thread",
-        undefined,
         undefined,
         {
           conversationId: "conversation-fork",

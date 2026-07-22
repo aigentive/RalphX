@@ -785,15 +785,6 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     plan_artifact_id: session.planArtifactId,
     seed_task_id: session.seedTaskId,
     parent_session_id: session.parentSessionId,
-    team_mode: session.teamMode,
-    team_config: session.teamConfig
-      ? {
-          max_teammates: session.teamConfig.maxTeammates,
-          model_ceiling: session.teamConfig.modelCeiling,
-          budget_limit: session.teamConfig.budgetLimit ?? null,
-          composition_mode: session.teamConfig.compositionMode ?? null,
-        }
-      : null,
     created_at: session.createdAt,
     updated_at: session.updatedAt,
     archived_at: session.archivedAt,
@@ -1301,7 +1292,6 @@ const commandHandlers: Record<
       ideationPage: false,
       automationsPage: true,
       battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
       ...overrides,

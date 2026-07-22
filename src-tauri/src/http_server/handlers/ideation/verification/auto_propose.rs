@@ -33,11 +33,9 @@ pub(super) async fn auto_propose_for_external(
         }
     }
 
-    let is_team_mode = session_is_team_mode(session);
     let app = &state.app_state;
-    let mut chat_service =
+    let chat_service =
         app.build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
-    chat_service = chat_service.with_team_mode(is_team_mode);
 
     let project_id = session.project_id.as_str().to_string();
     auto_propose_with_retry(

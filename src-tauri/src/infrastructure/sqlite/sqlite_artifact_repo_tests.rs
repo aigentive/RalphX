@@ -835,7 +835,6 @@ async fn test_create_artifact_with_team_metadata_persists() {
         author_teammate: "researcher".to_string(),
         session_id: Some("session-123".to_string()),
         team_phase: Some("active".to_string()),
-        verification_finding: None,
     });
 
     repo.create(artifact.clone()).await.unwrap();
@@ -872,7 +871,6 @@ async fn test_update_artifact_preserves_team_metadata() {
         author_teammate: "worker-1".to_string(),
         session_id: None,
         team_phase: None,
-        verification_finding: None,
     });
 
     repo.create(artifact.clone()).await.unwrap();

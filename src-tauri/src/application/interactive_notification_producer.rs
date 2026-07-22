@@ -19,10 +19,6 @@ pub fn plan_notification_key(session_id: &str, artifact_id: &str) -> String {
     format!("plan:{session_id}:{artifact_id}")
 }
 
-pub fn team_plan_notification_key(plan_id: &str) -> String {
-    format!("team-plan:{plan_id}")
-}
-
 pub fn pr_review_notification_key(conversation_id: impl AsRef<str>, action_id: &str) -> String {
     format!(
         "pr-review:{}:awaiting_user:{action_id}",
@@ -123,22 +119,6 @@ impl InteractiveNotificationProducer {
             body: Some(format!("“{subject}” is ready for review")),
             target,
             dedupe_key: Some(plan_notification_key(session_id, artifact_id)),
-        }
-    }
-
-    pub fn team_plan_approval(
-        plan_id: &str,
-        process: &str,
-        resolved: ResolvedNotificationTarget,
-    ) -> NewNotification {
-        NewNotification {
-            project_id: resolved.project_id,
-            category: NotificationCategory::TeamPlanApproval,
-            severity: NotificationSeverity::ActionRequired,
-            title: "Team plan approval needed".to_string(),
-            body: Some(format!("{process} team plan is awaiting approval")),
-            target: resolved.target,
-            dedupe_key: Some(team_plan_notification_key(plan_id)),
         }
     }
 }

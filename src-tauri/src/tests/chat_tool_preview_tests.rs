@@ -1013,8 +1013,6 @@ async fn stream_background_previews_heavy_live_tool_result() {
         Some("msg-live-preview".to_string()),
         None,
         CancellationToken::new(),
-        None,
-        false,
         StreamingStateCache::new(),
         None,
         None,

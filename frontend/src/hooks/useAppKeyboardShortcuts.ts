@@ -14,7 +14,6 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
   ideationPage: true,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
 };

@@ -2,14 +2,14 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::infrastructure::sqlite::migrations::run_migrations_through;
     use crate::infrastructure::sqlite::migrations::v37_team_sessions;
     use crate::infrastructure::sqlite::open_connection;
-    use crate::infrastructure::sqlite::run_migrations;
     use std::path::PathBuf;
 
     fn setup_db() -> rusqlite::Connection {
         let conn = open_connection(&PathBuf::from(":memory:")).unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations_through(&conn, 37).unwrap();
         conn
     }
 
