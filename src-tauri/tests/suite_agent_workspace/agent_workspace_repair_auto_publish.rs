@@ -10,10 +10,10 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, ArtifactId, ChatContextType, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
-    Project, ProjectId, TicketCanonicalBranch, TicketCanonicalBranchCycleState,
-    TicketGitConventionSnapshot,
+    AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, PlanBranchId, Project, ProjectId, TicketCanonicalBranch,
+    TicketCanonicalBranchCycleState, TicketGitConventionSnapshot,
 };
 use ralphx_lib::domain::review::ReviewSettings;
 use ralphx_lib::domain::services::github_service::GithubServiceTrait;
@@ -58,6 +58,37 @@ async fn disable_workspace_review_gate(app_state: &AppState) {
         })
         .await
         .expect("disable workspace review policy for auto-publish fixture");
+}
+
+async fn seed_current_repair_attempt(app_state: &AppState, conversation_id: ChatConversationId) {
+    let mut workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load repair workspace")
+        .expect("repair workspace exists");
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed accepted repair claim timestamp");
+    app_state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id))
+        .await
+        .expect("seed active repair run");
+    app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "repair_sent",
+            "succeeded",
+            "Sent failure to workspace repair agent",
+            Some("agent_fixable".to_string()),
+        ))
+        .await
+        .expect("seed successful repair dispatch");
 }
 
 #[tokio::test]
@@ -129,11 +160,13 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         workspace_path.to_string_lossy().to_string(),
     );
     workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
     app_state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
+    seed_current_repair_attempt(&app_state, conversation_id).await;
     disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
@@ -143,7 +176,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         Json(CompleteAgentWorkspaceRepairRequest {
             repair_commit_sha: repair_sha.clone(),
             resolved_base_ref: "main".to_string(),
-            resolved_base_commit: base_sha,
+            resolved_base_commit: base_sha.clone(),
             summary: "Resolved the stale base repair".to_string(),
         }),
     )
@@ -166,6 +199,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         .expect("query workspace")
         .expect("workspace exists");
     assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
 
     let events = state
         .app_state
@@ -183,6 +217,31 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
                 .summary
                 .contains("GitHub integration is not available")
     }));
+
+    let event_count = events.len();
+    assert!(complete_agent_workspace_repair(
+        axum::extract::State(state.clone()),
+        Path(conversation_id.as_str().to_string()),
+        Json(CompleteAgentWorkspaceRepairRequest {
+            repair_commit_sha: repair_sha,
+            resolved_base_ref: "main".to_string(),
+            resolved_base_commit: base_sha,
+            summary: "Duplicate stale completion".to_string(),
+        }),
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("query events after stale completion")
+            .len(),
+        event_count,
+        "stale completion must not append events or restart publication"
+    );
 }
 
 #[tokio::test]
@@ -421,6 +480,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         ))
         .await
         .expect("seed update-only repair request");
+    seed_current_repair_attempt(&app_state, conversation_id).await;
     disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
@@ -458,7 +518,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         .expect("query workspace")
         .expect("workspace exists");
     assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
-    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
     assert_eq!(refreshed.pr_auto_merge_current, Some(true));
 
     let events = state
@@ -576,11 +636,13 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     workspace.linked_ideation_session_id = Some(session_id);
     workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
     workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
     app_state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
+    seed_current_repair_attempt(&app_state, conversation_id).await;
 
     let state = make_http_state(app_state);
     let response = complete_agent_workspace_repair(
