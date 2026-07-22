@@ -8038,8 +8038,9 @@ async fn seed_delegated_timeline_tool(
     run.provider_profile = Some("openai".to_string());
     run.logical_model = Some("gpt-5.4".to_string());
     run.effective_model_id = Some("gpt-5.4".to_string());
-    run.input_tokens = Some(120);
-    run.output_tokens = Some(30);
+    run.input_tokens = Some(9_877_122);
+    run.output_tokens = Some(31_874);
+    run.cache_read_tokens = Some(9_540_224);
     run.estimated_usd = Some(0.0125);
     let run = state
         .agent_run_repo
@@ -8117,7 +8118,7 @@ async fn completed_delegate_timeline_page_and_detail_reconcile_durable_runtime_s
     );
     assert_eq!(
         page_result["delegated_status"]["latest_run"]["total_tokens"],
-        150
+        9_908_996
     );
     assert_eq!(
         page_result["delegated_status"]["recent_messages"][0]["content"],
@@ -8136,6 +8137,10 @@ async fn completed_delegate_timeline_page_and_detail_reconcile_durable_runtime_s
     assert_eq!(
         detail_result["delegated_status"]["latest_run"]["status"],
         "completed"
+    );
+    assert_eq!(
+        detail_result["delegated_status"]["latest_run"]["total_tokens"],
+        9_908_996
     );
     assert_eq!(
         detail_result["delegated_status"]["recent_messages"][0]["content"],

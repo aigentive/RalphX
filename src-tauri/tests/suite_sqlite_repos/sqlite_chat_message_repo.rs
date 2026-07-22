@@ -1,5 +1,6 @@
 use ralphx_lib::domain::entities::{
-    ChatConversationId, ChatMessage, ChatMessageId, IdeationSessionId, MessageRole,
+    AgentRunUsage, ChatConversationId, ChatMessage, ChatMessageId, IdeationSessionId, MessageRole,
+    ProviderUsageSnapshot, UsageCapture, UsageProvenance,
 };
 use ralphx_lib::domain::repositories::ChatMessageRepository;
 use ralphx_lib::infrastructure::sqlite::{
@@ -33,6 +34,8 @@ fn standalone_user_message(conversation_id: ChatConversationId, content: &str) -
         cache_creation_tokens: None,
         cache_read_tokens: None,
         estimated_usd: None,
+        usage_provenance: None,
+        raw_usage_snapshot: None,
         created_at: chrono::Utc::now(),
     }
 }
@@ -43,6 +46,50 @@ fn setup_repo() -> SqliteChatMessageRepository {
     // Disable FK checks so we can insert messages without seeding a parent session row
     conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
     SqliteChatMessageRepository::new(conn)
+}
+
+#[tokio::test]
+async fn replace_usage_capture_round_trips_and_can_clear_message_usage() {
+    let repo = setup_repo();
+    let message = ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "usage");
+    let message_id = message.id.clone();
+    repo.create(message).await.unwrap();
+
+    repo.replace_usage_capture(
+        &message_id,
+        &UsageCapture::normalized(
+            AgentRunUsage {
+                input_tokens: Some(90),
+                output_tokens: Some(24),
+                cache_creation_tokens: Some(8),
+                cache_read_tokens: Some(33),
+                estimated_usd: Some(0.015),
+            },
+            UsageProvenance::ProviderSnapshotFallback,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let raw = ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(700),
+        output_tokens: Some(30),
+        cache_creation_tokens: Some(100),
+        cache_read_tokens: Some(600),
+        estimated_usd: Some(0.04),
+    });
+    repo.replace_usage_capture(&message_id, &UsageCapture::cumulative_baseline(raw.clone()))
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&message_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.input_tokens, None);
+    assert_eq!(retrieved.output_tokens, None);
+    assert_eq!(
+        retrieved.usage_provenance,
+        Some(UsageProvenance::CumulativeBaselineOnly)
+    );
+    assert_eq!(retrieved.raw_usage_snapshot, Some(raw));
 }
 
 // ==================== GET LATEST MESSAGE BY ROLE TESTS ====================
@@ -57,7 +104,10 @@ async fn test_get_latest_message_by_role_returns_none_when_empty() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "should return None when session has no messages");
+    assert!(
+        result.is_none(),
+        "should return None when session has no messages"
+    );
 }
 
 #[tokio::test]
@@ -75,7 +125,10 @@ async fn test_get_latest_message_by_role_returns_none_when_role_not_present() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "should return None when no messages with the requested role exist");
+    assert!(
+        result.is_none(),
+        "should return None when no messages with the requested role exist"
+    );
 }
 
 #[tokio::test]
@@ -84,7 +137,10 @@ async fn test_get_latest_message_by_role_returns_only_message() {
     let session_id = IdeationSessionId::new();
 
     let msg = repo
-        .create(ChatMessage::orchestrator_in_session(session_id.clone(), "agent reply"))
+        .create(ChatMessage::orchestrator_in_session(
+            session_id.clone(),
+            "agent reply",
+        ))
         .await
         .unwrap();
 
@@ -93,7 +149,10 @@ async fn test_get_latest_message_by_role_returns_only_message() {
         .await
         .unwrap();
 
-    assert!(result.is_some(), "should return the single matching message");
+    assert!(
+        result.is_some(),
+        "should return the single matching message"
+    );
     assert_eq!(result.unwrap().id, msg.id);
 }
 
@@ -141,9 +200,12 @@ async fn test_get_latest_message_by_role_filters_by_session() {
     let session_b = IdeationSessionId::new();
 
     // Insert a message in session_a
-    repo.create(ChatMessage::orchestrator_in_session(session_a.clone(), "msg in a"))
-        .await
-        .unwrap();
+    repo.create(ChatMessage::orchestrator_in_session(
+        session_a.clone(),
+        "msg in a",
+    ))
+    .await
+    .unwrap();
 
     // Query session_b — should return None
     let result = repo
@@ -151,7 +213,10 @@ async fn test_get_latest_message_by_role_filters_by_session() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "should only return messages belonging to the queried session");
+    assert!(
+        result.is_none(),
+        "should only return messages belonging to the queried session"
+    );
 }
 
 #[tokio::test]
@@ -170,7 +235,10 @@ async fn test_get_latest_message_by_role_does_not_cross_roles() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "should not return messages of a different role");
+    assert!(
+        result.is_none(),
+        "should not return messages of a different role"
+    );
 }
 
 // ==================== GET FIRST USER MESSAGE BY CONTEXT (standalone) ====================

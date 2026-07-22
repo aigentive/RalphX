@@ -5,11 +5,11 @@ use ralphx_lib::commands::conversation_stats_commands::{
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
     AgentRun, ChatContextType, ChatConversation, ChatMessage, IdeationSessionId, MessageRole,
-    ProjectId, TaskId,
+    ProjectId, TaskId, UsageProvenance,
 };
 
 #[test]
-fn test_conversation_stats_prefers_message_usage_when_available() {
+fn test_conversation_stats_prefers_runs_when_usable_coverage_ties() {
     let session_id = IdeationSessionId::new();
     let mut conversation = ChatConversation::new_ideation(session_id.clone());
     conversation.set_provider_session_ref(ProviderSessionRef {
@@ -43,16 +43,136 @@ fn test_conversation_stats_prefers_message_usage_when_available() {
 
     let response = build_conversation_stats_response(&conversation, &[message], &[run]);
 
-    assert_eq!(response.usage_coverage.effective_totals_source, "messages");
+    assert_eq!(response.usage_coverage.effective_totals_source, "runs");
     assert_eq!(response.message_usage_totals.input_tokens, 120);
     assert_eq!(response.message_usage_totals.output_tokens, 40);
-    assert_eq!(response.effective_usage_totals.input_tokens, 120);
-    assert_eq!(response.effective_usage_totals.output_tokens, 40);
-    assert_eq!(response.effective_usage_totals.estimated_usd, Some(0.42));
+    assert_eq!(response.effective_usage_totals.input_tokens, 999);
+    assert_eq!(response.effective_usage_totals.output_tokens, 111);
+    assert_eq!(response.effective_usage_totals.estimated_usd, Some(1.25));
     assert_eq!(response.by_harness[0].key, "codex");
-    assert_eq!(response.by_harness[0].usage.input_tokens, 120);
+    assert_eq!(response.by_harness[0].usage.input_tokens, 999);
     assert_eq!(response.by_model[0].key, "gpt-5.4");
     assert_eq!(response.by_effort[0].key, "high");
+}
+
+#[test]
+fn test_conversation_source_selection_prefers_more_usable_samples() {
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let messages = vec![tagged_message(
+        &conversation,
+        &session_id,
+        AgentHarnessKind::Claude,
+        100,
+    )];
+    let runs = vec![
+        tagged_run(&conversation, AgentHarnessKind::Claude, 200),
+        tagged_run(&conversation, AgentHarnessKind::Claude, 300),
+    ];
+
+    let response = build_conversation_stats_response(&conversation, &messages, &runs);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "runs");
+    assert_eq!(response.effective_usage_totals.input_tokens, 500);
+    assert_eq!(response.usage_coverage.effective_run_conversation_count, 1);
+    assert_eq!(
+        response.usage_coverage.effective_message_conversation_count,
+        0
+    );
+}
+
+#[test]
+fn test_scope_selection_can_mix_ledgers_without_bucket_drift() {
+    let first_session = IdeationSessionId::new();
+    let second_session = IdeationSessionId::new();
+    let first = ChatConversation::new_ideation(first_session.clone());
+    let second = ChatConversation::new_ideation(second_session.clone());
+    let messages = vec![
+        tagged_message(&first, &first_session, AgentHarnessKind::Claude, 100),
+        tagged_message(&first, &first_session, AgentHarnessKind::Claude, 200),
+        tagged_message(&second, &second_session, AgentHarnessKind::Codex, 900),
+    ];
+    let runs = vec![
+        tagged_run(&first, AgentHarnessKind::Claude, 800),
+        tagged_run(&second, AgentHarnessKind::Codex, 300),
+        tagged_run(&second, AgentHarnessKind::Codex, 400),
+    ];
+
+    let response =
+        build_scope_stats_response("project", "project-1", &[first, second], &messages, &runs);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "mixed");
+    assert_eq!(
+        response.usage_coverage.effective_message_conversation_count,
+        1
+    );
+    assert_eq!(response.usage_coverage.effective_run_conversation_count, 1);
+    assert_eq!(response.effective_usage_totals.input_tokens, 1_000);
+    assert_eq!(
+        response
+            .by_harness
+            .iter()
+            .map(|bucket| bucket.usage.input_tokens)
+            .sum::<u64>(),
+        response.effective_usage_totals.input_tokens
+    );
+}
+
+#[test]
+fn test_processed_tokens_follow_provider_semantics_and_capture_quality() {
+    let claude_session = IdeationSessionId::new();
+    let codex_session = IdeationSessionId::new();
+    let claude_conversation = ChatConversation::new_ideation(claude_session.clone());
+    let codex_conversation = ChatConversation::new_ideation(codex_session.clone());
+    let mut claude = tagged_message(
+        &claude_conversation,
+        &claude_session,
+        AgentHarnessKind::Claude,
+        100,
+    );
+    claude.output_tokens = Some(10);
+    claude.cache_creation_tokens = Some(20);
+    claude.cache_read_tokens = Some(30);
+    let mut codex = tagged_message(
+        &codex_conversation,
+        &codex_session,
+        AgentHarnessKind::Codex,
+        100,
+    );
+    codex.output_tokens = Some(10);
+    codex.cache_creation_tokens = Some(20);
+    codex.cache_read_tokens = Some(30);
+
+    let response = build_scope_stats_response(
+        "project",
+        "project-1",
+        &[claude_conversation, codex_conversation],
+        &[claude, codex],
+        &[],
+    );
+
+    assert_eq!(response.effective_usage_totals.processed_tokens, Some(270));
+    assert_eq!(response.usage_coverage.fallback_estimated_sample_count, 0);
+    assert_eq!(response.usage_coverage.legacy_estimated_sample_count, 0);
+    assert_eq!(response.usage_coverage.uncounted_sample_count, 0);
+}
+
+#[test]
+fn test_baseline_and_fallback_quality_do_not_count_raw_baseline() {
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let mut baseline = tagged_message(&conversation, &session_id, AgentHarnessKind::Codex, 0);
+    baseline.input_tokens = None;
+    baseline.output_tokens = None;
+    baseline.usage_provenance = Some(UsageProvenance::CumulativeBaselineOnly);
+    let mut fallback = tagged_message(&conversation, &session_id, AgentHarnessKind::Codex, 400);
+    fallback.usage_provenance = Some(UsageProvenance::ProviderSnapshotFallback);
+
+    let response = build_conversation_stats_response(&conversation, &[baseline, fallback], &[]);
+
+    assert_eq!(response.effective_usage_totals.input_tokens, 400);
+    assert_eq!(response.usage_coverage.fallback_estimated_sample_count, 1);
+    assert_eq!(response.usage_coverage.uncounted_sample_count, 1);
 }
 
 #[test]
@@ -174,4 +294,34 @@ fn test_scope_stats_include_context_breakdown_and_conversation_count() {
     assert_eq!(response.by_context_type.len(), 2);
     assert_eq!(response.by_context_type[0].key, "project");
     assert_eq!(response.by_context_type[1].key, "task_execution");
+}
+
+fn tagged_message(
+    conversation: &ChatConversation,
+    session_id: &IdeationSessionId,
+    harness: AgentHarnessKind,
+    input_tokens: u64,
+) -> ChatMessage {
+    let mut message = ChatMessage::orchestrator_in_session(session_id.clone(), "done");
+    message.conversation_id = Some(conversation.id);
+    message.provider_harness = Some(harness);
+    message.provider_session_id = Some(format!("{harness}-session"));
+    message.input_tokens = Some(input_tokens);
+    message.output_tokens = Some(0);
+    message.usage_provenance = Some(UsageProvenance::ProviderTurnDelta);
+    message
+}
+
+fn tagged_run(
+    conversation: &ChatConversation,
+    harness: AgentHarnessKind,
+    input_tokens: u64,
+) -> AgentRun {
+    let mut run = AgentRun::new(conversation.id);
+    run.harness = Some(harness);
+    run.provider_session_id = Some(format!("{harness}-session"));
+    run.input_tokens = Some(input_tokens);
+    run.output_tokens = Some(0);
+    run.usage_provenance = Some(UsageProvenance::ProviderTurnDelta);
+    run
 }

@@ -2179,6 +2179,7 @@ pub struct AgentMessageResponse {
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
+    pub usage_provenance: Option<String>,
     pub created_at: String,
 }
 
@@ -2397,20 +2398,7 @@ fn delegated_agent_state_label(status: &str) -> &'static str {
 }
 
 fn delegated_total_tokens_from_run(run: &crate::domain::entities::AgentRun) -> Option<u64> {
-    let total = run.input_tokens.unwrap_or(0)
-        + run.output_tokens.unwrap_or(0)
-        + run.cache_creation_tokens.unwrap_or(0)
-        + run.cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && run.input_tokens.is_none()
-        && run.output_tokens.is_none()
-        && run.cache_creation_tokens.is_none()
-        && run.cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
+    run.processed_tokens()
 }
 
 async fn load_delegated_tool_runtime_snapshot(
@@ -8467,6 +8455,7 @@ pub async fn get_agent_conversation(
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
+            usage_provenance: message.usage_provenance.map(|value| value.to_string()),
             created_at: message.created_at.to_rfc3339(),
         });
     }
@@ -8598,6 +8587,7 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
+            usage_provenance: message.usage_provenance.map(|value| value.to_string()),
             created_at: message.created_at.to_rfc3339(),
         });
     }

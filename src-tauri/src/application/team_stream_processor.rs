@@ -28,6 +28,7 @@ use crate::application::team_service::TeamService;
 use crate::application::team_state_tracker::{
     TeamMessageType, TeamStateTracker, TeammateCost, TeammateStatus,
 };
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
     CoordinationMode, MessageRole,
@@ -101,7 +102,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     context_id: teammate_ctx_id,
                     claude_session_id: None,
                     provider_session_id: None,
-                    provider_harness: None,
+                    provider_harness: Some(AgentHarnessKind::Claude),
                     upstream_provider: None,
                     provider_profile: None,
                     agent_mode: None,
@@ -201,7 +202,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     tool_calls: None,
                     content_blocks: None,
                     attribution_source: None,
-                    provider_harness: None,
+                    provider_harness: Some(AgentHarnessKind::Claude),
                     provider_session_id: None,
                     upstream_provider: None,
                     provider_profile: None,
@@ -214,6 +215,8 @@ pub fn start_teammate_stream<R: Runtime>(
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                     estimated_usd: None,
+                    usage_provenance: None,
+                    raw_usage_snapshot: None,
                     created_at: chrono::Utc::now(),
                 };
                 let msg_id = msg.id.as_str().to_string();
@@ -370,7 +373,7 @@ pub fn start_teammate_stream<R: Runtime>(
                                             tool_calls: None,
                                             content_blocks: None,
                                             attribution_source: None,
-                                            provider_harness: None,
+                                            provider_harness: Some(AgentHarnessKind::Claude),
                                             provider_session_id: None,
                                             upstream_provider: None,
                                             provider_profile: None,
@@ -383,6 +386,8 @@ pub fn start_teammate_stream<R: Runtime>(
                                             cache_creation_tokens: None,
                                             cache_read_tokens: None,
                                             estimated_usd: None,
+                                            usage_provenance: None,
+                                            raw_usage_snapshot: None,
                                             created_at: chrono::Utc::now(),
                                         };
                                         let new_id = msg.id.as_str().to_string();
@@ -784,6 +789,7 @@ pub fn start_teammate_stream<R: Runtime>(
                                     }
                                 }
                                 StreamEvent::TurnComplete { .. } => {
+                                    let turn_capture = processor.current_turn_capture();
                                     // Finalize assistant message with accumulated content
                                     if let (Some(ref msg_repo), Some(ref msg_id)) =
                                         (&chat_message_repo, &assistant_message_id)
@@ -800,6 +806,34 @@ pub fn start_teammate_stream<R: Runtime>(
                                                 content_blocks_json.as_deref(),
                                             )
                                             .await;
+
+                                        if let Some(capture) = turn_capture.as_ref() {
+                                            match msg_repo
+                                                .replace_usage_capture(
+                                                    &ChatMessageId::from_string(msg_id.clone()),
+                                                    capture,
+                                                )
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    if let Some(ref conv_id) = conversation_id_str {
+                                                        let _ = app_handle.emit(
+                                                            "agent:usage_updated",
+                                                            serde_json::json!({
+                                                                "conversation_id": conv_id,
+                                                                "context_type": context_type,
+                                                                "context_id": context_id,
+                                                            }),
+                                                        );
+                                                    }
+                                                }
+                                                Err(error) => tracing::warn!(
+                                                    message_id = %msg_id,
+                                                    error = %error,
+                                                    "Failed to persist teammate usage capture"
+                                                ),
+                                            }
+                                        }
 
                                         // Emit agent:message_created so frontend can load from DB
                                         if let Some(ref conv_id) = conversation_id_str {

@@ -77,6 +77,7 @@ describe("buildFallbackConversationStats", () => {
       outputTokens: 5,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: 30,
       estimatedUsd: 0.01,
     });
     expect(stats?.byHarness).toMatchObject([
@@ -85,5 +86,52 @@ describe("buildFallbackConversationStats", () => {
         count: 1,
       },
     ]);
+  });
+
+  it("keeps ordinary parent-linked messages distinct and applies provider token policy", () => {
+    const stats = buildFallbackConversationStats(conversation(), [
+      providerMessage({
+        id: "reply-1",
+        parentMessageId: "prompt-1",
+        providerHarness: "codex",
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadTokens: 90,
+        usageProvenance: "provider_turn_delta",
+      }),
+      providerMessage({
+        id: "reply-2",
+        parentMessageId: "prompt-1",
+        providerHarness: "codex",
+        inputTokens: 200,
+        outputTokens: 20,
+        cacheReadTokens: 180,
+        usageProvenance: "provider_turn_delta",
+      }),
+    ]);
+
+    expect(stats?.usageCoverage.providerMessageCount).toBe(2);
+    expect(stats?.effectiveUsageTotals.processedTokens).toBe(330);
+    expect(stats?.effectiveUsageTotals.cacheReadTokens).toBe(270);
+  });
+
+  it("does not count cumulative baselines and reports fallback quality", () => {
+    const stats = buildFallbackConversationStats(conversation(), [
+      providerMessage({
+        id: "baseline",
+        usageProvenance: "cumulative_baseline_only",
+      }),
+      providerMessage({
+        id: "fallback",
+        providerHarness: "codex",
+        inputTokens: 50,
+        outputTokens: 5,
+        usageProvenance: "provider_snapshot_fallback",
+      }),
+    ]);
+
+    expect(stats?.effectiveUsageTotals.processedTokens).toBe(55);
+    expect(stats?.usageCoverage.fallbackEstimatedSampleCount).toBe(1);
+    expect(stats?.usageCoverage.uncountedSampleCount).toBe(1);
   });
 });

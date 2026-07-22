@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::entities::UsageProvenance;
 
 #[test]
 fn test_module_compiles() {
@@ -121,6 +122,73 @@ async fn teammate_stream_creates_solo_teammate_conversation() {
     assert_eq!(conversation.context_type, ChatContextType::Project);
     assert_eq!(conversation.context_id, "teammate:team-a:worker");
     assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
+}
+
+#[tokio::test]
+async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_ledger() {
+    use std::process::Stdio;
+
+    let app = crate::testing::create_mock_app();
+    let team_tracker = Arc::new(TeamStateTracker::new());
+    team_tracker
+        .create_team("team-usage", "project-1", "project")
+        .await
+        .unwrap();
+    team_tracker
+        .add_teammate("team-usage", "worker", "#ff6b35", "sonnet", "worker")
+        .await
+        .unwrap();
+    let conversations =
+        Arc::new(crate::infrastructure::memory::MemoryChatConversationRepository::new());
+    let messages = Arc::new(crate::infrastructure::memory::MemoryChatMessageRepository::new());
+    let line = r#"{"type":"result","session_id":"teammate-session","is_error":false,"result":"Done","usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_tokens":127826,"cache_read_tokens":1099251}}"#;
+    let mut child = tokio::process::Command::new("printf")
+        .arg("%s\n")
+        .arg(line)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("printf should spawn");
+    let stdout = child.stdout.take().unwrap();
+    let (_exit_tx, exit_rx) = oneshot::channel::<()>();
+    let stream_task = start_teammate_stream::<tauri::test::MockRuntime>(
+        stdout,
+        exit_rx,
+        "team-usage".to_string(),
+        "worker".to_string(),
+        "project".to_string(),
+        "project-1".to_string(),
+        app.handle().clone(),
+        team_tracker,
+        None,
+        Some(conversations.clone()),
+        Some(messages.clone()),
+        None,
+        None,
+    );
+
+    child.wait().await.unwrap();
+    stream_task.await.unwrap();
+    let conversation = conversations
+        .get_active_for_context(ChatContextType::Project, "teammate:team-usage:worker")
+        .await
+        .unwrap()
+        .unwrap();
+    let persisted = messages
+        .get_by_conversation(&conversation.id)
+        .await
+        .unwrap();
+    let message = persisted.first().expect("teammate assistant message");
+    assert_eq!(message.provider_harness, Some(AgentHarnessKind::Claude));
+    assert_eq!(message.input_tokens, Some(13));
+    assert_eq!(message.output_tokens, Some(1_434));
+    assert_eq!(message.cache_creation_tokens, Some(127_826));
+    assert_eq!(message.cache_read_tokens, Some(1_099_251));
+    assert_eq!(
+        message.usage_provenance,
+        Some(UsageProvenance::ProviderTurnDelta)
+    );
 }
 
 #[test]

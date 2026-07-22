@@ -10,6 +10,9 @@ function isProviderMessage(message: ChatMessageResponse): boolean {
 }
 
 function hasUsage(message: ChatMessageResponse): boolean {
+  if (message.usageProvenance === "cumulative_baseline_only") {
+    return false;
+  }
   return (
     message.inputTokens != null ||
     message.outputTokens != null ||
@@ -17,6 +20,32 @@ function hasUsage(message: ChatMessageResponse): boolean {
     message.cacheReadTokens != null ||
     message.estimatedUsd != null
   );
+}
+
+function processedTokensForMessage(
+  message: ChatMessageResponse,
+  fallbackHarness: string | null,
+): number | null {
+  if (message.usageProvenance === "cumulative_baseline_only") {
+    return null;
+  }
+  if (
+    message.inputTokens == null &&
+    message.outputTokens == null &&
+    message.cacheCreationTokens == null &&
+    message.cacheReadTokens == null
+  ) {
+    return null;
+  }
+
+  const harness = message.providerHarness ?? fallbackHarness;
+  const base = (message.inputTokens ?? 0) + (message.outputTokens ?? 0);
+  const processed = harness === "codex"
+    ? base
+    : harness === "claude"
+      ? base + (message.cacheCreationTokens ?? 0) + (message.cacheReadTokens ?? 0)
+      : null;
+  return processed != null && Number.isSafeInteger(processed) ? processed : null;
 }
 
 function hasAttribution(message: ChatMessageResponse): boolean {
@@ -63,19 +92,32 @@ function collapseProviderMessageBlocks(
   return Array.from(byMessage.values());
 }
 
-function buildUsageTotals(messages: ChatMessageResponse[]) {
-  return messages.reduce(
-    (totals, message) => ({
-      inputTokens: totals.inputTokens + (message.inputTokens ?? 0),
-      outputTokens: totals.outputTokens + (message.outputTokens ?? 0),
-      cacheCreationTokens:
-        totals.cacheCreationTokens + (message.cacheCreationTokens ?? 0),
-      cacheReadTokens: totals.cacheReadTokens + (message.cacheReadTokens ?? 0),
-      estimatedUsd:
-        totals.estimatedUsd == null && message.estimatedUsd == null
-          ? null
-          : (totals.estimatedUsd ?? 0) + (message.estimatedUsd ?? 0),
-    }),
+function buildUsageTotals(
+  messages: ChatMessageResponse[],
+  fallbackHarness: string | null,
+) {
+  let processedTokens = 0;
+  let processedAvailable = messages.length > 0;
+  const totals = messages.reduce(
+    (current, message) => {
+      const sampleProcessed = processedTokensForMessage(message, fallbackHarness);
+      if (sampleProcessed == null || !Number.isSafeInteger(processedTokens + sampleProcessed)) {
+        processedAvailable = false;
+      } else {
+        processedTokens += sampleProcessed;
+      }
+      return {
+        inputTokens: current.inputTokens + (message.inputTokens ?? 0),
+        outputTokens: current.outputTokens + (message.outputTokens ?? 0),
+        cacheCreationTokens:
+          current.cacheCreationTokens + (message.cacheCreationTokens ?? 0),
+        cacheReadTokens: current.cacheReadTokens + (message.cacheReadTokens ?? 0),
+        estimatedUsd:
+          current.estimatedUsd == null && message.estimatedUsd == null
+            ? null
+            : (current.estimatedUsd ?? 0) + (message.estimatedUsd ?? 0),
+      };
+    },
     {
       inputTokens: 0,
       outputTokens: 0,
@@ -84,17 +126,21 @@ function buildUsageTotals(messages: ChatMessageResponse[]) {
       estimatedUsd: null as number | null,
     },
   );
+  return {
+    ...totals,
+    processedTokens: processedAvailable ? processedTokens : null,
+  };
 }
 
 function buildUsageBuckets(
   messages: ChatMessageResponse[],
   keyFn: (message: ChatMessageResponse) => string | null,
+  fallbackHarness: string | null,
 ) {
   const buckets = new Map<
     string,
     {
-      count: number;
-      usage: ReturnType<typeof buildUsageTotals>;
+      messages: ChatMessageResponse[];
     }
   >();
 
@@ -102,34 +148,16 @@ function buildUsageBuckets(
     const key = keyFn(message);
     if (!key) continue;
 
-    const existing = buckets.get(key) ?? {
-      count: 0,
-      usage: {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        estimatedUsd: null as number | null,
-      },
-    };
-
-    existing.count += 1;
-    existing.usage.inputTokens += message.inputTokens ?? 0;
-    existing.usage.outputTokens += message.outputTokens ?? 0;
-    existing.usage.cacheCreationTokens += message.cacheCreationTokens ?? 0;
-    existing.usage.cacheReadTokens += message.cacheReadTokens ?? 0;
-    existing.usage.estimatedUsd =
-      existing.usage.estimatedUsd == null && message.estimatedUsd == null
-        ? null
-        : (existing.usage.estimatedUsd ?? 0) + (message.estimatedUsd ?? 0);
+    const existing = buckets.get(key) ?? { messages: [] };
+    existing.messages.push(message);
     buckets.set(key, existing);
   }
 
   return Array.from(buckets.entries())
     .map(([key, value]) => ({
       key,
-      count: value.count,
-      usage: value.usage,
+      count: value.messages.length,
+      usage: buildUsageTotals(value.messages, fallbackHarness),
     }))
     .sort(
       (a, b) =>
@@ -152,7 +180,22 @@ export function buildFallbackConversationStats(
   );
   const providerMessagesWithUsage = providerMessages.filter(hasUsage);
   const providerMessagesWithAttribution = providerMessages.filter(hasAttribution);
-  const effectiveUsageTotals = buildUsageTotals(providerMessagesWithUsage);
+  const fallbackHarness = conversation.providerHarness ?? null;
+  const effectiveUsageTotals = buildUsageTotals(
+    providerMessagesWithUsage,
+    fallbackHarness,
+  );
+  const legacyEstimatedSampleCount = providerMessagesWithUsage.filter(
+    (message) => message.usageProvenance == null,
+  ).length;
+  const fallbackEstimatedSampleCount = providerMessagesWithUsage.filter(
+    (message) => message.usageProvenance === "provider_snapshot_fallback",
+  ).length;
+  const uncountedSampleCount = providerMessages.filter(
+    (message) =>
+      message.usageProvenance === "cumulative_baseline_only" ||
+      (hasUsage(message) && processedTokensForMessage(message, fallbackHarness) == null),
+  ).length;
 
   return {
     conversationId: conversation.id,
@@ -167,6 +210,7 @@ export function buildFallbackConversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals,
@@ -175,6 +219,12 @@ export function buildFallbackConversationStats(
       providerMessagesWithUsage: providerMessagesWithUsage.length,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount:
+        providerMessagesWithUsage.length > 0 ? 1 : 0,
+      legacyEstimatedSampleCount,
+      fallbackEstimatedSampleCount,
+      uncountedSampleCount,
       effectiveTotalsSource:
         providerMessagesWithUsage.length > 0 ? "messages" : "none",
     },
@@ -187,19 +237,23 @@ export function buildFallbackConversationStats(
     byHarness: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.providerHarness ?? conversation.providerHarness ?? null,
+      fallbackHarness,
     ),
     byUpstreamProvider: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) =>
         message.upstreamProvider ?? conversation.upstreamProvider ?? null,
+      fallbackHarness,
     ),
     byModel: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.effectiveModelId ?? null,
+      fallbackHarness,
     ),
     byEffort: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.effectiveEffort ?? message.logicalEffort ?? null,
+      fallbackHarness,
     ),
   };
 }

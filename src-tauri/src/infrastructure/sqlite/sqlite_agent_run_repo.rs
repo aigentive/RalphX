@@ -29,7 +29,7 @@ use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AutomationId,
     AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
-    InterruptedConversation,
+    InterruptedConversation, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
 };
 
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
@@ -67,6 +67,19 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         cache_creation_tokens: row.get("cache_creation_tokens")?,
         cache_read_tokens: row.get("cache_read_tokens")?,
         estimated_usd: row.get("estimated_usd")?,
+        usage_provenance: row
+            .get::<_, Option<String>>("usage_provenance")?
+            .and_then(|value| value.parse::<UsageProvenance>().ok()),
+        raw_usage_snapshot: {
+            let snapshot = ProviderUsageSnapshot {
+                input_tokens: row.get("raw_usage_input_tokens")?,
+                output_tokens: row.get("raw_usage_output_tokens")?,
+                cache_creation_tokens: row.get("raw_usage_cache_creation_tokens")?,
+                cache_read_tokens: row.get("raw_usage_cache_read_tokens")?,
+                estimated_usd: row.get("raw_usage_estimated_usd")?,
+            };
+            (!snapshot.as_usage().is_empty()).then_some(snapshot)
+        },
         approval_policy: row.get("approval_policy")?,
         sandbox_mode: row.get("sandbox_mode")?,
         run_chain_id: row.get("run_chain_id")?,
@@ -123,11 +136,14 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                         logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                         cache_creation_tokens, cache_read_tokens, estimated_usd,
+                        usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                        raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens,
+                        raw_usage_estimated_usd,
                         approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                         action_kind, action_context_id, action_target_id,
                         persona_id, persona_slug, persona_version, persona_content_hash,
                         persona_injected, persona_skipped_reason
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39)",
                     rusqlite::params![
                         run.id.as_str(),
                         run.conversation_id.as_str(),
@@ -149,6 +165,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         run.cache_creation_tokens,
                         run.cache_read_tokens,
                         run.estimated_usd,
+                        run.usage_provenance.map(|value| value.to_string()),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.input_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.output_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.cache_creation_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.cache_read_tokens),
+                        run.raw_usage_snapshot.as_ref().and_then(|value| value.estimated_usd),
                         run.approval_policy,
                         run.sandbox_mode,
                         run.run_chain_id,
@@ -178,6 +200,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -206,6 +230,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -233,6 +259,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -261,6 +289,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -290,6 +320,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -320,6 +352,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -358,6 +392,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -390,6 +426,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
                             logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                            raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
@@ -444,6 +482,55 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         id,
                     ],
                 )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let capture = capture.clone();
+        self.db
+            .run(move |conn| {
+                let raw = capture.raw_snapshot.unwrap_or_default();
+                let affected = conn.execute(
+                    "UPDATE agent_runs
+                     SET input_tokens = ?1,
+                         output_tokens = ?2,
+                         cache_creation_tokens = ?3,
+                         cache_read_tokens = ?4,
+                         estimated_usd = ?5,
+                         usage_provenance = ?6,
+                         raw_usage_input_tokens = ?7,
+                         raw_usage_output_tokens = ?8,
+                         raw_usage_cache_creation_tokens = ?9,
+                         raw_usage_cache_read_tokens = ?10,
+                         raw_usage_estimated_usd = ?11
+                     WHERE id = ?12",
+                    rusqlite::params![
+                        capture.normalized.input_tokens,
+                        capture.normalized.output_tokens,
+                        capture.normalized.cache_creation_tokens,
+                        capture.normalized.cache_read_tokens,
+                        capture.normalized.estimated_usd,
+                        capture.provenance.to_string(),
+                        raw.input_tokens,
+                        raw.output_tokens,
+                        raw.cache_creation_tokens,
+                        raw.cache_read_tokens,
+                        raw.estimated_usd,
+                        id,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Err(crate::error::AppError::NotFound(format!(
+                        "Agent run not found: {id}"
+                    )));
+                }
                 Ok(())
             })
             .await
@@ -696,6 +783,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         ar.cache_creation_tokens,
                         ar.cache_read_tokens,
                         ar.estimated_usd,
+                        ar.usage_provenance,
+                        ar.raw_usage_input_tokens,
+                        ar.raw_usage_output_tokens,
+                        ar.raw_usage_cache_creation_tokens,
+                        ar.raw_usage_cache_read_tokens,
+                        ar.raw_usage_estimated_usd,
                         ar.approval_policy,
                         ar.sandbox_mode,
                         ar.run_chain_id,
@@ -821,6 +914,20 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens: row.get("cache_creation_tokens")?,
                             cache_read_tokens: row.get("cache_read_tokens")?,
                             estimated_usd: row.get("estimated_usd")?,
+                            usage_provenance: row
+                                .get::<_, Option<String>>("usage_provenance")?
+                                .and_then(|value| value.parse::<UsageProvenance>().ok()),
+                            raw_usage_snapshot: {
+                                let snapshot = ProviderUsageSnapshot {
+                                    input_tokens: row.get("raw_usage_input_tokens")?,
+                                    output_tokens: row.get("raw_usage_output_tokens")?,
+                                    cache_creation_tokens: row
+                                        .get("raw_usage_cache_creation_tokens")?,
+                                    cache_read_tokens: row.get("raw_usage_cache_read_tokens")?,
+                                    estimated_usd: row.get("raw_usage_estimated_usd")?,
+                                };
+                                (!snapshot.as_usage().is_empty()).then_some(snapshot)
+                            },
                             approval_policy: row.get("approval_policy")?,
                             sandbox_mode: row.get("sandbox_mode")?,
                             run_chain_id: row.get("run_chain_id")?,

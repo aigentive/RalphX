@@ -1715,17 +1715,47 @@ describe("useChatEvents", () => {
         fireEvent("agent:usage_updated", {
           conversation_id: CONV_ID,
           context_id: CTX_ID,
+          context_type: "project",
         });
       });
 
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["chat", "conversation-stats", CONV_ID],
       });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["project-chat-usage-stats", CTX_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["insights-chat-usage-stats"],
+      });
       expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
         queryKey: ["chat", "conversations", CONV_ID],
       });
       expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
         queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
+    it("invalidates task, project-family, and all-project insights usage for task contexts", () => {
+      const props = makeProps({ contextType: "task" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:usage_updated", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          context_type: "task_execution",
+        });
+      });
+
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["task-chat-usage-stats", CTX_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["project-chat-usage-stats"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["insights-chat-usage-stats"],
       });
     });
   });

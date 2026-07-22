@@ -1,6 +1,8 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
-use crate::domain::entities::{AgentRunUsage, ChatMessageAttribution};
+use crate::domain::entities::{
+    AgentRunUsage, ChatMessageAttribution, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -107,6 +109,32 @@ async fn test_update_usage_updates_message_usage_fields() {
 }
 
 #[tokio::test]
+async fn replace_usage_capture_clears_stale_memory_message_usage() {
+    let repo = MemoryChatMessageRepository::new();
+    let mut message =
+        ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "Usage message");
+    message.input_tokens = Some(90);
+    let message_id = message.id.clone();
+    repo.create(message).await.unwrap();
+    let raw = ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(700),
+        ..AgentRunUsage::default()
+    });
+
+    repo.replace_usage_capture(&message_id, &UsageCapture::cumulative_baseline(raw.clone()))
+        .await
+        .unwrap();
+
+    let updated = repo.get_by_id(&message_id).await.unwrap().unwrap();
+    assert_eq!(updated.input_tokens, None);
+    assert_eq!(updated.raw_usage_snapshot, Some(raw));
+    assert_eq!(
+        updated.usage_provenance,
+        Some(UsageProvenance::CumulativeBaselineOnly)
+    );
+}
+
+#[tokio::test]
 async fn test_update_attribution_updates_message_attribution_fields() {
     let repo = MemoryChatMessageRepository::new();
     let session_id = IdeationSessionId::new();
@@ -178,6 +206,8 @@ fn standalone_user_message(conversation_id: ChatConversationId, content: &str) -
         cache_creation_tokens: None,
         cache_read_tokens: None,
         estimated_usd: None,
+        usage_provenance: None,
+        raw_usage_snapshot: None,
         created_at: chrono::Utc::now(),
     }
 }

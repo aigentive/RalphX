@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::domain::entities::{
-    AgentRunId, ChatContextType, ChatConversationId, DelegatedSessionId,
+    AgentRun, AgentRunId, ChatContextType, ChatConversationId, DelegatedSessionId,
 };
 use crate::domain::services::RunningAgentKey;
 
@@ -39,28 +39,6 @@ struct DelegatedTaskSnapshot {
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
     estimated_usd: Option<f64>,
-}
-
-fn delegated_total_tokens(
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_creation_tokens: Option<u64>,
-    cache_read_tokens: Option<u64>,
-) -> Option<u64> {
-    let total = input_tokens.unwrap_or(0)
-        + output_tokens.unwrap_or(0)
-        + cache_creation_tokens.unwrap_or(0)
-        + cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && input_tokens.is_none()
-        && output_tokens.is_none()
-        && cache_creation_tokens.is_none()
-        && cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
 }
 
 fn delegated_duration_ms(
@@ -181,14 +159,7 @@ async fn load_delegated_task_snapshot(
             .as_ref()
             .and_then(|run| run.approval_policy.clone()),
         sandbox_mode: latest_run.as_ref().and_then(|run| run.sandbox_mode.clone()),
-        total_tokens: latest_run.as_ref().and_then(|run| {
-            delegated_total_tokens(
-                run.input_tokens,
-                run.output_tokens,
-                run.cache_creation_tokens,
-                run.cache_read_tokens,
-            )
-        }),
+        total_tokens: latest_run.as_ref().and_then(AgentRun::processed_tokens),
         duration_ms: latest_run
             .as_ref()
             .and_then(|run| delegated_duration_ms(&run.started_at, run.completed_at)),

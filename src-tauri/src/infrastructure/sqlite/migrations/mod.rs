@@ -518,6 +518,9 @@ mod v20260720131416_review_pr_disable_pr_automation_tests;
 mod v20260720200633_auto_verify_draft_plans;
 #[cfg(test)]
 mod v20260720200633_auto_verify_draft_plans_tests;
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots;
+#[cfg(test)]
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots_tests;
 mod v20260722132100_automation_run_goal_item;
 #[cfg(test)]
 mod v20260722132100_automation_run_goal_item_tests;
@@ -1689,6 +1692,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260720200633,
         name: "auto_verify_draft_plans",
         migrate: v20260720200633_auto_verify_draft_plans::migrate,
+    },
+    Migration {
+        version: 20260722022339,
+        name: "usage_capture_provenance_and_raw_snapshots",
+        migrate: v20260722022339_usage_capture_provenance_and_raw_snapshots::migrate,
     },
     Migration {
         version: 20260722132100,

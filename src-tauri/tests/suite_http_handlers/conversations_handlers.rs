@@ -422,8 +422,14 @@ async fn test_get_active_state_returns_delegated_metadata() {
 
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.delegated_job_id.as_deref(), Some("job-123"));
-    assert_eq!(task.delegated_session_id.as_deref(), Some("delegated-session-123"));
-    assert_eq!(task.delegated_conversation_id.as_deref(), Some("conv-child-123"));
+    assert_eq!(
+        task.delegated_session_id.as_deref(),
+        Some("delegated-session-123")
+    );
+    assert_eq!(
+        task.delegated_conversation_id.as_deref(),
+        Some("conv-child-123")
+    );
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));
@@ -481,10 +487,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     delegated_run.effective_model_id = Some("gpt-5.4-2026-04-01".to_string());
     delegated_run.approval_policy = Some("never".to_string());
     delegated_run.sandbox_mode = Some("danger-full-access".to_string());
-    delegated_run.input_tokens = Some(11);
-    delegated_run.output_tokens = Some(29);
-    delegated_run.cache_creation_tokens = Some(7);
-    delegated_run.cache_read_tokens = Some(13);
+    delegated_run.input_tokens = Some(9_116_803);
+    delegated_run.output_tokens = Some(25_881);
+    delegated_run.cache_creation_tokens = Some(0);
+    delegated_run.cache_read_tokens = Some(8_837_504);
     delegated_run.estimated_usd = Some(0.42);
     delegated_run.completed_at = Some(Utc::now());
     let delegated_run_id = delegated_run.id.as_str();
@@ -520,7 +526,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     let task = &response.0.streaming_tasks[0];
     assert_eq!(task.status, "completed");
     assert_eq!(task.provider_harness.as_deref(), Some("codex"));
-    assert_eq!(task.provider_session_id.as_deref(), Some("run-provider-session"));
+    assert_eq!(
+        task.provider_session_id.as_deref(),
+        Some("run-provider-session")
+    );
     assert_eq!(task.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(task.provider_profile.as_deref(), Some("prod"));
     assert_eq!(task.logical_model.as_deref(), Some("gpt-5.4"));
@@ -530,10 +539,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     );
     assert_eq!(task.approval_policy.as_deref(), Some("never"));
     assert_eq!(task.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(task.input_tokens, Some(11));
-    assert_eq!(task.output_tokens, Some(29));
-    assert_eq!(task.cache_creation_tokens, Some(7));
-    assert_eq!(task.cache_read_tokens, Some(13));
-    assert_eq!(task.total_tokens, Some(60));
+    assert_eq!(task.input_tokens, Some(9_116_803));
+    assert_eq!(task.output_tokens, Some(25_881));
+    assert_eq!(task.cache_creation_tokens, Some(0));
+    assert_eq!(task.cache_read_tokens, Some(8_837_504));
+    assert_eq!(task.total_tokens, Some(9_142_684));
     assert_eq!(task.estimated_usd, Some(0.42));
 }
