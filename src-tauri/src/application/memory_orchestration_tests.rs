@@ -15,6 +15,7 @@ use crate::domain::repositories::{
     MemoryEntryRepository, MemoryEventRepository, ProjectMemorySettingsRepository,
 };
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::mcp_runtime_context::append_mcp_runtime_args;
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository,
     MemoryProjectMemorySettingsRepository,
@@ -919,4 +920,92 @@ async fn settings_load_failure_is_typed_durable_and_fails_closed() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn memory_launch_context_propagates_parent_through_env_and_explicit_mcp_args() {
+    let parent_conversation_id = "11111111-1111-4111-8111-111111111111";
+    let conversation_id = ChatConversationId::from_string(parent_conversation_id.to_string());
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let launch = prepare_memory_agent_launch(
+        &conversation_id,
+        ChatContextType::TaskExecution,
+        "task-1",
+        &project_id,
+        PathBuf::from("/trusted/workspace").as_path(),
+    )
+    .expect("memory launch context");
+
+    assert_eq!(
+        launch
+            .env
+            .get("RALPHX_PARENT_CONVERSATION_ID")
+            .map(String::as_str),
+        Some(parent_conversation_id)
+    );
+    assert_eq!(
+        launch.runtime_context.parent_conversation_id.as_deref(),
+        Some(parent_conversation_id)
+    );
+    assert_eq!(
+        launch.runtime_context.conversation_id.as_deref(),
+        Some(parent_conversation_id)
+    );
+
+    let mut args = Vec::new();
+    append_mcp_runtime_args(&mut args, Some(&launch.runtime_context));
+    assert!(args
+        .windows(2)
+        .any(|pair| { pair == ["--parent-conversation-id", parent_conversation_id] }));
+    assert!(args
+        .windows(2)
+        .any(|pair| { pair == ["--conversation-id", parent_conversation_id] }));
+    assert!(
+        !launch.env.contains_key("RALPHX_TASK_ID"),
+        "memory context IDs must not be reclassified as task identity"
+    );
+}
+
+#[test]
+fn memory_runtime_configs_propagate_parent_for_maintainer_and_capture() {
+    let entry_repo = Arc::new(InMemoryMemoryEntryRepository::new());
+    let event_repo = Arc::new(InMemoryMemoryEventRepository::new());
+    let (_client, mut runtime) = capture_test_runtime(entry_repo, event_repo);
+    runtime
+        .env
+        .insert("CUSTOM_PROVIDER_TOKEN".to_string(), "preserved".to_string());
+    runtime.env.insert(
+        "RALPHX_PARENT_CONVERSATION_ID".to_string(),
+        "spoofed-parent".to_string(),
+    );
+    let parent_conversation_id = "11111111-1111-4111-8111-111111111111";
+    let conversation_id = ChatConversationId::from_string(parent_conversation_id.to_string());
+    let project_id = ProjectId::from_string("project-1".to_string());
+
+    for kind in [MemoryAgentKind::Maintainer, MemoryAgentKind::Capture] {
+        let config = build_memory_agent_config(
+            kind,
+            &runtime,
+            "memory prompt".to_string(),
+            &conversation_id,
+            ChatContextType::TaskExecution,
+            "task-1",
+            &project_id,
+            PathBuf::from("/trusted/workspace").as_path(),
+        )
+        .expect("memory runtime config");
+
+        assert_eq!(config.agent.as_deref(), Some(kind.agent_name()));
+        assert_eq!(
+            config.env.get("CUSTOM_PROVIDER_TOKEN").map(String::as_str),
+            Some("preserved")
+        );
+        assert_eq!(
+            config
+                .env
+                .get("RALPHX_PARENT_CONVERSATION_ID")
+                .map(String::as_str),
+            Some(parent_conversation_id)
+        );
+    }
 }

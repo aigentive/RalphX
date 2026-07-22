@@ -6,6 +6,8 @@ pub mod codex;
 pub mod harness_agent_catalog;
 pub mod internal_skills;
 pub mod mcp_runtime_context;
+#[cfg(test)]
+mod mcp_runtime_context_tests;
 mod mcp_launch_policy;
 pub mod mock;
 pub mod persona_overlay;

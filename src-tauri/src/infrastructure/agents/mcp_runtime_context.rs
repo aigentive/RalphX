@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpRuntimeContext {
@@ -15,6 +16,39 @@ pub struct McpRuntimeContext {
     pub enforce_filesystem_roots: bool,
     pub lead_session_id: Option<String>,
     pub parent_conversation_id: Option<String>,
+}
+
+impl McpRuntimeContext {
+    /// Build project-scoped MCP launch context from a backend-owned agent environment.
+    ///
+    /// A non-blank project ID is the authority gate. The working directory is always
+    /// taken from the trusted caller argument rather than from environment metadata.
+    pub fn from_agent_env(env: &HashMap<String, String>, working_directory: &Path) -> Option<Self> {
+        let project_id = non_blank_env(env, "RALPHX_PROJECT_ID")?;
+        let task_id = non_blank_env(env, "RALPHX_TASK_ID");
+        let context_id = non_blank_env(env, "RALPHX_CONTEXT_ID").or_else(|| task_id.clone());
+
+        Some(Self {
+            context_type: non_blank_env(env, "RALPHX_CONTEXT_TYPE"),
+            context_id,
+            conversation_id: non_blank_env(env, "RALPHX_CONVERSATION_ID"),
+            agent_run_id: non_blank_env(env, "RALPHX_AGENT_RUN_ID"),
+            task_id,
+            task_state: non_blank_env(env, "RALPHX_TASK_STATE"),
+            project_id: Some(project_id),
+            working_directory: Some(working_directory.to_path_buf()),
+            parent_conversation_id: non_blank_env(env, "RALPHX_PARENT_CONVERSATION_ID"),
+            ..Default::default()
+        })
+    }
+}
+
+fn non_blank_env(env: &HashMap<String, String>, key: &str) -> Option<String> {
+    env.get(key)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRuntimeContext>) {

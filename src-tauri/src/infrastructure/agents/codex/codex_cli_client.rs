@@ -69,6 +69,11 @@ pub struct CodexCliClient {
     capabilities: ClientCapabilities,
 }
 
+pub(super) struct CodexSpawnPreparation {
+    pub(super) prompt: String,
+    pub(super) config_overrides: Vec<String>,
+}
+
 impl CodexCliClient {
     pub fn new() -> Self {
         Self {
@@ -117,32 +122,31 @@ impl CodexCliClient {
         Ok((cli_path, capabilities))
     }
 
-    fn build_prompt(&self, config: &AgentConfig) -> String {
-        let runtime_context = config.agent.as_ref().and_then(|_| {
-            let project_id = config.env.get("RALPHX_PROJECT_ID")?;
-            Some(McpRuntimeContext {
-                context_type: None,
-                context_id: config.env.get("RALPHX_TASK_ID").cloned(),
-                conversation_id: config.env.get("RALPHX_CONVERSATION_ID").cloned(),
-                coordination_mode: None,
-                agent_run_id: config.env.get("RALPHX_AGENT_RUN_ID").cloned(),
-                task_id: config.env.get("RALPHX_TASK_ID").cloned(),
-                task_state: config.env.get("RALPHX_TASK_STATE").cloned(),
-                project_id: Some(project_id.clone()),
-                working_directory: Some(config.working_directory.clone()),
-                filesystem_read_roots: Vec::new(),
-                enforce_filesystem_roots: false,
-                lead_session_id: None,
-                parent_conversation_id: None,
-            })
-        });
-        compose_codex_prompt_for_profile_with_runtime_context(
+    pub(super) fn prepare_spawn(&self, config: &AgentConfig) -> AgentResult<CodexSpawnPreparation> {
+        let runtime_context =
+            McpRuntimeContext::from_agent_env(&config.env, &config.working_directory);
+        let mut config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
+            (config.plugin_dir.as_ref(), config.agent.as_deref())
+        {
+            build_codex_mcp_overrides(plugin_dir, agent_name, false, runtime_context.as_ref())
+                .map_err(AgentError::SpawnFailed)?
+        } else {
+            Vec::new()
+        };
+        config_overrides.extend(config.mcp_launch_policy.codex_config_overrides());
+
+        let prompt = compose_codex_prompt_for_profile_with_runtime_context(
             &config.prompt,
             config.plugin_dir.as_deref(),
             config.agent.as_deref(),
             None,
             runtime_context.as_ref(),
-        )
+        );
+
+        Ok(CodexSpawnPreparation {
+            prompt,
+            config_overrides,
+        })
     }
 
     fn build_exec_config(
@@ -184,21 +188,15 @@ impl AgenticClient for CodexCliClient {
             )));
         }
 
-        let mut config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
-            (config.plugin_dir.as_ref(), config.agent.as_deref())
-        {
-            build_codex_mcp_overrides(plugin_dir, agent_name, false, None)
-                .map_err(AgentError::SpawnFailed)?
-        } else {
-            Vec::new()
-        };
-        config_overrides.extend(config.mcp_launch_policy.codex_config_overrides());
-
-        let prompt = self.build_prompt(&config);
-        let exec_config = self.build_exec_config(&config, config_overrides);
-        let mut spawnable =
-            build_spawnable_codex_exec_command(&cli_path, &prompt, &capabilities, &exec_config)
-                .map_err(AgentError::SpawnFailed)?;
+        let preparation = self.prepare_spawn(&config)?;
+        let exec_config = self.build_exec_config(&config, preparation.config_overrides);
+        let mut spawnable = build_spawnable_codex_exec_command(
+            &cli_path,
+            &preparation.prompt,
+            &capabilities,
+            &exec_config,
+        )
+        .map_err(AgentError::SpawnFailed)?;
 
         for (key, value) in &config.env {
             spawnable.env(key, value);
