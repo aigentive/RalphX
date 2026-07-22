@@ -1,7 +1,16 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { installPagedPublishDiffRoute } from "../../fixtures/agents-publish-diff.fixtures";
+import {
+  seedWorkspaceReviewState,
+  type WorkspaceReviewVisualState,
+} from "../../fixtures/agents-workspace-review.fixtures";
 import { setupApp } from "../../fixtures/setup.fixtures";
 import { seedMergedWorkspace } from "../../fixtures/terminal-publish.fixtures";
+import {
+  expectNoPaneOverflow,
+  expectPrimaryActionContained,
+} from "../../helpers/agents-publish-layout.helpers";
 import { BasePage } from "../base.page";
 
 const TERMINAL_CONVERSATION_ID = "conv-agent-terminal-publish-visual";
@@ -13,6 +22,10 @@ export class AgentsPublishPage extends BasePage {
   readonly inlineDiffs: Locator;
   readonly pagedDiffContent: Locator;
   readonly composerContext: Locator;
+  readonly publishPane: Locator;
+  readonly changesTab: Locator;
+  readonly reviewTab: Locator;
+  readonly reviewContent: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -23,6 +36,59 @@ export class AgentsPublishPage extends BasePage {
       .getByText("inlineRowsArePaged = true")
       .first();
     this.composerContext = page.getByTestId("agents-composer-workspace-changes");
+    this.publishPane = page.getByTestId("agents-publish-pane");
+    this.changesTab = page.getByTestId("agents-publish-tab-changes");
+    this.reviewTab = page.getByTestId("agents-publish-tab-review");
+    this.reviewContent = page.getByTestId("agents-publish-content-review");
+  }
+
+  async openFromHeader() {
+    await this.page.getByTestId("agents-publish-workspace").click();
+    await expect(this.publishPane).toBeVisible();
+    await expect(this.changesTab).toBeVisible();
+    await expect(this.reviewTab).toBeVisible();
+  }
+
+  async selectChanges() {
+    await this.changesTab.click();
+    await expect(this.changesTab).toHaveAttribute("data-state", "active");
+  }
+
+  async selectReview() {
+    await this.reviewTab.click();
+    await expect(this.reviewTab).toHaveAttribute("data-state", "active");
+    await expect(this.reviewContent).toBeVisible();
+  }
+
+  async seedWorkspaceReviewState(
+    conversationId: string,
+    state: WorkspaceReviewVisualState,
+  ) {
+    await seedWorkspaceReviewState(
+      this.page,
+      this.reviewTab,
+      conversationId,
+      state,
+    );
+  }
+
+  async expectNoPaneOverflow() {
+    await expectNoPaneOverflow(this.publishPane);
+  }
+
+  async expectPrimaryActionContained(testId: string) {
+    await expectPrimaryActionContained(this.page, this.publishPane, testId);
+  }
+
+  async expectDiffRowsLoaded() {
+    await expect(this.pagedDiffContent).toBeVisible();
+    await expect(
+      this.inlineDiffs.getByText("Could not load diff rows"),
+    ).toHaveCount(0);
+  }
+
+  async installPagedDiffRoute() {
+    await installPagedPublishDiffRoute(this.page);
   }
 
   async openMergedPublishScenario() {
@@ -52,59 +118,5 @@ export class AgentsPublishPage extends BasePage {
     await expect(publishTab).toBeVisible();
     await publishTab.click();
     await expect(this.page.getByTestId("agents-publish-pane")).toBeVisible();
-  }
-
-  private async installPagedDiffRoute() {
-    await this.page.route("**/api/agent-workspaces/**/file-diff-page**", async (route) => {
-      const url = new URL(route.request().url());
-      const filePath = url.searchParams.get("path") ?? "frontend/src/Published.tsx";
-      const rows = [
-        {
-          kind: "hunk_header", header: "@@ -1,2 +1,3 @@",
-          old_start: 1, old_lines: 2, new_start: 1, new_lines: 3,
-        },
-        {
-          kind: "line",
-          line: {
-            kind: "context",
-            content: "export function publishedView() {",
-            old_line_num: 1,
-            new_line_num: 1,
-          },
-        },
-        {
-          kind: "line",
-          line: {
-            kind: "addition",
-            content: "  const inlineRowsArePaged = true;",
-            old_line_num: null,
-            new_line_num: 2,
-          },
-        },
-      ];
-      const offset = Number(url.searchParams.get("offset") ?? "0");
-      const limit = Number(url.searchParams.get("limit") ?? "200");
-      const pageRows = rows.slice(offset, offset + limit);
-      const nextOffset =
-        offset + pageRows.length < rows.length
-          ? offset + pageRows.length
-          : null;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          file_path: filePath,
-          language: "tsx",
-          rows: pageRows,
-          offset,
-          limit,
-          next_offset: nextOffset,
-          total_rows: rows.length,
-          old_total_lines: 2,
-          new_total_lines: 3,
-          is_binary: false,
-        }),
-      });
-    });
   }
 }

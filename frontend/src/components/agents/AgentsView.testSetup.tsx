@@ -19,6 +19,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
@@ -1081,6 +1082,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       activeTab,
       focusedIdeationSessionId,
       publishFocusRequest,
+      publishSubTabRequest,
       onClose,
       onFocusIdeationSessionForConversation,
       onFocusVerificationSession,
@@ -1095,6 +1097,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       activeTab?: string;
       focusedIdeationSessionId?: string | null;
       publishFocusRequest?: AgentPublishFocusRequest | null;
+      publishSubTabRequest?: AgentPublishSubTabRequest | null;
       projectBaseBranch?: string | null;
       isPublishingWorkspace?: boolean;
       onClose?: () => void;
@@ -1115,6 +1118,11 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-publish-sub-tab={
+          publishSubTabRequest?.conversationId === conversation?.id
+            ? (publishSubTabRequest?.tab ?? "changes")
+            : "changes"
+        }
         data-automation-id={conversation?.automationId ?? ""}
       >
         <AgentPublishPanel
@@ -1127,6 +1135,14 @@ vi.mock("./AgentsArtifactPane", async () => {
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
           }
+          activeSubTab={
+            publishSubTabRequest?.conversationId === conversation?.id
+              ? (publishSubTabRequest?.tab ?? "changes")
+              : "changes"
+          }
+          showReviewTab
+          onSubTabChange={() => {}}
+          reviewContent={null}
         />
       </div>
     ) : (
@@ -1136,6 +1152,11 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-publish-sub-tab={
+          publishSubTabRequest?.conversationId === conversation?.id
+            ? (publishSubTabRequest?.tab ?? "changes")
+            : "changes"
+        }
         data-automation-id={conversation?.automationId ?? ""}
       >
         {onClose ? (
@@ -2170,6 +2191,7 @@ export function setupAgentsViewTest() {
   resetAgentSessionState();
   useAgentArtifactUiStore.setState({
     artifactByConversationId: {},
+    publishSubTabRequest: null,
   });
   useAgentTerminalStore.setState({
     openByConversationId: {},
