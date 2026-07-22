@@ -2,10 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use dashmap::DashMap;
 use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -16,11 +19,12 @@ use crate::application::chat_service::{
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
-    AgentRunStatus, AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
-    ArtifactId, ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAction,
+    AgentRunActionKind, AgentRunId, AgentRunStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
+    Artifact, ArtifactContent, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
+    MessageRole, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
@@ -64,6 +68,70 @@ const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const MERGED_PUBLICATION_PR_STATUS: &str = "merged";
+pub(crate) const WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR: &str =
+    "Workspace Review was interrupted because the workspace mode changed to Plan";
+
+static WORKSPACE_REVIEW_LIFECYCLE_LOCKS: OnceLock<DashMap<String, Arc<Mutex<()>>>> =
+    OnceLock::new();
+
+fn workspace_review_lifecycle_locks() -> &'static DashMap<String, Arc<Mutex<()>>> {
+    WORKSPACE_REVIEW_LIFECYCLE_LOCKS.get_or_init(DashMap::new)
+}
+
+pub(crate) async fn lock_workspace_review_lifecycle(
+    conversation_id: &ChatConversationId,
+) -> OwnedMutexGuard<()> {
+    workspace_review_lifecycle_locks()
+        .entry(conversation_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
+}
+
+pub fn workspace_review_mode_is_eligible(mode: AgentConversationWorkspaceMode) -> bool {
+    matches!(
+        mode,
+        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
+    )
+}
+
+pub(crate) async fn load_current_workspace_review_eligible(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<AgentConversationWorkspace> {
+    load_workspace_review_eligible(state, workspace, false).await
+}
+
+async fn load_workspace_review_eligible(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    allow_missing_merged_workspace: bool,
+) -> AppResult<AgentConversationWorkspace> {
+    ensure_workspace_review_supported_mode(workspace)?;
+    let current = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?;
+    let current = match current {
+        Some(current) => current,
+        None if allow_missing_merged_workspace
+            && workspace.publication_pr_status.as_deref() == Some(MERGED_PUBLICATION_PR_STATUS) =>
+        {
+            workspace.clone()
+        }
+        #[cfg(test)]
+        None => workspace.clone(),
+        #[cfg(not(test))]
+        None => {
+            return Err(AppError::NotFound(
+                "Agent conversation workspace not found".to_string(),
+            ));
+        }
+    };
+    ensure_workspace_review_supported_mode(&current)?;
+    Ok(current)
+}
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
     value
@@ -372,6 +440,40 @@ async fn reconcile_interrupted_workspace_review_monitor_on_startup(
         return Ok(false);
     }
 
+    if let Some(workspace) = workspace_repo
+        .get_by_conversation_id(&monitor.conversation_id)
+        .await?
+    {
+        if !workspace_review_mode_is_eligible(workspace.mode) {
+            let Some(mut current_monitor) = workspace_repo
+                .get_workspace_review_monitor(&monitor.conversation_id)
+                .await?
+            else {
+                return Ok(false);
+            };
+            if current_monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+                return Ok(false);
+            }
+            current_monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            current_monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+            current_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+            current_monitor.last_error =
+                Some(if workspace.mode == AgentConversationWorkspaceMode::Plan {
+                    WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR.to_string()
+                } else {
+                    format!(
+                        "Workspace Review was interrupted because it is unavailable in {} mode",
+                        workspace.mode
+                    )
+                });
+            clear_review_blocking_state(&mut current_monitor);
+            workspace_repo
+                .upsert_workspace_review_monitor(current_monitor)
+                .await?;
+            return Ok(true);
+        }
+    }
+
     let original_run_id = monitor.last_run_id.clone();
     let run = match original_run_id.as_deref() {
         Some(run_id) => {
@@ -569,7 +671,8 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
-    ensure_workspace_review_supported_mode(workspace)?;
+    let workspace = load_workspace_review_eligible(state, workspace, true).await?;
+    let workspace = &workspace;
     let started = Instant::now();
     let project = state
         .project_repo
@@ -632,10 +735,35 @@ pub async fn start_agent_workspace_review(
     workspace: &AgentConversationWorkspace,
     force: bool,
 ) -> AppResult<AgentWorkspaceReviewStart> {
-    start_agent_workspace_review_with_runtime_override(state, workspace, force, None).await
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_unlocked_with_runtime_override(state, workspace, force, None).await
 }
 
 pub async fn start_agent_workspace_review_with_runtime_override(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewStart> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_unlocked_with_runtime_override(
+        state,
+        workspace,
+        force,
+        runtime_override,
+    )
+    .await
+}
+
+pub(crate) async fn start_agent_workspace_review_unlocked(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+) -> AppResult<AgentWorkspaceReviewStart> {
+    start_agent_workspace_review_unlocked_with_runtime_override(state, workspace, force, None).await
+}
+
+pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(
     state: Arc<AppState>,
     workspace: &AgentConversationWorkspace,
     force: bool,
@@ -659,7 +787,8 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewStart> {
-    ensure_workspace_review_supported_mode(workspace)?;
+    let workspace = load_current_workspace_review_eligible(&state, workspace).await?;
+    let workspace = &workspace;
     let request_started = Instant::now();
     info!(
         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -1854,6 +1983,20 @@ async fn mark_workspace_review_blocked(
     helper_id: &str,
     error: String,
 ) {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    if load_current_workspace_review_eligible(state, workspace)
+        .await
+        .is_err()
+    {
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "child_chat_blocked_ineligible_mode_ignored",
+            conversation_id = %workspace.conversation_id,
+            run_id = %helper_id,
+            "Ignored late workspace Review waiter settlement in an ineligible mode"
+        );
+        return;
+    }
     match load_or_create_monitor(state, workspace).await {
         Ok(mut monitor) => {
             if !workspace_review_block_matches_active_monitor(&monitor, target, helper_id) {
@@ -2010,6 +2153,28 @@ pub async fn complete_agent_workspace_review_run(
     blocker: Option<String>,
     created_by_run_id: Option<String>,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    complete_agent_workspace_review_run_unlocked(
+        state,
+        workspace,
+        outcome,
+        summary,
+        blocker,
+        created_by_run_id,
+    )
+    .await
+}
+
+pub(crate) async fn complete_agent_workspace_review_run_unlocked(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    outcome: Option<String>,
+    summary: Option<String>,
+    blocker: Option<String>,
+    created_by_run_id: Option<String>,
+) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let started = Instant::now();
     let normalized_outcome = outcome
         .as_deref()
@@ -2363,10 +2528,28 @@ pub async fn start_agent_workspace_review_blocking_fixer(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
-    start_agent_workspace_review_blocking_fixer_with_override(state, workspace, None, None).await
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_blocking_fixer_with_override_unlocked(state, workspace, None, None)
+        .await
 }
 
 pub async fn start_agent_workspace_review_blocking_fixer_with_override(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    confirmation: Option<&WorkspaceReviewFixerConfirmation>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_blocking_fixer_with_override_unlocked(
+        state,
+        workspace,
+        confirmation,
+        runtime_override,
+    )
+    .await
+}
+
+async fn start_agent_workspace_review_blocking_fixer_with_override_unlocked(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     confirmation: Option<&WorkspaceReviewFixerConfirmation>,
@@ -2383,6 +2566,82 @@ pub async fn start_agent_workspace_review_blocking_fixer_with_override(
     .await
 }
 
+pub(crate) async fn cleanup_workspace_review_for_plan_boundary(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    chat_service: Option<&dyn ChatService>,
+) -> AppResult<()> {
+    let Some(mut monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let review_is_active = monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing;
+    let fixer_is_active =
+        workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref());
+    let has_review_authority = review_is_active
+        || fixer_is_active
+        || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::NotRequired
+        || monitor.review_outcome != AgentWorkspaceReviewOutcome::None
+        || monitor.review_artifact_id.is_some()
+        || monitor.review_gate_bypassed_at.is_some()
+        || monitor.auto_merge_guard.is_some();
+    if review_is_active || fixer_is_active {
+        let chat_service = chat_service.ok_or_else(|| {
+            AppError::Conflict(
+                "Cannot switch to Plan while Workspace Review runtime cleanup is unavailable"
+                    .to_string(),
+            )
+        })?;
+        let mut runtime_conversations = Vec::new();
+        if review_is_active {
+            if let Some(conversation_id) = monitor.review_conversation_id.as_ref() {
+                runtime_conversations.push(conversation_id.clone());
+            }
+        }
+        if fixer_is_active {
+            let fixer_conversation_id = monitor
+                .review_fixer_conversation_id
+                .clone()
+                .unwrap_or_else(|| workspace.conversation_id.clone());
+            if !runtime_conversations.contains(&fixer_conversation_id) {
+                runtime_conversations.push(fixer_conversation_id);
+            }
+        }
+        for conversation_id in runtime_conversations {
+            chat_service
+                .stop_agent(ChatContextType::Project, &conversation_id.as_str())
+                .await
+                .map_err(|error| {
+                    AppError::Infrastructure(format!(
+                        "failed to stop Workspace Review runtime before Plan mode: {error}"
+                    ))
+                })?;
+        }
+    }
+
+    if has_review_authority {
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.last_error = Some(WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR.to_string());
+        monitor.clear_review_gate_bypass();
+        clear_review_blocking_state(&mut monitor);
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await?;
+    }
+
+    crate::application::agent_workspace_review_auto_merge::
+        cleanup_ineligible_workspace_review_auto_merge_guard(state, workspace)
+        .await?;
+    Ok(())
+}
+
 async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatService + ?Sized>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -2390,7 +2649,8 @@ async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatSe
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
-    ensure_workspace_review_supported_mode(workspace)?;
+    let workspace = load_current_workspace_review_eligible(state, workspace).await?;
+    let workspace = &workspace;
     let context = load_agent_workspace_review_context(state, workspace).await?;
     let Some(target) = context.target.as_ref() else {
         return Err(AppError::Validation(
@@ -3032,13 +3292,7 @@ pub(crate) fn build_context(
     });
     let is_outdated = monitor.review_artifact_id.is_some() && target.is_some() && !is_current;
     let should_show_tab = target.is_some() || monitor.review_artifact_id.is_some();
-    let should_show_tab = should_show_tab
-        && matches!(
-            workspace.mode,
-            crate::domain::entities::AgentConversationWorkspaceMode::Edit
-                | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
-                | crate::domain::entities::AgentConversationWorkspaceMode::Plan
-        );
+    let should_show_tab = should_show_tab && workspace_review_mode_is_eligible(workspace.mode);
     AgentWorkspaceReviewContext {
         monitor,
         target,
@@ -3569,17 +3823,17 @@ pub(crate) async fn resolve_review_target(
 pub(crate) fn ensure_workspace_review_supported_mode(
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<()> {
-    if matches!(
-        workspace.mode,
-        crate::domain::entities::AgentConversationWorkspaceMode::Edit
-            | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
-            | crate::domain::entities::AgentConversationWorkspaceMode::Plan
-    ) {
+    if workspace_review_mode_is_eligible(workspace.mode) {
         return Ok(());
     }
-    Err(AppError::Validation(
-        "Workspace Review is unavailable in Review PR mode".to_string(),
-    ))
+    let mode = match workspace.mode {
+        AgentConversationWorkspaceMode::ReviewPr => "Review PR".to_string(),
+        mode => mode.to_string(),
+    };
+    Err(AppError::Validation(format!(
+        "Workspace Review is unavailable in {} mode",
+        mode
+    )))
 }
 
 async fn resolve_workspace_delta_target(

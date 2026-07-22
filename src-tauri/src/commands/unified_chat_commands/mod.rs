@@ -3566,7 +3566,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         }
     }
 
-    let existing_workspace = state
+    let mut existing_workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation.id)
         .await
@@ -3599,6 +3599,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
     let plan_to_edit_handoff = current_mode == AgentConversationWorkspaceMode::Plan
         && target_mode == AgentConversationWorkspaceMode::Edit;
+    let entering_plan_workspace = target_mode == AgentConversationWorkspaceMode::Plan
+        && existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.mode != AgentConversationWorkspaceMode::Plan);
+    let leaving_plan_for_review_eligible_workspace = current_mode
+        == AgentConversationWorkspaceMode::Plan
+        && crate::application::agent_workspace_review::workspace_review_mode_is_eligible(
+            target_mode,
+        )
+        && existing_workspace.is_some();
+    let crossing_plan_review_boundary =
+        entering_plan_workspace || leaving_plan_for_review_eligible_workspace;
+    let _workspace_review_lifecycle_guard = if crossing_plan_review_boundary {
+        Some(
+            crate::application::agent_workspace_review::lock_workspace_review_lifecycle(
+                &conversation.id,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
@@ -3617,6 +3639,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 return Err("Cannot change mode while the agent is running".to_string());
             }
         }
+    }
+
+    if crossing_plan_review_boundary {
+        let cleanup_chat_service = match running_agent_policy {
+            ModeSwitchRunningAgentPolicy::StopWithService(chat_service) => Some(chat_service),
+            ModeSwitchRunningAgentPolicy::Reject | ModeSwitchRunningAgentPolicy::Allow => None,
+        };
+        let workspace = existing_workspace.as_ref().ok_or_else(|| {
+            "Cannot change mode because the Agent Workspace no longer exists".to_string()
+        })?;
+        crate::application::agent_workspace_review::cleanup_workspace_review_for_plan_boundary(
+            state,
+            workspace,
+            cleanup_chat_service,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        existing_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     let workspace = match existing_workspace {
@@ -3725,6 +3769,11 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
     };
+
+    if current_mode != target_mode {
+        crate::application::agent_workspace_review_context::
+            invalidate_workspace_review_presentation_context(&conversation.id);
+    }
 
     if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
         state

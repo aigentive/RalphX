@@ -831,8 +831,7 @@ async fn explicit_runtime_rejects_a_disabled_selected_provider() {
     let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
     provider_repo.upsert(&provider).await.unwrap();
-    let mut default_provider =
-        AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    let mut default_provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
     default_provider.enabled = true;
     default_provider.is_default = true;
     provider_repo.upsert(&default_provider).await.unwrap();

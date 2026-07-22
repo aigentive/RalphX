@@ -27,23 +27,24 @@ use axum::{
 };
 
 use super::*;
-use crate::application::agent_conversation_workspace::{
-    AgentConversationWorkspaceBaseSelection,
-};
+use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
-    apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer_with_override,
+    apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
+    load_agent_workspace_review_context, load_current_workspace_review_eligible,
+    lock_workspace_review_lifecycle, review_gate_publish_blocker,
+    start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
     AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
 };
-use crate::application::agent_workspace_review_diff::{
-    ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
-};
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
-    start_guarded_agent_workspace_review, start_guarded_agent_workspace_review_with_runtime_override,
-    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
+    start_guarded_agent_workspace_review,
+    start_guarded_agent_workspace_review_with_runtime_override, WorkspaceReviewStartConfirmation,
+    WorkspaceReviewStartOrigin,
+};
+use crate::application::agent_workspace_review_diff::{
+    ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
@@ -55,9 +56,6 @@ use crate::application::publish_resilience::{
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
 use crate::application::{AppState, ChatService, GitService};
-use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
-};
 use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
@@ -66,6 +64,9 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
@@ -759,7 +760,9 @@ impl From<ManualRoleRuntimeOverrideRequest> for ManualRoleRuntimeOverride {
             effort: value.effort,
             service_tier: value.service_tier,
             coordination_mode: value.coordination_mode,
-            persona_id: value.persona_id.map(crate::domain::entities::PersonaId::from_string),
+            persona_id: value
+                .persona_id
+                .map(crate::domain::entities::PersonaId::from_string),
         }
     }
 }
@@ -1395,6 +1398,7 @@ pub async fn get_agent_workspace_review_start_preview(
 ) -> Result<Json<AgentWorkspaceReviewStartPreviewResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let preview = preview_manual_workspace_review_start(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
@@ -1591,9 +1595,13 @@ pub async fn write_agent_workspace_review_artifact(
     let content_bytes = content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
     let mut monitor = context.monitor;
     let created_by_run_id = validate_workspace_review_tool_run_id(
         &monitor,
@@ -1770,6 +1778,10 @@ pub async fn write_agent_workspace_review_hunk_annotations(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let project = state
         .app_state
         .project_repo
@@ -1785,7 +1797,7 @@ pub async fn write_agent_workspace_review_hunk_annotations(
         })?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
 
     if !context.is_current {
         return Err(json_error(
@@ -1979,9 +1991,13 @@ pub async fn complete_agent_workspace_review_run(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
     let created_by_run_id = validate_workspace_review_tool_run_id(
         &context.monitor,
         created_by_run_id.as_deref(),
@@ -1993,7 +2009,7 @@ pub async fn complete_agent_workspace_review_run(
         outcome.as_deref(),
     )
     .await?;
-    let monitor = crate::application::agent_workspace_review::complete_agent_workspace_review_run(
+    let monitor = complete_agent_workspace_review_run_unlocked(
         state.app_state.as_ref(),
         &workspace,
         outcome,
@@ -3409,7 +3425,8 @@ fn auto_publish_can_resume_after_workspace_review(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> bool {
-    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
+    workspace_review_mode_is_eligible(workspace.mode)
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
         && workspace.auto_publish_initial_pr_enabled
         && workspace.publication_pr_number.is_none()
         && !workspace.has_terminal_publication_pr_status()

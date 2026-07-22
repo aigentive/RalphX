@@ -36,6 +36,7 @@ use super::{
     spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
     switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
+    switch_agent_conversation_mode_for_state_stopping_running_agent,
     try_acquire_agent_workspace_publish_guard, update_agent_conversation_coordination_mode,
     update_agent_conversation_workspace_from_base_for_app_state,
     validate_explicit_publish_base_ref, AgentConversationResponse,
@@ -7203,6 +7204,190 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
 }
 
 #[tokio::test]
+async fn switching_edit_to_plan_quiesces_workspace_review_authority_before_persisting_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-review-cleanup".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("34343434-3434-4434-8434-343434343434".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        Some("base-sha".to_string()),
+        "ralphx/test/plan-review-cleanup".to_string(),
+        "/tmp/ralphx-plan-review-cleanup".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let review_conversation_id = ChatConversationId::from_string("review-runtime".to_string());
+    let fixer_conversation_id = ChatConversationId::from_string("fixer-runtime".to_string());
+    let artifact_id = ArtifactId::from_string("historical-review-artifact".to_string());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.review_fixer_status = Some("running".to_string());
+    monitor.review_fixer_conversation_id = Some(fixer_conversation_id.clone());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "review-fingerprint".to_string(),
+        head_sha: Some("head-sha".to_string()),
+        last_error: None,
+    });
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should persist");
+    let service = MockChatService::new();
+
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("review cleanup should allow the PLAN transition");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+    let calls = service.get_stop_agent_calls().await;
+    assert!(calls.contains(&(ChatContextType::Project, review_conversation_id.as_str())));
+    assert!(calls.contains(&(ChatContextType::Project, fixer_conversation_id.as_str())));
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(stored.mode, AgentConversationWorkspaceMode::Plan);
+    assert_eq!(stored.pr_auto_merge_current, Some(false));
+    let cleaned = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(cleaned.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        cleaned.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        cleaned.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert!(cleaned.review_fixer_status.is_none());
+    assert!(cleaned.review_fixer_run_id.is_none());
+    assert!(cleaned.auto_merge_guard.is_none());
+    assert_eq!(cleaned.review_artifact_id, Some(artifact_id));
+    assert_eq!(cleaned.review_artifact_version, Some(4));
+    assert!(cleaned
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("mode changed to Plan")));
+}
+
+#[tokio::test]
+async fn failed_workspace_review_runtime_cleanup_keeps_workspace_out_of_plan_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-review-cleanup-failure".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("45454545-4545-4454-8454-454545454545".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        Some("base-sha".to_string()),
+        "ralphx/test/plan-review-cleanup-failure".to_string(),
+        "/tmp/ralphx-plan-review-cleanup-failure".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(ChatConversationId::from_string(
+        "review-runtime-cleanup-failure".to_string(),
+    ));
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should persist");
+    let service = MockChatService::new();
+    service.fail_next_stop_agent_calls(1).await;
+
+    let error = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("failed runtime cleanup must reject the PLAN transition");
+
+    assert!(error.contains("failed to stop Workspace Review runtime"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .mode,
+        AgentConversationWorkspaceMode::Edit
+    );
+}
+
+#[tokio::test]
 async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -7440,6 +7625,23 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
     );
     assert!(plan_workspace.linked_plan_branch_id.is_none());
 
+    let review_artifact_id =
+        ArtifactId::from_string("historical-plan-mode-review-artifact".to_string());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        plan_workspace.project_id.clone(),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_artifact_id = Some(review_artifact_id.clone());
+    monitor.review_artifact_version = Some(3);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("historical Plan review monitor should persist");
+
     let edit_response = switch_agent_conversation_mode_for_state(
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
@@ -7466,6 +7668,21 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    let cleaned_review = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("review monitor lookup should succeed")
+        .expect("historical review monitor should remain");
+    assert_eq!(
+        cleaned_review.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        cleaned_review.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(cleaned_review.review_artifact_id, Some(review_artifact_id));
 }
 
 #[tokio::test]

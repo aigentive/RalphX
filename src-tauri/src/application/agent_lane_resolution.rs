@@ -539,7 +539,9 @@ pub async fn resolve_manual_role_spawn_settings(
             approval_policy: selected_runtime.approval_policy.clone(),
             sandbox_mode: selected_runtime.sandbox_mode.clone(),
         };
-        service.validate_explicit_value(role, &complete_runtime).await?;
+        service
+            .validate_explicit_value(role, &complete_runtime)
+            .await?;
         validate_model_harness_compatibility(effective_harness, &model)
             .map_err(crate::error::AppError::Validation)?;
     }

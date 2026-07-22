@@ -105,7 +105,8 @@ impl ManualRoleDefaultService {
         project_root: Option<&Path>,
         role: RoutingRole,
     ) -> AppResult<ResolvedManualRoleDefault> {
-        self.resolve_unvalidated(project_id, project_root, role).await
+        self.resolve_unvalidated(project_id, project_root, role)
+            .await
     }
 
     async fn resolve_unvalidated(

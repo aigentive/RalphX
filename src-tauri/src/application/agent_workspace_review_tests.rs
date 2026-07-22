@@ -139,6 +139,86 @@ async fn wait_for_monitor_status(
     panic!("monitor did not reach status {status}");
 }
 
+#[tokio::test]
+async fn cleanup_before_plan_invalidates_inactive_pass_and_bypass_authority() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-authority-cleanup".to_string());
+
+    for (suffix, outcome, with_bypass) in [
+        ("passed", AgentWorkspaceReviewOutcome::Passed, false),
+        ("bypassed", AgentWorkspaceReviewOutcome::Blocking, true),
+    ] {
+        let conversation_id =
+            ChatConversationId::from_string(format!("plan-authority-cleanup-{suffix}"));
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            None,
+            Some("base-sha".to_string()),
+            format!("ralphx/test/plan-authority-cleanup-{suffix}"),
+            format!("/tmp/ralphx-plan-authority-cleanup-{suffix}"),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let artifact_id = ArtifactId::from_string(format!("review-artifact-{suffix}"));
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        monitor.review_outcome = outcome;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_artifact_id = Some(artifact_id.clone());
+        monitor.review_artifact_version = Some(7);
+        if with_bypass {
+            monitor.review_gate_bypassed_at = Some(Utc::now());
+            monitor.review_gate_bypassed_target_scope =
+                Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+            monitor.review_gate_bypassed_diff_fingerprint = Some("fingerprint".to_string());
+            monitor.review_gate_bypassed_artifact_id = Some(artifact_id.clone());
+            monitor.review_gate_bypassed_artifact_version = Some(7);
+        }
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        cleanup_workspace_review_for_plan_boundary(&state, &workspace, None)
+            .await
+            .expect("inactive review authority should be invalidated without a runtime");
+
+        let cleaned = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should remain as history");
+        assert_eq!(cleaned.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            cleaned.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            cleaned.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(cleaned.review_artifact_id, Some(artifact_id));
+        assert_eq!(cleaned.review_artifact_version, Some(7));
+        assert!(cleaned.review_gate_bypassed_at.is_none());
+        assert!(cleaned.review_gate_bypassed_artifact_id.is_none());
+        assert_eq!(
+            cleaned.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR)
+        );
+    }
+}
+
 #[test]
 fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads() {
     let mut inherited = WorkspaceReviewInheritedReferences::default();
@@ -2464,6 +2544,98 @@ async fn startup_reconciliation_marks_completed_current_workspace_review_ready()
     );
     assert_eq!(monitor.review_artifact_version, Some(9));
     assert_eq!(monitor.last_error, None);
+}
+
+#[tokio::test]
+async fn startup_reconciliation_does_not_consume_completed_review_output_in_plan_mode() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("Edit context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut completed_run = AgentRun::new(child_conversation_id.clone());
+    let run_id = completed_run.id.as_str().to_string();
+    completed_run.complete();
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("completed run should persist");
+
+    let mut monitor = context.monitor;
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(child_conversation_id);
+    monitor.last_run_id = Some(run_id.clone());
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(run_id),
+        ArtifactId::from_string("historical-plan-review-artifact"),
+        7,
+        Utc::now(),
+        None,
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("reviewing monitor should persist");
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("PLAN workspace should persist");
+
+    assert_eq!(
+        reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("PLAN startup reconciliation should perform cleanup"),
+        1
+    );
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(monitor.review_artifact_version, Some(7));
+    assert!(monitor
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("mode changed to Plan")));
 }
 
 #[tokio::test]
