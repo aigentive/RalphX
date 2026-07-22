@@ -213,7 +213,8 @@ pub use project_skill_versioning::{
     prepare_new_project_skill, project_skill_authorship_from_provenance,
     project_skill_content_hash, project_skill_content_matches, project_skill_evidence_hash,
     project_skill_evidence_hash_from_raw, project_skill_pipeline_role_from_provenance,
-    refresh_project_skill_metadata, ProjectSkillCreatedBy, ProjectSkillVersion,
+    refresh_project_skill_metadata, validate_project_skill_hash,
+    validate_project_skill_pipeline_role, ProjectSkillCreatedBy, ProjectSkillVersion,
 };
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

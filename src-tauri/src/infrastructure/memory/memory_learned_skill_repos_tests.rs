@@ -168,7 +168,6 @@ fn project_skill() -> ProjectSkill {
         predicted_effect: Some("Prevents split-brain state.".to_string()),
         provenance_json: json!({"source": "task_outcome"}),
         companion_of_skill_id: None,
-        version: 99,
         content_hash: "caller-controlled".to_string(),
         evidence_hash: "caller-controlled".to_string(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::Imported,
@@ -179,33 +178,40 @@ fn project_skill() -> ProjectSkill {
 }
 
 #[tokio::test]
-async fn memory_project_skill_repository_matches_atomic_version_contract() {
+async fn memory_project_skill_repository_persists_versions_only_when_explicitly_appended() {
     let repo = MemoryProjectSkillRepository::new();
     let created = repo.create(project_skill()).await.unwrap();
-    assert_eq!(created.version, 1);
     assert_eq!(
         created.created_by,
-        crate::domain::entities::ProjectSkillCreatedBy::Agent
+        crate::domain::entities::ProjectSkillCreatedBy::Imported
     );
     assert_ne!(created.content_hash, "caller-controlled");
     assert_ne!(created.evidence_hash, "caller-controlled");
-    assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 1);
+    assert!(repo.list_versions(&created.id).await.unwrap().is_empty());
+
+    let v1 =
+        crate::domain::entities::ProjectSkillVersion::from_skill(&created, 1, created.updated_at);
+    repo.append_version(v1.clone()).await.unwrap();
+    assert!(matches!(
+        repo.append_version(v1).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
 
     let mut revised = created.clone();
     revised.body_markdown = "Version two".to_string();
     let revised = repo.update_content(revised).await.unwrap().unwrap();
-    assert_eq!(revised.version, 2);
-    assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 2);
-
-    let mut stale = created.clone();
-    stale.body_markdown = "Stale body".to_string();
-    assert!(matches!(
-        repo.update_content(stale).await,
-        Err(crate::error::AppError::Conflict(_))
-    ));
-    assert_eq!(
-        repo.get_by_id(&created.id).await.unwrap().unwrap().version,
-        2
-    );
+    assert!(repo
+        .list_versions(&created.id)
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| row.version == 1));
+    repo.append_version(crate::domain::entities::ProjectSkillVersion::from_skill(
+        &revised,
+        2,
+        revised.updated_at,
+    ))
+    .await
+    .unwrap();
     assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 2);
 }

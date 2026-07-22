@@ -1586,7 +1586,6 @@ pub struct ProjectSkillResponse {
     pub predicted_effect: Option<String>,
     pub provenance_json: Value,
     pub companion_of_skill_id: Option<String>,
-    pub version: i64,
     pub content_hash: String,
     pub evidence_hash: String,
     pub created_by: String,
@@ -1614,7 +1613,6 @@ impl From<ProjectSkill> for ProjectSkillResponse {
             companion_of_skill_id: skill
                 .companion_of_skill_id
                 .map(|id| id.as_str().to_string()),
-            version: skill.version,
             content_hash: skill.content_hash,
             evidence_hash: skill.evidence_hash,
             created_by: skill.created_by.to_string(),
@@ -1693,7 +1691,6 @@ pub struct ProjectSkillLifecycleRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateProjectSkillRequest {
     pub project_skill_id: String,
-    pub expected_version: i64,
     pub title: String,
     pub bucket: String,
     pub stage: String,

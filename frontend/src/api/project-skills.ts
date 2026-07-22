@@ -36,11 +36,10 @@ const ProjectSkillResponseSchema = z.object({
   predicted_effect: z.string().nullable().optional(),
   provenance_json: z.unknown(),
   companion_of_skill_id: z.string().nullable().optional(),
-  version: z.number().int().positive(),
-  content_hash: z.string(),
-  evidence_hash: z.string(),
+  content_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  evidence_hash: z.string().regex(/^[0-9a-f]{64}$/),
   created_by: z.enum(["user", "agent", "imported"]),
-  pipeline_role: z.string().nullable().optional(),
+  pipeline_role: z.string().trim().min(1).nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -214,7 +213,6 @@ export interface ProjectSkill {
   sourceRoot: string | null;
   sourceSyncEnabled: boolean;
   companionOfSkillId: string | null;
-  version: number;
   contentHash: string;
   evidenceHash: string;
   createdBy: "user" | "agent" | "imported";
@@ -415,7 +413,6 @@ export interface PromoteMemoryToProjectSkillInput {
 
 export interface UpdateProjectSkillInput {
   projectSkillId: string;
-  expectedVersion: number;
   title: string;
   bucket: ProjectSkillCategory;
   stage: ProjectSkillCategory;
@@ -474,7 +471,6 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
       booleanValue(sourceSnapshot?.source_sync_enabled) ??
       false,
     companionOfSkillId: raw.companion_of_skill_id ?? null,
-    version: raw.version,
     contentHash: raw.content_hash,
     evidenceHash: raw.evidence_hash,
     createdBy: raw.created_by,
@@ -736,7 +732,6 @@ export const projectSkillsApi = {
   async update(input: UpdateProjectSkillInput): Promise<ProjectSkill | null> {
     const raw = await postJson<unknown>("project_skills/update", {
       project_skill_id: input.projectSkillId,
-      expected_version: input.expectedVersion,
       title: input.title,
       bucket: input.bucket,
       stage: input.stage,

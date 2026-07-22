@@ -66,12 +66,6 @@ fn migrate_in_transaction(conn: &Connection) -> AppResult<()> {
     add_column_if_missing(
         conn,
         "project_skills",
-        "version",
-        "ALTER TABLE project_skills ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0)",
-    )?;
-    add_column_if_missing(
-        conn,
-        "project_skills",
         "content_hash",
         "ALTER TABLE project_skills ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
     )?;
@@ -85,7 +79,7 @@ fn migrate_in_transaction(conn: &Connection) -> AppResult<()> {
         conn,
         "project_skills",
         "created_by",
-        "ALTER TABLE project_skills ADD COLUMN created_by TEXT NOT NULL DEFAULT 'user' CHECK (created_by IN ('user', 'agent', 'imported'))",
+        "ALTER TABLE project_skills ADD COLUMN created_by TEXT NOT NULL DEFAULT 'agent' CHECK (created_by IN ('user', 'agent', 'imported'))",
     )?;
     add_column_if_missing(
         conn,
@@ -96,7 +90,6 @@ fn migrate_in_transaction(conn: &Connection) -> AppResult<()> {
 
     backfill_project_skill_metadata(conn)?;
     create_version_table(conn)?;
-    seed_initial_versions(conn)?;
     extend_settings(conn)?;
     ensure_foreign_keys_valid(conn)?;
     Ok(())
@@ -130,15 +123,14 @@ fn backfill_project_skill_metadata(conn: &Connection) -> AppResult<()> {
 
     for (id, title, bucket, stage, body, provenance_raw) in rows {
         let content_hash = project_skill_content_hash(&title, &bucket, &stage, &body);
-        let evidence_hash = project_skill_evidence_hash_from_raw(&provenance_raw);
-        let parsed = serde_json::from_str::<Value>(&provenance_raw).ok();
-        let created_by = parsed
-            .as_ref()
-            .map(project_skill_authorship_from_provenance)
-            .unwrap_or(crate::domain::entities::ProjectSkillCreatedBy::User);
-        let pipeline_role = parsed
-            .as_ref()
-            .and_then(project_skill_pipeline_role_from_provenance);
+        let evidence_hash = project_skill_evidence_hash_from_raw(&provenance_raw)?;
+        let parsed = serde_json::from_str::<Value>(&provenance_raw).map_err(|error| {
+            AppError::Database(format!(
+                "invalid project_skills provenance_json during B1 backfill: {error}"
+            ))
+        })?;
+        let created_by = project_skill_authorship_from_provenance(&parsed);
+        let pipeline_role = project_skill_pipeline_role_from_provenance(&parsed);
         conn.execute(
             "UPDATE project_skills
              SET content_hash = ?2,
@@ -194,24 +186,6 @@ fn create_version_table(conn: &Connection) -> AppResult<()> {
     .map_err(db_error)
 }
 
-fn seed_initial_versions(conn: &Connection) -> AppResult<()> {
-    conn.execute_batch(
-        "INSERT OR IGNORE INTO project_skill_versions (
-            project_skill_id, project_id, version, title, bucket, stage, status,
-            pinned, archived, scope_paths_json, compact_guidance, body_markdown,
-            predicted_effect, provenance_json, companion_of_skill_id, content_hash,
-            evidence_hash, created_by, pipeline_role, skill_created_at,
-            skill_updated_at, snapshot_created_at
-         )
-         SELECT id, project_id, version, title, bucket, stage, status,
-                pinned, archived, scope_paths_json, compact_guidance, body_markdown,
-                predicted_effect, provenance_json, companion_of_skill_id, content_hash,
-                evidence_hash, created_by, pipeline_role, created_at, updated_at, updated_at
-         FROM project_skills;",
-    )
-    .map_err(db_error)
-}
-
 fn extend_settings(conn: &Connection) -> AppResult<()> {
     for (column, sql) in [
         (
@@ -220,11 +194,11 @@ fn extend_settings(conn: &Connection) -> AppResult<()> {
         ),
         (
             "auto_inject",
-            "ALTER TABLE project_skill_settings ADD COLUMN auto_inject INTEGER NOT NULL DEFAULT 0 CHECK (auto_inject IN (0, 1))",
+            "ALTER TABLE project_skill_settings ADD COLUMN auto_inject INTEGER NOT NULL DEFAULT 1 CHECK (auto_inject IN (0, 1))",
         ),
         (
             "auto_distill",
-            "ALTER TABLE project_skill_settings ADD COLUMN auto_distill INTEGER NOT NULL DEFAULT 0 CHECK (auto_distill IN (0, 1))",
+            "ALTER TABLE project_skill_settings ADD COLUMN auto_distill INTEGER NOT NULL DEFAULT 1 CHECK (auto_distill IN (0, 1))",
         ),
         (
             "injection_max_skills",

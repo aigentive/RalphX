@@ -36,7 +36,7 @@ fn setup_pre_b1_db() -> Connection {
            ) VALUES (
               'child', 'project-1', 'Imported Rule', 'merge', 'merge', 'retired', 0, 1,
               '[]', 'Check merge.', 'Imported body', 'Avoid merge regressions',
-              '{malformed', 'parent', '2026-06-14T11:00:00+00:00', '2026-06-14T11:01:00+00:00'
+              '{"source":"project_skill_import"}', 'parent', '2026-06-14T11:00:00+00:00', '2026-06-14T11:01:00+00:00'
            );
            INSERT INTO skill_usage_events (
               id, project_id, project_skill_id, injection_kind, created_at
@@ -95,53 +95,30 @@ fn migration_preserves_rows_links_indexes_and_backfills_b1_contract() {
 
     let parent = conn
         .query_row(
-            "SELECT version, content_hash, evidence_hash, created_by, pipeline_role
+            "SELECT content_hash, evidence_hash, created_by, pipeline_role
              FROM project_skills WHERE id = 'parent'",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
-        )
-        .unwrap();
-    assert_eq!(parent.0, 1);
-    assert_eq!(parent.1.len(), 64);
-    assert_eq!(parent.2.len(), 64);
-    assert_eq!(parent.3, "agent");
-    assert_eq!(parent.4.as_deref(), Some("verifier"));
-
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM project_skill_versions", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    let snapshot = conn
-        .query_row(
-            "SELECT title, body_markdown, provenance_json, status, content_hash
-             FROM project_skill_versions WHERE project_skill_id = 'parent' AND version = 1",
             [],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .unwrap();
-    assert_eq!(snapshot.0, " Review Rule ");
-    assert_eq!(snapshot.1, "Body");
-    assert!(snapshot.2.contains("task_outcome"));
-    assert_eq!(snapshot.3, "approved");
-    assert_eq!(snapshot.4, parent.1);
+    assert_eq!(parent.0.len(), 64);
+    assert_eq!(parent.1.len(), 64);
+    assert_eq!(parent.2, "agent");
+    assert_eq!(parent.3.as_deref(), Some("verifier"));
+
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM project_skill_versions", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 
     let settings = conn
         .query_row(
@@ -165,16 +142,18 @@ fn migration_preserves_rows_links_indexes_and_backfills_b1_contract() {
             },
         )
         .unwrap();
-    assert_eq!(settings, (1, 0, 0, 4, 6_000, 400, 5, 0, 1));
+    assert_eq!(settings, (1, 1, 1, 4, 6_000, 400, 5, 0, 1));
 
     conn.execute(
         "INSERT INTO project_skills (
            id, project_id, title, bucket, stage, status, compact_guidance,
-           body_markdown, predicted_effect, provenance_json, version,
+           body_markdown, predicted_effect, provenance_json,
            content_hash, evidence_hash, created_by
          ) VALUES (
            'stale', 'project-1', 'Stale', 'review', 'review', 'stale', 'Guide',
-           'Body', 'Effect', '{}', 1, 'a', 'b', 'user'
+           'Body', 'Effect', '{}',
+           'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+           'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'user'
          )",
         [],
     )
@@ -210,56 +189,38 @@ fn migration_preserves_rows_links_indexes_and_backfills_b1_contract() {
 }
 
 #[test]
-fn migration_is_idempotent_after_commit_without_duplicate_snapshots() {
+fn migration_is_idempotent_after_commit_without_fabricating_snapshots() {
     let conn = setup_pre_b1_db();
     v20260722090527_project_skill_schema_versioning::migrate(&conn).unwrap();
-
-    conn.execute_batch(
-        "UPDATE project_skills
-         SET version = 2, title = 'Updated Rule', content_hash = 'v2-content',
-             evidence_hash = 'v2-evidence', updated_at = '2026-06-14T10:02:00+00:00'
-         WHERE id = 'parent';
-         INSERT INTO project_skill_versions (
-             project_skill_id, project_id, version, title, bucket, stage, status,
-             pinned, archived, scope_paths_json, compact_guidance, body_markdown,
-             predicted_effect, provenance_json, companion_of_skill_id, content_hash,
-             evidence_hash, created_by, pipeline_role, skill_created_at,
-             skill_updated_at, snapshot_created_at
-         )
-         SELECT id, project_id, version, title, bucket, stage, status,
-                pinned, archived, scope_paths_json, compact_guidance, body_markdown,
-                predicted_effect, provenance_json, companion_of_skill_id, content_hash,
-                evidence_hash, created_by, pipeline_role, created_at, updated_at, updated_at
-         FROM project_skills WHERE id = 'parent';",
-    )
-    .unwrap();
 
     v20260722090527_project_skill_schema_versioning::migrate(&conn).unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM project_skill_versions", [], |row| row
             .get::<_, i64>(0))
             .unwrap(),
-        3
+        0
     );
+}
+
+#[test]
+fn migration_rejects_malformed_provenance_without_partial_schema_changes() {
+    let conn = setup_pre_b1_db();
+    conn.execute(
+        "UPDATE project_skills SET provenance_json = '{malformed' WHERE id = 'child'",
+        [],
+    )
+    .unwrap();
+
+    let error = v20260722090527_project_skill_schema_versioning::migrate(&conn)
+        .expect_err("malformed legacy provenance must fail closed");
+    assert!(error.to_string().contains("provenance_json"));
+    assert!(!column_exists(&conn, "project_skills", "content_hash"));
+    assert!(!column_exists(&conn, "project_skill_settings", "enabled"));
     assert_eq!(
-        conn.query_row(
-            "SELECT version, title, content_hash, evidence_hash
-             FROM project_skills WHERE id = 'parent'",
-            [],
-            |row| Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            )),
-        )
-        .unwrap(),
-        (
-            2,
-            "Updated Rule".to_string(),
-            "v2-content".to_string(),
-            "v2-evidence".to_string(),
-        )
+        conn.query_row("SELECT COUNT(*) FROM project_skills", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
     );
 }
 
@@ -276,7 +237,7 @@ fn migration_rolls_back_schema_and_data_and_restores_pragmas_on_failure() {
     let error = v20260722090527_project_skill_schema_versioning::migrate(&conn)
         .expect_err("injected backfill must fail");
     assert!(error.to_string().contains("injected migration failure"));
-    assert!(!column_exists(&conn, "project_skills", "version"));
+    assert!(!column_exists(&conn, "project_skills", "content_hash"));
     assert!(!column_exists(&conn, "project_skill_settings", "enabled"));
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM project_skills", [], |row| row

@@ -11,7 +11,8 @@ use super::{
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
-    SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
+    TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
@@ -80,7 +81,6 @@ fn project_skill(
         predicted_effect: Some(format!("{title} reduces repeated work.")),
         provenance_json: json!({ "source": "sqlite-test" }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
@@ -180,7 +180,6 @@ async fn project_skill_lifecycle_and_usage_round_trip() {
         predicted_effect: Some("Prevents adapter-only learned skill injection.".to_string()),
         provenance_json: json!({ "source": "test" }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
@@ -396,7 +395,7 @@ async fn project_skill_update_content_preserves_provenance_and_scope_filters() {
 }
 
 #[tokio::test]
-async fn project_skill_create_and_content_revision_keep_current_and_snapshots_atomic() {
+async fn project_skill_versions_are_appended_explicitly_and_content_updates_refresh_hashes() {
     let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
     let mut skill = project_skill(
         "Versioned Skill",
@@ -409,30 +408,36 @@ async fn project_skill_create_and_content_revision_keep_current_and_snapshots_at
         "source": "task_outcome",
         "additional": {"pipeline_role": "reviewer"}
     });
+    skill.created_by = ProjectSkillCreatedBy::Agent;
 
     let created = repo.create(skill).await.unwrap();
-    assert_eq!(created.version, 1);
     assert_eq!(created.created_by, ProjectSkillCreatedBy::Agent);
     assert_eq!(created.pipeline_role.as_deref(), Some("reviewer"));
     assert_eq!(created.content_hash.len(), 64);
     assert_eq!(created.evidence_hash.len(), 64);
-    let v1 = repo.list_versions(&created.id).await.unwrap();
-    assert_eq!(v1.len(), 1);
-    assert_eq!(v1[0].version, 1);
-    assert_eq!(v1[0].content_hash, created.content_hash);
-    assert_eq!(v1[0].body_markdown, created.body_markdown);
+    assert!(repo.list_versions(&created.id).await.unwrap().is_empty());
+    let v1 = ProjectSkillVersion::from_skill(&created, 1, created.updated_at);
+    repo.append_version(v1).await.unwrap();
 
     let no_op = repo.update_content(created.clone()).await.unwrap().unwrap();
-    assert_eq!(no_op.version, 1);
+    assert_eq!(no_op.updated_at, created.updated_at);
+    assert_eq!(no_op.content_hash, created.content_hash);
+    assert_eq!(no_op.evidence_hash, created.evidence_hash);
     assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 1);
 
     let mut revision = created.clone();
     revision.body_markdown = "Revised body".to_string();
     revision.provenance_json["revision"] = json!(2);
     let revised = repo.update_content(revision).await.unwrap().unwrap();
-    assert_eq!(revised.version, 2);
     assert_ne!(revised.content_hash, created.content_hash);
     assert_ne!(revised.evidence_hash, created.evidence_hash);
+    repo.append_version(ProjectSkillVersion::from_skill(
+        &revised,
+        2,
+        revised.updated_at,
+    ))
+    .await
+    .unwrap();
     let versions = repo.list_versions(&created.id).await.unwrap();
     assert_eq!(
         versions.iter().map(|row| row.version).collect::<Vec<_>>(),
@@ -441,16 +446,6 @@ async fn project_skill_create_and_content_revision_keep_current_and_snapshots_at
     assert_eq!(versions[1].body_markdown, revised.body_markdown);
     assert_eq!(versions[1].provenance_json, revised.provenance_json);
 
-    let mut stale = created;
-    stale.body_markdown = "Stale overwrite".to_string();
-    let error = repo
-        .update_content(stale)
-        .await
-        .expect_err("expected version 1 must not overwrite version 2");
-    assert!(matches!(error, crate::error::AppError::Conflict(_)));
-    let current = repo.get_by_id(&revised.id).await.unwrap().unwrap();
-    assert_eq!(current.version, 2);
-    assert_eq!(current.body_markdown, "Revised body");
     assert_eq!(repo.list_versions(&revised.id).await.unwrap().len(), 2);
 }
 
@@ -468,15 +463,32 @@ async fn project_skill_versions_cascade_and_malformed_rows_fail_closed() {
         ))
         .await
         .unwrap();
+    repo.append_version(ProjectSkillVersion::from_skill(
+        &created,
+        1,
+        created.updated_at,
+    ))
+    .await
+    .unwrap();
 
     conn.lock()
         .await
         .execute(
-            "UPDATE project_skill_versions SET created_by = 'invalid'
+            "UPDATE project_skill_versions SET content_hash = 'invalid'
              WHERE project_skill_id = ?1 AND version = 1",
             [created.id.as_str()],
         )
-        .expect_err("CHECK constraint must reject malformed authorship");
+        .unwrap();
+    assert!(repo.list_versions(&created.id).await.is_err());
+
+    conn.lock()
+        .await
+        .execute(
+            "UPDATE project_skills SET evidence_hash = 'invalid' WHERE id = ?1",
+            [created.id.as_str()],
+        )
+        .unwrap();
+    assert!(repo.get_by_id(&created.id).await.is_err());
 
     conn.lock()
         .await

@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 use super::ProjectId;
 use crate::error::{AppError, AppResult};
 
+pub const DEFAULT_PROJECT_SKILLS_ENABLED: bool = true;
+pub const DEFAULT_PROJECT_SKILLS_AUTO_INJECT: bool = true;
+pub const DEFAULT_PROJECT_SKILLS_AUTO_DISTILL: bool = true;
+pub const DEFAULT_PROJECT_SKILL_INJECTION_MAX_SKILLS: i64 = 4;
+pub const DEFAULT_PROJECT_SKILL_INJECTION_MAX_CHARS: i64 = 6_000;
+pub const DEFAULT_PROJECT_SKILL_GUIDANCE_MAX_CHARS: i64 = 400;
+pub const DEFAULT_PROJECT_SKILL_REPORT_MIN_OUTCOMES: i64 = 5;
+pub const DEFAULT_PROJECT_SKILL_VERIFICATION_CORPUS_GATE: i64 = 0;
+pub const DEFAULT_PROJECT_SKILL_EXPORT_ENABLED: bool = false;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSkillSettings {
     pub project_id: ProjectId,
@@ -21,15 +31,15 @@ impl ProjectSkillSettings {
     pub fn default_for_project(project_id: ProjectId) -> Self {
         Self {
             project_id,
-            enabled: true,
-            auto_inject: false,
-            auto_distill: false,
-            injection_max_skills: 4,
-            injection_max_chars: 6_000,
-            injection_guidance_max_chars: 400,
-            report_min_outcomes: 5,
-            verification_corpus_gate: 0,
-            export_enabled: false,
+            enabled: DEFAULT_PROJECT_SKILLS_ENABLED,
+            auto_inject: DEFAULT_PROJECT_SKILLS_AUTO_INJECT,
+            auto_distill: DEFAULT_PROJECT_SKILLS_AUTO_DISTILL,
+            injection_max_skills: DEFAULT_PROJECT_SKILL_INJECTION_MAX_SKILLS,
+            injection_max_chars: DEFAULT_PROJECT_SKILL_INJECTION_MAX_CHARS,
+            injection_guidance_max_chars: DEFAULT_PROJECT_SKILL_GUIDANCE_MAX_CHARS,
+            report_min_outcomes: DEFAULT_PROJECT_SKILL_REPORT_MIN_OUTCOMES,
+            verification_corpus_gate: DEFAULT_PROJECT_SKILL_VERIFICATION_CORPUS_GATE,
+            export_enabled: DEFAULT_PROJECT_SKILL_EXPORT_ENABLED,
         }
     }
 

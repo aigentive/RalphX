@@ -70,11 +70,15 @@ pub struct ProjectSkillVersion {
 }
 
 impl ProjectSkillVersion {
-    pub fn from_skill(skill: &ProjectSkill, snapshot_created_at: DateTime<Utc>) -> Self {
+    pub fn from_skill(
+        skill: &ProjectSkill,
+        version: i64,
+        snapshot_created_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             project_skill_id: skill.id.clone(),
             project_id: skill.project_id.clone(),
-            version: skill.version,
+            version,
             title: skill.title.clone(),
             bucket: skill.bucket.clone(),
             stage: skill.stage.clone(),
@@ -96,10 +100,47 @@ impl ProjectSkillVersion {
             snapshot_created_at,
         }
     }
+
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.version <= 0 {
+            return Err(AppError::Validation(
+                "project skill version must be positive".to_string(),
+            ));
+        }
+        validate_project_skill_hash("content_hash", &self.content_hash)?;
+        validate_project_skill_hash("evidence_hash", &self.evidence_hash)?;
+        validate_project_skill_pipeline_role(self.pipeline_role.as_deref())
+    }
+}
+
+pub fn validate_project_skill_hash(field: &str, value: &str) -> Result<(), AppError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(AppError::Validation(format!(
+            "project skill {field} must be 64 lowercase hexadecimal characters"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_project_skill_pipeline_role(value: Option<&str>) -> Result<(), AppError> {
+    if value.is_some_and(|role| role.trim().is_empty() || role != role.trim()) {
+        return Err(AppError::Validation(
+            "project skill pipeline_role must be trimmed and non-empty".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalized_identity(value: &str) -> String {
-    value.trim().to_lowercase()
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn normalized_body(value: &str) -> String {
@@ -151,11 +192,13 @@ pub fn project_skill_evidence_hash(value: &Value) -> String {
     hash_parts("ralphx.project-skill.evidence.v1", &[&canonical])
 }
 
-pub fn project_skill_evidence_hash_from_raw(raw: &str) -> String {
-    match serde_json::from_str::<Value>(raw) {
-        Ok(value) => project_skill_evidence_hash(&value),
-        Err(_) => hash_parts("ralphx.project-skill.evidence.raw.v1", &[raw]),
-    }
+pub fn project_skill_evidence_hash_from_raw(raw: &str) -> Result<String, AppError> {
+    let value = serde_json::from_str::<Value>(raw).map_err(|error| {
+        AppError::Database(format!(
+            "invalid project_skills provenance_json during evidence hash backfill: {error}"
+        ))
+    })?;
+    Ok(project_skill_evidence_hash(&value))
 }
 
 pub fn project_skill_authorship_from_provenance(value: &Value) -> ProjectSkillCreatedBy {
@@ -163,7 +206,11 @@ pub fn project_skill_authorship_from_provenance(value: &Value) -> ProjectSkillCr
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if matches!(
+    if source == "github_pr_history"
+        && value.get("source_ref_kind").and_then(Value::as_str) == Some("pull_request")
+    {
+        ProjectSkillCreatedBy::User
+    } else if matches!(
         source,
         "project_skill_import"
             | "project_snapshot"
@@ -186,8 +233,13 @@ pub fn project_skill_authorship_from_provenance(value: &Value) -> ProjectSkillCr
             | "agent"
     ) {
         ProjectSkillCreatedBy::Agent
-    } else {
+    } else if matches!(
+        source,
+        "memory_to_project_skill_promotion" | "github_pr_manual_stage" | "manual"
+    ) {
         ProjectSkillCreatedBy::User
+    } else {
+        ProjectSkillCreatedBy::Agent
     }
 }
 
@@ -202,7 +254,6 @@ pub fn project_skill_pipeline_role_from_provenance(value: &Value) -> Option<Stri
 }
 
 pub fn prepare_new_project_skill(mut skill: ProjectSkill) -> ProjectSkill {
-    skill.version = 1;
     refresh_project_skill_metadata(&mut skill);
     skill
 }
@@ -215,7 +266,6 @@ pub fn refresh_project_skill_metadata(skill: &mut ProjectSkill) {
         &skill.body_markdown,
     );
     skill.evidence_hash = project_skill_evidence_hash(&skill.provenance_json);
-    skill.created_by = project_skill_authorship_from_provenance(&skill.provenance_json);
     skill.pipeline_role = project_skill_pipeline_role_from_provenance(&skill.provenance_json);
 }
 

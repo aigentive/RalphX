@@ -59,7 +59,6 @@ function stagedSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {
     sourceRoot: null,
     sourceSyncEnabled: false,
     companionOfSkillId: null,
-    version: 1,
     contentHash: "content-hash",
     evidenceHash: "evidence-hash",
     createdBy: "agent",
@@ -583,7 +582,6 @@ describe("ProjectSkillsCuratorPanel", () => {
       expect(mockedProjectSkillsApi.update).toHaveBeenCalledWith(
         expect.objectContaining({
           projectSkillId: "skill-1",
-          expectedVersion: 1,
           title: "Check branch before export",
           bucket: "execution",
           stage: "merge",

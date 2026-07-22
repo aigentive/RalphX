@@ -39,7 +39,6 @@ fn staged_skill(project_id: ProjectId) -> ProjectSkill {
         predicted_effect: Some("Reduces repeated review changes.".to_string()),
         provenance_json: serde_json::json!({ "test": true }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
@@ -731,7 +730,6 @@ async fn update_project_skill_handler_updates_reviewable_fields() {
         ProjectScope(Some(vec![project_id.clone()])),
         Json(UpdateProjectSkillRequest {
             project_skill_id: skill_id.as_str().to_string(),
-            expected_version: 1,
             title: "Check branch before skill export".to_string(),
             bucket: "execution".to_string(),
             stage: "execution".to_string(),
@@ -755,34 +753,6 @@ async fn update_project_skill_handler_updates_reviewable_fields() {
         response.predicted_effect.as_deref(),
         Some("Prevents exporting from protected branches.")
     );
-
-    let error = update_project_skill(
-        State(test_state(Arc::clone(&app_state))),
-        ProjectScope(Some(vec![project_id])),
-        Json(UpdateProjectSkillRequest {
-            project_skill_id: skill_id.as_str().to_string(),
-            expected_version: 1,
-            title: "Stale overwrite".to_string(),
-            bucket: "execution".to_string(),
-            stage: "execution".to_string(),
-            scope_paths: Vec::new(),
-            compact_guidance: "Must not persist.".to_string(),
-            body_markdown: "Must not persist.".to_string(),
-            predicted_effect: "Must not persist.".to_string(),
-            source_sync_enabled: None,
-        }),
-    )
-    .await
-    .expect_err("stale expected version must be rejected");
-    assert_eq!(error.status, StatusCode::CONFLICT);
-    let stored = app_state
-        .project_skill_repo
-        .get_by_id(&skill_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(stored.version, 2);
-    assert_eq!(stored.title, "Check branch before skill export");
 }
 
 #[tokio::test]

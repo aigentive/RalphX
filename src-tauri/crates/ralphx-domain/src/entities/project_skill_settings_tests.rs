@@ -6,8 +6,8 @@ fn project_skill_settings_defaults_match_b1_contract() {
     let settings =
         ProjectSkillSettings::default_for_project(ProjectId::from_string("project-1".to_string()));
     assert!(settings.enabled);
-    assert!(!settings.auto_inject);
-    assert!(!settings.auto_distill);
+    assert!(settings.auto_inject);
+    assert!(settings.auto_distill);
     assert_eq!(settings.injection_max_skills, 4);
     assert_eq!(settings.injection_max_chars, 6_000);
     assert_eq!(settings.injection_guidance_max_chars, 400);

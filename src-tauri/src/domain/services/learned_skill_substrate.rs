@@ -99,7 +99,6 @@ pub struct StageProjectSkillFromOutcomeInput {
 
 pub struct UpdateProjectSkillContentInput {
     pub project_skill_id: ProjectSkillId,
-    pub expected_version: i64,
     pub title: String,
     pub bucket: String,
     pub stage: String,
@@ -198,7 +197,6 @@ impl ProjectSkillService {
                 "additional": input.additional_provenance,
             }),
             companion_of_skill_id,
-            version: 1,
             content_hash: String::new(),
             evidence_hash: String::new(),
             created_by: crate::domain::entities::ProjectSkillCreatedBy::Agent,
@@ -246,7 +244,6 @@ impl ProjectSkillService {
                 "archived or retired project skills cannot be edited".to_string(),
             ));
         }
-        skill.version = input.expected_version;
         skill.title = input.title;
         skill.bucket = input.bucket;
         skill.stage = input.stage;
@@ -528,7 +525,6 @@ impl ProjectSkillDistillerService {
                 .skill_service
                 .update_skill_content(UpdateProjectSkillContentInput {
                     project_skill_id: staged.id.clone(),
-                    expected_version: staged.version,
                     title: staged.title.clone(),
                     bucket: staged.bucket.clone(),
                     stage: staged.stage.clone(),
@@ -959,7 +955,6 @@ impl ProjectSkillImportPreviewService {
                     "source_snapshot": candidate.source_snapshot_json,
                 }),
                 companion_of_skill_id: None,
-                version: 1,
                 content_hash: String::new(),
                 evidence_hash: String::new(),
                 created_by: crate::domain::entities::ProjectSkillCreatedBy::Imported,
@@ -1024,7 +1019,6 @@ impl MemoryToProjectSkillPromotionService {
                 "source_conversation_id": memory.source_conversation_id,
             }),
             companion_of_skill_id: None,
-            version: 1,
             content_hash: String::new(),
             evidence_hash: String::new(),
             created_by: crate::domain::entities::ProjectSkillCreatedBy::User,

@@ -73,7 +73,6 @@ fn approved_skill(project_id: ProjectId, title: &str) -> ProjectSkill {
         predicted_effect: Some("Reduces repeated review changes.".to_string()),
         provenance_json: json!({ "test": true }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,

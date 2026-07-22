@@ -1025,7 +1025,6 @@ function ProjectSkillEditDialog({
               onClick={() => {
                 onUpdate({
                   projectSkillId: skill.id,
-                  expectedVersion: skill.version,
                   title: title.trim(),
                   bucket,
                   stage,

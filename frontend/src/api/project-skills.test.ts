@@ -28,9 +28,8 @@ function projectSkill(overrides: Record<string, unknown> = {}) {
     predicted_effect: "Prevents repeated validation loops.",
     provenance_json: { outcome_id: "outcome-1" },
     companion_of_skill_id: null,
-    version: 1,
-    content_hash: "content-hash",
-    evidence_hash: "evidence-hash",
+    content_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    evidence_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     created_by: "agent",
     pipeline_role: "reviewer",
     created_at: "2026-06-14T10:00:00Z",
@@ -104,9 +103,8 @@ describe("projectSkillsApi", () => {
         sourceRoot: null,
         sourceSyncEnabled: false,
         companionOfSkillId: null,
-        version: 1,
-        contentHash: "content-hash",
-        evidenceHash: "evidence-hash",
+        contentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        evidenceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         createdBy: "agent",
         pipelineRole: "reviewer",
         createdAt: "2026-06-14T10:00:00Z",
@@ -168,9 +166,8 @@ describe("projectSkillsApi", () => {
     expect(skills[0]).toEqual(
       expect.objectContaining({
         status: "stale",
-        version: 1,
-        contentHash: "content-hash",
-        evidenceHash: "evidence-hash",
+        contentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        evidenceHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         createdBy: "agent",
         pipelineRole: "reviewer",
       }),
@@ -181,6 +178,16 @@ describe("projectSkillsApi", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         skills: [projectSkill({ created_by: "system" })],
+        count: 1,
+      }),
+    );
+    await expect(
+      projectSkillsApi.list({ projectId: "project-1" }),
+    ).rejects.toThrow();
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        skills: [projectSkill({ content_hash: "NOT-A-HASH" })],
         count: 1,
       }),
     );
@@ -470,7 +477,6 @@ describe("projectSkillsApi", () => {
     await expect(
       projectSkillsApi.update({
         projectSkillId: "skill-1",
-        expectedVersion: 1,
         title: "Updated skill",
         bucket: "review",
         stage: "review",
@@ -489,7 +495,6 @@ describe("projectSkillsApi", () => {
       expect.objectContaining({
         body: JSON.stringify({
           project_skill_id: "skill-1",
-          expected_version: 1,
           title: "Updated skill",
           bucket: "review",
           stage: "review",

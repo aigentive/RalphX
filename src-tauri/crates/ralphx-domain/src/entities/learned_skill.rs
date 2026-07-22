@@ -199,7 +199,6 @@ pub struct ProjectSkill {
     pub predicted_effect: Option<String>,
     pub provenance_json: Value,
     pub companion_of_skill_id: Option<ProjectSkillId>,
-    pub version: i64,
     pub content_hash: String,
     pub evidence_hash: String,
     pub created_by: super::project_skill_versioning::ProjectSkillCreatedBy,

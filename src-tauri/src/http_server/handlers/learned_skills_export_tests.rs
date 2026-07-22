@@ -36,7 +36,6 @@ fn approved_skill(project_id: ProjectId) -> ProjectSkill {
         predicted_effect: Some("Reduces repeated review changes.".to_string()),
         provenance_json: serde_json::json!({ "test": true }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
@@ -104,6 +103,8 @@ async fn project_skill_settings_default_to_export_disabled() {
     .0;
 
     assert!(response.enabled);
+    assert!(response.auto_inject);
+    assert!(response.auto_distill);
     assert_eq!(response.injection_max_skills, 4);
     assert!(!response.export_enabled);
 }

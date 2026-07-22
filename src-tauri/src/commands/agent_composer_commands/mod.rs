@@ -4,6 +4,8 @@ mod plan_references_tests;
 pub mod project_entries;
 mod root;
 pub mod skills;
+#[cfg(test)]
+mod skills_tests;
 mod types;
 
 pub use plan_references::search_agent_composer_plan_references;

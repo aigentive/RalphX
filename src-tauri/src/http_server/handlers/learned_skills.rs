@@ -424,7 +424,6 @@ pub async fn update_project_skill(
     let updated = service
         .update_skill_content(UpdateProjectSkillContentInput {
             project_skill_id: skill_id,
-            expected_version: req.expected_version,
             title: req.title,
             bucket: req.bucket,
             stage: req.stage,
@@ -748,10 +747,9 @@ pub async fn stage_project_skill_from_pull_request(
             "evidence": fields.evidence,
         }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
-        created_by: crate::domain::entities::ProjectSkillCreatedBy::Agent,
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
         pipeline_role: None,
         created_at: now,
         updated_at: now,
@@ -2013,7 +2011,6 @@ pub(super) async fn sync_source_tracked_project_skills(
         if service
             .update_skill_content(UpdateProjectSkillContentInput {
                 project_skill_id: existing.id.clone(),
-                expected_version: existing.version,
                 title: candidate.title.clone(),
                 bucket: candidate.bucket.clone(),
                 stage: candidate.stage.clone(),

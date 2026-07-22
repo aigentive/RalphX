@@ -128,7 +128,6 @@ impl MemoryProjectSkillRepository {
 impl ProjectSkillRepository for MemoryProjectSkillRepository {
     async fn create(&self, skill: ProjectSkill) -> AppResult<ProjectSkill> {
         let skill = prepare_new_project_skill(skill);
-        let snapshot = ProjectSkillVersion::from_skill(&skill, skill.updated_at);
         let mut state = self.state.write().unwrap();
         if state.rows.iter().any(|row| row.id == skill.id) {
             return Err(crate::error::AppError::Conflict(format!(
@@ -137,7 +136,6 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
             )));
         }
         state.rows.push(skill.clone());
-        state.versions.push(snapshot);
         Ok(skill)
     }
 
@@ -208,12 +206,6 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
             return Ok(None);
         };
         let row = &state.rows[index];
-        if row.version != skill.version {
-            return Err(crate::error::AppError::Conflict(format!(
-                "project skill expected version {} but current version is {}",
-                skill.version, row.version
-            )));
-        }
         if project_skill_content_matches(row, &skill) {
             return Ok(Some(row.clone()));
         }
@@ -226,14 +218,39 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         row.body_markdown = skill.body_markdown;
         row.predicted_effect = skill.predicted_effect;
         row.provenance_json = skill.provenance_json;
-        row.version += 1;
         row.updated_at = Utc::now();
         refresh_project_skill_metadata(row);
-        let saved = row.clone();
-        state
-            .versions
-            .push(ProjectSkillVersion::from_skill(&saved, saved.updated_at));
-        Ok(Some(saved))
+        Ok(Some(row.clone()))
+    }
+
+    async fn append_version(&self, version: ProjectSkillVersion) -> AppResult<ProjectSkillVersion> {
+        version.validate()?;
+        let mut state = self.state.write().unwrap();
+        let skill = state
+            .rows
+            .iter()
+            .find(|row| row.id == version.project_skill_id)
+            .ok_or_else(|| {
+                crate::error::AppError::NotFound(format!(
+                    "project skill {} was not found",
+                    version.project_skill_id.as_str()
+                ))
+            })?;
+        if skill.project_id != version.project_id {
+            return Err(crate::error::AppError::Validation(
+                "project skill version project does not match its skill".to_string(),
+            ));
+        }
+        if state.versions.iter().any(|row| {
+            row.project_skill_id == version.project_skill_id && row.version == version.version
+        }) {
+            return Err(crate::error::AppError::Conflict(format!(
+                "project skill version {} already exists",
+                version.version
+            )));
+        }
+        state.versions.push(version.clone());
+        Ok(version)
     }
 
     async fn list_versions(&self, id: &ProjectSkillId) -> AppResult<Vec<ProjectSkillVersion>> {

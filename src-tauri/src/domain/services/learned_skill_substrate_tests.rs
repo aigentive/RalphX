@@ -23,7 +23,7 @@ use crate::domain::services::learned_skill_substrate::{
     ProjectSkillService, PromoteMemoryToProjectSkillInput, SkillUsageService,
     StageProjectSkillFromOutcomeInput, UpdateProjectSkillContentInput,
 };
-use crate::infrastructure::memory::{
+use crate::testing::{
     InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
     MemoryTaskOutcomeRepository,
 };
@@ -46,7 +46,6 @@ fn staged_skill(project_id: ProjectId) -> ProjectSkill {
         predicted_effect: Some("Avoids adapter-only injection.".to_string()),
         provenance_json: json!({ "test": true }),
         companion_of_skill_id: None,
-        version: 1,
         content_hash: String::new(),
         evidence_hash: String::new(),
         created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
@@ -192,7 +191,6 @@ async fn project_skill_service_rejects_unknown_category_on_update() {
     let error = service
         .update_skill_content(UpdateProjectSkillContentInput {
             project_skill_id: skill.id,
-            expected_version: skill.version,
             title: "Updated skill".to_string(),
             bucket: "execution".to_string(),
             stage: "unsupported_stage".to_string(),
@@ -468,6 +466,10 @@ async fn project_skill_import_apply_stages_only_eligible_rows_with_snapshot_prov
     let imported = &result.imported_skills[0];
     assert_eq!(imported.status, ProjectSkillLifecycleStatus::Staged);
     assert_eq!(
+        imported.created_by,
+        crate::domain::entities::ProjectSkillCreatedBy::Imported
+    );
+    assert_eq!(
         imported
             .provenance_json
             .get("source")
@@ -561,6 +563,10 @@ async fn memory_to_project_skill_promotion_stages_skill_with_memory_provenance()
         .unwrap();
 
     assert_eq!(result.skill.status, ProjectSkillLifecycleStatus::Staged);
+    assert_eq!(
+        result.skill.created_by,
+        crate::domain::entities::ProjectSkillCreatedBy::User
+    );
     assert_eq!(result.skill.scope_paths, vec!["src-tauri".to_string()]);
     assert_eq!(
         result
@@ -763,6 +769,10 @@ async fn project_skill_distillation_stages_skill_with_outcome_provenance() {
 
     assert_eq!(staged.project_id, project_id);
     assert_eq!(staged.status, ProjectSkillLifecycleStatus::Staged);
+    assert_eq!(
+        staged.created_by,
+        crate::domain::entities::ProjectSkillCreatedBy::Agent
+    );
     assert_eq!(
         staged.predicted_effect.as_deref(),
         Some("Prevents repeated failed merge validation loops.")
