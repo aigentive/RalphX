@@ -2387,6 +2387,11 @@ async fn workspace_publish_fixable_failure_is_routed_by_backend() {
     let state = AppState::new_test();
     let service = MockChatService::new();
     let workspace = test_agent_workspace();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
 
     mark_agent_workspace_publish_failure(
         &state,
@@ -2408,6 +2413,11 @@ async fn workspace_publish_repair_defers_to_role_runtime_but_starts_fresh_sessio
     let state = AppState::new_test();
     let service = MockChatService::new();
     let workspace = test_agent_workspace();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
 
     let mut conversation = ChatConversation::new_project(workspace.project_id.clone());
     conversation.id = workspace.conversation_id;
