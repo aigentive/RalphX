@@ -4745,6 +4745,16 @@ async fn mark_workspace_review_blocked_pauses_owning_automation() {
         .await
         .expect("context should load");
     let target = context.target.expect("target should exist");
+    let mut monitor =
+        AgentWorkspaceReviewMonitor::new(workspace.conversation_id.clone(), project.id.clone());
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.last_run_id = Some("helper-1".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
 
     mark_workspace_review_blocked(
         &state,
