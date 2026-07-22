@@ -471,7 +471,7 @@ fn rejects_agent_workspace_repair_when_head_does_not_match_reported_repair_commi
 
     let error = verify_agent_workspace_repair_completion(check)
         .expect_err("reported repair commit must be current HEAD");
-    assert!(error.contains("repair_commit_sha"));
+    assert!(error.contains("reported fix commit"));
 }
 
 #[test]
