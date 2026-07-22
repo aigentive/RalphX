@@ -817,7 +817,7 @@ async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
         .unwrap()
         .expect("workspace should still exist");
     assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
-    assert_eq!(updated.publication_pr_status.as_deref(), Some("open"));
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("failed"));
     assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
     let events = workspace_repo
         .list_publication_events(&conversation_id)
