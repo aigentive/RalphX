@@ -64,3 +64,14 @@ fn global_router_path_uses_explicit_ralphx_config_root() {
         PathBuf::from("/tmp/user-config/.ralphx/router.yaml")
     );
 }
+
+#[test]
+fn global_mcp_policy_path_uses_explicit_ralphx_config_root() {
+    let paths =
+        AppPaths::new_with_config_dir("/tmp/ralphx-app-data", None, "/tmp/user-config/.ralphx");
+
+    assert_eq!(
+        paths.global_mcp_policy_path(),
+        PathBuf::from("/tmp/user-config/.ralphx/mcp.yaml")
+    );
+}

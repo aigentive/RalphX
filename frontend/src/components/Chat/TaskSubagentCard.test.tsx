@@ -87,6 +87,47 @@ describe("TaskSubagentCard", () => {
     expect(screen.queryByText("delegated")).not.toBeInTheDocument();
   });
 
+  it("keeps a user-expanded delegate open through terminal settlement and shows runtime details", async () => {
+    const user = userEvent.setup();
+    const running = makeStreamingTask({
+      toolUseId: "call-delegate-stable",
+      toolName: "delegate_start",
+      description: "Inspect runtime metadata",
+      subagentType: "delegated",
+      status: "running",
+      providerHarness: "codex",
+      upstreamProvider: "openai",
+      providerProfile: "production",
+      logicalModel: "gpt-5.4",
+      effectiveModelId: "gpt-5.4-2026-07-01",
+      logicalEffort: "high",
+      effectiveEffort: "high",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    const { rerender } = render(<TaskSubagentCard task={running} />);
+
+    await user.click(screen.getByRole("button", { name: /inspect runtime metadata/i }));
+    expect(screen.getByTestId("delegate-runtime-details")).toHaveTextContent(
+      "gpt-5.4-2026-07-01",
+    );
+    expect(screen.getByTestId("delegate-runtime-details")).toHaveTextContent(
+      "danger-full-access",
+    );
+
+    rerender(
+      <TaskSubagentCard
+        task={{ ...running, status: "completed", completedAt: Date.now() }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /click to collapse/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("delegate-runtime-details")).toBeInTheDocument();
+  });
+
   it("shows collapsed completed summary metrics", () => {
     render(<TaskSubagentCard task={makeStreamingTask()} />);
 

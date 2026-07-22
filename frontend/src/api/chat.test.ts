@@ -528,12 +528,14 @@ describe("chat api", () => {
     });
   });
 
-  it("accepts persona_builder mode and threads nullable persona_id to personaId", async () => {
+  it("accepts persona_builder mode and transforms its persona bindings", async () => {
     mockInvoke.mockResolvedValue([
       {
         ...planSeedConversationResponse(),
         agent_mode: "persona_builder",
         persona_id: null,
+        builder_draft_id: "draft-1",
+        builder_result_persona_id: "persona-1",
       },
     ]);
 
@@ -542,6 +544,8 @@ describe("chat api", () => {
     expect(result[0]).toMatchObject({
       agentMode: "persona_builder",
       personaId: null,
+      builderDraftId: "draft-1",
+      builderResultPersonaId: "persona-1",
     });
   });
 
@@ -1376,6 +1380,51 @@ describe("chat api", () => {
     });
   });
 
+  it("creates a self-keyed standalone conversation without sending contextId", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-1",
+      context_type: "standalone",
+      context_id: "standalone-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone" },
+    });
+  });
+
+  it("creates a persona builder with its mode persisted before setup", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "standalone-builder-1",
+      context_type: "standalone",
+      context_id: "standalone-builder-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      agent_mode: "persona_builder",
+      title: null,
+      message_count: 0,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:00:00Z",
+    });
+
+    await createConversation("standalone", null, undefined, "persona_builder");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_agent_conversation", {
+      input: { contextType: "standalone", mode: "persona_builder" },
+    });
+  });
+
   it("updates conversation title", async () => {
     mockInvoke.mockResolvedValue({
       id: "c-title",
@@ -1407,18 +1456,26 @@ describe("chat api", () => {
 
   it("archives conversation", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Old agent",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Old agent",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     const result = await archiveConversation("c-archive", { closePullRequest: false });
@@ -1427,23 +1484,32 @@ describe("chat api", () => {
       conversationId: "c-archive",
       closePullRequest: false,
     });
-    expect(result.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.conversation.archivedAt).toBe("2026-01-24T10:01:00Z");
+    expect(result.cleanup.localCleanup).toBe("cleaned");
   });
 
   it("passes explicit PR closure intent when archiving", async () => {
     mockInvoke.mockResolvedValue({
-      id: "c-archive-close-pr",
-      context_type: "project",
-      context_id: "p1",
-      claude_session_id: null,
-      provider_session_id: null,
-      provider_harness: null,
-      title: "Close PR",
-      message_count: 1,
-      last_message_at: null,
-      created_at: "2026-01-24T10:00:00Z",
-      updated_at: "2026-01-24T10:01:00Z",
-      archived_at: "2026-01-24T10:01:00Z",
+      conversation: {
+        id: "c-archive-close-pr",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        title: "Close PR",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        archived_at: "2026-01-24T10:01:00Z",
+      },
+      cleanup: {
+        runtime_shutdown_succeeded: true,
+        cleanup_claim: "claimed",
+        local_cleanup: "cleaned",
+        message: null,
+      },
     });
 
     await archiveConversation("c-archive-close-pr", { closePullRequest: true });
@@ -3304,8 +3370,9 @@ describe("getConversationActiveState", () => {
   });
 
   it("fetches conversation active state with stats fields", async () => {
-    const mockResponse: ConversationActiveStateResponse = {
+    const mockResponse = {
       is_active: true,
+      run_id: "run-parent-123",
       tool_calls: [],
       streaming_tasks: [
         {
@@ -3353,6 +3420,7 @@ describe("getConversationActiveState", () => {
       backendApiUrl("conversations/conv-123/active-state"),
     );
     expect(result.is_active).toBe(true);
+    expect(result.runId).toBe("run-parent-123");
     expect(result.streaming_tasks).toHaveLength(1);
     const task = result.streaming_tasks[0];
     expect(task.tool_use_id).toBe("toolu_abc123");
@@ -3424,6 +3492,7 @@ describe("getConversationActiveState", () => {
           pr_number: 411,
           pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
           current_head_sha: "abcdef1234567890",
+          pending_action_head_status: "current",
           health: { merge_state_status: "Blocked" },
           review_feedback: null,
           monitor: rawMonitor(),
@@ -3450,6 +3519,7 @@ describe("getConversationActiveState", () => {
     expect(result.monitor?.lastReviewRunId).toBe("run-1");
     expect(result.monitor?.reviewArtifactHeadSha).toBe("abcdef1234567890");
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
+    expect(result.pendingActionHeadStatus).toBe("current");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
   });
@@ -3464,6 +3534,10 @@ describe("getConversationActiveState", () => {
           events: [],
           target: rawWorkspaceReviewTarget(),
           monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: true,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
           is_current: true,
           is_outdated: false,
           should_show_tab: true,
@@ -3483,6 +3557,44 @@ describe("getConversationActiveState", () => {
     expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);
+    expect(result.reviewArtifactIsCurrent).toBe(true);
+    expect(result.reviewArtifactIsOutdated).toBe(false);
+    expect(result.canMutateReviewState).toBe(false);
+    expect(result.reviewRuntimeState).toBe("missing_runtime_identity");
+  });
+
+  it("forwards cancellation and full-target refresh options for workspace review context", async () => {
+    const controller = new AbortController();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [],
+          target: rawWorkspaceReviewTarget(),
+          monitor: rawWorkspaceReviewMonitor(),
+          review_artifact_is_current: false,
+          review_artifact_is_outdated: false,
+          can_mutate_review_state: false,
+          review_runtime_state: "missing_runtime_identity",
+          is_current: false,
+          is_outdated: false,
+          should_show_tab: true,
+        }),
+    });
+
+    await getAgentWorkspaceReviewContext("conversation/1", {
+      signal: controller.signal,
+      refreshTarget: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-context?refresh_target=true",
+      ),
+      { signal: controller.signal },
+    );
   });
 
   it("starts a general workspace review run through the encoded REST endpoint", async () => {
@@ -3541,6 +3653,7 @@ describe("getConversationActiveState", () => {
       expect.objectContaining({
         name: "AgentWorkspaceHttpError",
         status: 409,
+        detail: "workspace Review target or GitHub auto-merge state changed",
       }),
     );
   });
@@ -3959,6 +4072,32 @@ describe("getConversationActiveState", () => {
 });
 
 describe("startAgentConversationInvokeInput", () => {
+  it("omits projectId for standalone chat starts", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "hello",
+        conversationId: "standalone-1",
+        mode: "chat",
+      }),
+    ).toEqual({
+      content: "hello",
+      conversationId: "standalone-1",
+      mode: "chat",
+    });
+  });
+  it("maps persona-builder refine provenance without inventing a standalone project", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        content: "Refine this voice",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+      }),
+    ).toEqual({
+      content: "Refine this voice",
+      mode: "persona_builder",
+      sourcePersonaId: "persona-reviewer",
+    });
+  });
   it("includes only projectId and content when all optional fields are absent", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",

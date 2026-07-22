@@ -479,9 +479,15 @@ mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
 #[cfg(test)]
 mod v20260716154318_manual_role_defaults_tests;
+mod v20260716170840_persona_project_scope;
+#[cfg(test)]
+mod v20260716170840_persona_project_scope_tests;
 mod v20260716202015_workspace_review_bypass_and_bound_agent;
 #[cfg(test)]
 mod v20260716202015_workspace_review_bypass_and_bound_agent_tests;
+mod v20260716204027_conversation_folder_references;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
@@ -491,12 +497,33 @@ mod v20260716214835_clickup_strict_git_naming_settings_tests;
 mod v20260716224726_ticket_canonical_branch_strict_policy;
 #[cfg(test)]
 mod v20260716224726_ticket_canonical_branch_strict_policy_tests;
+mod v20260717152713_persona_builder_result_binding;
+#[cfg(test)]
+mod v20260717152713_persona_builder_result_binding_tests;
+mod v20260717152714_persona_artifact_history;
+#[cfg(test)]
+mod v20260717152714_persona_artifact_history_tests;
 mod v20260717235338_github_cli_token_environment_setting;
 #[cfg(test)]
 mod v20260717235338_github_cli_token_environment_setting_tests;
+mod v20260718014631_mcp_policy_overrides;
+#[cfg(test)]
+mod v20260718014631_mcp_policy_overrides_tests;
 mod v20260718162852_clear_detected_validation_commands;
 #[cfg(test)]
 mod v20260718162852_clear_detected_validation_commands_tests;
+mod v20260718182035_add_tasks_enabled_setting;
+#[cfg(test)]
+mod v20260718182035_add_tasks_enabled_setting_tests;
+mod v20260720102513_add_tasks_feature_state;
+#[cfg(test)]
+mod v20260720102513_add_tasks_feature_state_tests;
+mod v20260720131416_review_pr_disable_pr_automation;
+#[cfg(test)]
+mod v20260720131416_review_pr_disable_pr_automation_tests;
+mod v20260720200633_auto_verify_draft_plans;
+#[cfg(test)]
+mod v20260720200633_auto_verify_draft_plans_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -591,7 +618,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260718162852;
+pub const SCHEMA_VERSION: i64 = 20260720200633;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1602,9 +1629,19 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260716154318_manual_role_defaults::migrate,
     },
     Migration {
+        version: 20260716170840,
+        name: "persona_project_scope",
+        migrate: v20260716170840_persona_project_scope::migrate,
+    },
+    Migration {
         version: 20260716202015,
         name: "workspace_review_bypass_and_bound_agent",
         migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
+    },
+    Migration {
+        version: 20260716204027,
+        name: "conversation_folder_references",
+        migrate: v20260716204027_conversation_folder_references::migrate,
     },
     Migration {
         version: 20260716210000,
@@ -1622,14 +1659,49 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260716224726_ticket_canonical_branch_strict_policy::migrate,
     },
     Migration {
+        version: 20260717152713,
+        name: "persona_builder_result_binding",
+        migrate: v20260717152713_persona_builder_result_binding::migrate,
+    },
+    Migration {
+        version: 20260717152714,
+        name: "persona_artifact_history",
+        migrate: v20260717152714_persona_artifact_history::migrate,
+    },
+    Migration {
         version: 20260717235338,
         name: "github_cli_token_environment_setting",
         migrate: v20260717235338_github_cli_token_environment_setting::migrate,
     },
     Migration {
+        version: 20260718014631,
+        name: "mcp_policy_overrides",
+        migrate: v20260718014631_mcp_policy_overrides::migrate,
+    },
+    Migration {
         version: 20260718162852,
         name: "clear_detected_validation_commands",
         migrate: v20260718162852_clear_detected_validation_commands::migrate,
+    },
+    Migration {
+        version: 20260718182035,
+        name: "add_tasks_enabled_setting",
+        migrate: v20260718182035_add_tasks_enabled_setting::migrate,
+    },
+    Migration {
+        version: 20260720102513,
+        name: "add_tasks_feature_state",
+        migrate: v20260720102513_add_tasks_feature_state::migrate,
+    },
+    Migration {
+        version: 20260720131416,
+        name: "review_pr_disable_pr_automation",
+        migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
+    },
+    Migration {
+        version: 20260720200633,
+        name: "auto_verify_draft_plans",
+        migrate: v20260720200633_auto_verify_draft_plans::migrate,
     },
 ];
 

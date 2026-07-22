@@ -82,6 +82,13 @@ describe("parseComposerReferencesFromMetadata", () => {
 
   it("serializes selected composer references for optimistic messages", () => {
     const metadata = serializeComposerReferencesMetadata({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -118,6 +125,13 @@ describe("parseComposerReferencesFromMetadata", () => {
 
     expect(metadata).toBeTruthy();
     expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      folderReferences: [
+        {
+          id: "folder-1",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       projectReferences: [{ path: "src/main.ts", kind: "file" }],
       integrationReferences: [
         {
@@ -214,9 +228,64 @@ describe("parseComposerReferencesFromMetadata", () => {
       },
     });
   });
+
+  it("round-trips generic artifact excerpts independently from whole-source references", () => {
+    const metadata = serializeComposerReferencesMetadata({
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+
+    expect(parseComposerReferencesFromMetadata(JSON.parse(metadata ?? "{}"))).toEqual({
+      projectReferences: [],
+      integrationReferences: [],
+      artifactReferences: [],
+      excerptReferences: [
+        {
+          sourceKind: "workspace_diff",
+          sourceId: "conversation-1",
+          sourceLabel: "Diff",
+          title: "Workspace changes",
+          excerpt: "const answer = 42;",
+          filePath: "src/app.ts",
+          revision: "abc123",
+        },
+      ],
+    });
+  });
 });
 
 describe("MessageReferences", () => {
+  it("renders an immutable folder snapshot with its full path", () => {
+    render(
+      <MessageReferences
+        folderReferences={[
+          {
+            id: "folder-1",
+            folderPath: "/work/brand-kit",
+            displayName: "brand-kit",
+          },
+        ]}
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const chip = screen.getByTestId("message-reference-folder:folder-1");
+    expect(chip).toHaveTextContent("Folder");
+    expect(chip).toHaveTextContent("brand-kit");
+    expect(chip).toHaveTextContent("/work/brand-kit");
+  });
+
   it("renders a compact frozen selection and views its saved content without fetching", () => {
     render(
       <MessageReferences
@@ -405,6 +474,43 @@ describe("MessageReferences", () => {
     // Even though a url is present, the ticket chip prefers the button branch.
     expect(chip.tagName).toBe("BUTTON");
     expect(chip.getAttribute("type")).toBe("button");
+  });
+
+  it("renders distinct same-text excerpts from one source as separate chips", () => {
+    // Regression: keying excerpt chips only by sourceKind:sourceId:excerpt let
+    // two references with identical text but different revision/version/locator
+    // collide in React rendering, hiding one chip after reload.
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[]}
+        excerptReferences={[
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "abc123",
+          },
+          {
+            sourceKind: "workspace_diff",
+            sourceId: "conversation-1",
+            sourceLabel: "Diff",
+            excerpt: "const answer = 42;",
+            filePath: "src/app.ts",
+            revision: "def456",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getAllByTestId(
+        "message-reference-excerpt:workspace_diff:conversation-1",
+      ),
+    ).toHaveLength(2);
   });
 
   it("renders non-ticket integrations (confluence) as links without onOpenTicket", () => {

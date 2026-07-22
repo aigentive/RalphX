@@ -1,17 +1,44 @@
 use ralphx_domain::personas::validation::compose_persona_content;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::personas::{
-    draft_applied_payload, draft_updated_payload, PersonaService, SavePersonaDraftInput,
+    draft_applied_payload, draft_updated_payload, PersonaService, PersonaUsage,
+    SavePersonaDraftInput,
 };
 use crate::application::AppState;
-use crate::domain::entities::{Persona, PersonaId};
-use crate::infrastructure::agents::claude::agent_personas_enabled;
+use crate::domain::entities::{
+    ChatConversationId, Persona, PersonaId, PersonaScopeFilter, ProjectId,
+};
+use crate::infrastructure::agents::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListPersonasInput {}
+pub struct ListPersonasInput {
+    #[serde(default)]
+    pub scope: Option<PersonaScopeInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PersonaScopeInput {
+    All,
+    GlobalOnly,
+    GlobalAndProject {
+        #[serde(rename = "projectId")]
+        project_id: String,
+    },
+}
+
+fn scope_filter(scope: Option<PersonaScopeInput>) -> PersonaScopeFilter {
+    match scope {
+        None | Some(PersonaScopeInput::All) => PersonaScopeFilter::All,
+        Some(PersonaScopeInput::GlobalOnly) => PersonaScopeFilter::GlobalOnly,
+        Some(PersonaScopeInput::GlobalAndProject { project_id }) => {
+            PersonaScopeFilter::GlobalAndProject(ProjectId::from_string(project_id))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +57,8 @@ pub struct ApprovePersonaAsNewInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePersonaDraftInput {
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub slug: String,
     pub content: Option<String>,
     #[serde(default)]
@@ -51,6 +80,15 @@ pub struct UpdatePersonaInput {
     pub body: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaDraftInput {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub expected_content_hash: Option<String>,
+}
+
 #[tauri::command]
 pub async fn list_personas(
     input: ListPersonasInput,
@@ -61,12 +99,12 @@ pub async fn list_personas(
 
 #[doc(hidden)]
 pub async fn list_personas_for_state(
-    _input: ListPersonasInput,
+    input: ListPersonasInput,
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Vec<Persona>, String> {
     service(state)
-        .list_personas(feature_enabled)
+        .list_personas(feature_enabled, scope_filter(input.scope))
         .await
         .map_err(to_string)
 }
@@ -111,12 +149,40 @@ pub async fn create_persona_draft_for_state(
         .create_draft(
             feature_enabled,
             SavePersonaDraftInput {
+                project_id: input.project_id.map(ProjectId::from_string),
                 slug: input.slug,
                 content,
                 source_session_id: input.source_session_id,
                 source_persona_id: None,
                 source_content_hash: None,
             },
+        )
+        .await
+        .map_err(to_string)?;
+    emit_draft_updated(state, &persona);
+    Ok(persona)
+}
+
+#[tauri::command]
+pub async fn update_persona_draft(
+    input: UpdatePersonaDraftInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    update_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn update_persona_draft_for_state(
+    input: UpdatePersonaDraftInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    let persona = service(state)
+        .update_draft(
+            feature_enabled,
+            &persona_id(input.id)?,
+            &input.content,
+            input.expected_content_hash.as_deref(),
         )
         .await
         .map_err(to_string)?;
@@ -249,6 +315,81 @@ pub async fn archive_persona_for_state(
         .archive_persona(feature_enabled, &persona_id(input.id)?)
         .await
         .map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn unarchive_persona(
+    input: PersonaIdInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    unarchive_persona_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn unarchive_persona_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    service(state)
+        .unarchive_persona(feature_enabled, &persona_id(input.id)?)
+        .await
+        .map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn list_persona_usage(state: State<'_, AppState>) -> Result<Vec<PersonaUsage>, String> {
+    list_persona_usage_for_state(state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn list_persona_usage_for_state(
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Vec<PersonaUsage>, String> {
+    service(state)
+        .list_persona_usage(feature_enabled)
+        .await
+        .map_err(to_string)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPersonaOverlayInput {
+    pub conversation_id: String,
+}
+
+/// Body content flows only through this direct command response — never events.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaOverlayPreview {
+    pub persona_id: String,
+    pub slug: String,
+    pub version: i64,
+    pub rendered_block: String,
+    pub skipped_reason: Option<String>,
+}
+
+#[tauri::command]
+pub async fn preview_persona_overlay(
+    input: PreviewPersonaOverlayInput,
+    state: State<'_, AppState>,
+) -> Result<Option<PersonaOverlayPreview>, String> {
+    if input.conversation_id.trim().is_empty() {
+        return Err("conversation id cannot be empty".to_string());
+    }
+    let resolved = state
+        .build_chat_service()
+        .preview_persona_overlay(&ChatConversationId::from_string(input.conversation_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(resolved.map(|persona| PersonaOverlayPreview {
+        persona_id: persona.id.to_string(),
+        slug: persona.slug,
+        version: persona.version,
+        rendered_block: persona.block,
+        skipped_reason: persona.skipped_reason.map(str::to_string),
+    }))
 }
 
 #[tauri::command]

@@ -120,6 +120,10 @@ pub struct TaskCleanupService {
     task_stopper: Option<Arc<dyn TaskStopper>>,
 }
 
+pub(crate) fn is_agent_active_status(status: InternalStatus) -> bool {
+    AGENT_ACTIVE_STATUSES.contains(&status)
+}
+
 impl TaskCleanupService {
     pub fn new(
         task_repo: Arc<dyn TaskRepository>,
@@ -564,6 +568,23 @@ impl TaskCleanupService {
     }
 
     async fn stop_task_contexts_by_identity(&self, task_id: &TaskId) -> bool {
+        match self.stop_task_runtime_contexts_strict(task_id).await {
+            Ok(stopped) => stopped,
+            Err(error) => {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    error = %error,
+                    "Failed to stop every task runtime context"
+                );
+                false
+            }
+        }
+    }
+
+    pub(crate) async fn stop_task_runtime_contexts_strict(
+        &self,
+        task_id: &TaskId,
+    ) -> AppResult<bool> {
         let mut stopped_any = false;
 
         for context_type in ["task_execution", "review", "merge", "branch_update"] {
@@ -577,15 +598,14 @@ impl TaskCleanupService {
                 .running_agent_registry
                 .stop(&key)
                 .await
-                .ok()
-                .flatten()
+                .map_err(AppError::Infrastructure)?
                 .is_some()
             {
                 stopped_any = true;
             }
         }
 
-        stopped_any
+        Ok(stopped_any)
     }
 
     /// Clean task Git resources for destructive attempt replacement.

@@ -358,7 +358,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "permission_request") {
     try {
       const result = await handlePermissionRequest(
-        args as Parameters<typeof handlePermissionRequest>[0]
+        args as Parameters<typeof handlePermissionRequest>[0],
+        runtimeContext
       );
       safeTrace("tool.success", {
         name,
@@ -390,7 +391,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     try {
-      const result = await handleFilesystemToolCall(name, args);
+      const result = await handleFilesystemToolCall(name, args, runtimeContext);
       safeTrace("tool.success", {
         name,
         result: summarizeResult(result),
@@ -493,7 +494,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         args as unknown as RequestTeamPlanArgs,
         RALPHX_CONTEXT_TYPE ?? "ideation",
         RALPHX_CONTEXT_ID ?? "",
-        leadSessionId
+        leadSessionId,
+        runtimeContext
       );
       safeTrace("tool.success", {
         name,
@@ -687,6 +689,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (isAgentWorkspaceToolName(name)) {
       result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
         parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+        conversationId: RALPHX_CONVERSATION_ID,
         agentRunId: RALPHX_AGENT_RUN_ID,
       });
     } else if (isAutomationSetupToolName(name)) {
@@ -1008,16 +1011,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         explicitParentConversationId ??
         RALPHX_PARENT_CONVERSATION_ID ??
         RALPHX_CONVERSATION_ID;
-      result = await callTauri("coordination/delegate/start", {
-        ...delegateArgs,
-        ...(parentConversationId
-          ? { parent_conversation_id: parentConversationId }
-          : {}),
-        caller_agent_name: AGENT_TYPE,
-        caller_agent_profile: RALPHX_AGENT_PROFILE,
-        caller_context_type: RALPHX_CONTEXT_TYPE,
-        caller_context_id: RALPHX_CONTEXT_ID,
-      });
+      result = await callTauri(
+        "coordination/delegate/start",
+        {
+          ...delegateArgs,
+          ...(parentConversationId
+            ? { parent_conversation_id: parentConversationId }
+            : {}),
+          caller_agent_name: AGENT_TYPE,
+          caller_agent_profile: RALPHX_AGENT_PROFILE,
+          caller_context_type: RALPHX_CONTEXT_TYPE,
+          caller_context_id: RALPHX_CONTEXT_ID,
+        },
+        {
+          headers: {
+            "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          },
+        },
+      );
     } else if (name === "delegate_wait") {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
     } else if (name === "delegate_cancel") {

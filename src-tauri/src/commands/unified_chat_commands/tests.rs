@@ -36,6 +36,7 @@ use super::{
     spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
     switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
+    switch_agent_conversation_mode_for_state_stopping_running_agent,
     try_acquire_agent_workspace_publish_guard, update_agent_conversation_coordination_mode,
     update_agent_conversation_workspace_from_base_for_app_state,
     validate_explicit_publish_base_ref, AgentConversationResponse,
@@ -52,6 +53,7 @@ use super::{
     CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
     ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
     UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+    STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -693,8 +695,9 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
     let response = create_agent_conversation(
         CreateAgentConversationInput {
             context_type: ChatContextType::Project.to_string(),
-            context_id: project_id.as_str().to_string(),
+            context_id: Some(project_id.as_str().to_string()),
             title: Some("Team conversation".to_string()),
+            mode: None,
             team_intent: Some(TeamIntent::rx_native(None)),
         },
         app.state(),
@@ -711,6 +714,119 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
         .expect("stored conversation should load")
         .expect("stored conversation should exist");
     assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+struct StandaloneConversationsFlagOverrideReset;
+
+impl Drop for StandaloneConversationsFlagOverrideReset {
+    fn drop(&mut self) {
+        crate::infrastructure::agents::reset_standalone_conversations_override_for_test();
+    }
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let response = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: Some("Standalone chat".to_string()),
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("standalone conversation should be created");
+
+    assert_eq!(response.context_type, "standalone");
+    assert_eq!(response.context_id, response.id);
+
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(response.id))
+        .await
+        .expect("stored conversation should load")
+        .expect("stored conversation should exist");
+    assert!(stored.is_valid_standalone_self_key());
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_flag_off_is_rejected() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(false));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: None,
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must be rejected while the flag is off");
+
+    assert!(error.contains("standalone_conversations"));
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: Some("caller-supplied-id".to_string()),
+            title: None,
+            mode: None,
+            team_intent: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must reject a caller-supplied context_id");
+
+    assert!(error.contains("does not accept a context_id"));
+}
+
+#[tokio::test]
+async fn create_agent_conversation_standalone_rejects_team_intent() {
+    let _reset = StandaloneConversationsFlagOverrideReset;
+    crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
+    let app = build_send_now_command_app(AppState::new_test());
+
+    let error = create_agent_conversation(
+        CreateAgentConversationInput {
+            context_type: ChatContextType::Standalone.to_string(),
+            context_id: None,
+            title: None,
+            mode: None,
+            team_intent: Some(TeamIntent::rx_native(None)),
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("standalone creation must reject team intent");
+
+    assert_eq!(error, STANDALONE_TEAM_INTENT_REJECTED_ERROR);
+    assert!(app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .list_by_context_type(ChatContextType::Standalone, true, 10)
+        .await
+        .expect("standalone conversations should list")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2422,6 +2538,107 @@ async fn auto_publish_pause_disables_and_restores_pr_supervision_preferences() {
 }
 
 #[tokio::test]
+async fn agent_workspace_automation_preferences_remain_mutable_during_repair() {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(257);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/257".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("repair workspace should persist");
+
+    let supervised = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: Some("squash".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("PR supervision should remain configurable during repair");
+
+    assert!(supervised.pr_autofix_enabled);
+    assert!(supervised.pr_auto_merge_desired);
+    assert_eq!(
+        supervised.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let paused = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: false,
+        },
+        &state,
+    )
+    .await
+    .expect("Auto Publish should pause during repair");
+
+    assert!(!paused.auto_publish_enabled);
+    assert_eq!(paused.auto_publish_paused_pr_autofix_enabled, Some(true));
+    assert_eq!(paused.auto_publish_paused_pr_auto_merge_desired, Some(true));
+    assert!(!paused.pr_autofix_enabled);
+    assert!(!paused.pr_auto_merge_desired);
+    assert_eq!(paused.pr_supervision_status.as_deref(), Some("paused"));
+    assert_eq!(
+        paused.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let resumed = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect("Auto Publish should resume during repair");
+
+    assert!(resumed.auto_publish_enabled);
+    assert_eq!(resumed.auto_publish_paused_pr_autofix_enabled, None);
+    assert_eq!(resumed.auto_publish_paused_pr_auto_merge_desired, None);
+    assert!(resumed.pr_autofix_enabled);
+    assert!(resumed.pr_auto_merge_desired);
+    assert_eq!(resumed.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(
+        resumed.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("repair workspace lookup should succeed")
+        .expect("repair workspace should remain persisted");
+    assert!(stored.auto_publish_enabled);
+    assert_eq!(stored.auto_publish_paused_pr_autofix_enabled, None);
+    assert_eq!(stored.auto_publish_paused_pr_auto_merge_desired, None);
+    assert!(stored.pr_autofix_enabled);
+    assert!(stored.pr_auto_merge_desired);
+    assert_eq!(
+        stored.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let github_state = github.state();
+    assert_eq!(github_state.enable_pr_auto_merge_calls, 2);
+    assert_eq!(github_state.fetch_pr_health_calls, 1);
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+}
+
+#[tokio::test]
 async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
     let state = AppState::new_test();
     let workspace = command_test_workspace();
@@ -2690,6 +2907,76 @@ fn command_test_workspace() -> AgentConversationWorkspace {
         "ralphx/test/agent-command".to_string(),
         "/tmp/agent-command-workspace".to_string(),
     )
+}
+
+#[tokio::test]
+async fn review_pr_rejects_supervision_and_auto_publish_changes_without_mutation() {
+    let state = AppState::new_test();
+    let mut workspace = command_test_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 77,
+        url: Some("https://github.com/owner/repo/pull/77".to_string()),
+        title: Some("External PR".to_string()),
+        head_ref_name: "external/head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("external-head".to_string()),
+    });
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.auto_publish_enabled = false;
+    workspace.auto_publish_paused_pr_autofix_enabled = Some(true);
+    workspace.auto_publish_paused_pr_auto_merge_desired = Some(true);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let original = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+
+    let supervision_error = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Review PR supervision should fail closed");
+    let auto_publish_error = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Review PR Auto Publish changes should fail closed");
+
+    assert!(supervision_error.contains("Review PR"));
+    assert!(auto_publish_error.contains("Review PR"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        Some(original)
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
 }
 
 fn command_test_pr_health(auto_merge_active: bool) -> PrHealth {
@@ -6574,8 +6861,9 @@ async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attributio
     let created = create_agent_conversation(
         CreateAgentConversationInput {
             context_type: ChatContextType::Project.to_string(),
-            context_id: project_id.as_str().to_string(),
+            context_id: Some(project_id.as_str().to_string()),
             title: Some("Created from command".to_string()),
+            mode: None,
             team_intent: None,
         },
         app.state(),
@@ -6587,8 +6875,11 @@ async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attributio
     let archived = archive_agent_conversation(conversation_id.clone(), false, app.state())
         .await
         .expect("conversation should be archived");
-    assert!(archived.archived_at.is_some());
-    assert_eq!(archived.logical_model.as_deref(), Some("gpt-5.5"));
+    assert!(archived.conversation.archived_at.is_some());
+    assert_eq!(
+        archived.conversation.logical_model.as_deref(),
+        Some("gpt-5.5")
+    );
 
     let restored = restore_agent_conversation(conversation_id, app.state())
         .await
@@ -7253,6 +7544,190 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
 }
 
 #[tokio::test]
+async fn switching_edit_to_plan_quiesces_workspace_review_authority_before_persisting_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-review-cleanup".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("34343434-3434-4434-8434-343434343434".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        Some("base-sha".to_string()),
+        "ralphx/test/plan-review-cleanup".to_string(),
+        "/tmp/ralphx-plan-review-cleanup".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let review_conversation_id = ChatConversationId::from_string("review-runtime".to_string());
+    let fixer_conversation_id = ChatConversationId::from_string("fixer-runtime".to_string());
+    let artifact_id = ArtifactId::from_string("historical-review-artifact".to_string());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(review_conversation_id.clone());
+    monitor.review_fixer_status = Some("running".to_string());
+    monitor.review_fixer_conversation_id = Some(fixer_conversation_id.clone());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "review-fingerprint".to_string(),
+        head_sha: Some("head-sha".to_string()),
+        last_error: None,
+    });
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should persist");
+    let service = MockChatService::new();
+
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("review cleanup should allow the PLAN transition");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+    let calls = service.get_stop_agent_calls().await;
+    assert!(calls.contains(&(ChatContextType::Project, review_conversation_id.as_str())));
+    assert!(calls.contains(&(ChatContextType::Project, fixer_conversation_id.as_str())));
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(stored.mode, AgentConversationWorkspaceMode::Plan);
+    assert_eq!(stored.pr_auto_merge_current, Some(false));
+    let cleaned = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(cleaned.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        cleaned.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        cleaned.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert!(cleaned.review_fixer_status.is_none());
+    assert!(cleaned.review_fixer_run_id.is_none());
+    assert!(cleaned.auto_merge_guard.is_none());
+    assert_eq!(cleaned.review_artifact_id, Some(artifact_id));
+    assert_eq!(cleaned.review_artifact_version, Some(4));
+    assert!(cleaned
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("mode changed to Plan")));
+}
+
+#[tokio::test]
+async fn failed_workspace_review_runtime_cleanup_keeps_workspace_out_of_plan_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-review-cleanup-failure".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("45454545-4545-4454-8454-454545454545".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        Some("base-sha".to_string()),
+        "ralphx/test/plan-review-cleanup-failure".to_string(),
+        "/tmp/ralphx-plan-review-cleanup-failure".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(ChatConversationId::from_string(
+        "review-runtime-cleanup-failure".to_string(),
+    ));
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should persist");
+    let service = MockChatService::new();
+    service.fail_next_stop_agent_calls(1).await;
+
+    let error = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("failed runtime cleanup must reject the PLAN transition");
+
+    assert!(error.contains("failed to stop Workspace Review runtime"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .mode,
+        AgentConversationWorkspaceMode::Edit
+    );
+}
+
+#[tokio::test]
 async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -7488,6 +7963,23 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
     );
     assert!(plan_workspace.linked_plan_branch_id.is_none());
 
+    let review_artifact_id =
+        ArtifactId::from_string("historical-plan-mode-review-artifact".to_string());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        plan_workspace.project_id.clone(),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_artifact_id = Some(review_artifact_id.clone());
+    monitor.review_artifact_version = Some(3);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("historical Plan review monitor should persist");
+
     let edit_response = switch_agent_conversation_mode_for_state(
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
@@ -7513,6 +8005,21 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    let cleaned_review = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("review monitor lookup should succeed")
+        .expect("historical review monitor should remain");
+    assert_eq!(
+        cleaned_review.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        cleaned_review.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(cleaned_review.review_artifact_id, Some(review_artifact_id));
 }
 
 #[tokio::test]

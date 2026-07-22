@@ -62,6 +62,7 @@ Do not edit a `TOOL_ALLOWLIST` mirror to grant production access. The compatibil
 | Codex | Load canonical MCP capabilities through Codex runtime overrides/sidecars; do not reuse Claude plugin/frontmatter assumptions. |
 | RalphX-native delegation | `delegate_start` caller→target authorization and delegation-tool visibility derive from `delegation.allowed_targets`; caller identity is transport-owned. |
 | Mixed external/internal transport | Public/high-level `mcp_tools` and `harnesses.<harness>.internal_mcp_tools` remain separate surfaces. |
+| Provider-native third-party MCP | Native definitions/auth/trust remain provider-owned; canonical RalphX grants authorize only RalphX tools, while global/project policy may deny native servers/tools at launch. |
 
 Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `allowedTools` is a CLI flag, not a frontmatter key.
 
@@ -75,6 +76,10 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 ## Ticket Attachment Tools (NON-NEGOTIABLE)
 
 `list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker, coder, and team-lead surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
+
+## Persona Builder Tools
+
+`ralphx-persona-extractor` gets bounded `fs_*` reads plus `ask_user_question`, `save_persona_draft`, and `get_persona_draft`; context enters through the standard composer/read-root contract, not bespoke ingest commands or tools.
 
 ## Failure Diagnosis
 

@@ -33,7 +33,6 @@ interface AgentsConversationMainRegionProps {
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
-  onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
   onFocusIdeationSessionForConversation: ActiveConversationPanelProps[
     "onFocusIdeationSessionForConversation"
@@ -54,6 +53,7 @@ interface AgentsConversationMainRegionProps {
   onRuntimePreferenceChange: StartConversationPanelProps["onRuntimePreferenceChange"];
   onSelectArtifact: ActiveConversationPanelProps["onSelectArtifact"];
   onStartAgentConversation: StartConversationPanelProps["onStartAgentConversation"];
+  onStartPersonaBuilder: ActiveConversationPanelProps["onStartPersonaBuilder"];
   onToggleArtifacts: ActiveConversationPanelProps["onToggleArtifacts"];
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
@@ -96,7 +96,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onActiveProviderChange,
   onAgentUserMessageSent,
   onConversationModeSwitched,
-  onCreateProject,
   onFocusIdeationSession,
   onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
@@ -115,6 +114,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onRuntimePreferenceChange,
   onSelectArtifact,
   onStartAgentConversation,
+  onStartPersonaBuilder,
   onToggleArtifacts,
   onSelectChatFocus,
   projects,
@@ -129,7 +129,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
-  if (activeProjectId && selectedConversationId && activeConversation) {
+  if (selectedConversationId && activeConversation) {
     return (
       <AgentsActiveConversationPanel
         activeConversation={activeConversation}
@@ -174,6 +174,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onSelectArtifact={onSelectArtifact}
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
+        onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
         promotePublishShortcut={promotePublishShortcut}
         publishingConversationId={publishingConversationId}
@@ -195,7 +196,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
       modelRegistry={modelRegistry}
-      onCreateProject={onCreateProject}
       onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
     />

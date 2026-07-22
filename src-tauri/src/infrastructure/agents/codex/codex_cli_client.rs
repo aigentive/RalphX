@@ -163,7 +163,7 @@ impl AgenticClient for CodexCliClient {
             )));
         }
 
-        let config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
+        let mut config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
             (config.plugin_dir.as_ref(), config.agent.as_deref())
         {
             build_codex_mcp_overrides(plugin_dir, agent_name, false, None)
@@ -171,6 +171,7 @@ impl AgenticClient for CodexCliClient {
         } else {
             Vec::new()
         };
+        config_overrides.extend(config.mcp_launch_policy.codex_config_overrides());
 
         let prompt = self.build_prompt(&config);
         let exec_config = self.build_exec_config(&config, config_overrides);

@@ -13,10 +13,11 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
-import { chatKeys } from "@/hooks/useChat";
+import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { personaKeys } from "@/hooks/usePersonas";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -26,11 +27,35 @@ import {
   agentProjectFixture as project,
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
+  renderWithAgentProviders,
 } from "./agentsTestFixtures";
+import { AgentsStartComposer } from "./AgentsStartComposer";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
-import { LINKED_SETUP_FAILURE_MARKER } from "./agentStartErrors";
+import {
+  LINKED_SETUP_FAILURE_MARKER,
+  MCP_SETUP_PREFLIGHT_MARKER,
+} from "./agentStartErrors";
 import { useStartAgentConversation } from "./useStartAgentConversation";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
+  return {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    automationsPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+    agentPersonas: false,
+    agentConversationTeam: false,
+    agentConversationWorkflows: false,
+    ...overrides,
+  };
+}
 
 const {
   archiveConversationMock,
@@ -131,6 +156,40 @@ function agentProviderSettings(
   return { ...settings, ...overrides };
 }
 
+function claudeWorkspaceEditRoleDefault() {
+  return {
+    role: "workspace_edit",
+    source: "global_ui",
+    value: {
+      provider: "claude",
+      model: "opus",
+      effort: "high",
+      service_tier: "provider_default",
+      coordination_mode: "solo",
+      persona_id: null,
+      approval_policy: null,
+      sandbox_mode: null,
+    },
+  } as const;
+}
+
+function codexRoleDefault(role: string) {
+  return {
+    role,
+    source: "global_ui",
+    value: {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      service_tier: "standard",
+      coordination_mode: "solo",
+      persona_id: null,
+      approval_policy: "never",
+      sandbox_mode: "danger-full-access",
+    },
+  } as const;
+}
+
 describe("AgentsView start conversation", () => {
   beforeEach(setupAgentsViewTest);
 
@@ -149,7 +208,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     // Workflow modes live on the Mode chip popover, not the "+" action menu.
@@ -157,8 +216,134 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
-  it("prefills and consumes a pending start conversation draft", async () => {
+  it("initializes an ordinary new run from the persisted mode preference", async () => {
     mockAgentViewData();
+    resetAgentSessionState({ defaultStartMode: "plan" });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Plan"),
+    );
+  });
+
+  it("shows Autopilot only when the capability is enabled and never offers Ideation", async () => {
+    mockAgentViewData();
+    const { queryClient } = renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.queryByTestId("agents-start-mode-autopilot")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentConversationAutopilot: true }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    expect(screen.getByTestId("agents-start-mode-autopilot")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+  });
+
+  it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
+    const atlas = { ...project, id: "project-atlas", name: "Atlas" };
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [project, atlas], isLoading: false });
+    resetAgentSessionState({
+      startConversationDraft: {
+        projectId: "project-atlas",
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+      },
+    });
+    const view = renderAgentsView();
+
+    await screen.findByTestId("persona-build-banner");
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.getByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.getByLabelText("Persona build project is locked")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.queryByTestId("agents-start-mode-persona_builder")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
+    view.queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({ agentPersonas: true }),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
+  });
+
+  it("keeps standalone reachable with zero projects and prevents project-only controls", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({
+        standaloneConversations: true,
+        agentPersonas: true,
+        agentConversationTeam: true,
+      }),
+    );
+
+    await screen.findByTestId("agents-start-project");
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-project")).not.toBeDisabled(),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    expect(screen.getByTestId("agents-start-project-standalone")).toHaveTextContent(
+      "No project (standalone)",
+    );
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+
+    expect(screen.getByText("Runs in a private workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Ask");
+    expect(
+      screen.getByText(/Project-requiring modes are unavailable without a project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-base")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeDisabled();
+    expect(screen.getAllByText("Requires a project").length).toBeGreaterThan(0);
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "/" },
+    });
+    expect(screen.queryByTestId("agent-composer-command-menu")).not.toBeInTheDocument();
+  });
+
+  it("keeps the zero-project picker disabled when standalone is flag-off", async () => {
+    mockAgentViewData();
+    useProjectsMock.mockReturnValue({ data: [], isLoading: false });
+    renderAgentsView();
+
+    expect(await screen.findByTestId("agents-start-project")).toBeDisabled();
+    expect(screen.queryByTestId("agents-start-project-standalone")).not.toBeInTheDocument();
+  });
+
+  it("prefills and consumes an explicit start draft ahead of the saved default", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setDefaultStartMode("plan");
     loadBranchBaseOptionsMock.mockResolvedValueOnce({
       options: [
         {
@@ -556,27 +741,31 @@ describe("AgentsView start conversation", () => {
       ticketingDashboard: false,
       agentPersonas: true,
     });
-    queryClient.setQueryData(personaKeys.list(), [
-      {
-        id: "persona-reviewer",
-        slug: "reviewer-voice",
-        name: "Reviewer Voice",
-        description: "Careful reviews",
-        content: "# Reviewer",
-        status: "active",
-        version: 1,
-        contentHash: "persona-hash",
-        sourceSessionId: null,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-    ]);
+    queryClient.setQueryData(
+      personaKeys.list({ type: "globalAndProject", projectId: "project-1" }),
+      [
+        {
+          id: "persona-reviewer",
+          slug: "reviewer-voice",
+          name: "Reviewer Voice",
+          description: "Careful reviews",
+          content: "# Reviewer",
+          status: "active",
+          version: 1,
+          contentHash: "persona-hash",
+          sourceSessionId: null,
+          projectId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    );
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
     );
     await userEvent.click(screen.getByRole("button", { name: "Choose persona" }));
-    await userEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "Review the current changes" },
     });
@@ -592,8 +781,18 @@ describe("AgentsView start conversation", () => {
   it("omits picker overrides when starting from the untouched role default", async () => {
     mockAgentViewData();
     resetAgentSessionState({ lastRuntimeByProjectId: {} });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(claudeWorkspaceEditRoleDefault())
+        : Promise.resolve(undefined),
+    );
     renderAgentsView();
 
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "opus",
+      ),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "use the current role default" },
     });
@@ -609,6 +808,44 @@ describe("AgentsView start conversation", () => {
     expect(startInput).not.toHaveProperty("personaId");
   });
 
+  it("starts with the visible Codex runtime while the Claude role default is still loading", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({ lastRuntimeByProjectId: {} });
+    let resolveRoleDefault:
+      | ((value: ReturnType<typeof claudeWorkspaceEditRoleDefault>) => void)
+      | null = null;
+    const pendingRoleDefault = new Promise<
+      ReturnType<typeof claudeWorkspaceEditRoleDefault>
+    >((resolve) => {
+      resolveRoleDefault = resolve;
+    });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? pendingRoleDefault
+        : Promise.resolve(undefined),
+    );
+    renderAgentsView();
+
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+      "gpt-5.5",
+    );
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep the visible Codex runtime" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+      }),
+    );
+
+    resolveRoleDefault?.(claudeWorkspaceEditRoleDefault());
+  });
+
   it("does not reuse a remembered runtime after the workspace mode changes", async () => {
     mockAgentViewData();
     resetAgentSessionState({
@@ -620,10 +857,20 @@ describe("AgentsView start conversation", () => {
         },
       },
     });
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(codexRoleDefault("workspace_plan"))
+        : Promise.resolve(undefined),
+    );
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "gpt-5.5",
+      ),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "plan with the plan role default" },
     });
@@ -800,9 +1047,12 @@ describe("AgentsView start conversation", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-capability")).toBeInTheDocument(),
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByTestId("agents-start-capability"));
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Capabilities,/ }),
+    );
     await userEvent.click(
       screen.getByTestId("agents-start-capability-rx_native_team"),
     );
@@ -1023,6 +1273,185 @@ describe("AgentsView start conversation", () => {
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
         "conversation-linked-retry"
       )
+    );
+  });
+
+  it("shows in-app MCP recovery without terminal guidance and opens the exact settings card", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"ambiguous_reserved_id","repair_status":"manual_only"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    const recovery = await screen.findByTestId("agents-start-mcp-setup-error");
+    expect(recovery).toHaveTextContent("MCP setup needs attention");
+    expect(recovery).not.toHaveTextContent("claude mcp remove");
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue("keep this draft");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
+      expect.objectContaining({ kind: "mcp_setup", serverId: "ralphx" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open MCP settings" }));
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({
+      section: "mcp",
+      provider: "claude",
+      serverId: "ralphx",
+      scope: "user",
+    });
+  });
+
+  it("retries Claude MCP cleanup and automatically replays the original start once", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await screen.findByTestId("agents-start-mcp-setup-error");
+    expect(screen.getByRole("button", { name: "Retry cleanup" })).toBeEnabled();
+
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValueOnce({ changed: true });
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        {
+          input: {
+            provider: "claude",
+            serverId: "ralphx",
+            scope: "user",
+          },
+        },
+      ),
+    );
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(2));
+    expect(startAgentConversationMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ content: "keep this cleanup draft" }),
+    );
+    expect(screen.queryByText(/Start the agent again/)).not.toBeInTheDocument();
+    expect(useAgentSessionStore.getState().startConversationFailure).toBeNull();
+  });
+
+  it("snapshots files and folders before MCP cleanup, gates Send, and replays those references once", async () => {
+    const user = userEvent.setup();
+    const file = new File(["same bytes"], "recovery.txt", { type: "text/plain" });
+    const folder = {
+      id: "folder-recovery",
+      folderPath: "/work/recovery",
+      displayName: "recovery",
+    };
+    useChatStore.getState().setComposerDraftFolders("agents:start", [folder]);
+    let finishCleanup: ((value: { changed: boolean }) => void) | null = null;
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    renderWithAgentProviders(
+      <AgentsStartComposer
+        projects={[project]}
+        defaultProjectId={project.id}
+        defaultRuntime={{ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" }}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{
+          claude: [],
+          codex: [
+            {
+              id: "gpt-5.5",
+              label: "gpt-5.5",
+              menuLabel: "gpt-5.5",
+              defaultEffort: "xhigh",
+              supportedEfforts: ["xhigh"],
+            },
+          ],
+        }}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [file] },
+    });
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "replay with context" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await screen.findByTestId("agents-start-mcp-setup-error");
+
+    vi.mocked(invoke).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishCleanup = resolve;
+        }),
+    );
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+    expect(screen.getByRole("button", { name: "Retrying cleanup…" })).toBeDisabled();
+    expect(screen.getByTestId("agents-start-submit")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    finishCleanup?.({ changed: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    const replay = onSubmit.mock.calls[1]?.[0];
+    expect(replay.files).toHaveLength(1);
+    expect(replay.files[0]).toBe(file);
+    expect(replay.folders).toEqual([{ ...folder }]);
+  });
+
+  it("keeps the MCP recovery actionable when cleanup retry fails", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    startAgentConversationMock.mockRejectedValueOnce(
+      new Error(
+        `${MCP_SETUP_PREFLIGHT_MARKER}{"provider":"claude","server_id":"ralphx","scope":"user","conflict_kind":"legacy_repair_failed","repair_status":"failed"}`,
+      ),
+    );
+
+    renderAgentsView();
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this failed cleanup draft" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await screen.findByTestId("agents-start-mcp-setup-error");
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("cleanup unavailable"));
+    await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "retry_legacy_mcp_registration_repair",
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByTestId("agents-start-mcp-setup-error")).toHaveTextContent(
+      "Retry cleanup",
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this failed cleanup draft",
     );
   });
 
@@ -1708,6 +2137,282 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "seeds and starts a standalone chat with $provider runtime and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, gcTime: 0 },
+          mutations: { retry: false },
+        },
+      });
+      const standaloneConversation = conversation({
+        id: "standalone-1",
+        contextType: "standalone",
+        contextId: "standalone-1",
+        projectId: null,
+        agentMode: "chat",
+      });
+      createConversationMock.mockResolvedValue(standaloneConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: standaloneConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "standalone-1",
+          agentRunId: "run-standalone-1",
+          isNewConversation: false,
+          wasQueued: true,
+          queuedAsPending: false,
+          queuedMessageId: "queued-standalone-1",
+        },
+      });
+      const selectConversation = vi.fn();
+      const handleAutoManagedTitle = vi.fn();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle,
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation,
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: null,
+        content: "Explore privately",
+        runtime: { provider, modelId, effort },
+        mode: "edit",
+        base: null,
+        files: [],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+        composerProjectReferences: [
+          {
+            projectId: "stale-project",
+            projectName: "Stale project",
+          },
+        ],
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith("standalone", null);
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "Explore privately",
+          conversationId: "standalone-1",
+          mode: "chat",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+      expect(startInput).not.toHaveProperty("composerProjectReferences");
+      expect(selectConversation).toHaveBeenCalledWith(null, "standalone-1");
+      expect(
+        useChatStore.getState().queuedMessages["standalone:standalone-1"],
+      ).toEqual([
+        expect.objectContaining({
+          id: "queued-standalone-1",
+          content: "Explore privately",
+        }),
+      ]);
+      expect(handleAutoManagedTitle).toHaveBeenCalledWith(
+        expect.objectContaining({ targetProjectId: null }),
+      );
+    },
+  );
+
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a Global persona builder with $provider, locked provenance, folders, and no project or Team intent",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-global-1",
+        contextType: "standalone",
+        contextId: "builder-global-1",
+        projectId: null,
+        agentMode: "persona_builder",
+      });
+      createConversationMock.mockResolvedValue(builderConversation);
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: null,
+        sendResult: {
+          conversationId: "builder-global-1",
+          agentRunId: "run-builder-1",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      vi.mocked(invoke).mockImplementation(async (command) => {
+        if (command === "add_conversation_folder_reference") {
+          return {
+            id: "folder-ref-1",
+            conversationId: "builder-global-1",
+            folderPath: "/context/docs",
+            displayName: "docs",
+            createdAt: "2026-07-17T00:00:00Z",
+          };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: null,
+        content: "Refine the review voice",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        sourcePersonaId: "persona-reviewer",
+        base: null,
+        files: [],
+        folders: [{ folderPath: "/context/docs", displayName: "docs" }],
+        capabilityIntent: { coordinationMode: "rx_native_team" },
+      });
+
+      expect(createConversationMock).toHaveBeenCalledWith(
+        "standalone",
+        null,
+        undefined,
+        "persona_builder",
+      );
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "builder-global-1",
+          folderPath: "/context/docs",
+          displayName: "docs",
+        },
+      });
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "builder-global-1",
+          mode: "persona_builder",
+          providerHarness: provider,
+          sourcePersonaId: "persona-reviewer",
+        }),
+      );
+      const startInput = startAgentConversationMock.mock.calls[0]?.[0];
+      expect(startInput).not.toHaveProperty("projectId");
+      expect(startInput).not.toHaveProperty("capabilityIntent");
+      expect(startInput).not.toHaveProperty("teamIntent");
+    },
+  );
+
+  it.each([
+    { provider: "claude", modelId: "sonnet", effort: "medium" },
+    { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+  ] as const)(
+    "starts a project persona builder with $provider runtime",
+    async ({ provider, modelId, effort }) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const builderConversation = conversation({
+        id: "builder-project-1",
+        contextType: "project",
+        contextId: "project-1",
+        projectId: "project-1",
+        agentMode: "persona_builder",
+      });
+      startAgentConversationMock.mockResolvedValue({
+        conversation: builderConversation,
+        workspace: conversationWorkspace({
+          conversationId: "builder-project-1",
+          mode: "persona_builder",
+        }),
+        sendResult: {
+          conversationId: "builder-project-1",
+          agentRunId: "run-builder-project-1",
+          isNewConversation: true,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId: vi.fn(),
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper },
+      );
+
+      await result.current({
+        projectId: "project-1",
+        content: "Build a project reviewer",
+        runtime: { provider, modelId, effort },
+        mode: "persona_builder",
+        base: null,
+        files: [],
+      });
+
+      expect(createConversationMock).not.toHaveBeenCalled();
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "Build a project reviewer",
+          mode: "persona_builder",
+          providerHarness: provider,
+          modelId,
+          logicalEffort: effort,
+        }),
+      );
+    },
+  );
+
   it("falls back to the default runtime when the remembered provider is no longer valid", async () => {
     mockAgentViewData();
     resetAgentSessionState({
@@ -1817,11 +2522,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await user.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
@@ -1869,11 +2569,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await userEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
     await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
@@ -1940,11 +2635,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await user.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await user.click(screen.getByRole("button", { name: /^Model,/ }));
@@ -1963,11 +2653,6 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Advanced provider and model settings",
-      }),
-    );
     await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
 
     expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
@@ -2084,7 +2769,24 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("stores selected references on the first optimistic message before a conversation exists", async () => {
+  it("stores selected references on the seeded optimistic folder message", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "add_conversation_folder_reference") {
+        const input = (args as {
+          input: {
+            conversationId: string;
+            folderPath: string;
+            displayName: string;
+          };
+        }).input;
+        return Promise.resolve({
+          id: "folder-1",
+          ...input,
+          createdAt: "2026-07-20T07:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: Infinity },
@@ -2096,6 +2798,7 @@ describe("AgentsView start conversation", () => {
       contextId: "project-1",
       title: null,
     });
+    createConversationMock.mockResolvedValue(seededConversation);
     let resolveStart:
       | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
       | null = null;
@@ -2136,6 +2839,7 @@ describe("AgentsView start conversation", () => {
       mode: "edit",
       base: null,
       files: [],
+      folders: [{ folderPath: "/work/brand-kit", displayName: "brand-kit" }],
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
         {
@@ -2158,12 +2862,25 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
     );
-    const optimisticConversationId =
-      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-seeded-references",
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      }),
+    );
     const optimisticMessage = queryClient.getQueryData<{
       messages: Array<{ metadata: string | null }>;
-    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+    }>(["chat", "conversations", "conversation-seeded-references"])?.messages[0];
     expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+      composer_folder_references: [
+        {
+          folderPath: "/work/brand-kit",
+          displayName: "brand-kit",
+        },
+      ],
       composer_project_references: [{ path: "src/main.ts", kind: "file" }],
       composer_integration_references: [
         {
@@ -2183,7 +2900,7 @@ describe("AgentsView start conversation", () => {
       ],
     });
 
-    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(createConversationMock).toHaveBeenCalledWith("project", "project-1");
     resolveStart?.({
       conversation: seededConversation,
       workspace: conversationWorkspace({
@@ -2436,6 +3153,9 @@ describe("AgentsView start conversation", () => {
         fileName: "draft.txt",
       }),
     });
+    expect(invoke).toHaveBeenCalledWith("abort_seeded_agent_conversation", {
+      conversationId: "conversation-failed-start",
+    });
     expect(
       queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
     ).toBeUndefined();
@@ -2448,6 +3168,90 @@ describe("AgentsView start conversation", () => {
     expect(
       useChatStore.getState().agentActivityLabels["project:conversation-failed-start"]
     ).toBeUndefined();
+  });
+
+  it("reveals and invalidates a seeded conversation when abort reports it already started", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const selectConversation = vi.fn();
+    const seededConversation = conversation({
+      id: "conversation-survived-abort",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockRejectedValue(new Error("start response was lost"));
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "upload_chat_attachment") {
+        return Promise.resolve({ id: "attachment-survived-start" });
+      }
+      if (command === "abort_seeded_agent_conversation") {
+        return Promise.reject(
+          new Error(
+            "SEEDED_AGENT_CONVERSATION_ALREADY_STARTED: conversation `conversation-survived-abort` has already started",
+          ),
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation,
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    await expect(
+      result.current({
+        projectId: "project-1",
+        content: "recover the surviving start",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        mode: "edit",
+        base: null,
+        files: [new File(["draft"], "draft.txt", { type: "text/plain" })],
+      }),
+    ).rejects.toThrow("start response was lost");
+
+    expect(selectConversation).toHaveBeenCalledWith(
+      "project-1",
+      "conversation-survived-abort",
+    );
+    expect(
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-survived-abort",
+      ]),
+    ).toBeDefined();
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["agents", "sidebar-conversations"],
+    });
+    expect(invalidateConversationDataQueries).toHaveBeenCalledWith(
+      queryClient,
+      "conversation-survived-abort",
+    );
   });
 
   it("moves running state when the backend resolves a different conversation id", async () => {
@@ -2749,8 +3553,53 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("starts automation mode by creating a bound setup conversation before sending", async () => {
+  it("starts automation mode from the selected current branch", async () => {
     mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_start_composer_role_default"
+        ? Promise.resolve(codexRoleDefault("workspace_automation"))
+        : Promise.resolve(undefined),
+    );
+    const currentBranchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "current_branch:feature/automation-base",
+        label: "Current branch (feature/automation-base)",
+        detail: "Currently checked out in the project root",
+        source: "current",
+        selection: {
+          kind: "current_branch",
+          ref: "feature/automation-base",
+          displayName: "Current branch (feature/automation-base)",
+        },
+      },
+    ];
+    loadBranchBaseOptionsMock.mockResolvedValue({
+      options: currentBranchOptions,
+      selectedKey: "project_default:main",
+    });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: currentBranchOptions,
+          selectedKey: "current_branch:feature/automation-base",
+          loadedAt: "2026-07-20T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "current_branch:feature/automation-base",
+      },
+    });
     createAutomationDraftMock.mockResolvedValue({
       automation: {
         id: "automation-setup-flow",
@@ -2804,7 +3653,13 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
     await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_start_composer_role_default", {
+        input: { projectId: "project-1", mode: "automation" },
+      }),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "set up a weekly dependency cleanup automation" },
     });
@@ -2814,6 +3669,12 @@ describe("AgentsView start conversation", () => {
       expect(createAutomationDraftMock).toHaveBeenCalledWith({
         projectId: "project-1",
         name: "set up a weekly dependency cleanup automation",
+        base: {
+          kind: "current_branch",
+          branchMode: "isolated",
+          ref: "feature/automation-base",
+          displayName: "Current branch (feature/automation-base)",
+        },
       })
     );
     await waitFor(() =>
@@ -2923,6 +3784,12 @@ describe("AgentsView start conversation", () => {
         projectId: "project-1",
         name: "ship the trusted pipeline",
         authoringMode: "trusted_auto_finalize",
+        base: {
+          kind: "project_default",
+          branchMode: "isolated",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
       })
     );
   });
@@ -3119,6 +3986,102 @@ describe("AgentsView start conversation", () => {
         configurable: true,
       });
     }
+  });
+
+  it("restores unsent starter composer folders from the draft store", async () => {
+    mockAgentViewData();
+    useChatStore.getState().setComposerDraftFolders("agents:start", [
+      { id: "draft-folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+    ]);
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags({
+        standaloneConversations: true,
+      }),
+    );
+
+    expect(
+      await screen.findByTestId("draft-folder-reference-chips"),
+    ).toHaveTextContent("design-notes");
+
+    await userEvent.click(screen.getByTestId("agents-start-project"));
+    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
+    expect(screen.getByTestId("draft-folder-reference-chips")).toHaveTextContent(
+      "design-notes",
+    );
+  });
+
+  it("registers a pre-send picked folder against the seeded conversation before sending the first message", async () => {
+    mockAgentViewData();
+    createConversationMock.mockResolvedValue(
+      conversation({ id: "conversation-folder-seeded", contextId: "project-1" })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({ id: "conversation-folder-seeded", contextId: "project-1" }),
+      workspace: conversationWorkspace({ conversationId: "conversation-folder-seeded" }),
+      sendResult: {
+        conversationId: "conversation-folder-seeded",
+        agentRunId: "run-folder-1",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    vi.mocked(openDialog).mockResolvedValue("/Users/test/projects/test-project");
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "add_conversation_folder_reference") {
+        return Promise.resolve({
+          id: "folder-ref-1",
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+          createdAt: "2026-01-01T00:00:00Z",
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      FEATURE_FLAGS_QUERY_KEY,
+      enabledFeatureFlags(),
+    );
+
+    fireEvent.click(
+      await screen.findByTestId("agent-composer-actions-menu"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+
+    expect(await screen.findByText("test-project")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this folder" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
+        input: {
+          conversationId: "conversation-folder-seeded",
+          folderPath: "/Users/test/projects/test-project",
+          displayName: "test-project",
+        },
+      })
+    );
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-folder-seeded",
+          content: "review this folder",
+        })
+      )
+    );
   });
 
 });

@@ -15,6 +15,10 @@ import os from "node:os";
 import path from "node:path";
 import { safeError } from "./redact.js";
 import { buildTauriApiUrl } from "./tauri-client.js";
+import {
+  buildRuntimeTransportHeaders,
+  type RuntimeContext,
+} from "./runtime-context.js";
 
 /** Timeout for long-polling (15 minutes — staggered 1 min above backend's 14 min) */
 const TEAM_PLAN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -70,7 +74,8 @@ export async function handleRequestTeamPlan(
   args: RequestTeamPlanArgs,
   contextType: string,
   contextId: string,
-  leadSessionId: string | undefined
+  leadSessionId: string | undefined,
+  runtimeContext: Pick<RuntimeContext, "conversationId"> = {}
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const teamName = args.team_name;
 
@@ -137,7 +142,10 @@ export async function handleRequestTeamPlan(
       buildTauriApiUrl("team/plan/request"),
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+        },
         body: JSON.stringify({
           context_type: contextType || "ideation",
           context_id: contextId || "",

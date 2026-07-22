@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
+  buildConversationModeOptions,
   buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
@@ -124,31 +125,115 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     );
   });
 
-  it("excludes persona builder from selectable mode options", () => {
-    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
-    );
-    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
-      "persona_builder",
+  it("includes Persona as a label-only conversation mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona", disabled: true }),
     );
   });
 
-  it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
+  it.each(["automation", "persona_builder"] as const)(
+    "disables every conversation-mode option while %s is locked",
+    (mode) => {
+      const options = buildConversationModeOptions(
+        conversation({ agentMode: mode }),
+        null,
+      );
+      expect(options).not.toHaveLength(0);
+      expect(options.every((option) => option.disabled)).toBe(true);
+    },
+  );
+
+  it("keeps Persona in the starter registry for feature-gated rendering", () => {
+    expect(AGENT_START_MODE_OPTIONS).toContainEqual(
+      expect.objectContaining({ id: "persona_builder", label: "Persona" }),
+    );
+  });
+
+  it("orders ordinary new-run modes by planning, execution, review, and inquiry", () => {
+    expect(
+      AGENT_START_MODE_OPTIONS.slice(0, 5).map(({ id, label }) => ({ id, label })),
+    ).toEqual([
+      { id: "plan", label: "Plan" },
+      { id: "edit", label: "Agent" },
+      { id: "review_pr", label: "Review PR" },
+      { id: "chat", label: "Ask" },
+      { id: "automation", label: "Automation" },
+    ]);
+  });
+
+  it("describes Review PR as a remote GitHub action workflow", () => {
+    const conversationMode = AGENT_CONVERSATION_MODE_OPTIONS.find(
+      (option) => option.id === "review_pr",
+    );
+    const startMode = AGENT_START_MODE_OPTIONS.find(
+      (option) => option.id === "review_pr",
+    );
+
+    for (const option of [conversationMode, startMode]) {
+      expect(option?.description).toContain("remote GitHub PR");
+      expect(option?.description).toContain("user-approved GitHub review");
+    }
+  });
+
+  it("keeps legacy-only modes out of fresh conversations and gates Autopilot", () => {
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: false }).map(
         (option) => option.id,
       ),
-    ).not.toContain("tasks");
-    expect(
-      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
-        (option) => option.id,
-      ),
-    ).not.toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
     expect(
       buildAgentStartModeOptions({ autopilotEnabled: true }).map(
         (option) => option.id,
       ),
-    ).toContain("autopilot");
+    ).toEqual([
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "autopilot",
+      "persona_builder",
+    ]);
+  });
+
+  it("derives ordinary conversation modes from the canonical start-mode order", () => {
+    expect(
+      AGENT_CONVERSATION_MODE_OPTIONS.map(({ id, label, description }) => ({
+        id,
+        label,
+        description,
+      })),
+    ).toEqual(
+      AGENT_START_MODE_OPTIONS.map(({ id, label, description }) => ({
+        id,
+        label,
+        description,
+      })),
+    );
+  });
+
+  it("promotes the selected mode without disturbing the remaining order", () => {
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "review_pr",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toEqual([
+      "review_pr",
+      "plan",
+      "edit",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
   });
 
   it("offers Tasks only for the current or durably attached pipeline", () => {
@@ -166,15 +251,58 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
         autopilotEnabled: false,
       }).map((option) => option.id),
     ).toContain("tasks");
+
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "tasks",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toEqual([
+      "tasks",
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
+  });
+
+  it("retains Ideation only while it is the current historical mode", () => {
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "ideation",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toEqual([
+      "ideation",
+      "plan",
+      "edit",
+      "review_pr",
+      "chat",
+      "automation",
+      "persona_builder",
+    ]);
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).not.toContain("ideation");
   });
 
   it("keeps a disabled current Autopilot mode visible after opt-out", () => {
-    const autopilot = buildAgentConversationModeOptions({
+    const options = buildAgentConversationModeOptions({
       currentMode: "autopilot",
       taskPipelineAvailable: false,
       autopilotEnabled: false,
-    }).find((option) => option.id === "autopilot");
+    });
+    const autopilot = options.find((option) => option.id === "autopilot");
 
     expect(autopilot).toMatchObject({ disabled: true });
+    expect(options[0]?.id).toBe("autopilot");
   });
 });

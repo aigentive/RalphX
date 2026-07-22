@@ -1,5 +1,14 @@
+pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
+pub(crate) mod mcp_catalog;
+mod security_policy;
 pub mod stream_processor;
+
+#[cfg(test)]
+mod app_server_mcp_catalog_tests;
+
+#[cfg(test)]
+mod mcp_catalog_tests;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -10,9 +19,11 @@ use tracing::warn;
 use crate::domain::agents::{
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
-use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::claude::{
-    claude_runtime_config, external_mcp_config, filter_interactive_tools,
+    SpawnableCommand, SpawnableStdinTransport,
+};
+use crate::infrastructure::agents::claude::{
+    agent_names, claude_runtime_config, external_mcp_config, filter_interactive_tools,
     format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
@@ -29,9 +40,10 @@ use crate::infrastructure::external_mcp_supervisor::{
     ensure_tauri_mcp_bypass_token, TAURI_MCP_BYPASS_TOKEN_ENV,
 };
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
+pub(crate) use security_policy::CodexLaunchSecurityPolicy;
 
 const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
-const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
+const CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES: &[&str] = &[
     "features.apply_patch_freeform=false",
     "features.apply_patch_streaming_events=false",
     "include_apply_patch_tool=false",
@@ -168,12 +180,12 @@ impl Default for CodexExecCliConfig {
 
 pub type CodexMcpRuntimeContext = McpRuntimeContext;
 
-fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_APPROVAL_POLICY
+fn effective_codex_approval_policy(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.approval_policy()
 }
 
-fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
-    CODEX_DEFAULT_SANDBOX_MODE
+fn effective_codex_sandbox_mode(policy: CodexLaunchSecurityPolicy) -> &'static str {
+    policy.sandbox_mode()
 }
 
 fn codex_service_tier_overrides(config: &CodexExecCliConfig) -> Result<Vec<String>, String> {
@@ -234,6 +246,7 @@ pub fn build_codex_mcp_overrides_for_profile(
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
     let codex_metadata =
         try_load_canonical_codex_metadata_for_profile(&project_root, short_name, agent_profile)?;
+    let shell_tool_disabled = codex_metadata.runtime_features.get("shell_tool") == Some(&false);
     if codex_metadata.mcp_transport.as_deref() == Some("external") {
         let mut overrides = build_codex_external_mcp_overrides(
             &mcp_server_name,
@@ -251,7 +264,12 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
-        append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+        append_codex_apply_patch_disable_overrides(
+            &mut overrides,
+            short_name,
+            agent_profile,
+            shell_tool_disabled,
+        );
         return Ok(overrides);
     }
 
@@ -268,21 +286,33 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
-    append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
+    append_codex_apply_patch_disable_overrides(
+        &mut overrides,
+        short_name,
+        agent_profile,
+        shell_tool_disabled,
+    );
 
     Ok(overrides)
 }
 
-fn append_codex_plan_read_only_feature_overrides(
+fn append_codex_apply_patch_disable_overrides(
     overrides: &mut Vec<String>,
+    agent_name: &str,
     agent_profile: Option<&str>,
+    shell_tool_disabled: bool,
 ) {
-    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE) {
+    if !shell_tool_disabled
+        && agent_profile != Some(CODEX_PLAN_AGENT_PROFILE)
+        && agent_name != mcp_agent_type(agent_names::AGENT_PERSONA_EXTRACTOR)
+    {
         return;
     }
-    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature gates, while -c accepts the top-level include_apply_patch_tool override.
+    // A canonical agent without shell access is read-only across native Codex tools too.
+    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature
+    // gates, while -c accepts the top-level include_apply_patch_tool override.
     overrides.extend(
-        CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES
+        CODEX_APPLY_PATCH_DISABLED_CONFIG_OVERRIDES
             .iter()
             .map(|entry| (*entry).to_string()),
     );
@@ -297,6 +327,7 @@ fn build_codex_internal_mcp_overrides(
     runtime_context: Option<&CodexMcpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
+    let startup_timeout_secs = external_mcp_config().startup_timeout_secs;
     let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
 
     let node_command = node_utils::find_node_binary()
@@ -349,6 +380,8 @@ fn build_codex_internal_mcp_overrides(
             encode_codex_string_array(&mcp_args)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!("mcp_servers.{mcp_server_name}.startup_timeout_sec={startup_timeout_secs}"),
     ];
 
     if let Some(tools) = enabled_tools {
@@ -393,6 +426,11 @@ fn build_codex_external_mcp_overrides(
             encode_codex_string_literal(TAURI_MCP_BYPASS_TOKEN_ENV)?
         ),
         format!("mcp_servers.{mcp_server_name}.enabled=true"),
+        format!("mcp_servers.{mcp_server_name}.required=true"),
+        format!(
+            "mcp_servers.{mcp_server_name}.startup_timeout_sec={}",
+            cfg.startup_timeout_secs
+        ),
     ];
 
     if !codex_metadata.mcp_tools.is_empty() {
@@ -915,6 +953,18 @@ pub fn build_codex_exec_args(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<Vec<String>, String> {
+    build_codex_exec_args_with_security_policy(
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
     }
@@ -934,7 +984,9 @@ pub fn build_codex_exec_args(
 
     require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
     args.push("-s".to_string());
-    args.push(normalize_cli_token(effective_codex_sandbox_mode(config)));
+    args.push(normalize_cli_token(effective_codex_sandbox_mode(
+        security_policy,
+    )));
 
     if let Some(cwd) = config.cwd.as_ref() {
         args.push("-C".to_string());
@@ -978,7 +1030,7 @@ pub fn build_codex_exec_args(
     args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     Ok(args)
@@ -988,6 +1040,20 @@ pub fn build_codex_exec_resume_args(
     capabilities: &CodexCliCapabilities,
     session_id: &str,
     config: &CodexExecCliConfig,
+) -> Result<Vec<String>, String> {
+    build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+fn build_codex_exec_resume_args_with_security_policy(
+    capabilities: &CodexCliCapabilities,
+    session_id: &str,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
 ) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
@@ -1039,14 +1105,14 @@ pub fn build_codex_exec_resume_args(
     args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
-        normalize_cli_token(effective_codex_approval_policy(config))
+        normalize_cli_token(effective_codex_approval_policy(security_policy))
     ));
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
     args.push(format!(
         "sandbox_mode=\"{}\"",
-        normalize_cli_token(effective_codex_sandbox_mode(config))
+        normalize_cli_token(effective_codex_sandbox_mode(security_policy))
     ));
 
     Ok(args)
@@ -1070,15 +1136,35 @@ pub fn build_spawnable_codex_exec_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_args(capabilities, config)?;
+    build_spawnable_codex_exec_command_with_security_policy(
+        cli_path,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_exec_command_with_security_policy(
+    cli_path: &Path,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_args_with_security_policy(capabilities, config, security_policy)?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -1093,15 +1179,42 @@ pub fn build_spawnable_codex_resume_command(
     capabilities: &CodexCliCapabilities,
     config: &CodexExecCliConfig,
 ) -> Result<SpawnableCommand, String> {
-    let args = build_codex_exec_resume_args(capabilities, session_id, config)?;
+    build_spawnable_codex_resume_command_with_security_policy(
+        cli_path,
+        session_id,
+        prompt,
+        capabilities,
+        config,
+        CodexLaunchSecurityPolicy::McpCompatibility,
+    )
+}
+
+pub(crate) fn build_spawnable_codex_resume_command_with_security_policy(
+    cli_path: &Path,
+    session_id: &str,
+    prompt: &str,
+    capabilities: &CodexCliCapabilities,
+    config: &CodexExecCliConfig,
+    security_policy: CodexLaunchSecurityPolicy,
+) -> Result<SpawnableCommand, String> {
+    let args = build_codex_exec_resume_args_with_security_policy(
+        capabilities,
+        session_id,
+        config,
+        security_policy,
+    )?;
     let mut cmd = tokio::process::Command::new(cli_path);
     cmd.args(args);
     cmd.arg("--");
     cmd.arg(prompt);
     let prompt_arg_index = cmd.as_std().get_args().count().saturating_sub(1);
-    configure_spawn(&mut cmd, config.cwd.as_deref());
+    let stdin_transport = configure_spawn(
+        &mut cmd,
+        config.cwd.as_deref(),
+        CodexPromptTransport::PositionalArg,
+    );
     Ok(attach_codex_prompt_debug_artifact(
-        SpawnableCommand::new(cmd, None),
+        SpawnableCommand::new_with_stdin_transport(cmd, None, stdin_transport),
         prompt,
         prompt_arg_index,
         config.cwd.as_deref(),
@@ -1200,7 +1313,18 @@ fn run_codex_optional_command(cli_path: &Path, args: &[&str]) -> String {
     run_codex_command(cli_path, args).unwrap_or_default()
 }
 
-fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexPromptTransport {
+    PositionalArg,
+    #[cfg(test)]
+    Stdin,
+}
+
+fn configure_spawn(
+    cmd: &mut tokio::process::Command,
+    cwd: Option<&Path>,
+    prompt_transport: CodexPromptTransport,
+) -> SpawnableStdinTransport {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
@@ -1219,13 +1343,24 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::piped());
+    let stdin_transport = match prompt_transport {
+        CodexPromptTransport::PositionalArg => {
+            cmd.stdin(std::process::Stdio::null());
+            SpawnableStdinTransport::Null
+        }
+        #[cfg(test)]
+        CodexPromptTransport::Stdin => {
+            cmd.stdin(std::process::Stdio::piped());
+            SpawnableStdinTransport::Piped
+        }
+    };
     crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     // Put Codex (and its descendants — MCP server, any subprocesses it
     // spawns) into their own process group so the Tauri exit handler can
     // SIGTERM the whole tree without risking the app itself. See
     // `crate::infrastructure::agents::spawn_isolation`.
     crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec_tokio(cmd);
+    stdin_transport
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

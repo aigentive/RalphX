@@ -54,6 +54,12 @@ pub async fn append_ideation_plan_task_core(
     }
 
     let session_id = IdeationSessionId::from_string(input.session_id.clone());
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await?;
     let tasks_owner = app_state
         .agent_conversation_workspace_repo
         .get_by_task_pipeline_session_id(&session_id)
@@ -224,6 +230,11 @@ pub async fn append_ideation_plan_task_core(
     let (dependencies_created, was_waiting_on_pr, inserted_status) = app_state
         .db
         .run_transaction(move |conn| {
+            crate::application::tasks_feature_policy::authorize_tasks_session_sync(
+                conn,
+                Some(&tx_session_id),
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )?;
             if let Some((source_conversation_id, source_message_id)) =
                 tx_tasks_source_identity.as_ref()
             {

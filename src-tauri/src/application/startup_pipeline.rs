@@ -37,6 +37,7 @@ use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::error::AppError;
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +148,21 @@ where
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
     let previous_session_cutoff = startup_previous_session_cutoff();
 
+    let phase_started_at = startup_phase_started("legacy_claude_mcp_reconciliation");
+    if deps
+        .app_state
+        .mcp_policy_service()
+        .reconcile_reserved_claude_registration_best_effort()
+        .await
+        .is_err()
+    {
+        warn!(
+            failure_code = "legacy_mcp_reconciliation_failed",
+            "Legacy Claude MCP reconciliation did not complete; launch preflight remains authoritative"
+        );
+    }
+    startup_phase_completed("legacy_claude_mcp_reconciliation", phase_started_at);
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,
@@ -216,6 +232,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
+    let phase_started_at = startup_phase_started("deferred_plan_approval_reconciliation");
+    if let Err(error) = crate::application::plan_approval_notification_service::reconcile_deferred_plan_approvals_on_startup(&app_state).await {
+        tracing::warn!(error = %error, "Deferred plan approval reconciliation did not complete");
+    }
+    startup_phase_completed("deferred_plan_approval_reconciliation", phase_started_at);
+
+    // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
+    // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
     match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
         Arc::clone(&app_state.branch_update_repo),
@@ -248,6 +272,21 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
     startup_phase_completed("git_mutation_authority_recovery", phase_started_at);
+
+    let tasks_settings = app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if tasks_settings.tasks_feature_state != crate::domain::ideation::TasksFeatureState::Enabled {
+        app_state
+            .build_tasks_feature_toggle_service(
+                Arc::clone(&execution_state),
+                Some(app_handle.clone()),
+            )
+            .set_tasks_enabled(false)
+            .await?;
+    }
 
     let phase_started_at = startup_phase_started("branch_update_run_binding_recovery");
     match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(
@@ -486,6 +525,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     tracing::info!("Scheduling terminal agent workspace local cleanup...");
     {
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let cleanup_plan_branch_repo = Arc::clone(&plan_branch_repo);
         let project_repo = Arc::clone(&project_repo);
         let ticket_branch_repo = Arc::clone(&app_state.ticket_canonical_branch_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
@@ -495,6 +535,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
                 crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                     agent_conversation_workspace_repo,
+                    cleanup_plan_branch_repo,
                     project_repo,
                     Some(ticket_branch_repo),
                     github_service,
@@ -537,23 +578,20 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
-                crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
-                    project_repo,
-                    agent_conversation_workspace_repo,
-                    Some(ticket_branch_repo),
-                    orphan_worktree_cleanup_marker_repo,
-                    blocked_git_project_ids,
-                    running_agent_registry,
-                )
-                .await;
-            })
+            crate::application::orphan_worktree_cleanup::run_periodic_orphan_agent_worktree_cleanup(
+                project_repo,
+                agent_conversation_workspace_repo,
+                Some(ticket_branch_repo),
+                orphan_worktree_cleanup_marker_repo,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
             .await;
         });
     }
 
     let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
@@ -561,6 +599,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Some(Arc::clone(&app_state.ticket_canonical_branch_repo)),
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
+        Some(app_state.notification_service()),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
@@ -584,6 +623,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                plan_branch_repo: Arc::clone(&plan_branch_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);

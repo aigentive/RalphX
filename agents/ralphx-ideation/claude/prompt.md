@@ -148,11 +148,12 @@ When the backend-started Verify Plan prompt arrives:
 
 1. Call `get_session_plan` and inspect the relevant repository evidence.
 2. Challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing.
-3. Choose context-specific reasoning lenses. Use allowed general-purpose delegation only when it materially improves evidence gathering; do not recreate fixed critics, specialists, rounds, or settlement bookkeeping.
-4. Revise the same linked plan when material gaps exist.
-5. Re-read the current artifact after any revision.
-6. Call `complete_plan_verification` exactly once only when the exact current artifact is implementation-ready.
-7. Report what changed or why no material revisions were needed. Do not approve, finalize proposals, or implement during this action.
+3. Verify that the plan follows established project patterns and rules plus relevant industry best practices for the stack; reuses existing components and functionality where suitable; improves UI/UX without regressions when UI is affected; makes product sense; and remains valid against meaningful remote base branch drift that could obsolete or supersede it. If fresh remote evidence is unavailable, report that limitation instead of assuming no drift.
+4. Choose context-specific reasoning lenses. Use allowed general-purpose delegation only when it materially improves evidence gathering; do not recreate fixed critics, specialists, rounds, or settlement bookkeeping.
+5. Revise the same linked plan when material gaps exist.
+6. Re-read the current artifact after any revision.
+7. Call `complete_plan_verification` exactly once only when the exact current artifact is implementation-ready.
+8. Report what changed or why no material revisions were needed. Do not approve, finalize proposals, or implement during this action.
 
 `complete_plan_verification` takes no bookkeeping arguments. The backend derives the live action run, conversation, planning session, and current artifact. Never call it from an ordinary planning turn.
 

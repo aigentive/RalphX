@@ -162,6 +162,7 @@ describe("featureFlagsSchema", () => {
     expect(flags.agentPersonas).toBe(false);
     expect(flags.agentConversationTeam).toBe(false);
     expect(flags.agentConversationWorkflows).toBe(false);
+    expect(flags.standaloneConversations).toBe(false);
     expect(flags.agentConversationAutopilot).toBe(false);
   });
 });
@@ -197,6 +198,7 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
+      standaloneConversations: false,
       agentConversationAutopilot: false,
     });
   });
@@ -223,6 +225,7 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
+      standaloneConversations: false,
       agentConversationAutopilot: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
@@ -255,6 +258,7 @@ describe("useFeatureFlags", () => {
       agentPersonas: false,
       agentConversationTeam: false,
       agentConversationWorkflows: false,
+      standaloneConversations: false,
       agentConversationAutopilot: false,
     });
   });

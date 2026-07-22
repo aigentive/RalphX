@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   AgentWorkspacePrReviewAction,
@@ -8,6 +9,9 @@ import type {
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+  refreshWorkspaceReviewContext,
   prReviewContextForConversation,
   resolveWorkspaceReviewOwnerConversationId,
 } from "./agentWorkspaceQueries";
@@ -79,6 +83,7 @@ function reviewContext(
     prNumber: 471,
     prUrl: "https://github.com/aigentive/ralphx.app/pull/471",
     currentHeadSha: "abcdef1234567890",
+    pendingActionHeadStatus: "current",
     health: null,
     reviewFeedback: null,
     monitor: monitor(),
@@ -170,16 +175,28 @@ describe("resolveWorkspaceReviewOwnerConversationId", () => {
     ).toBe("parent-workspace-conversation");
   });
 
-  it("uses the selected conversation for reviewable project workspaces without parents", () => {
+  it("rejects PLAN workspaces without falling back to their parent", () => {
     expect(
       resolveWorkspaceReviewOwnerConversationId({
         activeConversationContextType: "project",
         activeConversationId: "workspace-conversation",
-        activeConversationParentId: null,
+        activeConversationParentId: "parent-workspace-conversation",
         activeConversationMode: "plan",
         activeWorkspaceConversationId: "workspace-conversation",
       }),
-    ).toBe("workspace-conversation");
+    ).toBeNull();
+  });
+
+  it("rejects Review PR workspaces without falling back to their parent", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "project",
+        activeConversationId: "review-pr-conversation",
+        activeConversationParentId: "parent-workspace-conversation",
+        activeConversationMode: "review_pr",
+        activeWorkspaceConversationId: "review-pr-conversation",
+      }),
+    ).toBeNull();
   });
 
   it("returns null for non-project conversations", () => {
@@ -192,5 +209,115 @@ describe("resolveWorkspaceReviewOwnerConversationId", () => {
         activeWorkspaceConversationId: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe("workspace Review refresh ownership", () => {
+  it("keeps broad workspace invalidation away from Review context", async () => {
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await invalidateWorkspaceQueries(queryClient, "conversation-1");
+
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+    });
+  });
+
+  it("coalesces raced refreshes and runs one trailing full-target request", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const requests: Array<{
+      refreshTarget: boolean;
+      resolve: (value: AgentWorkspaceReviewContext) => void;
+    }> = [];
+    const fetchContext = vi.fn(
+      (
+        _conversationId: string,
+        options: { refreshTarget?: boolean },
+      ) =>
+        new Promise<AgentWorkspaceReviewContext>((resolve) => {
+          requests.push({
+            refreshTarget: options.refreshTarget ?? false,
+            resolve,
+          });
+        }),
+    );
+
+    const first = refreshWorkspaceReviewContext(
+      queryClient,
+      "conversation-1",
+      "status",
+      fetchContext,
+    );
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const racedStatus = refreshWorkspaceReviewContext(
+      queryClient,
+      "conversation-1",
+      "status",
+      fetchContext,
+    );
+    const racedTarget = refreshWorkspaceReviewContext(
+      queryClient,
+      "conversation-1",
+      "full_target",
+      fetchContext,
+    );
+
+    expect(requests).toHaveLength(1);
+    requests[0]!.resolve({} as AgentWorkspaceReviewContext);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]!.refreshTarget).toBe(true);
+    requests[1]!.resolve({} as AgentWorkspaceReviewContext);
+
+    await Promise.all([first, racedStatus, racedTarget]);
+    expect(fetchContext).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not replace an active interval fetch when a Review signal refresh arrives", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspaceReview("conversation-1"),
+      {} as AgentWorkspaceReviewContext,
+    );
+    const refetchQueries = vi.spyOn(queryClient, "refetchQueries");
+    let resolveIntervalFetch: (value: AgentWorkspaceReviewContext) => void;
+    let intervalSignal: AbortSignal | undefined;
+    const intervalFetch = queryClient.fetchQuery({
+      queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+      queryFn: ({ signal }) => {
+        intervalSignal = signal;
+        return new Promise<AgentWorkspaceReviewContext>((resolve) => {
+          resolveIntervalFetch = resolve;
+        });
+      },
+      staleTime: 0,
+    });
+    const signalRefreshFetch = vi.fn();
+
+    await vi.waitFor(() => expect(intervalSignal).toBeDefined());
+    const signalRefresh = refreshWorkspaceReviewContext(
+      queryClient,
+      "conversation-1",
+      "status",
+      signalRefreshFetch,
+    );
+
+    await Promise.resolve();
+    expect(intervalSignal?.aborted).toBe(false);
+    expect(signalRefreshFetch).not.toHaveBeenCalled();
+    expect(refetchQueries).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        exact: true,
+        queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+      }),
+      { cancelRefetch: false },
+    );
+
+    resolveIntervalFetch!({} as AgentWorkspaceReviewContext);
+    await Promise.all([intervalFetch, signalRefresh]);
   });
 });

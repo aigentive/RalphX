@@ -33,7 +33,7 @@ function InlineNotice({
   );
 }
 
-export default function WorkspaceReviewSection() {
+export default function WorkspaceReviewSection({ embedded = false }: { embedded?: boolean }) {
   const activeProject = useProjectStore(selectActiveProject);
   const projectId = activeProject?.id ?? null;
   const projectName = activeProject?.name ?? null;
@@ -62,14 +62,11 @@ export default function WorkspaceReviewSection() {
   const disabledPublishGate =
     isReviewLoading || isReviewUpdating || !reviewSettings;
 
-  return (
-    <SectionCard
-      icon={
-        <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Workspace Review"
-      description="Configure Workspace Review publish gating and inherited-provider runtime defaults."
-    >
+  const content = (
+    <>
+      <p className="mb-3 text-xs text-[var(--text-muted)]">
+        Legacy runtime fallbacks apply only when the Reviewer role in Agents follows provider defaults.
+      </p>
       {reviewSettings && (
         <>
           <ToggleSettingRow
@@ -80,8 +77,7 @@ export default function WorkspaceReviewSection() {
             disabled={disabledPublishGate}
             onChange={() =>
               updateReviewSettings({
-                requireWorkspaceReview:
-                  !reviewSettings.require_workspace_review,
+                requireWorkspaceReview: !reviewSettings.require_workspace_review,
               })
             }
           />
@@ -102,16 +98,14 @@ export default function WorkspaceReviewSection() {
       )}
       {isProviderPlaceholderData && (
         <InlineNotice title="Loading Providers">
-          Checking configured providers before showing Workspace Review
-          defaults.
+          Checking configured providers before showing Workspace Review defaults.
         </InlineNotice>
       )}
       {requiresProviderSetup && (
         <InlineNotice title="Provider Setup Required">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <span>
-              Enable and validate at least one provider before configuring
-              Workspace Review defaults.
+              Enable and validate at least one provider before configuring legacy Workspace Review fallbacks.
             </span>
             <button
               type="button"
@@ -131,41 +125,32 @@ export default function WorkspaceReviewSection() {
           className="w-full"
         >
           <TabsList className="inline-flex h-9 items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-secondary)]">
-            <TabsTrigger
-              value="global"
-              className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-            >
+            <TabsTrigger value="global" className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm">
               Global Defaults
             </TabsTrigger>
-            <TabsTrigger
-              value="project"
-              className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-            >
+            <TabsTrigger value="project" className="rounded-sm px-3 py-1 text-xs font-medium data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm">
               Project Overrides
             </TabsTrigger>
           </TabsList>
           <TabsContent value="global" className="mt-4">
-            <WorkspaceReviewScopeRows
-              projectId={null}
-              projectName={null}
-              isGlobal={true}
-              providers={enabledProviders}
-              modelRegistry={modelRegistry}
-              globalRows={globalRows}
-            />
+            <WorkspaceReviewScopeRows projectId={null} projectName={null} isGlobal={true} providers={enabledProviders} modelRegistry={modelRegistry} globalRows={globalRows} />
           </TabsContent>
           <TabsContent value="project" className="mt-4">
-            <WorkspaceReviewScopeRows
-              projectId={projectId}
-              projectName={projectName}
-              isGlobal={false}
-              providers={enabledProviders}
-              modelRegistry={modelRegistry}
-              globalRows={globalRows}
-            />
+            <WorkspaceReviewScopeRows projectId={projectId} projectName={projectName} isGlobal={false} providers={enabledProviders} modelRegistry={modelRegistry} globalRows={globalRows} />
           </TabsContent>
         </Tabs>
       )}
+    </>
+  );
+  return embedded ? content : (
+    <SectionCard
+      icon={
+        <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
+      }
+      title="Workspace Review"
+      description="Configure publish gating and legacy runtime fallbacks. The Reviewer role in Agents is authoritative."
+    >
+      {content}
     </SectionCard>
   );
 }

@@ -125,7 +125,6 @@ pub(crate) fn run_app_setup(
     service_team_tracker: TeamStateTracker,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
-
     configure_bundled_runtime_env(app);
 
     // Create application state with production SQLite repositories
@@ -170,7 +169,7 @@ pub(crate) fn run_app_setup(
     launch_startup_pipeline(
         app,
         &app_state,
-        startup_execution_state,
+        Arc::clone(&startup_execution_state),
         startup_active_project_state,
         pr_fix_review_publish_resumer,
     );

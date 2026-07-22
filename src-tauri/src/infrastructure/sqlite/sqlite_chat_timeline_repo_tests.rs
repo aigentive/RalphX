@@ -339,6 +339,70 @@ async fn page_hydrates_diff_tool_payloads_without_eager_loading_other_tools() {
 }
 
 #[tokio::test]
+async fn page_hydrates_full_delegation_payloads_without_eager_loading_other_tools() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-delegation");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let long_result = json!({
+        "job_id": "job-full-payload",
+        "status": "completed",
+        "content": "x".repeat(2_000),
+        "delegated_status": {
+            "conversation_id": "delegated-conversation",
+            "latest_run": {
+                "agent_run_id": "delegated-run",
+                "logical_model": "gpt-5.4",
+                "logical_effort": "high"
+            }
+        }
+    });
+    let mut delegate = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    delegate.tool_call_id = Some("call-delegate-wait".to_string());
+    delegate.tool_name = Some("mcp__ralphx__delegate_wait".to_string());
+    delegate.tool_status = Some("completed".to_string());
+    delegate.tool_input_preview = Some(r#"{"job_id":"job-full-payload"}"#.to_string());
+    delegate.input_json = delegate.tool_input_preview.clone();
+    delegate.tool_result_preview = Some("truncated-preview".to_string());
+    delegate.result_json = Some(long_result.to_string());
+
+    timeline_repo
+        .upsert_item(delegate)
+        .await
+        .expect("insert delegation timeline item");
+
+    let page = timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("timeline page");
+    let hydrated = page.items.first().expect("delegation item");
+    let hydrated_result: serde_json::Value = serde_json::from_str(
+        hydrated
+            .result_json
+            .as_deref()
+            .expect("delegation result should be fully hydrated"),
+    )
+    .expect("delegation result json");
+
+    assert_eq!(hydrated_result["job_id"], "job-full-payload");
+    assert_eq!(
+        hydrated_result["delegated_status"]["latest_run"]["agent_run_id"],
+        "delegated-run"
+    );
+    assert_eq!(
+        hydrated_result["content"].as_str().map(str::len),
+        Some(2_000)
+    );
+}
+
+#[tokio::test]
 async fn mark_message_items_finalized_updates_streaming_rows() {
     let (db, conversation_repo, timeline_repo) = setup_repos();
     let conversation_id = create_conversation(&conversation_repo).await;

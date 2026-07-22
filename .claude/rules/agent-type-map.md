@@ -37,12 +37,19 @@ Do not maintain a hand-written full agent roster here; canonical metadata and ca
 | `delegation` | `delegation:` | Parent-linked delegated agent conversation |
 | `task` | `task:` | Task Q&A |
 | `project` | `project:` | Project Q&A |
+| `standalone` | `standalone:` | Projectless Chat or Persona conversation in a private workspace |
 | `task_execution` | `task_execution:` | Implementation run |
 | `review` | `review:` | Review run/chat |
 | `merge` | `merge:` | Merge resolution |
 | `branch_update` | `branch_update:` | Branch synchronization/conflict resolution |
 
 When adding a context, update Rust serialization/parsing, TS schema, registry/store key, send/resume routing, lifecycle events, queue/recovery behavior, and user-visible tests together.
+
+## Agent Conversation Modes
+
+| Mode | Contexts | Purpose |
+|---|---|---|
+| `persona_builder` | `project` \| `standalone` | Scope-locked persona build/refine in the Agents surface; folders are references and text attachments use the private workspace. |
 
 ## Verification Ownership
 

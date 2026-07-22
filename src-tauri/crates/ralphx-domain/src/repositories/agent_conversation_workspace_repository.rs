@@ -12,6 +12,36 @@ use crate::entities::{
 };
 use crate::error::AppResult;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspaceLocalCleanupClaim {
+    Claimed,
+    AlreadyInProgress,
+    AlreadyCleaned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePrTerminalSettlement {
+    pub superseded_action_ids: Vec<String>,
+    pub event_inserted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentWorkspacePrReviewActionMutation {
+    UpsertPending(AgentWorkspacePrReviewAction),
+    CompareAndSet {
+        action_id: String,
+        expected: AgentWorkspacePrReviewActionStatus,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePrReviewStateTransition {
+    pub monitor: AgentWorkspacePrReviewMonitor,
+    pub action: Option<AgentWorkspacePrReviewAction>,
+}
+
 #[async_trait]
 pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn create_or_update(
@@ -122,6 +152,30 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _checked_at: DateTime<Utc>,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn claim_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        _stale_before: DateTime<Utc>,
+    ) -> AppResult<AgentWorkspaceLocalCleanupClaim> {
+        self.mark_local_cleanup_status(conversation_id, "cleaning", claimed_at)
+            .await?;
+        Ok(AgentWorkspaceLocalCleanupClaim::Claimed)
+    }
+
+    async fn finalize_local_cleanup(
+        &self,
+        conversation_id: &ChatConversationId,
+        claimed_at: DateTime<Utc>,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let _ = claimed_at;
+        self.mark_local_cleanup_status(conversation_id, status, checked_at)
+            .await?;
+        Ok(true)
     }
 
     async fn get_local_cleanup_status(
@@ -365,8 +419,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _head_sha: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
     }
 
     async fn mark_pr_review_first_action_resolved(
@@ -378,6 +432,57 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Ok(Vec::new())
+    }
+
+    /// Review PR lifecycle candidates, including monitors whose new-head dispatch is paused.
+    async fn list_pr_review_lifecycle_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        self.list_active_pr_review_monitors().await
+    }
+
+    /// Startup repair candidates include both nonterminal lifecycle monitors and legacy rows whose
+    /// workspace or monitor already carries terminal authority.
+    async fn list_pr_review_lifecycle_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
+    /// Rearms only a legacy terminal-monitor/nonterminal-workspace split after a live GitHub Open
+    /// observation. Normal paused monitors never use this repair transition.
+    async fn rearm_terminal_pr_review_monitor_after_live_open(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Atomically settles every durable Review PR projection after GitHub reports a terminal PR.
+    async fn settle_pr_review_terminal(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _status: &str,
+        _summary: &str,
+    ) -> AppResult<AgentWorkspacePrTerminalSettlement> {
+        Err(crate::error::AppError::Infrastructure(
+            "Review PR terminal settlement is unsupported by this repository".to_string(),
+        ))
+    }
+
+    /// Atomically settles one Review PR monitor transition and optional action mutation while the
+    /// exact workspace/PR and monitor remain nonterminal. `None` means stale or terminal authority
+    /// rejected the transition without changing either row.
+    async fn transition_pr_review_state_if_nonterminal(
+        &self,
+        _monitor: AgentWorkspacePrReviewMonitor,
+        _action: Option<AgentWorkspacePrReviewActionMutation>,
+    ) -> AppResult<Option<AgentWorkspacePrReviewStateTransition>> {
+        Err(crate::error::AppError::Infrastructure(
+            "Guarded Review PR state transitions are unsupported by this repository".to_string(),
+        ))
     }
 
     async fn upsert_workspace_review_monitor(
@@ -392,6 +497,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
         Ok(None)
+    }
+
+    /// Atomically records a reviewer launch failure only while the exact reserved launch still
+    /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
+    async fn fail_reserved_workspace_review_start(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_target_scope: crate::entities::AgentWorkspaceReviewTargetScope,
+        _expected_diff_fingerprint: &str,
+        _expected_review_conversation_id: &ChatConversationId,
+        _expected_run_id: &str,
+        _error: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
     }
 
     async fn approve_workspace_review_anyway(
@@ -461,6 +580,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(action)
     }
 
+    async fn create_or_update_pr_review_action_if_nonterminal(
+        &self,
+        action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        self.create_or_update_pr_review_action(action).await
+    }
+
     async fn get_pr_review_action(
         &self,
         _action_id: &str,
@@ -473,6 +599,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _head_sha: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn get_latest_pending_pr_review_action(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
     ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
         Ok(None)
     }
@@ -495,6 +629,33 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     }
 
     async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool>;
+
+    async fn claim_pending_pr_review_action_if_nonterminal(
+        &self,
+        action_id: &str,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+    ) -> AppResult<bool> {
+        self.claim_pending_pr_review_action(action_id).await
+    }
+
+    async fn compare_and_set_pr_review_action_status(
+        &self,
+        action_id: &str,
+        expected: AgentWorkspacePrReviewActionStatus,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<&str>,
+    ) -> AppResult<bool> {
+        let Some(action) = self.get_pr_review_action(action_id).await? else {
+            return Ok(false);
+        };
+        if action.status != expected {
+            return Ok(false);
+        }
+        self.update_pr_review_action_status(action_id, status, submitted_review_id)
+            .await?;
+        Ok(true)
+    }
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 

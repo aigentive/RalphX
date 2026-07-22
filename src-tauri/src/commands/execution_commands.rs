@@ -15,7 +15,7 @@ use crate::application::chat_service::{
 };
 use crate::application::reconciliation::UserRecoveryAction;
 use crate::application::task_restart::{
-    classify_failed_restart, prepare_terminal_task_for_ready_restart, FailedRestartClassification,
+    build_terminal_ready_restart_plan, classify_failed_restart, FailedRestartClassification,
 };
 use crate::application::team_state_tracker::TeamStateTracker;
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
@@ -121,9 +121,46 @@ pub async fn recover_task_execution(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
+    let task = match app_state.task_repo.get_by_id(&task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
 
     Ok(reconciler.recover_execution_stop(&task_id).await)
+}
+
+async fn prepare_recovery_prompt_action(
+    task_id: &crate::domain::entities::TaskId,
+    action: &str,
+    app_state: &AppState,
+) -> Result<Option<(crate::domain::entities::Task, UserRecoveryAction)>, String> {
+    let action = match action {
+        "restart" => UserRecoveryAction::Restart,
+        "cancel" => UserRecoveryAction::Cancel,
+        _ => return Err("Invalid recovery action".to_string()),
+    };
+    let task = match app_state.task_repo.get_by_id(task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some((task, action)))
 }
 
 /// Resolve a recovery prompt by applying the selected action.
@@ -136,18 +173,12 @@ pub async fn resolve_recovery_prompt(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let task_id = crate::domain::entities::TaskId::from_string(task_id);
-    let action = match action.as_str() {
-        "restart" => UserRecoveryAction::Restart,
-        "cancel" => UserRecoveryAction::Cancel,
-        _ => return Err("Invalid recovery action".to_string()),
+    let Some((task, action)) =
+        prepare_recovery_prompt_action(&task_id, action.as_str(), &app_state).await?
+    else {
+        return Ok(false);
     };
     let reconciler = build_reconciler_for_recovery(&app_state, Arc::clone(&execution_state), app);
-
-    let task = match app_state.task_repo.get_by_id(&task_id).await {
-        Ok(Some(task)) => task,
-        Ok(None) => return Ok(false),
-        Err(e) => return Err(e.to_string()),
-    };
 
     Ok(reconciler.apply_user_recovery_action(&task, action).await)
 }
@@ -190,6 +221,13 @@ pub async fn restart_task(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+        .authorize_session(
+            task.ideation_session_id.as_ref(),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
 
     if task.internal_status == InternalStatus::Failed {
         let classification = classify_failed_restart(&state, &task).await;
@@ -227,20 +265,19 @@ pub async fn restart_task(
                 });
             }
             FailedRestartClassification::RestartRequired(_) => {
-                prepare_terminal_task_for_ready_restart(
-                    &state.task_repo,
+                let plan = build_terminal_ready_restart_plan(
                     &state.task_step_repo,
                     &task,
                     agent_variant.as_deref(),
                 )
                 .await
-                .map_err(|error| format!("Failed to prepare task restart: {error}"))?;
+                .map_err(|error| format!("Failed to prepare task restart: {error}"))?
+                .ok_or_else(|| "Failed task restart did not produce a terminal plan".to_string())?;
                 let transition_service =
                     build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
                 let updated_task = transition_service
-                    .transition_task_with_metadata(
-                        &task_id,
-                        InternalStatus::Ready,
+                    .restart_terminal_task_to_ready(
+                        plan,
                         Some(build_restart_metadata(note.as_deref())),
                     )
                     .await
@@ -330,23 +367,29 @@ pub async fn restart_task(
             stopped_from_status: stopped_from_status.as_str().to_string(),
         });
     }
-    if transition_target == InternalStatus::Ready && task.internal_status.is_terminal() {
-        prepare_terminal_task_for_ready_restart(
-            &state.task_repo,
-            &state.task_step_repo,
-            &task,
-            agent_variant.as_deref(),
-        )
-        .await
-        .map_err(|e| format!("Failed to prepare task restart: {e}"))?;
-    }
+    let terminal_restart_plan = if transition_target == InternalStatus::Ready
+        && task.internal_status.is_terminal()
+    {
+        build_terminal_ready_restart_plan(&state.task_step_repo, &task, agent_variant.as_deref())
+            .await
+            .map_err(|e| format!("Failed to prepare task restart: {e}"))?
+    } else {
+        None
+    };
 
     // 7. Transition to target status: clear stop metadata and optionally store restart_note
     let restart_metadata = build_restart_metadata(note.as_deref());
-    let updated_task = transition_service
-        .transition_task_with_metadata(&task_id, transition_target, Some(restart_metadata))
-        .await
-        .map_err(|e| e.to_string())?;
+    let updated_task = if let Some(plan) = terminal_restart_plan {
+        transition_service
+            .restart_terminal_task_to_ready(plan, Some(restart_metadata))
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        transition_service
+            .transition_task_with_metadata(&task_id, transition_target, Some(restart_metadata))
+            .await
+            .map_err(|e| e.to_string())?
+    };
 
     if transition_target == InternalStatus::Ready {
         schedule_ready_tasks_for_project(

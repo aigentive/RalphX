@@ -21,13 +21,17 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
-import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
+import {
+  serializeComposerReferencesMetadata,
+  type MessageFolderReference,
+} from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
+  ComposerExcerptReference,
   CapabilityIntent,
   ComposerIntegrationReference,
   ComposerProjectReference,
@@ -64,6 +68,7 @@ interface UseChatActionsProps {
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      composerExcerptReferences?: ComposerExcerptReference[];
       capabilityIntent?: CapabilityIntent | null;
       composerSelectionSnapshot?: ComposerSelectionSnapshot;
       teamIntent?: TeamIntent | null;
@@ -172,9 +177,11 @@ export function useChatActions({
       attachmentIds?: string[],
       target?: string,
       composerOptions?: {
+        folderReferences?: MessageFolderReference[];
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         selectionSnapshot?: ComposerSelectionSnapshot;
         teamIntent?: TeamIntent | null;
@@ -203,10 +210,12 @@ export function useChatActions({
           try {
             if (activeConversationId && !target) {
               const referenceMetadata = serializeComposerReferencesMetadata({
+                folderReferences: composerOptions?.folderReferences,
                 projectReferences: composerOptions?.projectReferences,
                 integrationReferences: composerOptions?.integrationReferences,
                 artifactReferences: composerOptions?.artifactReferences,
                 selectionSnapshot: composerOptions?.selectionSnapshot,
+                excerptReferences: composerOptions?.excerptReferences,
               });
               const message = referenceMetadata
                 ? addOptimisticUserMessageToConversationCache(
@@ -229,6 +238,7 @@ export function useChatActions({
               composerOptions?.projectReferences?.length ||
               composerOptions?.integrationReferences?.length ||
               composerOptions?.artifactReferences?.length ||
+              composerOptions?.excerptReferences?.length ||
               composerOptions?.capabilityIntent ||
               composerOptions?.selectionSnapshot ||
               composerOptions?.teamIntent
@@ -261,6 +271,12 @@ export function useChatActions({
                       ? {
                           composerSelectionSnapshot:
                             composerOptions.selectionSnapshot,
+                        }
+                      : {}),
+                    ...(composerOptions?.excerptReferences?.length
+                      ? {
+                          composerExcerptReferences:
+                            composerOptions.excerptReferences,
                         }
                       : {}),
                   }
@@ -302,15 +318,20 @@ export function useChatActions({
         } else {
           const params: {
             content: string;
+            composerFolderReferences?: MessageFolderReference[];
             attachmentIds?: string[];
             target?: string;
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            composerExcerptReferences?: ComposerExcerptReference[];
             capabilityIntent?: CapabilityIntent | null;
             composerSelectionSnapshot?: ComposerSelectionSnapshot;
             teamIntent?: TeamIntent | null;
           } = { content };
+          if (composerOptions?.folderReferences?.length) {
+            params.composerFolderReferences = composerOptions.folderReferences;
+          }
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
           }
@@ -327,6 +348,9 @@ export function useChatActions({
           if (composerOptions?.artifactReferences?.length) {
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
+          }
+          if (composerOptions?.excerptReferences?.length) {
+            params.composerExcerptReferences = composerOptions.excerptReferences;
           }
           if (composerOptions?.capabilityIntent) {
             params.capabilityIntent = composerOptions.capabilityIntent;

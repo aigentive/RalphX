@@ -1,7 +1,7 @@
 use super::plan_complexity_assessment::{
     build_plan_complexity_assessor_prompt, get_current_plan_complexity_assessment_sync,
-    get_plan_complexity_assessment_by_key_sync, truncate_chars,
-    upsert_plan_complexity_assessment_sync,
+    get_plan_complexity_assessment_by_key_sync, list_missing_plan_complexity_assessments_sync,
+    truncate_chars, upsert_plan_complexity_assessment_sync,
 };
 use crate::domain::entities::{Artifact, ArtifactId, ArtifactType};
 use crate::error::AppError;
@@ -33,6 +33,7 @@ fn setup_db() -> Connection {
         CREATE TABLE ideation_sessions (
             id TEXT PRIMARY KEY,
             session_flow TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
             plan_artifact_id TEXT
         );
         CREATE TABLE artifacts (
@@ -62,10 +63,93 @@ fn setup_db() -> Connection {
             updated_at TEXT NOT NULL,
             UNIQUE(session_id, artifact_id, artifact_version)
         );
+        CREATE TABLE ideation_settings (
+            id INTEGER PRIMARY KEY,
+            plan_mode TEXT NOT NULL DEFAULT 'optional',
+            require_plan_approval INTEGER NOT NULL DEFAULT 1,
+            suggest_plans_for_complex INTEGER NOT NULL DEFAULT 1,
+            auto_link_proposals INTEGER NOT NULL DEFAULT 1,
+            require_verification_for_accept INTEGER NOT NULL DEFAULT 0,
+            require_verification_for_proposals INTEGER NOT NULL DEFAULT 0,
+            require_accept_for_finalize INTEGER,
+            ext_require_verification_for_accept INTEGER,
+            ext_require_verification_for_proposals INTEGER,
+            ext_require_accept_for_finalize INTEGER,
+            auto_verify_plans INTEGER NOT NULL DEFAULT 0,
+            auto_verify_draft_plans INTEGER NOT NULL DEFAULT 1,
+            ext_auto_verify_plans INTEGER,
+            tasks_enabled INTEGER NOT NULL DEFAULT 1,
+            tasks_feature_state TEXT NOT NULL DEFAULT 'enabled'
+        );
+        INSERT INTO ideation_settings (id, tasks_enabled) VALUES (1, 1);
+        CREATE TABLE agent_conversation_workspaces (
+            conversation_id TEXT PRIMARY KEY,
+            linked_ideation_session_id TEXT,
+            task_pipeline_session_id TEXT,
+            status TEXT NOT NULL
+        );
         ",
     )
     .expect("create test tables");
     conn
+}
+
+#[test]
+fn missing_assessment_reconciliation_only_selects_active_direct_plan_workspaces() {
+    let conn = setup_db();
+    seed_current_plan(&conn, "planning", Some("approved"));
+    conn.execute(
+        "INSERT INTO agent_conversation_workspaces (
+            conversation_id, linked_ideation_session_id, task_pipeline_session_id, status
+         ) VALUES ('conversation-1', 'session-1', NULL, 'active')",
+        [],
+    )
+    .unwrap();
+
+    let pending = list_missing_plan_complexity_assessments_sync(&conn, 8).unwrap();
+    assert_eq!(
+        pending,
+        vec![("session-1".to_string(), "artifact-1".to_string(), 3)]
+    );
+
+    conn.execute(
+        "UPDATE agent_conversation_workspaces
+         SET task_pipeline_session_id = 'session-1'
+         WHERE conversation_id = 'conversation-1'",
+        [],
+    )
+    .unwrap();
+    assert!(list_missing_plan_complexity_assessments_sync(&conn, 8)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn assessment_submission_rejects_stale_output_while_tasks_are_disabled() {
+    let conn = setup_db();
+    seed_current_plan(&conn, "planning", Some("approved"));
+    conn.execute(
+        "UPDATE ideation_settings
+         SET tasks_enabled = 0, tasks_feature_state = 'disabled'
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let error = upsert_plan_complexity_assessment_sync(&conn, valid_request(), "assessor")
+        .expect_err("stale assessor output must be rejected while Tasks are off");
+    assert!(matches!(
+        error,
+        AppError::FeatureDisabled(message) if message.starts_with("ralphx:tasks_disabled")
+    ));
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plan_complexity_assessments",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 fn seed_current_plan(conn: &Connection, session_flow: &str, approval_status: Option<&str>) {

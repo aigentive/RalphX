@@ -1,9 +1,24 @@
-import type { AgentModelCatalogEntry } from "@/lib/agent-models";
-import type { Persona } from "@/types/persona";
+import { ChevronDown, ChevronRight } from "lucide-react";
+
 import type {
   ManualRoleCatalogEntry,
   ManualRoleDefault,
 } from "@/api/manual-role-defaults.types";
+import { useConfirmation } from "@/hooks/useConfirmation";
+import type { AgentModelCatalogEntry } from "@/lib/agent-models";
+import type { Persona } from "@/types/persona";
+
+import { AgentRoleDefaultEditor } from "./AgentRoleDefaultEditor";
+
+const SOURCE_LABELS: Record<string, string> = {
+  project_ui: "Project UI",
+  project_yaml: "Project YAML",
+  global_ui: "Global UI",
+  global_yaml: "Global YAML",
+  legacy_lane: "Legacy lane",
+  legacy_workspace_review: "Legacy Workspace Review",
+  provider_default: "Provider default",
+};
 
 const CAPABILITY_LABELS: Record<string, string> = {
   solo: "Defaults",
@@ -18,267 +33,161 @@ const SPEED_LABELS: Record<string, string> = {
   fast: "Fast",
 };
 
-const SOURCE_LABELS: Record<string, string> = {
-  project_ui: "Project UI",
-  project_yaml: "Project YAML",
-  global_ui: "Global UI",
-  global_yaml: "Global YAML",
-  legacy_lane: "Legacy lane",
-  provider_default: "Provider default",
-};
-
-interface AgentRoleDefaultRowProps {
+export interface AgentRoleDefaultRowProps {
   entry: ManualRoleCatalogEntry;
+  expanded: boolean;
   disabled: boolean;
   providers: readonly string[];
   modelsForProvider: (provider: string) => readonly AgentModelCatalogEntry[];
   personas: readonly Persona[];
   onUpdate: (value: ManualRoleDefault) => void;
-  onFollow: () => void;
+  onExpandedChange: (expanded: boolean) => void;
+  onUseInheritedDefault: () => Promise<unknown>;
   onManagePersonas: () => void;
 }
 
-function nullableValue(value: string): string | null {
-  return value === "__default__" ? null : value;
+function providerLabel(provider: string): string {
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  return provider;
 }
 
-function labelFor(value: string, labels: Record<string, string>): string {
-  return labels[value] ?? value;
+function SummaryPill({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex min-h-6 items-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-[11px] text-[var(--text-secondary)]">
+      {children}
+    </span>
+  );
 }
 
 export function AgentRoleDefaultRow({
   entry,
+  expanded,
   disabled,
   providers,
   modelsForProvider,
   personas,
   onUpdate,
-  onFollow,
+  onExpandedChange,
+  onUseInheritedDefault,
   onManagePersonas,
 }: AgentRoleDefaultRowProps) {
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const value = entry.configured ?? entry.effective;
-  const blocked = disabled || value === null;
-  const models = value ? modelsForProvider(value.provider) : [];
-  const providerOptions =
-    value && !providers.includes(value.provider)
-      ? [value.provider, ...providers]
-      : providers;
-  const selectedModel = models.find((model) => model.id === value?.model);
-  const efforts = selectedModel?.supportedEfforts ?? [];
-  const commit = (patch: Partial<ManualRoleDefault>) => {
-    if (value) onUpdate({ ...value, ...patch });
+  const diagnosticOpen = entry.diagnostics.length > 0;
+  const effectiveExpanded = expanded || diagnosticOpen;
+  const model = value
+    ? modelsForProvider(value.provider).find((candidate) => candidate.id === value.model)
+    : null;
+  const sourceLabel = entry.source
+    ? SOURCE_LABELS[entry.source] ?? entry.source
+    : "Invalid";
+
+  const requestInheritedDefault = () => {
+    void confirm({
+      title: `Use inherited default for ${entry.displayName}?`,
+      description:
+        "This removes the UI override at this scope. The next configured source will become effective after the backend refreshes this role.",
+      confirmText: "Use inherited default",
+      pendingText: "Using inherited default...",
+      onConfirm: onUseInheritedDefault,
+      recoverFromError: () => ({
+        description:
+          "The override could not be removed. The configured value is unchanged; fix the error and try again.",
+        confirmText: "Try again",
+      }),
+    });
   };
 
   return (
     <div
       data-testid="manual-role-row"
-      className="rounded-lg px-4 py-4"
-      style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: 1,
-      }}
+      className="agents-role-row"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="text-sm font-semibold text-[var(--text-primary)]">
-            {entry.displayName}
-          </h4>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            Manual default · {entry.source ? SOURCE_LABELS[entry.source] ?? entry.source : "Invalid"}
-          </p>
+        <button
+          type="button"
+          aria-label={`Edit ${entry.displayName}`}
+          aria-expanded={effectiveExpanded}
+          aria-disabled={diagnosticOpen}
+          aria-controls={`${entry.role}-editor`}
+          onClick={() => {
+            if (!diagnosticOpen) onExpandedChange(!effectiveExpanded);
+          }}
+          className="group flex min-w-0 flex-1 items-start gap-2 text-left"
+        >
+          {effectiveExpanded
+            ? <ChevronDown aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-secondary)]" />
+            : <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-secondary)]" />}
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent-primary)]">
+              {entry.displayName}
+            </span>
+            <span className="mt-0.5 block text-xs leading-5 text-[var(--text-muted)]">
+              {entry.description}
+            </span>
+          </span>
+        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span className={entry.configured ? "agents-source-badge agents-source-badge--configured" : "agents-source-badge"}>
+            {entry.configured ? "Configured here" : `Inherited · ${sourceLabel}`}
+          </span>
+          {diagnosticOpen && (
+            <span className="agents-attention-badge">Needs attention</span>
+          )}
+          {entry.configured && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={requestInheritedDefault}
+              aria-label={`Use inherited default for ${entry.displayName}`}
+              className="rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)] disabled:pointer-events-none disabled:opacity-50"
+            >
+              Use inherited default
+            </button>
+          )}
         </div>
-        {entry.configured && (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={onFollow}
-            aria-label={`Follow ${entry.displayName} default`}
-            className="rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-50"
-          >
-            Follow
-          </button>
-        )}
       </div>
 
-      {entry.diagnostics.length > 0 && (
-        <div className="mt-3 space-y-1 text-xs text-[var(--status-error)]" role="alert">
-          {entry.diagnostics.map((diagnostic) => (
-            <p key={diagnostic}>{diagnostic}</p>
-          ))}
+      {!effectiveExpanded && value && (
+        <div className="ml-6 mt-3 flex flex-wrap gap-2">
+          <SummaryPill>{providerLabel(value.provider)}</SummaryPill>
+          <SummaryPill>{model?.menuLabel ?? value.model ?? "Provider model"}</SummaryPill>
+          <SummaryPill>{value.effort ?? "Provider effort"}</SummaryPill>
+          {value.serviceTier !== "provider_default" && (
+            <SummaryPill>{SPEED_LABELS[value.serviceTier] ?? value.serviceTier}</SummaryPill>
+          )}
+          {value.coordinationMode && value.coordinationMode !== "solo" && (
+            <SummaryPill>
+              {CAPABILITY_LABELS[value.coordinationMode] ?? value.coordinationMode}
+            </SummaryPill>
+          )}
         </div>
       )}
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Provider</span>
-          <select
-            aria-label={`${entry.displayName} provider`}
-            className="settings-input h-9 w-full"
-            value={value?.provider ?? ""}
-            disabled={blocked}
-            onChange={(event) => {
-              const provider = event.target.value;
-              const firstModel = modelsForProvider(provider)[0];
-              commit({
-                provider,
-                model: firstModel?.id ?? null,
-                effort: firstModel?.defaultEffort ?? null,
-              });
-            }}
-          >
-            {providerOptions.map((provider) => (
-              <option key={provider} value={provider}>
-                {provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider}
-              </option>
-            ))}
-          </select>
-        </label>
+      {effectiveExpanded && (
+        <div id={`${entry.role}-editor`} className="ml-6 mt-4 space-y-4">
+          {diagnosticOpen && (
+            <div className="agents-diagnostic" role="alert">
+              {entry.diagnostics.map((diagnostic) => (
+                <p key={diagnostic}>{diagnostic}</p>
+              ))}
+            </div>
+          )}
+          <AgentRoleDefaultEditor
+            entry={entry}
+            disabled={disabled}
+            providers={providers}
+            modelsForProvider={modelsForProvider}
+            personas={personas}
+            forcePersonaAccessOpen={diagnosticOpen}
+            onUpdate={onUpdate}
+            onManagePersonas={onManagePersonas}
+          />
+        </div>
+      )}
 
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Model</span>
-          <select
-            aria-label={`${entry.displayName} model`}
-            className="settings-input h-9 w-full"
-            value={value?.model ?? "__default__"}
-            disabled={blocked}
-            onChange={(event) => {
-              const model = nullableValue(event.target.value);
-              const selected = models.find((candidate) => candidate.id === model);
-              commit({ model, effort: selected?.defaultEffort ?? value?.effort ?? null });
-            }}
-          >
-            <option value="__default__">Provider default</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>{model.menuLabel}</option>
-            ))}
-            {value?.model && !selectedModel && (
-              <option value={value.model}>{value.model}</option>
-            )}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Effort</span>
-          <select
-            aria-label={`${entry.displayName} effort`}
-            className="settings-input h-9 w-full"
-            value={value?.effort ?? "__default__"}
-            disabled={blocked}
-            onChange={(event) => commit({ effort: nullableValue(event.target.value) })}
-          >
-            <option value="__default__">Provider default</option>
-            {efforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-            {value?.effort && !efforts.some((effort) => effort === value.effort) && (
-              <option value={value.effort}>{value.effort}</option>
-            )}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Capability</span>
-          <select
-            aria-label={`${entry.displayName} capability`}
-            className="settings-input h-9 w-full"
-            value={value?.coordinationMode ?? "solo"}
-            disabled={blocked}
-            onChange={(event) => commit({ coordinationMode: event.target.value })}
-          >
-            {entry.controls.capabilities.map((option) => (
-              <option key={option.value} value={option.value} disabled={!option.enabled}>
-                {labelFor(option.value, CAPABILITY_LABELS)}
-                {!option.enabled && option.disabledReason ? ` — ${option.disabledReason}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Speed</span>
-          <select
-            aria-label={`${entry.displayName} speed`}
-            className="settings-input h-9 w-full"
-            value={value?.serviceTier ?? "provider_default"}
-            disabled={blocked}
-            onChange={(event) =>
-              commit({ serviceTier: event.target.value as ManualRoleDefault["serviceTier"] })
-            }
-          >
-            {entry.controls.speeds.map((option) => (
-              <option key={option.value} value={option.value} disabled={!option.enabled}>
-                {labelFor(option.value, SPEED_LABELS)}
-                {!option.enabled && option.disabledReason ? ` — ${option.disabledReason}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Persona</span>
-          <select
-            aria-label={`${entry.displayName} persona`}
-            className="settings-input h-9 w-full"
-            value={value?.personaId ?? "__default__"}
-            disabled={blocked || !entry.controls.persona.enabled}
-            onChange={(event) => commit({ personaId: nullableValue(event.target.value) })}
-          >
-            <option value="__default__">No role persona</option>
-            {personas.map((persona) => (
-              <option key={persona.id} value={persona.id}>{persona.name}</option>
-            ))}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Approval</span>
-          <select
-            aria-label={`${entry.displayName} approval policy`}
-            className="settings-input h-9 w-full"
-            value={value?.approvalPolicy ?? "__default__"}
-            disabled={blocked}
-            onChange={(event) => commit({ approvalPolicy: nullableValue(event.target.value) })}
-          >
-            <option value="__default__">Provider default</option>
-            <option value="untrusted">Untrusted</option>
-            <option value="on-request">On request</option>
-            <option value="never">Never</option>
-          </select>
-        </label>
-
-        <label className="space-y-1 text-xs text-[var(--text-secondary)]">
-          <span>Sandbox</span>
-          <select
-            aria-label={`${entry.displayName} sandbox mode`}
-            className="settings-input h-9 w-full"
-            value={value?.sandboxMode ?? "__default__"}
-            disabled={blocked}
-            onChange={(event) => commit({ sandboxMode: nullableValue(event.target.value) })}
-          >
-            <option value="__default__">Provider default</option>
-            <option value="read-only">Read only</option>
-            <option value="workspace-write">Workspace write</option>
-            <option value="danger-full-access">Danger full access</option>
-          </select>
-        </label>
-      </div>
-
-      <div className="mt-3 space-y-1 text-[11px] text-[var(--text-muted)]">
-        {entry.controls.capabilities.filter((option) => !option.enabled).map((option) => (
-          <p key={`capability-${option.value}`}>{option.disabledReason}</p>
-        ))}
-        {entry.controls.speeds.filter((option) => !option.enabled).map((option) => (
-          <p key={`speed-${option.value}`}>{option.disabledReason}</p>
-        ))}
-        {!entry.controls.persona.enabled && entry.controls.persona.disabledReason && (
-          <p>
-            {entry.controls.persona.disabledReason}{" "}
-            <button type="button" className="text-[var(--accent-primary)] underline" onClick={onManagePersonas}>
-              Manage personas
-            </button>
-          </p>
-        )}
-      </div>
+      <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
 }

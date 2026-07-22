@@ -138,6 +138,86 @@ async fn wait_for_monitor_status(
     panic!("monitor did not reach status {status}");
 }
 
+#[tokio::test]
+async fn cleanup_before_plan_invalidates_inactive_pass_and_bypass_authority() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-authority-cleanup".to_string());
+
+    for (suffix, outcome, with_bypass) in [
+        ("passed", AgentWorkspaceReviewOutcome::Passed, false),
+        ("bypassed", AgentWorkspaceReviewOutcome::Blocking, true),
+    ] {
+        let conversation_id =
+            ChatConversationId::from_string(format!("plan-authority-cleanup-{suffix}"));
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            None,
+            Some("base-sha".to_string()),
+            format!("ralphx/test/plan-authority-cleanup-{suffix}"),
+            format!("/tmp/ralphx-plan-authority-cleanup-{suffix}"),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let artifact_id = ArtifactId::from_string(format!("review-artifact-{suffix}"));
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        monitor.review_outcome = outcome;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_artifact_id = Some(artifact_id.clone());
+        monitor.review_artifact_version = Some(7);
+        if with_bypass {
+            monitor.review_gate_bypassed_at = Some(Utc::now());
+            monitor.review_gate_bypassed_target_scope =
+                Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+            monitor.review_gate_bypassed_diff_fingerprint = Some("fingerprint".to_string());
+            monitor.review_gate_bypassed_artifact_id = Some(artifact_id.clone());
+            monitor.review_gate_bypassed_artifact_version = Some(7);
+        }
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        cleanup_workspace_review_for_plan_boundary(&state, &workspace, None)
+            .await
+            .expect("inactive review authority should be invalidated without a runtime");
+
+        let cleaned = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should remain as history");
+        assert_eq!(cleaned.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            cleaned.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            cleaned.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(cleaned.review_artifact_id, Some(artifact_id));
+        assert_eq!(cleaned.review_artifact_version, Some(7));
+        assert!(cleaned.review_gate_bypassed_at.is_none());
+        assert!(cleaned.review_gate_bypassed_artifact_id.is_none());
+        assert_eq!(
+            cleaned.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR)
+        );
+    }
+}
+
 #[test]
 fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads() {
     let mut inherited = WorkspaceReviewInheritedReferences::default();
@@ -395,6 +475,7 @@ x
         WORKSPACE_REVIEW_MAX_CHANGED_FILES
     );
     assert!(packet.summary.files_changed > WORKSPACE_REVIEW_MAX_CHANGED_FILES as u32);
+    assert!(packet.changed_files_truncated);
     assert_eq!(packet.summary.deletions, 2);
     assert!(packet.summary.insertions >= 4);
     assert!(packet.patch_excerpt_truncated);
@@ -444,6 +525,32 @@ x
         .expect("ranked file should be tracked");
     assert_eq!(ranked.status, "untracked");
     assert!(ranked.sources.contains("ignored"));
+}
+
+#[test]
+fn review_packet_reports_typed_hunk_truncation_without_changing_small_packets() {
+    let large_diff = (0..=WORKSPACE_REVIEW_MAX_HUNK_ANCHORS)
+        .map(|index| {
+            format!(
+                "diff --git a/src/{index}.rs b/src/{index}.rs\n--- a/src/{index}.rs\n+++ b/src/{index}.rs\n@@ -1 +1 @@\n-old\n+new"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let truncated = build_selected_source_review_packet(&large_diff);
+    assert!(truncated.hunk_anchors_truncated);
+    assert_eq!(
+        truncated.hunk_anchors.len(),
+        WORKSPACE_REVIEW_MAX_HUNK_ANCHORS
+    );
+
+    let small = build_selected_source_review_packet(
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new",
+    );
+    assert!(!small.changed_files_truncated);
+    assert!(!small.hunk_anchors_truncated);
+    assert!(!small.patch_excerpt_truncated);
 }
 
 #[test]
@@ -1383,6 +1490,18 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
                 .contains("Use the backend-owned Review gate.")
             && !artifact.content_truncated));
     assert!(start.context.monitor.last_run_id.is_some());
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string()),
+        start.context.monitor.last_run_id
+    );
+    assert_eq!(
+        sent_options[0].queue_policy,
+        crate::application::chat_service::SendQueuePolicy::RequireImmediateStart
+    );
     let review_conversation_id = start
         .context
         .monitor
@@ -1570,13 +1689,70 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
         .expect("monitor should persist");
     assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
     assert_eq!(monitor.review_conversation_id, Some(review_conversation_id));
-    assert!(monitor.last_run_id.is_none());
+    assert_eq!(
+        monitor.last_run_id,
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string())
+    );
     assert_eq!(
             monitor.last_error.as_deref(),
             Some(
                 "failed to start workspace reviewer chat: Agent not available: Mock agent not available"
             )
         );
+}
+
+#[tokio::test]
+async fn start_review_blocks_monitor_when_child_chat_breaks_reserved_identity() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+    let chat_service = MockChatService::new();
+    chat_service.mismatch_next_send_result_identity().await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+
+    let error = start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("review child chat must preserve its reserved identity");
+
+    assert!(error
+        .to_string()
+        .contains("reserved immediate-start authority"));
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("reserved monitor should persist");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.last_run_id,
+        sent_options[0]
+            .preallocated_agent_run_id
+            .map(|run_id| run_id.to_string())
+    );
+    assert!(monitor
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("reserved immediate-start authority")));
 }
 
 #[tokio::test]
@@ -1631,6 +1807,42 @@ async fn start_review_blocks_monitor_without_sending_when_no_enabled_default_exi
         .last_error
         .as_deref()
         .is_some_and(|message| message.contains("Settings > Harness > Providers")));
+}
+
+#[tokio::test]
+async fn start_review_rejects_missing_parent_conversation_before_creating_a_child() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = Arc::new(AppState::new_test());
+    let chat_service = MockChatService::new();
+    chat_service.set_available(false).await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+
+    let error = start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("a missing parent conversation must fail before child launch");
+
+    assert!(error.to_string().contains("Conversation not found"));
+    assert!(chat_service.get_sent_options().await.is_empty());
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed");
+    assert!(monitor.is_none());
 }
 
 #[tokio::test]
@@ -1706,6 +1918,71 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
+    );
+}
+
+#[tokio::test]
+async fn start_review_passes_the_provider_default_reviewer_model_to_the_child_chat() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(default_client)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_client);
+    let provider_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some("gpt-5.6-terra".to_string());
+    codex.effort = Some(LogicalEffort::XHigh);
+    provider_repo.upsert(&codex).await.unwrap();
+    state.agent_provider_settings_repo = provider_repo;
+    let state = Arc::new(state);
+    let chat_service = MockChatService::new();
+    chat_service.set_available(false).await;
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(workspace.mode);
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("owner conversation should persist");
+
+    start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        &chat_service,
+    )
+    .await
+    .expect_err("review child chat send should fail after options are recorded");
+
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(
+        sent_options[0].model_override.as_deref(),
+        Some("gpt-5.6-terra")
+    );
+    assert_eq!(
+        sent_options[0].logical_effort_override,
+        Some(LogicalEffort::XHigh)
     );
 }
 
@@ -2092,6 +2369,98 @@ async fn startup_reconciliation_marks_completed_current_workspace_review_ready()
     );
     assert_eq!(monitor.review_artifact_version, Some(9));
     assert_eq!(monitor.last_error, None);
+}
+
+#[tokio::test]
+async fn startup_reconciliation_does_not_consume_completed_review_output_in_plan_mode() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("Edit context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut completed_run = AgentRun::new(child_conversation_id.clone());
+    let run_id = completed_run.id.as_str().to_string();
+    completed_run.complete();
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("completed run should persist");
+
+    let mut monitor = context.monitor;
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.review_conversation_id = Some(child_conversation_id);
+    monitor.last_run_id = Some(run_id.clone());
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(run_id),
+        ArtifactId::from_string("historical-plan-review-artifact"),
+        7,
+        Utc::now(),
+        None,
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("reviewing monitor should persist");
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("PLAN workspace should persist");
+
+    assert_eq!(
+        reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("PLAN startup reconciliation should perform cleanup"),
+        1
+    );
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert_eq!(monitor.review_artifact_version, Some(7));
+    assert!(monitor
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("mode changed to Plan")));
 }
 
 #[tokio::test]
@@ -3445,7 +3814,7 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
         .expect("persisted monitor should exist");
     assert_eq!(
         persisted.reviewed_target_scope,
-        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
     );
     assert_eq!(
         persisted.review_gate_status,
@@ -3464,6 +3833,21 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
     assert!(!start.started);
     assert_eq!(start.skipped_reason.as_deref(), Some("current"));
     assert_eq!(chat_service.get_sent_messages().await.len(), 0);
+
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("persisted monitor read should succeed")
+        .expect("persisted monitor should exist");
+    assert_eq!(
+        persisted.reviewed_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+    );
+    assert_eq!(
+        persisted.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
 }
 
 #[tokio::test]
@@ -4063,6 +4447,8 @@ fn review_request_message_and_started_summary_describe_targets() {
     assert!(message.contains("Goal Wins"));
     assert!(message.contains("Respect the approved plan."));
     assert!(message.contains("target.review_packet"));
+    assert!(message.contains("list_workspace_review_files"));
+    assert!(message.contains("get_workspace_review_diff_page"));
     assert!(message.contains("Do not run shell commands, tests, linters, or validation suites."));
     assert!(message.contains(&workspace.conversation_id.as_str()));
     assert_eq!(

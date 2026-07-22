@@ -11,6 +11,9 @@ use tokio::time::{timeout, Duration};
 use tracing::info;
 
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
+};
 use crate::application::question_state::QuestionState;
 use crate::application::team_events;
 use crate::application::team_state_tracker::TeammateStatus;
@@ -76,12 +79,17 @@ pub(crate) fn is_user_attended_turn_completion(
     context_type: ChatContextType,
     automation_run_owned: bool,
     ideation_session_has_parent: bool,
+    backend_action_owned: bool,
 ) -> bool {
-    !automation_run_owned
+    !backend_action_owned
+        && !automation_run_owned
         && !ideation_session_has_parent
         && matches!(
             context_type,
-            ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+            ChatContextType::Ideation
+                | ChatContextType::Project
+                | ChatContextType::Standalone
+                | ChatContextType::Task
         )
 }
 
@@ -90,10 +98,11 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
-) {
+    agent_run_id: Option<&str>,
+) -> bool {
     let Some(state) = app_handle.try_state::<AppState>() else {
         tracing::warn!("Agent turn completed without managed AppState; agent_waiting skipped");
-        return;
+        return false;
     };
     let conversation = match state
         .chat_conversation_repo
@@ -101,11 +110,27 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         .await
     {
         Ok(Some(conversation)) => conversation,
-        Ok(None) => return,
+        Ok(None) => return false,
         Err(error) => {
             tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to load conversation for agent_waiting");
-            return;
+            return false;
         }
+    };
+    let backend_action_owned = if let Some(run_id) = agent_run_id {
+        match state
+            .agent_run_repo
+            .get_by_id(&AgentRunId::from_string(run_id.to_string()))
+            .await
+        {
+            Ok(Some(run)) => run.action_kind.is_some(),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(error = %error, run_id, "Failed to load run action authority for agent_waiting");
+                return false;
+            }
+        }
+    } else {
+        false
     };
 
     let (project_id, ideation_session_has_parent, context_title) = match context_type {
@@ -117,22 +142,23 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
                     session.parent_session_id.is_some(),
                     session.title,
                 ),
-                Ok(None) => return,
+                Ok(None) => return false,
                 Err(error) => {
                     tracing::warn!(error = %error, session_id = %session_id, "Failed to load ideation session for agent_waiting");
-                    return;
+                    return false;
                 }
             }
         }
         ChatContextType::Project => (Some(context_id.to_string()), false, None),
+        ChatContextType::Standalone => (None, false, None),
         ChatContextType::Task => {
             let task_id = TaskId::from_string(context_id.to_string());
             match state.task_repo.get_by_id(&task_id).await {
                 Ok(Some(task)) => (Some(task.project_id.to_string()), false, Some(task.title)),
-                Ok(None) => return,
+                Ok(None) => return false,
                 Err(error) => {
                     tracing::warn!(error = %error, task_id = %task_id, "Failed to load task for agent_waiting");
-                    return;
+                    return false;
                 }
             }
         }
@@ -140,15 +166,16 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         | ChatContextType::TaskExecution
         | ChatContextType::Review
         | ChatContextType::Merge
-        | ChatContextType::BranchUpdate => return,
+        | ChatContextType::BranchUpdate => return false,
     };
 
     if !is_user_attended_turn_completion(
         context_type,
         conversation.automation_run_id.is_some(),
         ideation_session_has_parent,
+        backend_action_owned,
     ) {
-        return;
+        return false;
     }
     state
         .notification_service()
@@ -158,6 +185,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
             conversation.title.as_deref().or(context_title.as_deref()),
         ))
         .await;
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,6 +1035,8 @@ pub struct StreamOutcome {
     /// the post-loop caller should skip re-finalization and duplicate
     /// `run_completed` emission (or `turn_completed` in interactive mode).
     pub turns_finalized: usize,
+    /// Whether this stream won the guarded Running -> Completed transition.
+    pub completion_applied: bool,
     /// Whether the execution slot is still held when the stream exits.
     /// False when TurnComplete decremented the slot and no new message arrived
     /// to re-increment it (process was idle between turns at exit time).
@@ -1174,7 +1204,13 @@ pub async fn process_stream_background<R: Runtime>(
     conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     split_verification_transcript: bool,
     persist_conversation_provider_session_ref: bool,
+    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    interactive_process_key: Option<InteractiveProcessKey>,
+    interactive_process_token: Option<InteractiveProcessToken>,
 ) -> Result<StreamOutcome, StreamError> {
+    streaming_state_cache
+        .set_run_id(&conversation_id.as_str(), agent_run_id.clone())
+        .await;
     if stream_mode_for_harness(harness) == HarnessStreamMode::CodexJsonl {
         return process_codex_stream_background(
             child,
@@ -1309,6 +1345,7 @@ pub async fn process_stream_background<R: Runtime>(
     // Count of turns fully finalized in the loop (interactive mode).
     // Used to tell the caller whether post-loop finalization should be skipped.
     let mut turns_finalized: usize = 0;
+    let mut completion_applied_for_stream = false;
 
     // When true, the process is legitimately idle between interactive turns
     // (TurnComplete received, waiting for next stdin message). The timeout
@@ -1717,6 +1754,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_CHUNK,
                                 AgentChunkPayload {
                                     text: text.clone(),
+                                    run_id: agent_run_id.clone(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -1832,6 +1870,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: id.clone(),
                                     arguments: serde_json::Value::Null,
                                     result: None,
+                                    run_id: agent_run_id.clone(),
                                     preview: AgentToolCallPreviewFields::default(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
@@ -1938,6 +1977,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     &conversation_id_str,
                                     &context_type_str,
                                     &context_id_str,
+                                    agent_run_id.as_deref(),
                                     diff_context_value,
                                     parent_tool_use_id.clone(),
                                     stream_seq,
@@ -2102,13 +2142,16 @@ pub async fn process_stream_background<R: Runtime>(
                         }
 
                         // Finalize the current assistant message with accumulated content
-                        if let (Some(ref repo), Some(ref msg_id)) =
+                        let assistant_message_persisted = if let (
+                            Some(ref repo),
+                            Some(ref msg_id),
+                        ) =
                             (&chat_message_repo, &assistant_message_id)
                         {
                             let role =
                                 super::chat_service_helpers::get_assistant_role(&context_type)
                                     .to_string();
-                            super::chat_service_send_background::finalize_structured_assistant_message(
+                            let persisted = super::chat_service_send_background::finalize_structured_assistant_message(
                                 repo,
                                 &chat_timeline_repo,
                                 app_handle.as_ref(),
@@ -2139,6 +2182,15 @@ pub async fn process_stream_background<R: Runtime>(
                                 );
                                 last_emitted_usage = turn_usage;
                             }
+                            persisted
+                        } else {
+                            false
+                        };
+                        if chat_message_repo.is_some() && !assistant_message_persisted {
+                            return Err(StreamError::LocalToolFailed {
+                                message: "Failed to persist the final assistant message"
+                                    .to_string(),
+                            });
                         }
 
                         // Persist session_id to DB on first TurnComplete
@@ -2169,41 +2221,23 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
-                        // Complete the agent_run DB record so the recovery poll
-                        // (`useChatRecovery`) no longer sees status=running.
-                        if let (Some(ref repo), Some(ref run_id)) = (&agent_run_repo, &agent_run_id)
+                        let completion_applied = if let (Some(ref repo), Some(ref run_id)) =
+                            (&agent_run_repo, &agent_run_id)
                         {
-                            let _ = repo.complete(&AgentRunId::from_string(run_id)).await;
-                        }
-
-                        // Emit turn_completed (NOT run_completed) for interactive turns.
-                        // The process is still alive and waiting for stdin — emitting
-                        // run_completed would cause the frontend to set isAgentRunning=false,
-                        // making the next user message go through sendAgentMessage (which
-                        // creates a new conversation for TaskExecution contexts) instead
-                        // of queueAgentMessage (which delivers via existing stdin).
-                        if let Some(ref handle) = app_handle {
-                            let provider_session_id = session_id.clone();
-                            let _ = handle.emit(
-                                super::chat_service_types::events::AGENT_TURN_COMPLETED,
-                                super::chat_service_types::AgentRunCompletedPayload::with_provider_session_and_run_id(
-                                    agent_run_id.clone(),
-                                    conversation_id_str.clone(),
-                                    context_type_str.clone(),
-                                    context_id_str.clone(),
-                                    Some(harness),
-                                    provider_session_id,
-                                    None,
-                                ),
-                            );
-                            record_agent_waiting_if_user_attended(
-                                handle,
-                                context_type,
-                                context_id,
-                                conversation_id,
-                            )
-                            .await;
-                        }
+                            repo.complete_if_running(&AgentRunId::from_string(run_id))
+                                .await
+                                .unwrap_or_else(|error| {
+                                    tracing::error!(
+                                        error = %error,
+                                        run_id,
+                                        "TurnComplete: guarded run completion failed"
+                                    );
+                                    false
+                                })
+                        } else {
+                            false
+                        };
+                        completion_applied_for_stream |= completion_applied;
 
                         // Clear streaming state cache (same as normal run_completed path)
                         streaming_state_cache.clear(&conversation_id_str).await;
@@ -2234,6 +2268,110 @@ pub async fn process_stream_background<R: Runtime>(
                                 );
                                 if let Some(ref handle) = app_handle {
                                     exec_state.emit_status_changed(handle, "interactive_turn_idle");
+                                }
+                            }
+                        }
+
+                        let interactive_idle_applied =
+                            if let (Some(registry), Some(key), Some(token)) = (
+                                interactive_process_registry.as_ref(),
+                                interactive_process_key.as_ref(),
+                                interactive_process_token,
+                            ) {
+                                registry.mark_idle_if_token(key, token).await
+                            } else {
+                                false
+                            };
+
+                        let mut verification_pending = false;
+                        if completion_applied && interactive_idle_applied {
+                            if let (Some(handle), Some(run_id)) =
+                                (app_handle.as_ref(), agent_run_id.as_ref())
+                            {
+                                if let Some(state) = handle.try_state::<AppState>() {
+                                    let chat_service = state.build_chat_service_for_runtime(
+                                        execution_state.clone(),
+                                        Some(handle.clone()),
+                                    );
+                                    match crate::application::plan_verification_service::admit_automatic_plan_verification(
+                                        state.inner(),
+                                        &chat_service,
+                                        conversation_id,
+                                        &AgentRunId::from_string(run_id),
+                                        true,
+                                    )
+                                    .await
+                                    {
+                                        Ok(disposition) => {
+                                            verification_pending =
+                                                disposition.verification_pending();
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(
+                                                error = %error,
+                                                conversation_id = %conversation_id_str,
+                                                run_id,
+                                                "TurnComplete: automatic plan verification admission failed"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if completion_applied {
+                            if let (Some(handle), Some(run_id)) =
+                                (app_handle.as_ref(), agent_run_id.as_ref())
+                            {
+                                if let Some(state) = handle.try_state::<AppState>() {
+                                    if !verification_pending {
+                                        if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
+                                            state.inner(),
+                                            conversation_id,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!(error = %error, conversation_id = %conversation_id_str, "Failed to release deferred plan approval after automatic admission settled");
+                                        }
+                                    }
+                                    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+                                        state.inner(),
+                                        &AgentRunId::from_string(run_id),
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(error = %error, run_id, "Failed to release deferred plan approval for terminal verification run");
+                                    }
+                                }
+                            }
+                        }
+
+                        // Emit turn_completed (NOT run_completed) for interactive turns.
+                        // Only the guarded winning completion may publish success events.
+                        if completion_applied {
+                            if let Some(ref handle) = app_handle {
+                                let provider_session_id = session_id.clone();
+                                let _ = handle.emit(
+                                    super::chat_service_types::events::AGENT_TURN_COMPLETED,
+                                    super::chat_service_types::AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                        agent_run_id.clone(),
+                                        conversation_id_str.clone(),
+                                        context_type_str.clone(),
+                                        context_id_str.clone(),
+                                        Some(harness),
+                                        provider_session_id,
+                                        None,
+                                    ),
+                                );
+                                if !verification_pending {
+                                    record_agent_waiting_if_user_attended(
+                                        handle,
+                                        context_type,
+                                        context_id,
+                                        conversation_id,
+                                        agent_run_id.as_deref(),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -2321,6 +2459,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_TASK_STARTED,
                                 AgentTaskStartedPayload {
                                     tool_use_id,
+                                    run_id: agent_run_id.clone(),
                                     tool_name,
                                     description,
                                     subagent_type,
@@ -2406,6 +2545,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
                                     tool_use_id,
+                                    run_id: agent_run_id.clone(),
                                     agent_id,
                                     status: Some("completed".to_string()),
                                     total_duration_ms,
@@ -2742,6 +2882,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     &conversation_id_str,
                                     &context_type_str,
                                     &context_id_str,
+                                    agent_run_id.as_deref(),
                                     parent_tool_use_id,
                                     stream_seq,
                                 ),
@@ -3113,6 +3254,7 @@ pub async fn process_stream_background<R: Runtime>(
         usage: result.usage,
         stderr_text: stderr_content,
         turns_finalized,
+        completion_applied: completion_applied_for_stream,
         execution_slot_held,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit,
@@ -3492,6 +3634,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         events::AGENT_CHUNK,
                         AgentChunkPayload {
                             text,
+                            run_id: agent_run_id.clone(),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),
@@ -3606,6 +3749,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             &conversation_id_str,
                             &context_type_str,
                             &context_id_str,
+                            agent_run_id.as_deref(),
                             diff_context_value,
                             None,
                             stream_seq,
@@ -3780,6 +3924,26 @@ async fn process_codex_stream_background<R: Runtime>(
         .map(|status| status.success())
         .unwrap_or(true);
     let status_code = status.as_ref().and_then(|status| status.code());
+    let status_signal = status
+        .as_ref()
+        .and_then(|status| process_exit_details(status).exit_signal);
+    let stderr_preview = truncate_str(stderr_content.trim(), 2000);
+
+    if !status_success || (!codex_turn_completed && response_text.trim().is_empty()) {
+        tracing::warn!(
+            conversation_id = %conversation_id_str,
+            agent_run_id = agent_run_id.as_deref().unwrap_or("unknown"),
+            exit_code = ?status_code,
+            exit_signal = ?status_signal,
+            stdout_lines_seen = lines_seen,
+            stdout_lines_parsed = lines_parsed,
+            runtime_error_count = runtime_errors.len(),
+            local_tool_error_count = local_tool_errors.len(),
+            stderr_len = stderr_content.len(),
+            stderr_preview = %stderr_preview,
+            "Codex process reached terminal stream state"
+        );
+    }
 
     let outcome = StreamOutcome {
         response_text,
@@ -3789,6 +3953,7 @@ async fn process_codex_stream_background<R: Runtime>(
         usage,
         stderr_text: stderr_content.clone(),
         turns_finalized: 0,
+        completion_applied: false,
         execution_slot_held: true,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit: false,
@@ -3839,10 +4004,14 @@ async fn process_codex_stream_background<R: Runtime>(
             return Err(provider_error);
         }
         if !stderr_trimmed.is_empty() {
-            return Err(StreamError::AgentExit {
-                exit_code: status_code,
-                stderr: stderr_trimmed,
-            });
+            let meaningful_stderr =
+                super::chat_service_errors::meaningful_agent_exit_stderr(&stderr_trimmed);
+            if !meaningful_stderr.is_empty() {
+                return Err(StreamError::AgentExit {
+                    exit_code: status_code,
+                    stderr: stderr_trimmed,
+                });
+            }
         }
     }
 
@@ -3869,7 +4038,12 @@ async fn process_codex_stream_background<R: Runtime>(
             local_tool_error_count = local_tool_errors.len(),
             "Codex terminal stream produced no meaningful completion"
         );
-        return Err(StreamError::NoOutput { context_type });
+        return Err(StreamError::NoOutput {
+            context_type,
+            exit_code: status_code,
+            exit_signal: status_signal,
+            stderr: stderr_preview.to_string(),
+        });
     }
 
     if outcome.tool_calls.is_empty() {

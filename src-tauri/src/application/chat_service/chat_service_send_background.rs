@@ -315,7 +315,7 @@ pub(crate) fn should_recover_silent_completion(
 ) -> bool {
     matches!(
         context_type,
-        ChatContextType::Project | ChatContextType::Ideation
+        ChatContextType::Project | ChatContextType::Ideation | ChatContextType::Standalone
     ) && has_session_for_queue
         && turns_finalized == 0
         && !silent_interactive_exit
@@ -598,7 +598,7 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
     )
     .await;
-    finalize_assistant_message(
+    let _ = finalize_assistant_message(
         chat_message_repo,
         app_handle,
         event_ctx,
@@ -622,49 +622,54 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
     tool_calls_json: Option<&str>,
     content_blocks_json: Option<&str>,
     timeline_items: Vec<ChatTimelineItem>,
-) {
+) -> bool {
     let message_id_entity =
         crate::domain::entities::ChatMessageId::from_string(message_id.to_string());
-    let _ = chat_message_repo
+    let message_persisted = chat_message_repo
         .update_content(
             &message_id_entity,
             content,
             tool_calls_json,
             content_blocks_json,
         )
-        .await;
+        .await
+        .is_ok();
 
-    if let Some(handle) = app_handle {
-        let render_ready = if timeline_items.is_empty() {
-            None
-        } else {
-            chat_message_repo
-                .get_by_id(&message_id_entity)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|message| {
-                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
-                        &message,
-                        timeline_items,
-                    )
-                })
-        };
-        let _ = handle.emit(
-            "agent:message_created",
-            AgentMessageCreatedPayload {
-                message_id: message_id.to_string(),
-                conversation_id: event_ctx.conversation_id.clone(),
-                context_type: event_ctx.context_type.clone(),
-                context_id: event_ctx.context_id.clone(),
-                role: role.to_string(),
-                content: content.to_string(),
-                created_at: None,
-                metadata: None,
-                render_ready,
-            },
-        );
+    if message_persisted {
+        if let Some(handle) = app_handle {
+            let render_ready = if timeline_items.is_empty() {
+                None
+            } else {
+                chat_message_repo
+                    .get_by_id(&message_id_entity)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|message| {
+                        AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                            &message,
+                            timeline_items,
+                        )
+                    })
+            };
+            let _ = handle.emit(
+                "agent:message_created",
+                AgentMessageCreatedPayload {
+                    message_id: message_id.to_string(),
+                    conversation_id: event_ctx.conversation_id.clone(),
+                    context_type: event_ctx.context_type.clone(),
+                    context_id: event_ctx.context_id.clone(),
+                    role: role.to_string(),
+                    content: content.to_string(),
+                    created_at: None,
+                    metadata: None,
+                    render_ready,
+                },
+            );
+        }
     }
+
+    message_persisted
 }
 
 pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
@@ -680,7 +685,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
     tool_calls: &[crate::infrastructure::agents::claude::ToolCall],
     content_blocks: &[crate::infrastructure::agents::claude::ContentBlockItem],
     split_verification_transcript: bool,
-) {
+) -> bool {
     let event_ctx = event_context(conversation_id, &context_type, context_id);
     if split_verification_transcript {
         let segments = build_assistant_transcript_segments(tool_calls, content_blocks);
@@ -694,6 +699,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                 .flatten();
             let attribution = original_message.as_ref().map(attribution_from_message);
 
+            let mut messages_persisted = true;
             if let Some(first_segment) = segments.first() {
                 let tool_calls_json = serde_json::to_string(&first_segment.tool_calls).ok();
                 let content_blocks_json = serde_json::to_string(&first_segment.content_blocks).ok();
@@ -705,7 +711,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                     crate::domain::entities::ChatTimelineItemStatus::Finalized,
                 )
                 .await;
-                finalize_assistant_message(
+                messages_persisted &= finalize_assistant_message(
                     chat_message_repo,
                     app_handle,
                     &event_ctx,
@@ -761,9 +767,11 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                             },
                         );
                     }
+                } else {
+                    messages_persisted = false;
                 }
             }
-            return;
+            return messages_persisted;
         }
     }
 
@@ -788,7 +796,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
         content_blocks_json.as_deref(),
         timeline_items,
     )
-    .await;
+    .await
 }
 
 #[doc(hidden)]
@@ -865,7 +873,7 @@ pub async fn finalize_structured_assistant_message_for_test<R: Runtime>(
     content_blocks: &[ContentBlockItem],
     split_verification_transcript: bool,
 ) {
-    finalize_structured_assistant_message(
+    let _ = finalize_structured_assistant_message(
         chat_message_repo,
         &None,
         app_handle,
@@ -1053,6 +1061,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             Some(Arc::clone(&conversation_repo)),
             split_verification_transcript,
             persist_conversation_provider_session_ref,
+            interactive_process_registry.clone(),
+            interactive_process_token.map(|_| {
+                InteractiveProcessKey::new(context_type.to_string(), &runtime_context_id)
+            }),
+            interactive_process_token,
         )
         .await;
 
@@ -1140,6 +1153,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 let provider_session_id = outcome.session_id;
                 let stderr_text = crate::utils::secret_redactor::redact(&outcome.stderr_text);
                 let turns_finalized = outcome.turns_finalized;
+                let turn_completion_applied = outcome.completion_applied;
                 // Debug: Log what we got from stream processing
                 tracing::info!(
                     "[CHAT_SERVICE] Stream complete: context={}/{}, response_len={}, tool_calls={}, session_id={:?}",
@@ -1299,12 +1313,13 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 );
 
                 let assistant_role = get_assistant_role(&context_type).to_string();
-                if skip_post_loop_finalization {
+                let assistant_message_persisted = if skip_post_loop_finalization {
                     tracing::debug!(
                         turns_finalized,
                         "Skipping post-loop finalization — {} turn(s) already finalized in stream loop",
                         turns_finalized,
                     );
+                    false
                 } else if has_output {
                     finalize_structured_assistant_message(
                         &chat_message_repo,
@@ -1320,7 +1335,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &content_blocks,
                         split_verification_transcript,
                     )
-                    .await;
+                    .await
                 } else {
                     // Stream completed with no content — update pre-created message so UI
                     // doesn't show "..." forever, and mirror the placeholder note into the
@@ -1336,16 +1351,26 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &assistant_role,
                     )
                     .await;
-                }
+                    true
+                };
 
                 // Treat zero-output runs as failed executions for autonomous task/review flows.
                 // Note: when interactive turns were finalized, has_output is false (processor was reset)
                 // but the run actually succeeded — override the flag for the run status check.
-                let effective_has_output = has_output || turns_finalized > 0;
+                let effective_has_output =
+                    (has_output && assistant_message_persisted) || turns_finalized > 0;
                 // When turns were finalized in the stream loop, agent_run was already
                 // completed in the TurnComplete handler — skip duplicate completion.
+                let mut completion_applied = turn_completion_applied;
                 if !skip_post_loop_finalization {
-                    if !effective_has_output
+                    if has_output && !assistant_message_persisted {
+                        let _ = agent_run_repo
+                            .fail(
+                                &AgentRunId::from_string(&agent_run_id),
+                                "Failed to persist the final assistant message",
+                            )
+                            .await;
+                    } else if !effective_has_output
                         && (context_type == ChatContextType::TaskExecution
                             || context_type == ChatContextType::Review)
                     {
@@ -1356,9 +1381,70 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             )
                             .await;
                     } else {
-                        let _ = agent_run_repo
-                            .complete(&AgentRunId::from_string(&agent_run_id))
-                            .await;
+                        match agent_run_repo
+                            .complete_if_running(&AgentRunId::from_string(&agent_run_id))
+                            .await
+                        {
+                            Ok(applied) => completion_applied = applied,
+                            Err(error) => {
+                                tracing::error!(
+                                    error = %error,
+                                    run_id = %agent_run_id,
+                                    "Stream exit: guarded run completion failed"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if completion_applied
+                    && ((has_output && assistant_message_persisted) || turns_finalized > 0)
+                {
+                    if let Some(handle) = app_handle.as_ref() {
+                        if let Some(state) = handle.try_state::<crate::application::AppState>() {
+                            let chat_service = state.build_chat_service_for_runtime(
+                                execution_state.clone(),
+                                Some(handle.clone()),
+                            );
+                            let verification_pending = match crate::application::plan_verification_service::admit_automatic_plan_verification(
+                                state.inner(),
+                                &chat_service,
+                                &conversation_id,
+                                &AgentRunId::from_string(&agent_run_id),
+                                true,
+                            )
+                            .await
+                            {
+                                Ok(disposition) => disposition.verification_pending(),
+                                Err(error) => {
+                                    tracing::error!(
+                                        error = %error,
+                                        conversation_id = %conversation_id,
+                                        run_id = %agent_run_id,
+                                        "Stream exit: automatic plan verification admission failed"
+                                    );
+                                    false
+                                }
+                            };
+                            if !verification_pending {
+                                if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
+                                    state.inner(),
+                                    &conversation_id,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to release deferred plan approval after automatic admission settled");
+                                }
+                            }
+                            if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+                                state.inner(),
+                                &AgentRunId::from_string(&agent_run_id),
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %error, run_id = %agent_run_id, "Failed to release deferred plan approval for terminal verification run");
+                            }
+                        }
                     }
                 }
 
@@ -2018,6 +2104,26 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 .await;
 
                 if !recovery_spawned {
+                    if let Some(handle) = app_handle.as_ref() {
+                        if let Some(state) = handle.try_state::<crate::application::AppState>() {
+                            if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
+                                state.inner(),
+                                &conversation_id,
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to release deferred plan approval after terminal stream error");
+                            }
+                            if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
+                                state.inner(),
+                                &AgentRunId::from_string(&agent_run_id),
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %error, run_id = %agent_run_id, "Failed to release deferred plan approval for failed verification run");
+                            }
+                        }
+                    }
                     let queued_resume_in_place = message_queue
                         .get_queued(context_type, &runtime_context_id)
                         .iter()

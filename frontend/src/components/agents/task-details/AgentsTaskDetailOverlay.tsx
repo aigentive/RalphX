@@ -320,6 +320,7 @@ export interface AgentsTaskDetailOverlayProps {
     taskId: string,
     contextType: TaskRuntimeHistoryContextType
   ) => void;
+  readOnly?: boolean;
 }
 
 export function AgentsTaskDetailOverlay({
@@ -331,6 +332,7 @@ export function AgentsTaskDetailOverlay({
   backLabel,
   onBack,
   onFocusTaskRuntime,
+  readOnly = false,
 }: AgentsTaskDetailOverlayProps) {
   const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
   const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
@@ -420,6 +422,7 @@ export function AgentsTaskDetailOverlay({
       ? "Main chat is showing this runtime transcript"
       : "Runtime transcript available"
     : "No runtime transcript recorded for this stage";
+  const isEditMode = isEditing && !readOnly && !isHistoryMode;
 
   // Get mutations
   const {
@@ -438,7 +441,7 @@ export function AgentsTaskDetailOverlay({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (isEditing) {
+        if (isEditMode) {
           // If editing, just exit edit mode (go back to view)
           setIsEditing(false);
         } else {
@@ -450,13 +453,19 @@ export function AgentsTaskDetailOverlay({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeSelectedTask, isEditing]);
+  }, [closeSelectedTask, isEditMode]);
 
   // Reset editing and history state when task changes
   useEffect(() => {
     setIsEditing(false);
     setHistoryState(null);
   }, [selectedTaskId, setHistoryState]);
+
+  useEffect(() => {
+    if (readOnly || isHistoryMode) {
+      setIsEditing(false);
+    }
+  }, [isHistoryMode, readOnly]);
 
   // Handle backdrop click
   const handleBackdropClick = useCallback(
@@ -471,7 +480,7 @@ export function AgentsTaskDetailOverlay({
 
   // Handle edit save
   const handleSave = (updateData: Parameters<typeof updateMutation.mutate>[0]['input']) => {
-    if (!task) return;
+    if (!task || readOnly) return;
     updateMutation.mutate(
       { taskId: task.id, input: updateData },
       {
@@ -567,7 +576,7 @@ export function AgentsTaskDetailOverlay({
   const isArchived = !!task.archivedAt;
   const isManagedPlanMerge = task.category === "plan_merge";
   const isSystemControlled = isManagedPlanMerge || systemControlledStatuses.includes(task.internalStatus);
-  const canEdit = !isHistoryMode && !isArchived && !isSystemControlled;
+  const canEdit = !readOnly && !isHistoryMode && !isArchived && !isSystemControlled;
   const categoryLabel = getTaskCategoryLabel(task.category);
   // "Backlog" is the equivalent of "draft" - tasks that haven't started execution yet
   const isBacklog = task.internalStatus === "backlog";
@@ -661,7 +670,7 @@ export function AgentsTaskDetailOverlay({
                   />
                 )}
                 {/* Start Ideation button - only for backlog (draft) tasks */}
-                {!isHistoryMode && isBacklog && (
+                {!readOnly && !isHistoryMode && isBacklog && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -692,7 +701,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Archive button */}
-                {!isHistoryMode && !isArchived && (
+                {!readOnly && !isHistoryMode && !isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -710,7 +719,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Restore button */}
-                {!isHistoryMode && isArchived && (
+                {!readOnly && !isHistoryMode && isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -744,7 +753,7 @@ export function AgentsTaskDetailOverlay({
           </div>
 
           {/* History selector for viewing historical states (hidden in edit mode) */}
-          {!isEditing && (
+          {!isEditMode && (
             <TaskHistoryDropdown
               taskId={task.id}
               currentStatus={task.internalStatus}
@@ -773,7 +782,7 @@ export function AgentsTaskDetailOverlay({
           )}
 
           {/* Scrollable Content */}
-          {isEditing ? (
+          {isEditMode ? (
             /* Edit Mode - No ScrollArea, form handles its own layout */
             <div className="flex-1 flex flex-col overflow-auto px-6 py-4">
               <div
@@ -802,6 +811,7 @@ export function AgentsTaskDetailOverlay({
                     showContext={true}
                     showHistory={true}
                     useViewRegistry={true}
+                    readOnly={readOnly}
                     {...(isHistoryMode && viewStatus ? { viewAsStatus: viewStatus } : {})}
                     {...(isHistoryMode && historyState?.timestamp
                       ? { viewTimestamp: historyState.timestamp }
@@ -819,7 +829,7 @@ export function AgentsTaskDetailOverlay({
           )}
 
           {/* Execution Control Bar - current mode only */}
-          {footer && !isHistoryMode && (
+          {footer && !readOnly && !isHistoryMode && (
             <div className="flex-shrink-0">
               {footer}
             </div>

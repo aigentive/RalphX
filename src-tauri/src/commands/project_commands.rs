@@ -453,7 +453,7 @@ pub async fn delete_project(id: String, state: State<'_, AppState>) -> Result<()
     let project_id = ProjectId::from_string(id);
     state
         .project_repo
-        .delete(&project_id)
+        .delete_with_dependent_sweep(&project_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -763,6 +763,7 @@ pub async fn spawn_project_analyzer(
         max_tokens: None,
         timeout_secs: Some(120),
         env,
+        mcp_launch_policy: Default::default(),
     };
 
     tokio::spawn(async move {

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 
+use crate::application::tasks_feature_policy::authorize_tasks_session_sync;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
@@ -195,6 +196,11 @@ fn validate_activation_authority_sync(
     conversation_id: &str,
     session_id: &str,
 ) -> AppResult<()> {
+    authorize_tasks_session_sync(
+        conn,
+        None,
+        crate::domain::ideation::TasksFeatureAction::Progress,
+    )?;
     let session = SessionRepo::get_by_id_sync(conn, session_id)?
         .ok_or_else(|| AppError::NotFound("Task pipeline session not found".to_string()))?;
     if session.session_flow != IdeationSessionFlow::Planning
@@ -240,6 +246,11 @@ pub(crate) fn validate_start_authority_sync(
     session_id: &str,
     requested_proposal_ids: &[String],
 ) -> AppResult<()> {
+    authorize_tasks_session_sync(
+        conn,
+        Some(session_id),
+        crate::domain::ideation::TasksFeatureAction::Progress,
+    )?;
     let session = SessionRepo::get_by_id_sync(conn, session_id)?
         .ok_or_else(|| AppError::NotFound("Task pipeline session not found".to_string()))?;
     if session.session_flow != IdeationSessionFlow::Planning

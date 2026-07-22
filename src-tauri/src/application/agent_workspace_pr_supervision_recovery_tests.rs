@@ -239,7 +239,7 @@ async fn setup_linked_plan_recovery_workspace(
     let conversation_id = ChatConversationId::new();
     let session_id = IdeationSessionId::from_string(format!("session-{name}"));
     let plan_branch_id = PlanBranchId::from_string(format!("plan-branch-{name}"));
-    let branch_name = format!("ralphx/test/{name}");
+    let branch_name = format!("ralphx/test/plan-{name}");
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string(format!("artifact-{name}")),
         session_id.clone(),
@@ -595,7 +595,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
 }
 
 #[tokio::test]
-async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr() {
+async fn marks_terminal_linked_plan_pr_status_and_workspace_authority() {
     let cases = [
         (
             "plan-pr-supervision-terminal-merged",
@@ -668,13 +668,14 @@ async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr()
             .await
             .unwrap()
             .expect("workspace should still exist");
-        assert_eq!(updated.publication_pr_number, None);
-        assert_eq!(updated.publication_push_status, None);
-        assert!(updated
-            .pr_supervision_summary
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Pull request"));
+        assert_eq!(updated.publication_pr_number, Some(702));
+        assert_eq!(
+            updated.publication_pr_status.as_deref(),
+            Some(expected_status)
+        );
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        assert!(updated.pr_supervision_status.is_none());
+        assert!(updated.pr_supervision_summary.is_none());
         let updated_plan = plan_branch_repo
             .get_by_id(&plan_branch_id)
             .await
@@ -764,6 +765,7 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-needs-agent").await;
     let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha.clone());
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("fixing".to_string());
 
@@ -1248,10 +1250,67 @@ async fn active_run_does_not_hide_terminal_pr_during_supervision_recovery() {
 }
 
 #[tokio::test]
+async fn terminal_supervision_recovery_reports_missing_chat_runtime() {
+    let (_temp_dir, project, workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-terminal-runtime-missing").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+    let mut sync_state = open_sync_state(&workspace.branch_name, "remote-head");
+    sync_state.status = PrStatus::Merged {
+        merged_at: None,
+        merge_commit_sha: None,
+    };
+    github.will_return_sync_state(sync_state);
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active run");
+
+    let error = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            github,
+            Arc::clone(&agent_run_repo),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect_err("missing chat runtime must block terminal recovery success");
+
+    assert!(error.to_string().contains("no chat runtime was available"));
+    assert!(agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup")
+        .expect("run retained")
+        .is_active());
+    let persisted = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("merged"));
+    assert!(workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
 async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_recovery() {
     let (_temp_dir, project, workspace, plan_branch, _head_sha) =
         setup_linked_plan_recovery_workspace("pr-supervision-active-plan-terminal", 704).await;
     let conversation_id = workspace.conversation_id.clone();
+    let plan_worktree_path = workspace.worktree_path.clone();
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
         .create_or_update(workspace.clone())
@@ -1333,6 +1392,28 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
         .expect("plan branch lookup should succeed")
         .expect("plan branch should exist");
     assert_eq!(updated_plan.pr_status, Some(PlanPrStatus::Merged));
+    let updated_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace should exist");
+    assert_eq!(
+        updated_workspace.publication_pr_status.as_deref(),
+        Some("merged"),
+        "workspace authority must match the terminal linked plan PR"
+    );
+    assert_eq!(
+        workspace_repo
+            .get_local_cleanup_status(&conversation_id)
+            .await
+            .expect("cleanup marker lookup")
+            .as_deref(),
+        Some("cleaned")
+    );
+    assert!(
+        !Path::new(&plan_worktree_path).exists(),
+        "terminal linked plan worktree should be removed in-process"
+    );
 }
 
 #[tokio::test]

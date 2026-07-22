@@ -61,6 +61,18 @@ fn routing_role_family_keys_and_labels_are_stable() {
 }
 
 #[test]
+fn only_execution_roles_require_tasks() {
+    for role in ROUTING_ROLES {
+        assert_eq!(
+            role.metadata().requires_tasks,
+            role.metadata().family == RoutingRoleFamily::Execution,
+            "{} has incorrect Tasks applicability",
+            role.metadata().key,
+        );
+    }
+}
+
+#[test]
 fn every_role_round_trips_through_display_parse_and_serde() {
     for role in ROUTING_ROLES {
         let key = role.to_string();
@@ -70,6 +82,11 @@ fn every_role_round_trips_through_display_parse_and_serde() {
         assert_eq!(serde_json::from_str::<RoutingRole>(&json).unwrap(), role);
         assert_eq!(role.metadata().key, key);
         assert!(!role.metadata().display_name.is_empty());
+        assert!(
+            !role.metadata().description.trim().is_empty(),
+            "{} must expose a task-oriented description",
+            role.metadata().key
+        );
     }
     assert!(RoutingRole::from_str("execution_branch_updater").is_err());
 }

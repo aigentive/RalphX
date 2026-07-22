@@ -9,7 +9,7 @@ mod tests {
         external_mcp_pid_file_name, external_mcp_pid_file_path,
         external_mcp_process_matches_expected_port, is_external_mcp_process,
         is_test_environment_for_test, process_listens_on_port, stderr_indicates_address_in_use,
-        ExternalMcpHandle,
+        ExternalMcpHandle, ExternalMcpReadinessState,
     };
 
     // ── Helper ────────────────────────────────────────────────────────────
@@ -21,6 +21,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 100,
+            startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
             node_path: None,
@@ -62,6 +63,19 @@ mod tests {
     fn test_handle_initially_empty() {
         let handle = ExternalMcpHandle::new();
         assert!(handle.get().is_none());
+        assert_eq!(handle.readiness(), ExternalMcpReadinessState::Disabled);
+    }
+
+    #[tokio::test]
+    async fn disabled_handle_rejects_required_transport_gate() {
+        let handle = ExternalMcpHandle::new();
+
+        let error = handle
+            .await_ready(std::time::Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "External MCP transport is disabled");
     }
 
     // ── Test 2: is_test_environment returns true in test context ───────────

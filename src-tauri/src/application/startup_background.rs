@@ -692,21 +692,21 @@ pub async fn maybe_start_external_mcp(
                 app_handle.clone(),
                 app_data_dir,
             ));
+            let handle = app_handle.state::<ExternalMcpHandle>();
+            if handle.set(Arc::clone(&supervisor)).is_err() {
+                warn!("ExternalMcpHandle already initialized");
+                return;
+            }
             match Arc::clone(&supervisor)
                 .start(bootstrap.node_path, bootstrap.entry_path)
                 .await
             {
                 Ok(()) => {
-                    let handle = app_handle.state::<ExternalMcpHandle>();
-                    if handle.set(supervisor).is_err() {
-                        warn!("ExternalMcpHandle already initialized");
-                    } else {
-                        info!(
-                            supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
-                            elapsed_ms = started_at.elapsed().as_millis(),
-                            "External MCP supervisor started and registered"
-                        );
-                    }
+                    info!(
+                        supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "External MCP supervisor registered and starting"
+                    );
                 }
                 Err(e) => {
                     warn!(

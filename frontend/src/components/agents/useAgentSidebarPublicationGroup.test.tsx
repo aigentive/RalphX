@@ -112,6 +112,38 @@ describe("useAgentSidebarPublicationGroup", () => {
     );
   });
 
+  it("requests the standalone pseudo-group with an empty project list", async () => {
+    listAgentSidebarConversations.mockResolvedValueOnce(
+      responseForGroup("__no_project__"),
+    );
+
+    const { result } = renderHook(
+      () =>
+        useAgentSidebarProjectGroup({
+          projectId: "__no_project__",
+          archivedOnly: false,
+          search: "",
+          publicationStates: ["active"],
+          pinnedConversationIds: [],
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(listAgentSidebarConversations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupBy: "project",
+        offsets: { __no_project__: 0 },
+        projectIds: [],
+      }),
+    );
+    expect(
+      agentSidebarConversationKeys.noProjectGroup(false, "", ["active"]),
+    ).toEqual(
+      expect.arrayContaining(["project", "__no_project__", "states", ["active"]]),
+    );
+  });
+
   it("requests eight rows per publication-state group page", async () => {
     listAgentSidebarConversations.mockResolvedValueOnce(responseForGroup("active"));
 

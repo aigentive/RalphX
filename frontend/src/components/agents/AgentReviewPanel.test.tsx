@@ -85,12 +85,20 @@ function reviewMonitor(
 function reviewContext(
   overrides: Partial<AgentWorkspaceReviewContext> = {},
 ): AgentWorkspaceReviewContext {
+  const reviewArtifactIsCurrent =
+    overrides.reviewArtifactIsCurrent ?? overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated =
+    overrides.reviewArtifactIsOutdated ?? overrides.isOutdated ?? true;
   return {
     success: true,
     workspace: conversationWorkspaceFixture(),
     events: [],
     target: reviewTarget,
     monitor: reviewMonitor(),
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
     isCurrent: false,
     isOutdated: true,
     shouldShowTab: true,
@@ -124,10 +132,18 @@ it("distinguishes a blocking review authorized by a human bypass", () => {
 function reviewStartResult(
   overrides: Partial<StartAgentWorkspaceReviewResult> = {},
 ): StartAgentWorkspaceReviewResult {
+  const reviewArtifactIsCurrent =
+    overrides.reviewArtifactIsCurrent ?? overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated =
+    overrides.reviewArtifactIsOutdated ?? overrides.isOutdated ?? true;
   return {
     success: true,
     target: reviewTarget,
     monitor: reviewMonitor(),
+    reviewArtifactIsCurrent,
+    reviewArtifactIsOutdated,
+    canMutateReviewState: false,
+    reviewRuntimeState: "missing_runtime_identity",
     isCurrent: false,
     isOutdated: true,
     shouldShowTab: true,
@@ -173,6 +189,40 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("opens the Workspace Review transcript without hiding its metadata", async () => {
+    const user = userEvent.setup();
+    const onViewTranscript = vi.fn();
+
+    renderPanel({ onViewTranscript });
+
+    expect(screen.getByText("Workspace changes")).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date("2026-07-10T00:00:00.000Z").toLocaleString()),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "View transcript" }),
+    );
+
+    expect(onViewTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("hides the transcript action without a callback", () => {
+    renderPanel();
+
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the Workspace Review transcript action in Review PR", () => {
+    renderPanel({ onViewTranscript: vi.fn(), isReviewPrWorkspace: true });
+
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("offers Approve anyway behind confirmation while Fix Issues stays primary", async () => {
     const user = userEvent.setup();
     const onApproveAnyway = vi.fn().mockResolvedValue(undefined);
@@ -262,7 +312,7 @@ describe("AgentReviewPanel", () => {
     expect(screen.getByRole("button", { name: "Update review" })).toBeEnabled();
     expect(screen.getByText("Review is outdated")).toBeInTheDocument();
     expect(
-      screen.getByText(/Outdated for current changes\./),
+      screen.getByText(/Previous Review covers earlier changes\./),
     ).toBeInTheDocument();
   });
 

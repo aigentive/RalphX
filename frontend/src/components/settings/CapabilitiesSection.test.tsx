@@ -45,10 +45,11 @@ describe("CapabilitiesSection", () => {
     });
   });
 
-  it("renders Team and Workflows off by default with experimental guidance", async () => {
+  it("does not expose always-on folder context as a capability", async () => {
     renderSection();
 
     expect(await screen.findByText("Team")).toBeInTheDocument();
+    expect(screen.queryByText("Folder context")).not.toBeInTheDocument();
     expect(screen.getByText("Workflows")).toBeInTheDocument();
     expect(screen.getByTestId("agent-conversation-team")).not.toBeChecked();
     expect(

@@ -108,6 +108,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     bound_agent_name: None,
                     persona_id: None,
                     builder_draft_id: None,
+                    builder_result_persona_id: None,
                     coordination_mode: CoordinationMode::Solo,
                     automation_id: None,
                     automation_run_id: None,

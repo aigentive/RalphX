@@ -77,6 +77,7 @@ interface ColumnProps {
   fillWidth?: boolean;
   /** Card content density for tasks rendered in this column. */
   cardDisplayMode?: TaskCardDisplayMode;
+  readOnly?: boolean;
 }
 
 function InvalidDropIcon() {
@@ -178,8 +179,8 @@ function formatColumnHeaderCount(
   return `(${taskCount})`;
 }
 
-export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, cardDisplayMode = "default" }: ColumnProps) {
-  const { setNodeRef } = useDroppable({ id: column.id });
+export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, cardDisplayMode = "default", readOnly = false }: ColumnProps) {
+  const { setNodeRef } = useDroppable({ id: column.id, disabled: readOnly });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();
   const isDragging = active !== null;
@@ -290,6 +291,18 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
 
     return grouped;
   }, [groups, tasks]);
+  const unmappedTasks = useMemo(
+    () =>
+      groups
+        ? tasks.filter(
+            (task) =>
+              !groups.some((group) =>
+                group.statuses.includes(task.internalStatus as InternalStatus)
+              )
+          )
+        : [],
+    [groups, tasks]
+  );
 
   // UX guard:
   // If Done has only completed tasks visible, force that subgroup open even if it was persisted collapsed.
@@ -410,6 +423,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
   // Determine if this column should show InlineTaskAdd
   // Always visible in draft/backlog columns (not during drag)
   const showInlineAdd =
+    !readOnly &&
     !isDragging &&
     (column.id === "draft" || column.id === "backlog");
   const headerCountLabel = formatColumnHeaderCount(
@@ -514,7 +528,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
         )}
 
         {/* Quick-add button for draft/backlog columns (hidden during drag) */}
-        {!isDragging && (column.id === "draft" || column.id === "backlog") && (
+        {!readOnly && !isDragging && (column.id === "draft" || column.id === "backlog") && (
           <CollapsedQuickAdd onActivate={handleCollapsedQuickAdd} />
         )}
       </div>
@@ -647,12 +661,33 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
                           displayMode={cardDisplayMode}
                           isHidden={task.id === hiddenTaskId}
                           groupInfo={columnGroupInfo}
+                          readOnly={readOnly}
                           {...(onTaskSelect !== undefined && { onSelect: onTaskSelect })}
                         />
                       ))}
                     </ColumnGroup>
                   );
                 })}
+
+                {unmappedTasks.length > 0 && (
+                  <ColumnGroup
+                    label="Unmapped status"
+                    count={unmappedTasks.length}
+                    collapsed={false}
+                    onToggle={() => {}}
+                  >
+                    {unmappedTasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        displayMode={cardDisplayMode}
+                        isHidden={task.id === hiddenTaskId}
+                        readOnly
+                        {...(onTaskSelect !== undefined && { onSelect: onTaskSelect })}
+                      />
+                    ))}
+                  </ColumnGroup>
+                )}
 
                 {/* Sentinel element for infinite scroll */}
                 <div ref={sentinelRef} className="h-1" aria-hidden="true" />
@@ -674,6 +709,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
                     displayMode={cardDisplayMode}
                     isHidden={task.id === hiddenTaskId}
                     groupInfo={columnGroupInfo}
+                    readOnly={readOnly}
                     {...(onTaskSelect !== undefined && { onSelect: onTaskSelect })}
                   />
                 ))}
@@ -710,10 +746,12 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
             taskCount={tasks.length}
             projectId={projectId}
             groupId={column.mapsTo}
-            onCancelAll={handleCancelAll}
-            onPauseAll={handlePauseAll}
-            onResumeAll={handleResumeAll}
-            onArchiveAll={handleArchiveAll}
+            {...(!readOnly && {
+              onCancelAll: handleCancelAll,
+              onPauseAll: handlePauseAll,
+              onResumeAll: handleResumeAll,
+              onArchiveAll: handleArchiveAll,
+            })}
             confirm={confirm}
           />
         </ContextMenuContent>

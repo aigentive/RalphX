@@ -101,4 +101,6 @@ export interface StreamingTask {
   childToolCalls: ToolCall[];
   /** Monotonically increasing sequence number for cross-event-type ordering */
   seq?: number;
+  /** Authority that supplied the current terminal delegation state. */
+  delegationTerminalSource?: "provider" | "lifecycle-complete" | "active-state";
 }

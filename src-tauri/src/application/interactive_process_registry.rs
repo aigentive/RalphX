@@ -42,6 +42,13 @@ pub struct InteractiveProcess {
     pub completion_signal: Arc<Notify>,
     pub metadata: InteractiveProcessMetadata,
     token: InteractiveProcessToken,
+    state: InteractiveProcessState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveProcessState {
+    Active,
+    Idle,
 }
 
 /// Monotonic identity for one concrete registry entry.
@@ -53,6 +60,7 @@ pub struct InteractiveProcessToken(u64);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveProcessMetadata {
+    pub agent_run_id: Option<String>,
     pub harness: Option<AgentHarnessKind>,
     pub provider_session_id: Option<String>,
     pub persona_id: Option<String>,
@@ -125,6 +133,7 @@ impl InteractiveProcessRegistry {
             completion_signal: Arc::clone(&completion_signal),
             metadata,
             token,
+            state: InteractiveProcessState::Active,
         };
         processes.insert(key, entry);
         (completion_signal, token)
@@ -153,6 +162,8 @@ impl InteractiveProcessRegistry {
                 key.context_type, key.context_id
             )
         })?;
+        // The registry lock serializes this ownership transition against idle retirement.
+        entry.state = InteractiveProcessState::Active;
 
         // Ensure message ends with newline for CLI's line-based stdin reader
         let msg = if message.ends_with('\n') {
@@ -202,6 +213,36 @@ impl InteractiveProcessRegistry {
         }
     }
 
+    /// Mark only the concrete stream registration that emitted TurnComplete as idle.
+    pub async fn mark_idle_if_token(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+    ) -> bool {
+        let mut processes = self.processes.lock().await;
+        let Some(entry) = processes.get_mut(key) else {
+            return false;
+        };
+        if entry.token != token {
+            return false;
+        }
+        entry.state = InteractiveProcessState::Idle;
+        true
+    }
+
+    /// Atomically retire only an idle registration so a concurrent stdin write wins.
+    pub async fn retire_if_idle(&self, key: &InteractiveProcessKey) -> Option<InteractiveProcess> {
+        let mut processes = self.processes.lock().await;
+        if processes
+            .get(key)
+            .is_some_and(|entry| entry.state == InteractiveProcessState::Idle)
+        {
+            processes.remove(key)
+        } else {
+            None
+        }
+    }
+
     /// Return the completion signal for a running process, or None if not registered.
     ///
     /// Callers can clone and `.await` the returned notifier to be woken when the process
@@ -235,6 +276,15 @@ impl InteractiveProcessRegistry {
         processes.len()
     }
 
+    #[cfg(test)]
+    pub async fn state_for_test(
+        &self,
+        key: &InteractiveProcessKey,
+    ) -> Option<InteractiveProcessState> {
+        let processes = self.processes.lock().await;
+        processes.get(key).map(|entry| entry.state)
+    }
+
     /// Return all registered process keys for shutdown diagnostics.
     pub async fn dump_state(&self) -> Vec<InteractiveProcessKey> {
         let processes = self.processes.lock().await;
@@ -254,193 +304,5 @@ impl InteractiveProcessRegistry {
             keys = ?keys,
             "[IPR_DIAG] Registered interactive processes"
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_register_and_has_process() {
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("ideation", "session-123");
-        assert!(!registry.has_process(&key).await);
-        assert_eq!(registry.count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_remove_nonexistent_returns_none() {
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("ideation", "session-123");
-        assert!(registry.remove(&key).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn stale_stream_exit_does_not_remove_fresh_ipr_entry() {
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("project", "replacement-race");
-        let (stdin_a, _child_a) = create_test_stdin().await;
-        let token_a = registry
-            .register_with_metadata(key.clone(), stdin_a, InteractiveProcessMetadata::default())
-            .await;
-        let (stdin_b, _child_b) = create_test_stdin().await;
-        let token_b = registry
-            .register_with_metadata(key.clone(), stdin_b, InteractiveProcessMetadata::default())
-            .await;
-
-        assert!(
-            registry.remove_if_token(&key, token_a).await.is_none(),
-            "old stream cleanup must not remove the replacement entry"
-        );
-        assert!(registry.has_process(&key).await);
-        assert!(
-            registry.remove_if_token(&key, token_b).await.is_some(),
-            "the current stream cleanup must still remove its own entry"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_write_message_no_process_returns_error() {
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("ideation", "session-123");
-        let result = registry.write_message(&key, "hello").await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No interactive process"));
-    }
-
-    #[tokio::test]
-    async fn test_register_returns_completion_signal() {
-        let (stdin, _child) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("task", "task-789");
-
-        let signal = registry.register(key.clone(), stdin).await;
-        // Signal is live and shared with the entry
-        let fetched = registry.get_completion_signal(&key).await.unwrap();
-        assert!(Arc::ptr_eq(&signal, &fetched));
-    }
-
-    #[tokio::test]
-    async fn test_register_with_metadata_persists_harness_metadata() {
-        let (stdin, _child) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("ideation", "session-xyz");
-
-        registry
-            .register_with_metadata(
-                key.clone(),
-                stdin,
-                InteractiveProcessMetadata {
-                    harness: Some(AgentHarnessKind::Codex),
-                    provider_session_id: Some("thread-123".to_string()),
-                    persona_id: None,
-                    persona_content_hash: None,
-                },
-            )
-            .await;
-
-        let metadata = registry.get_metadata(&key).await.unwrap();
-        assert_eq!(metadata.harness, Some(AgentHarnessKind::Codex));
-        assert_eq!(metadata.provider_session_id.as_deref(), Some("thread-123"));
-    }
-
-    #[tokio::test]
-    async fn test_get_completion_signal_none_if_not_registered() {
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("ideation", "session-999");
-        assert!(registry.get_completion_signal(&key).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_completion_signal_survives_remove() {
-        // The Arc<Notify> should remain usable after the process is removed,
-        // so any awaiter that cloned it before removal can still be notified.
-        let (stdin, _child) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("merge", "merge-1");
-
-        let signal = registry.register(key.clone(), stdin).await;
-        let _removed = registry.remove(&key).await;
-
-        // Notifying after removal should not panic
-        signal.notify_waiters();
-        // Signal for key is gone from registry
-        assert!(registry.get_completion_signal(&key).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_register_and_write_message() {
-        // Create a real pipe to test write
-        let (stdin, _child) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-        let key = InteractiveProcessKey::new("task", "task-456");
-
-        registry.register(key.clone(), stdin).await;
-        assert!(registry.has_process(&key).await);
-        assert_eq!(registry.count().await, 1);
-
-        // Write should succeed
-        let result = registry.write_message(&key, "test message").await;
-        assert!(result.is_ok());
-
-        // Remove
-        let removed = registry.remove(&key).await;
-        assert!(removed.is_some());
-        assert!(!registry.has_process(&key).await);
-    }
-
-    #[tokio::test]
-    async fn test_dump_state_empty() {
-        let registry = InteractiveProcessRegistry::new();
-        let keys = registry.dump_state().await;
-        assert!(keys.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_dump_state_returns_all_keys() {
-        let (stdin1, _child1) = create_test_stdin().await;
-        let (stdin2, _child2) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-
-        let key1 = InteractiveProcessKey::new("ideation", "session-1");
-        let key2 = InteractiveProcessKey::new("task_execution", "task-2");
-        registry.register(key1.clone(), stdin1).await;
-        registry.register(key2.clone(), stdin2).await;
-
-        let keys = registry.dump_state().await;
-        assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&key1));
-        assert!(keys.contains(&key2));
-    }
-
-    #[tokio::test]
-    async fn test_clear_removes_all() {
-        let (stdin1, _child1) = create_test_stdin().await;
-        let (stdin2, _child2) = create_test_stdin().await;
-        let registry = InteractiveProcessRegistry::new();
-
-        registry
-            .register(InteractiveProcessKey::new("a", "1"), stdin1)
-            .await;
-        registry
-            .register(InteractiveProcessKey::new("b", "2"), stdin2)
-            .await;
-        assert_eq!(registry.count().await, 2);
-
-        registry.clear().await;
-        assert_eq!(registry.count().await, 0);
-    }
-
-    /// Helper: create a real stdin pipe via `cat` subprocess for testing writes.
-    async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
-        let mut child = tokio::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("failed to spawn cat");
-        let stdin = child.stdin.take().expect("no stdin");
-        (stdin, child)
     }
 }

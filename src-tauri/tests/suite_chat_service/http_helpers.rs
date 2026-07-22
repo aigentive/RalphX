@@ -200,8 +200,8 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
 // Verification Gate Integration Tests — Scenarios 10-25
 // ============================================================================
 
-/// Shared setup: create artifact + session with plan, optionally set verification_status
-/// and enable the proposal gate in the DB.
+/// Shared setup: create artifact + session with a plan and optionally seed the legacy
+/// verification-status/proposal-gate fields retained for database compatibility.
 async fn setup_session_with_gate(
     state: &AppState,
     verification_status: &str,
@@ -226,7 +226,11 @@ async fn setup_session_with_gate(
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
-    state.ideation_session_repo.create(session.clone()).await.unwrap();
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
 
     // Apply verification_status and gate setting via raw SQL (both share the same SQLite conn)
     let sid = session.id.as_str().to_string();
@@ -275,11 +279,11 @@ async fn create_test_proposal(state: &AppState, session_id: &IdeationSessionId) 
         .id
 }
 
-// Scenario 10: HTTP create on unverified session + gate on → 400 (AppError::Validation with ProposalNotVerified message)
+// Scenario 10: The retired proposal gate cannot block draft proposal creation.
 #[tokio::test]
-async fn test_create_gate_blocks_unverified_when_enabled() {
+async fn test_create_ignores_legacy_proposal_gate_when_unverified() {
     let state = AppState::new_sqlite_test();
-    let (session, _artifact_id) = setup_session_with_gate(&state, "unverified", true).await;
+    let (session, artifact_id) = setup_session_with_gate(&state, "unverified", true).await;
 
     let options = CreateProposalOptions {
         title: "Blocked Proposal".to_string(),
@@ -295,24 +299,21 @@ async fn test_create_gate_blocks_unverified_when_enabled() {
         expected_proposal_count: None,
     };
 
-    let result = create_proposal_impl(&state, session.id.clone(), options).await;
-    assert!(result.is_err(), "Create on Unverified+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot create proposals"),
-                "Error must mention 'Cannot create proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let (created, dependency_errors, ready_to_finalize) =
+        create_proposal_impl(&state, session.id.clone(), options)
+            .await
+            .expect("legacy proposal-gate fields must not block draft creation");
+    assert_eq!(created.title, "Blocked Proposal");
+    assert_eq!(created.session_id, session.id);
+    assert_eq!(created.plan_artifact_id, Some(artifact_id));
+    assert!(dependency_errors.is_empty());
+    assert!(!ready_to_finalize);
 }
 
-// Scenario 11: Tauri IPC parity — IPC and HTTP use the same create_proposal_impl,
-// so the verification gate blocks with identical semantics (validates the refactor).
+// Scenario 11: Tauri IPC and HTTP retain the same ungated draft-creation semantics
+// because both use create_proposal_impl.
 #[tokio::test]
-async fn test_create_gate_ipc_parity_same_error_as_http() {
+async fn test_create_ipc_http_parity_when_legacy_gate_is_enabled() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "unverified", true).await;
 
@@ -347,22 +348,24 @@ async fn test_create_gate_ipc_parity_same_error_as_http() {
     let ipc_result = create_proposal_impl(&state, session.id.clone(), ipc_options).await;
     let http_result = create_proposal_impl(&state, session.id.clone(), http_options).await;
 
-    // Both must fail with the same error type (single enforcement point)
-    assert!(ipc_result.is_err(), "IPC create on Unverified must fail");
-    assert!(http_result.is_err(), "HTTP create on Unverified must fail");
-    assert!(
-        matches!(ipc_result.unwrap_err(), AppError::Validation(_)),
-        "IPC must return Validation error"
-    );
-    assert!(
-        matches!(http_result.unwrap_err(), AppError::Validation(_)),
-        "HTTP must return Validation error"
-    );
+    let (ipc_created, ipc_dependency_errors, ipc_ready) =
+        ipc_result.expect("IPC-backed draft creation must ignore the legacy gate");
+    let (http_created, http_dependency_errors, http_ready) =
+        http_result.expect("HTTP-backed draft creation must ignore the legacy gate");
+    assert_eq!(ipc_created.title, "IPC Proposal");
+    assert_eq!(http_created.title, "HTTP Proposal");
+    assert_eq!(ipc_created.session_id, session.id);
+    assert_eq!(http_created.session_id, session.id);
+    assert_ne!(ipc_created.id, http_created.id);
+    assert!(ipc_dependency_errors.is_empty());
+    assert!(http_dependency_errors.is_empty());
+    assert!(!ipc_ready);
+    assert!(!http_ready);
 }
 
-// Scenario 12: HTTP update during Reviewing + gate on → 400
+// Scenario 12: Legacy Reviewing state cannot block proposal draft updates.
 #[tokio::test]
-async fn test_update_gate_blocks_when_reviewing() {
+async fn test_update_ignores_legacy_reviewing_gate() {
     let state = AppState::new_sqlite_test();
     // First create with gate off to get a proposal
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
@@ -393,23 +396,24 @@ async fn test_update_gate_blocks_when_reviewing() {
         source: UpdateSource::Api,
         ..Default::default()
     };
-    let result = update_proposal_impl(&state, &proposal_id, options).await;
-    assert!(result.is_err(), "Update on Reviewing+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot update proposals"),
-                "Error must mention 'Cannot update proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let (updated, dependency_errors) = update_proposal_impl(&state, &proposal_id, options)
+        .await
+        .expect("legacy Reviewing state must not block draft updates");
+    assert_eq!(updated.title, "Updated");
+    assert_eq!(updated.id, proposal_id);
+    assert!(dependency_errors.is_empty());
+    let persisted = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .unwrap()
+        .expect("updated proposal must remain persisted");
+    assert_eq!(persisted.title, "Updated");
 }
 
-// Scenario 13: HTTP delete during NeedsRevision + gate on → 400
+// Scenario 13: Legacy NeedsRevision state cannot block proposal draft archival.
 #[tokio::test]
-async fn test_archive_gate_blocks_when_needs_revision() {
+async fn test_archive_ignores_legacy_needs_revision_gate() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
     let proposal_id = create_test_proposal(&state, &session.id).await;
@@ -434,18 +438,17 @@ async fn test_archive_gate_blocks_when_needs_revision() {
         .await
         .unwrap();
 
-    let result = archive_proposal_impl(&state, proposal_id).await;
-    assert!(result.is_err(), "Archive on NeedsRevision+gate=on must fail");
-    match result.unwrap_err() {
-        AppError::Validation(msg) => {
-            assert!(
-                msg.contains("Cannot delete proposals"),
-                "Error must mention 'Cannot delete proposals', got: {}",
-                msg
-            );
-        }
-        other => panic!("Expected AppError::Validation, got: {:?}", other),
-    }
+    let archived_session_id = archive_proposal_impl(&state, proposal_id.clone())
+        .await
+        .expect("legacy NeedsRevision state must not block draft archival");
+    assert_eq!(archived_session_id, session.id);
+    let archived = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .unwrap()
+        .expect("archived proposal must remain queryable");
+    assert!(archived.archived_at.is_some());
 }
 
 // Scenario 14: Single event per operation — verify proposal appears exactly once in DB
@@ -562,7 +565,10 @@ async fn test_update_api_does_not_set_user_modified() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!initial.user_modified, "Proposal should start with user_modified=false");
+    assert!(
+        !initial.user_modified,
+        "Proposal should start with user_modified=false"
+    );
 
     let options = UpdateProposalOptions {
         title: Some("API Updated Title".to_string()),
@@ -781,7 +787,10 @@ async fn test_archive_proposal_clears_dependency_rows() {
         .await
         .unwrap();
 
-    assert_eq!(stale_count, 0, "archiving must remove related dependency rows");
+    assert_eq!(
+        stale_count, 0,
+        "archiving must remove related dependency rows"
+    );
 }
 
 // Scenario 20: Settings — require_verification_for_proposals roundtrip.
@@ -815,7 +824,10 @@ async fn test_settings_require_proposals_roundtrip_via_db() {
         .await
         .unwrap();
 
-    assert!(proposals_enabled, "require_verification_for_proposals must persist as true");
+    assert!(
+        proposals_enabled,
+        "require_verification_for_proposals must persist as true"
+    );
 
     // Disable and re-verify
     state
@@ -877,7 +889,10 @@ async fn test_settings_both_verification_fields_independent() {
         .unwrap();
 
     assert!(accept, "require_verification_for_accept must be true");
-    assert!(!proposals, "require_verification_for_proposals must be false");
+    assert!(
+        !proposals,
+        "require_verification_for_proposals must be false"
+    );
 
     // Flip: accept=false, proposals=true
     state
@@ -904,7 +919,10 @@ async fn test_settings_both_verification_fields_independent() {
         .unwrap();
 
     assert!(!accept2, "require_verification_for_accept must be false");
-    assert!(proposals2, "require_verification_for_proposals must be true");
+    assert!(
+        proposals2,
+        "require_verification_for_proposals must be true"
+    );
 }
 
 // Scenario 22: require_verification_for_accept roundtrip — validates the hardcoded-false bug fix.
@@ -1011,7 +1029,12 @@ async fn test_concurrent_creates_produce_unique_sort_orders() {
         .iter()
         .cloned()
         .collect();
-    assert_eq!(orders.len(), 3, "All 3 sort_orders must be unique, got: {:?}", orders);
+    assert_eq!(
+        orders.len(),
+        3,
+        "All 3 sort_orders must be unique, got: {:?}",
+        orders
+    );
 
     // Verify all 3 proposals exist in DB
     let all_proposals = state
@@ -1053,7 +1076,11 @@ async fn test_create_with_valid_depends_on_inserts_dependency() {
         .await
         .expect("create with valid dep should succeed");
 
-    assert!(dep_errors.is_empty(), "Expected no dep errors, got: {:?}", dep_errors);
+    assert!(
+        dep_errors.is_empty(),
+        "Expected no dep errors, got: {:?}",
+        dep_errors
+    );
 
     // Verify dep was inserted: B should have 1 dependency (A)
     let dep_count = state
@@ -1088,11 +1115,23 @@ async fn test_create_with_nonexistent_dep_partial_failure() {
         .expect("proposal itself should be created despite bad dep");
 
     // Proposal was created
-    let in_db = state.task_proposal_repo.get_by_id(&proposal.id).await.unwrap();
-    assert!(in_db.is_some(), "Proposal should be in DB despite dep error");
+    let in_db = state
+        .task_proposal_repo
+        .get_by_id(&proposal.id)
+        .await
+        .unwrap();
+    assert!(
+        in_db.is_some(),
+        "Proposal should be in DB despite dep error"
+    );
 
     // dep_errors has one entry for the nonexistent dep
-    assert_eq!(dep_errors.len(), 1, "Expected one dep error, got: {:?}", dep_errors);
+    assert_eq!(
+        dep_errors.len(),
+        1,
+        "Expected one dep error, got: {:?}",
+        dep_errors
+    );
     assert!(
         dep_errors[0].contains("not found"),
         "Error should mention not found, got: {}",
@@ -1181,7 +1220,11 @@ async fn test_update_add_depends_on_cycle_rejected() {
     )
     .await
     .unwrap();
-    assert!(errs.is_empty(), "First dep (A→B) should succeed: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "First dep (A→B) should succeed: {:?}",
+        errs
+    );
 
     // Now try B depends on A (B→A) — would create cycle A→B→A
     let (_, dep_errors) = update_proposal_impl(
@@ -1226,7 +1269,11 @@ async fn test_update_add_blocks_cycle_rejected() {
     )
     .await
     .unwrap();
-    assert!(errs.is_empty(), "First dep (A→B) should succeed: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "First dep (A→B) should succeed: {:?}",
+        errs
+    );
 
     // Update A with add_blocks=[B] → would insert B depends_on A (B→A)
     // Cycle check: would_create_cycle(B, A) → true since A→B exists → rejected
@@ -1288,10 +1335,7 @@ async fn test_update_add_depends_on_partial_failure() {
         &state,
         &b_id,
         UpdateProposalOptions {
-            add_depends_on: vec![
-                a_id.as_str().to_string(),
-                "nonexistent-id".to_string(),
-            ],
+            add_depends_on: vec![a_id.as_str().to_string(), "nonexistent-id".to_string()],
             source: UpdateSource::Api,
             ..Default::default()
         },
@@ -1300,7 +1344,12 @@ async fn test_update_add_depends_on_partial_failure() {
     .unwrap();
 
     // Exactly one error (for nonexistent), valid dep was inserted
-    assert_eq!(dep_errors.len(), 1, "Expected one dep error, got: {:?}", dep_errors);
+    assert_eq!(
+        dep_errors.len(),
+        1,
+        "Expected one dep error, got: {:?}",
+        dep_errors
+    );
     assert!(
         dep_errors[0].contains("not found"),
         "Error should mention not found, got: {}",
@@ -1313,7 +1362,10 @@ async fn test_update_add_depends_on_partial_failure() {
         .count_dependencies(&b_id)
         .await
         .expect("count_dependencies should succeed");
-    assert_eq!(dep_count, 1, "B→A dep should have been inserted successfully (1 dep)");
+    assert_eq!(
+        dep_count, 1,
+        "B→A dep should have been inserted successfully (1 dep)"
+    );
 }
 
 // ============================================================================
@@ -1604,9 +1656,13 @@ async fn test_expected_count_set_on_first_proposal() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
 
-    create_proposal_impl(&state, session.id.clone(), make_proposal_options("First", Some(3)))
-        .await
-        .expect("first proposal should succeed");
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("First", Some(3)),
+    )
+    .await
+    .expect("first proposal should succeed");
 
     let updated = state
         .ideation_session_repo
@@ -1629,9 +1685,13 @@ async fn test_expected_count_mismatch_rejected() {
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;
 
     // First proposal: locks expected=3
-    create_proposal_impl(&state, session.id.clone(), make_proposal_options("First", Some(3)))
-        .await
-        .expect("first proposal should succeed");
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("First", Some(3)),
+    )
+    .await
+    .expect("first proposal should succeed");
 
     // Second proposal: claims expected=5 — must be rejected
     let result = create_proposal_impl(
@@ -1641,7 +1701,10 @@ async fn test_expected_count_mismatch_rejected() {
     )
     .await;
 
-    assert!(result.is_err(), "Mismatched expected_proposal_count must be rejected");
+    assert!(
+        result.is_err(),
+        "Mismatched expected_proposal_count must be rejected"
+    );
     match result.unwrap_err() {
         AppError::Validation(msg) => {
             assert!(
@@ -1673,7 +1736,10 @@ async fn test_ready_to_finalize_on_count_match() {
         )
         .await
         .expect("proposal should succeed");
-        assert!(!ready, "ready_to_finalize must be false for proposal {i} of 3");
+        assert!(
+            !ready,
+            "ready_to_finalize must be false for proposal {i} of 3"
+        );
     }
 
     // Proposal 3: count == expected → ready_to_finalize=true
@@ -1685,7 +1751,10 @@ async fn test_ready_to_finalize_on_count_match() {
     .await
     .expect("third proposal should succeed");
 
-    assert!(ready, "ready_to_finalize must be true when active count == expected");
+    assert!(
+        ready,
+        "ready_to_finalize must be true when active count == expected"
+    );
 
     // Session must remain Active — agent drives finalize_proposals explicitly
     let updated = state
@@ -1778,7 +1847,10 @@ async fn test_finalize_blocked_by_verification_gate() {
     // Explicitly call finalize_proposals — must fail with validation error
     let result = finalize_proposals_impl(&state, session.id.as_str(), false).await;
 
-    assert!(result.is_err(), "finalize_proposals must fail when verification gate blocks acceptance");
+    assert!(
+        result.is_err(),
+        "finalize_proposals must fail when verification gate blocks acceptance"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
@@ -1863,7 +1935,10 @@ async fn test_finalize_rejects_feature_without_affected_paths() {
 
     let result = finalize_proposals_impl(&state, session.id.as_str(), false).await;
 
-    assert!(result.is_err(), "finalize must reject feature proposals without scope");
+    assert!(
+        result.is_err(),
+        "finalize must reject feature proposals without scope"
+    );
     match result.unwrap_err() {
         AppError::Validation(msg) => {
             assert!(
@@ -1991,7 +2066,10 @@ async fn test_no_gating_when_count_omitted() {
     .await
     .expect("proposal without expected count should succeed");
 
-    assert!(!triggered, "No trigger when expected_proposal_count is omitted");
+    assert!(
+        !triggered,
+        "No trigger when expected_proposal_count is omitted"
+    );
 
     let updated = state
         .ideation_session_repo
@@ -2396,21 +2474,35 @@ async fn task_context_skips_newer_baseline_and_reuses_current_final_validation_h
 #[test]
 fn compute_validation_hint_sha_match_tests_passed_returns_skip_tests() {
     let cache = make_validation_cache("abc12345def67890", true, true);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_tests");
-    assert!(msg.contains("Tests passed"), "hint_message should mention 'Tests passed', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("Tests passed"),
+        "hint_message should mention 'Tests passed', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
 fn compute_validation_hint_sha_match_tests_ran_false_returns_skip_test_validation() {
     let cache = make_validation_cache("abc12345def67890", false, false);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_test_validation");
-    assert!(msg.contains("No tests were run"), "hint_message should mention 'No tests were run', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("No tests were run"),
+        "hint_message should mention 'No tests were run', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -2428,11 +2520,18 @@ fn compute_validation_hint_sha_mismatch_returns_run_tests() {
 #[test]
 fn compute_validation_hint_tests_failed_same_sha_returns_run_tests() {
     let cache = make_validation_cache("abc12345def67890", true, false);
-    let (hint, msg) =
-        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
-    assert!(msg.contains("Tests failed"), "hint_message should mention 'Tests failed', got: {}", msg);
-    assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
+    assert!(
+        msg.contains("Tests failed"),
+        "hint_message should mention 'Tests failed', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("abc12345"),
+        "hint_message should contain truncated SHA, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -2464,5 +2563,9 @@ fn compute_validation_hint_sha_mismatch_with_short_sha() {
     let cache = make_validation_cache("abc", true, true);
     let (hint, msg) = compute_validation_hint(&cache, "def", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
-    assert!(msg.contains("Cache stale") || msg.contains("SHA changed"), "got: {}", msg);
+    assert!(
+        msg.contains("Cache stale") || msg.contains("SHA changed"),
+        "got: {}",
+        msg
+    );
 }

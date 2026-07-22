@@ -136,6 +136,8 @@ pub struct ExternalMcpConfig {
     pub max_restart_attempts: u32,
     /// Delay between restart attempts in milliseconds. Default: 2000.
     pub restart_delay_ms: u64,
+    /// Deadline for required MCP server startup and external bridge readiness.
+    pub startup_timeout_secs: u64,
     /// Backend deadline for human-in-the-loop MCP waits (question/team-plan).
     /// Must stay below the effective MCP tool ceiling so backend 408 responses win.
     pub human_wait_timeout_secs: u64,
@@ -180,6 +182,7 @@ impl Default for ExternalMcpConfig {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 2000,
+            startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
             node_path: None,
@@ -493,6 +496,9 @@ pub struct GitRuntimeConfig {
     pub terminal_pr_local_cleanup_retry_secs: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
+    /// Seconds between same-process orphan agent-worktree cleanup passes.
+    #[serde(default = "default_orphan_worktree_cleanup_interval_secs")]
+    pub orphan_worktree_cleanup_interval_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
@@ -526,6 +532,7 @@ impl Default for GitRuntimeConfig {
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
+            orphan_worktree_cleanup_interval_secs: 900,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
             cleanup_worktree_timeout_secs: 15,
@@ -541,6 +548,10 @@ fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_orphan_worktree_cleanup_interval_secs() -> u64 {
     900
 }
 
@@ -637,12 +648,19 @@ impl Default for SupervisorRuntimeConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LimitsConfig {
     pub max_resume_attempts: u64,
+    #[serde(default = "default_max_live_folder_references")]
+    pub max_live_folder_references: usize,
+}
+
+fn default_max_live_folder_references() -> usize {
+    5
 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_resume_attempts: 5,
+            max_live_folder_references: default_max_live_folder_references(),
         }
     }
 }
@@ -993,6 +1011,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS"
     );
     env_u64!(
+        cfg.git.orphan_worktree_cleanup_interval_secs,
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS"
+    );
+    env_u64!(
         cfg.git.agent_kill_settle_secs,
         "RALPHX_GIT_AGENT_KILL_SETTLE_SECS"
     );
@@ -1125,6 +1147,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.external_mcp.host = v;
     }
     env_u64!(
+        cfg.external_mcp.startup_timeout_secs,
+        "RALPHX_EXTERNAL_MCP_STARTUP_TIMEOUT_SECS"
+    );
+    env_u64!(
         cfg.external_mcp.human_wait_timeout_secs,
         "RALPHX_EXTERNAL_MCP_HUMAN_WAIT_TIMEOUT_SECS"
     );
@@ -1177,6 +1203,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION") {
         cfg.ui_feature_flags
             .persona_switch_forces_fresh_provider_session =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_STANDALONE_CONVERSATIONS") {
+        cfg.ui_feature_flags.standalone_conversations =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
 }
@@ -1285,6 +1315,9 @@ pub fn validate_external_mcp_config(cfg: &ExternalMcpConfig) -> Result<(), Strin
     }
     if cfg.human_wait_timeout_secs == 0 {
         return Err("external_mcp.human_wait_timeout_secs must be greater than 0".to_string());
+    }
+    if cfg.startup_timeout_secs == 0 {
+        return Err("external_mcp.startup_timeout_secs must be greater than 0".to_string());
     }
     if cfg.enabled {
         let is_local = cfg.host == "localhost" || cfg.host == "127.0.0.1";

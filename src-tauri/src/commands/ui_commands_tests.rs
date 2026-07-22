@@ -36,6 +36,11 @@ fn get_ui_feature_flags_includes_agent_personas() {
     let json = serde_json::to_value(response).expect("feature flags response should serialize");
 
     assert_eq!(json.get("agentPersonas"), Some(&serde_json::json!(false)));
+    assert!(json.get("composerFolderReferences").is_none());
+    assert!(matches!(
+        json.get("standaloneConversations"),
+        Some(serde_json::Value::Bool(_))
+    ));
     assert_eq!(
         json.get("agentConversationTeam"),
         Some(&serde_json::json!(false))
@@ -49,6 +54,14 @@ fn get_ui_feature_flags_includes_agent_personas() {
         Some(&serde_json::json!(false))
     );
     assert!(json.get("agent_personas").is_none());
+}
+
+#[test]
+fn get_ui_feature_flags_reports_the_effective_standalone_value() {
+    let state = AppState::new_test();
+
+    assert!(ui_feature_flags_response_with_standalone(&state, true).standalone_conversations);
+    assert!(!ui_feature_flags_response_with_standalone(&state, false).standalone_conversations);
 }
 
 #[test]

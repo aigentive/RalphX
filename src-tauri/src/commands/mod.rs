@@ -30,6 +30,7 @@ pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
 pub mod conversation_stats_commands;
+pub mod conversation_folder_reference_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -49,6 +50,9 @@ pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod methodology_commands;
 pub mod manual_role_default_commands;
+pub mod mcp_policy_commands;
+#[cfg(test)]
+mod mcp_policy_commands_tests;
 pub mod metrics_commands;
 pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;
@@ -59,7 +63,6 @@ pub mod notification_commands;
 #[cfg(test)]
 mod notification_commands_tests;
 pub mod permission_commands;
-pub mod persona_builder_commands;
 pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
@@ -161,11 +164,6 @@ pub use automation_commands::{
     restart_automation, retry_automation_judge, retry_automation_plan_judge, stop_automation,
     update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
-};
-pub use persona_builder_commands::{
-    create_persona_builder_conversation, get_persona_builder_ingest_status,
-    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
-    PersonaBuilderIngestStatusResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,

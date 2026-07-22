@@ -15,26 +15,31 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { composerExcerptReferenceKey } from "@/components/agents/artifact-selection/artifactSelection.types";
 import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
 
 export function MessageReferences({
+  folderReferences = [],
   projectReferences,
   integrationReferences,
   artifactReferences,
   selectionSnapshot,
+  excerptReferences = [],
 }: MessageComposerReferences) {
   const setTicketProvider = useTicketingStore((s) => s.setProvider);
   const setSelectedTicketRef = useTicketingStore((s) => s.setSelectedTicketRef);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
 
   if (
+    folderReferences.length === 0 &&
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
     artifactReferences.length === 0 &&
-    !selectionSnapshot
+    !selectionSnapshot &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -44,6 +49,16 @@ export function MessageReferences({
       data-testid="message-reference-list"
       className="mb-2 flex max-w-[min(85%,620px)] flex-wrap justify-end gap-2 self-end"
     >
+      {folderReferences.map((reference) => (
+        <ReferenceChip
+          key={`folder:${reference.id ?? reference.folderPath}`}
+          testId={`message-reference-folder:${reference.id ?? reference.folderPath}`}
+          icon={FolderOpen}
+          typeLabel="Folder"
+          label={reference.displayName}
+          description={reference.folderPath}
+        />
+      ))}
       {projectReferences.map((reference) => {
         const isFolder = reference.kind === "directory";
         return (
@@ -136,6 +151,27 @@ export function MessageReferences({
       {selectionSnapshot ? (
         <SelectionSnapshotReference snapshot={selectionSnapshot} />
       ) : null}
+      {excerptReferences.map((reference) => {
+        const label = reference.title ?? reference.sourceId;
+        const description = [
+          reference.version !== undefined ? `v${reference.version}` : null,
+          reference.filePath,
+          reference.locator,
+          reference.excerpt,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ReferenceChip
+            key={`excerpt:${composerExcerptReferenceKey(reference)}`}
+            testId={`message-reference-excerpt:${reference.sourceKind}:${reference.sourceId}`}
+            icon={ScrollText}
+            typeLabel={`${reference.sourceLabel} excerpt`}
+            label={label}
+            {...(description ? { description } : {})}
+          />
+        );
+      })}
     </div>
   );
 }

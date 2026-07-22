@@ -87,6 +87,10 @@ impl AppPaths {
         self.ralphx_config_dir.join("router.yaml")
     }
 
+    pub fn global_mcp_policy_path(&self) -> PathBuf {
+        self.ralphx_config_dir.join("mcp.yaml")
+    }
+
     pub fn workflow_runner_path(&self) -> AppResult<PathBuf> {
         let executable = std::env::current_exe().map_err(|error| {
             AppError::Infrastructure(format!("Failed to resolve RalphX executable: {error}"))

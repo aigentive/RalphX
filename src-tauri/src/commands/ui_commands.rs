@@ -7,7 +7,9 @@ use crate::application::{
     agent_capability_gate::AgentCapabilities, harness_runtime_registry::default_ui_feature_flags,
     AppState,
 };
-use crate::infrastructure::agents::claude::{agent_personas_enabled, set_agent_personas_override};
+use crate::infrastructure::agents::{
+    agent_personas_enabled, set_agent_personas_override, standalone_conversations_enabled,
+};
 
 /// Response struct for UI feature flags.
 /// Fields use camelCase for frontend consumption via Tauri invoke.
@@ -23,6 +25,7 @@ pub struct UiFeatureFlagsResponse {
     pub atlassian_oauth: bool,
     pub ticketing_dashboard: bool,
     pub agent_personas: bool,
+    pub standalone_conversations: bool,
     pub agent_conversation_team: bool,
     pub agent_conversation_workflows: bool,
     pub agent_conversation_autopilot: bool,
@@ -38,6 +41,13 @@ pub struct UpdateUiFeatureFlagsInput {
 }
 
 fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
+    ui_feature_flags_response_with_standalone(state, standalone_conversations_enabled())
+}
+
+fn ui_feature_flags_response_with_standalone(
+    state: &AppState,
+    standalone_conversations: bool,
+) -> UiFeatureFlagsResponse {
     let flags = default_ui_feature_flags();
     let agent_capabilities = state.agent_capability_gate.snapshot();
     UiFeatureFlagsResponse {
@@ -50,6 +60,7 @@ fn ui_feature_flags_response(state: &AppState) -> UiFeatureFlagsResponse {
         atlassian_oauth: flags.atlassian_oauth,
         ticketing_dashboard: flags.ticketing_dashboard,
         agent_personas: agent_personas_enabled(),
+        standalone_conversations,
         agent_conversation_team: agent_capabilities.team,
         agent_conversation_workflows: agent_capabilities.workflows,
         agent_conversation_autopilot: agent_capabilities.autopilot,

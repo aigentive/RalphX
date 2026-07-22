@@ -5,12 +5,17 @@
  */
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
 
 type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
-type TauriGet = (path: string) => Promise<unknown>;
+type TauriGet = (
+  path: string,
+  options?: { headers?: Record<string, string> },
+) => Promise<unknown>;
 
 export type AgentWorkspaceToolRuntimeContext = {
   parentConversationId?: string;
+  conversationId?: string;
   agentRunId?: string;
 };
 
@@ -128,7 +133,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "get_workspace_review_context",
     description:
-      "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
+      "Read the current general workspace Review context, including the selected review target, compact review packet, prior Review artifact freshness, and backend-derived runtime mutation authority. Artifact freshness does not determine whether an active owned run may refresh it. " +
       "Call this first when running as the workspace Review artifact writer.",
     inputSchema: {
       type: "object",
@@ -137,6 +142,57 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description:
             "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+        },
+      },
+    },
+  },
+  {
+    name: "list_workspace_review_files",
+    description:
+      "Page the complete current Workspace Review changed-file inventory when the compact context reports truncation. " +
+      "The backend binds every cursor to the active reviewer runtime and current target/source snapshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cursor: {
+          type: "string",
+          description: "Opaque continuation cursor returned by the previous file page.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Optional bounded number of changed files to return.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_workspace_review_diff_page",
+    description:
+      "Read a bounded structured diff page for one current Workspace Review file/source. " +
+      "For the first page provide path and source; for continuation provide only the opaque cursor and optional limit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "First-page path selected from the current review file inventory.",
+        },
+        source: {
+          type: "string",
+          enum: ["selected_source", "committed", "staged", "unstaged"],
+          description: "First-page exact diff source listed for the selected path.",
+        },
+        cursor: {
+          type: "string",
+          description: "Opaque continuation cursor returned by the previous diff page.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 400,
+          description: "Optional bounded number of structured diff rows to return.",
         },
       },
     },
@@ -560,6 +616,10 @@ export async function callAgentWorkspaceTool(
       return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
     case "get_workspace_review_context":
       return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
+    case "list_workspace_review_files":
+      return callListWorkspaceReviewFilesTool(callTauriGet, args, runtimeContext);
+    case "get_workspace_review_diff_page":
+      return callGetWorkspaceReviewDiffPageTool(callTauriGet, args, runtimeContext);
     case "write_workspace_review_artifact":
       return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
     case "write_workspace_review_hunk_annotations":
@@ -611,6 +671,17 @@ function resolveAgentWorkspaceConversationId(
 
   throw new Error(
     `${toolName} requires conversation_id because RalphX did not provide the current workspace conversation id to the MCP runtime context.`
+  );
+}
+
+function resolveRuntimeAgentWorkspaceConversationId(
+  toolName: string,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): string {
+  const conversationId = runtimeContext?.parentConversationId?.trim() ?? "";
+  if (conversationId.length > 0) return conversationId;
+  throw new Error(
+    `${toolName} requires the current agent workspace conversation from runtime context`
   );
 }
 
@@ -715,9 +786,75 @@ export async function callGetWorkspaceReviewContextTool(
     args,
     runtimeContext
   );
-  return callTauriGet(
-    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`
+  const path =
+    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
+}
+
+export async function callListWorkspaceReviewFilesTool(
+  callTauriGet: TauriGet,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "list_workspace_review_files",
+    runtimeContext
   );
+  const pageArgs = (args && typeof args === "object" ? args : {}) as {
+    cursor?: string;
+    limit?: number;
+  };
+  const query = new URLSearchParams();
+  if (typeof pageArgs.cursor === "string") query.set("cursor", pageArgs.cursor);
+  if (typeof pageArgs.limit === "number") query.set("limit", String(pageArgs.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const path = `agent-workspaces/${conversation_id}/workspace-review-files${suffix}`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
+}
+
+export async function callGetWorkspaceReviewDiffPageTool(
+  callTauriGet: TauriGet,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "get_workspace_review_diff_page",
+    runtimeContext
+  );
+  const pageArgs = (args && typeof args === "object" ? args : {}) as {
+    path?: string;
+    source?: string;
+    cursor?: string;
+    limit?: number;
+  };
+  const hasCursor = typeof pageArgs.cursor === "string" && pageArgs.cursor.length > 0;
+  const hasPath = typeof pageArgs.path === "string" && pageArgs.path.length > 0;
+  const hasSource = typeof pageArgs.source === "string" && pageArgs.source.length > 0;
+  if ((hasCursor && (hasPath || hasSource)) || (!hasCursor && !(hasPath && hasSource))) {
+    throw new Error(
+      "get_workspace_review_diff_page requires either path and source for the first page, or cursor for continuation"
+    );
+  }
+  const query = new URLSearchParams();
+  if (hasPath) query.set("path", pageArgs.path!);
+  if (hasSource) query.set("source", pageArgs.source!);
+  if (hasCursor) query.set("cursor", pageArgs.cursor!);
+  if (typeof pageArgs.limit === "number") query.set("limit", String(pageArgs.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const path = `agent-workspaces/${conversation_id}/workspace-review-diff-page${suffix}`;
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  return headers ? callTauriGet(path, { headers }) : callTauriGet(path);
 }
 
 export async function callWriteWorkspaceReviewArtifactTool(

@@ -7,20 +7,14 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "models", heading: "Models" },
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
-  { id: "execution", heading: "Execution" },
   { id: "agents", heading: "Agents" },
-  { id: "global-execution", heading: "Global Capacity" },
-  { id: "review", heading: "Review Policy" },
-  { id: "ideation-workflow", heading: "Planning & Verification" },
+  { id: "tasks", heading: "Tasks" },
+  { id: "planning", heading: "Planning" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
-  { id: "external-mcp", heading: "External MCP" },
+  { id: "mcp", heading: "MCP" },
   { id: "accessibility", heading: "Accessibility" },
 ] as const;
-
-const EXPANDED_SETTINGS_SECTION_IDS = new Set([
-  "agents",
-]);
 
 test.describe("Settings Dialog", () => {
   let settingsPage: SettingsPage;
@@ -48,33 +42,7 @@ test.describe("Settings Dialog", () => {
     expect(zIndex).not.toBeNull();
   });
 
-  test("execution section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("execution");
-    await settingsPage.waitForSection("execution", "Execution");
-    await expect(settingsPage.maxConcurrentTasksInput).toBeVisible();
-    await expect(settingsPage.projectIdeationMaxInput).toBeVisible();
-  });
-
-  test("global capacity section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("global-execution");
-    await settingsPage.waitForSection("global-execution", "Global Capacity");
-    await expect(settingsPage.globalMaxConcurrentInput).toBeVisible();
-    await expect(settingsPage.globalIdeationMaxInput).toBeVisible();
-    await expect(settingsPage.allowIdeationBorrowIdleExecutionToggle).toBeVisible();
-  });
-
-  test("review section contains all controls", async ({ page }) => {
-    settingsPage = new SettingsPage(page);
-    await settingsPage.openViaStore("review");
-    await settingsPage.waitForSection("review", "Review Policy");
-    await expect(settingsPage.requireHumanReviewToggle).toBeVisible();
-    await expect(settingsPage.maxFixAttemptsInput).toBeVisible();
-    await expect(settingsPage.maxRevisionCyclesInput).toBeVisible();
-  });
-
-  test("external MCP section contains all controls", async ({ page }) => {
+  test("External MCP section contains bridge controls", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("external-mcp");
     await settingsPage.waitForSection("external-mcp", "External MCP");
@@ -135,21 +103,8 @@ test.describe("Settings Dialog", () => {
       await settingsPage.waitForSection(section.id, section.heading);
       if (section.id === "agents") {
         await expect(
-          settingsPage.settingsDialog.getByTestId("manual-role-row").first(),
+          settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
         ).toBeVisible({ timeout: 10000 });
-      }
-      if (EXPANDED_SETTINGS_SECTION_IDS.has(section.id)) {
-        const expandAllButton = settingsPage.settingsDialog.getByRole("button", {
-          name: "Expand all",
-        });
-        if (await expandAllButton.isVisible()) {
-          await expandAllButton.click();
-          await expect(
-            settingsPage.settingsDialog.getByRole("button", {
-              name: "Collapse all",
-            }),
-          ).toBeVisible();
-        }
       }
       await settingsPage.waitForAnimations();
 
@@ -161,4 +116,76 @@ test.describe("Settings Dialog", () => {
       );
     });
   }
+
+  test("matches populated Agents expanded editor", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("agents");
+    await settingsPage.waitForSection("agents", "Agents");
+    await settingsPage.settingsDialog
+      .getByTestId("agent-family-row")
+      .first()
+      .getByRole("button")
+      .first()
+      .click();
+    await settingsPage.settingsDialog
+      .getByRole("button", { name: "Edit Edit" })
+      .click();
+    await expect(
+      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
+    ).toBeVisible();
+    await settingsPage.waitForAnimations();
+
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-section-agents-expanded.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+  });
+
+  test("matches populated Agents narrow layout", async ({ page }) => {
+    await page.setViewportSize({ width: 760, height: 900 });
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("agents");
+    await settingsPage.waitForSection("agents", "Agents");
+    await expect(
+      settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
+    ).toBeVisible({ timeout: 10000 });
+    await settingsPage.settingsDialog
+      .getByTestId("agent-family-row")
+      .first()
+      .getByRole("button")
+      .first()
+      .click();
+    await settingsPage.settingsDialog
+      .getByRole("button", { name: "Edit Edit" })
+      .click();
+    await expect(
+      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
+    ).toBeVisible();
+    await settingsPage.waitForAnimations();
+    await expect(
+      settingsPage.settingsDialog
+        .getByTestId("agent-family-row")
+        .first()
+        .getByRole("button")
+        .first(),
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
+    ).toBeVisible();
+    await settingsPage.settingsDialog
+      .getByRole("combobox", { name: "Edit provider" })
+      .scrollIntoViewIfNeeded();
+
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-section-agents-narrow.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+    await expect(
+      settingsPage.settingsDialog.locator(
+        '[data-testid="manual-role-row"]:has(button[aria-label="Edit Edit"])',
+      ),
+    ).toHaveScreenshot("settings-dialog-section-agents-narrow-editor.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
 });

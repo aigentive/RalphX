@@ -3,12 +3,12 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::Json;
 
-use super::request_question;
+use super::{request_question, resolve_question};
 use crate::application::app_state::AppState;
 use crate::domain::entities::{
     ChatConversation, NotificationCategory, NotificationTargetKind, Project,
 };
-use crate::http_server::types::{HttpServerState, QuestionRequestInput};
+use crate::http_server::types::{HttpServerState, QuestionRequestInput, ResolveQuestionInput};
 
 fn make_test_state() -> HttpServerState {
     HttpServerState::new_test(Arc::new(AppState::new_test()))
@@ -92,4 +92,26 @@ async fn request_question_records_plan_mode_question_once_without_event_listener
         row.body.as_deref(),
         Some("project on acme-app: “Should the proposal include a migration?”")
     );
+
+    assert_eq!(
+        resolve_question(
+            State(state.clone()),
+            Json(ResolveQuestionInput {
+                request_id: first.request_id,
+                selected_options: Vec::new(),
+                text: Some("Yes".into()),
+                skipped: false,
+            }),
+        )
+        .await,
+        axum::http::StatusCode::OK
+    );
+    let settled = state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications;
+    assert!(settled[0].read_at.is_some());
 }

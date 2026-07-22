@@ -40,7 +40,9 @@ export function parseCliOptionsFromArgs(args, optionName) {
     return values;
 }
 export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
-    const context = {};
+    const context = {
+        filesystemEnforced: parseCliOptionFromArgs(args, "filesystem-enforced") === "1",
+    };
     for (const mapping of RUNTIME_ARG_ENV_MAPPINGS) {
         const cliValue = parseCliOptionFromArgs(args, mapping.argName);
         if (cliValue && cliValue.length > 0) {
@@ -54,7 +56,12 @@ export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
         }
     }
     const cliFilesystemReadRoots = parseCliOptionsFromArgs(args, "filesystem-read-root").filter((value) => value.length > 0);
-    if (cliFilesystemReadRoots.length > 0) {
+    if (context.filesystemEnforced) {
+        const serialized = JSON.stringify(cliFilesystemReadRoots);
+        env.RALPHX_FILESYSTEM_READ_ROOTS = serialized;
+        context.filesystemReadRoots = serialized;
+    }
+    else if (cliFilesystemReadRoots.length > 0) {
         const serialized = JSON.stringify(cliFilesystemReadRoots);
         env.RALPHX_FILESYSTEM_READ_ROOTS = serialized;
         context.filesystemReadRoots = serialized;
@@ -68,14 +75,27 @@ export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
     return context;
 }
 export function buildArtifactMutationTransportHeaders(context) {
-    const headers = {};
+    const headers = {
+        ...(buildRuntimeTransportHeaders(context) ?? {}),
+    };
     if (context.contextType === "ideation" && context.contextId) {
         headers["X-RalphX-Caller-Session-Id"] = context.contextId;
     }
-    if (context.agentRunId && context.conversationId) {
-        headers["x-ralphx-agent-run-id"] = context.agentRunId;
-        headers["x-ralphx-conversation-id"] = context.conversationId;
-    }
+    Object.assign(headers, buildRuntimeIdentityTransportHeaders(context));
     return Object.keys(headers).length > 0 ? headers : undefined;
+}
+export function buildRuntimeIdentityTransportHeaders(context) {
+    if (!context.agentRunId || !context.conversationId)
+        return undefined;
+    return {
+        "x-ralphx-agent-run-id": context.agentRunId,
+        "x-ralphx-conversation-id": context.conversationId,
+    };
+}
+export function buildRuntimeTransportHeaders(context) {
+    const conversationId = context.conversationId?.trim();
+    return conversationId
+        ? { "x-ralphx-conversation-id": conversationId }
+        : undefined;
 }
 //# sourceMappingURL=runtime-context.js.map

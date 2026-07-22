@@ -31,7 +31,7 @@ export function useAgentsAutoTitle({
     }: {
       content: string;
       conversationId: string;
-      targetProjectId: string;
+      targetProjectId: string | null;
       shouldSpawnSessionNamer: boolean;
       providerHarness?: string | null;
     }) => {
@@ -79,7 +79,10 @@ export function useAgentsAutoTitle({
           : chatApi.updateConversationTitle(conversationId, nextTitle);
       void titleUpdate
         .then(() => {
-          void invalidateProjectConversations(conversation?.projectId ?? targetProjectId);
+          const projectId = conversation?.projectId ?? targetProjectId;
+          if (projectId) {
+            void invalidateProjectConversations(projectId);
+          }
         })
         .catch(() => {
           // Auto-titling is best-effort; manual title editing remains available.

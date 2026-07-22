@@ -1,24 +1,23 @@
 export type SettingsSectionId =
   | "providers"
   | "agents"
-  | "execution"
   | "models"
-  | "global-execution"
   | "personas"
   | "capabilities"
-  | "workspace-review"
-  | "review"
-  | "autonomy"
+  | "tasks"
+  | "planning"
+  | "workspace"
+  | "capacity"
   | "repository"
   | "project-analysis"
-  | "ideation-workflow"
   | "api-keys"
+  | "external-mcp"
   | "integrations"
   | "github"
   | "linear"
   | "clickup"
   | "granola"
-  | "external-mcp"
+  | "mcp"
   | "accessibility"
   | "notifications";
 
@@ -26,7 +25,6 @@ export type SettingsGroupId =
   | "harness"
   | "general"
   | "workspace"
-  | "ideation"
   | "access"
   | "integrations"
   | "preferences";
@@ -41,9 +39,8 @@ export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
   { id: "harness", label: "Harness" },
   { id: "workspace", label: "Workspace" },
   { id: "general", label: "General" },
-  { id: "ideation", label: "Ideation" },
   { id: "integrations", label: "Integrations" },
-  { id: "access", label: "Access" },
+  { id: "access", label: "External Access" },
   { id: "preferences", label: "Preferences" },
 ];
 
@@ -53,16 +50,15 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "providers", groupId: "harness", label: "Providers" },
   { id: "models", groupId: "harness", label: "Models" },
   { id: "agents", groupId: "harness", label: "Agents" },
+  { id: "mcp", groupId: "harness", label: "MCP" },
   { id: "repository", groupId: "workspace", label: "Repository" },
   { id: "project-analysis", groupId: "workspace", label: "Setup & Validation" },
-  { id: "execution", groupId: "general", label: "Execution" },
-  { id: "global-execution", groupId: "general", label: "Global Capacity" },
+  { id: "tasks", groupId: "general", label: "Tasks" },
+  { id: "planning", groupId: "general", label: "Planning" },
+  { id: "workspace", groupId: "general", label: "Workspace" },
+  { id: "capacity", groupId: "general", label: "Capacity" },
   { id: "personas", groupId: "general", label: "Personas" },
   { id: "capabilities", groupId: "general", label: "Capabilities" },
-  { id: "workspace-review", groupId: "general", label: "Workspace Review" },
-  { id: "review", groupId: "general", label: "Review Policy" },
-  { id: "autonomy", groupId: "general", label: "Autonomy Policy" },
-  { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
   { id: "github", groupId: "integrations", label: "GitHub" },
   { id: "linear", groupId: "integrations", label: "Linear" },
@@ -74,6 +70,13 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];
 
+export type SettingsCompositeTab = "general" | "review-policy" | "autonomy-policy" | "review";
+
+export interface SettingsDestination {
+  section: SettingsSectionId;
+  tab?: SettingsCompositeTab;
+}
+
 export function isSettingsSectionId(value: unknown): value is SettingsSectionId {
   return (
     typeof value === "string" &&
@@ -81,9 +84,24 @@ export function isSettingsSectionId(value: unknown): value is SettingsSectionId 
   );
 }
 
-export function resolveSettingsSectionId(value: unknown): SettingsSectionId | null {
+export function resolveSettingsDestination(value: unknown): SettingsDestination | null {
   if (value === "execution-harnesses" || value === "ideation-harnesses") {
-    return "agents";
+    return { section: "agents" };
   }
-  return isSettingsSectionId(value) ? value : null;
+  const legacy: Record<string, SettingsDestination> = {
+    review: { section: "tasks", tab: "review-policy" },
+    autonomy: { section: "tasks", tab: "autonomy-policy" },
+    "ideation-workflow": { section: "tasks", tab: "general" },
+    "workspace-review": { section: "workspace", tab: "review" },
+    execution: { section: "workspace", tab: "general" },
+    "global-execution": { section: "capacity" },
+  };
+  if (typeof value === "string" && legacy[value]) {
+    return legacy[value];
+  }
+  return isSettingsSectionId(value) ? { section: value } : null;
+}
+
+export function resolveSettingsSectionId(value: unknown): SettingsSectionId | null {
+  return resolveSettingsDestination(value)?.section ?? null;
 }

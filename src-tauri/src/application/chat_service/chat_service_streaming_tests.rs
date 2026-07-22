@@ -5,17 +5,18 @@ use super::{
     normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
     persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
     process_exit_details, process_stream_background, provider_session_ref_for_harness,
-    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
-    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
+    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
+    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
+    StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
-    AgentRun, AgentRunUsage, ChatContextType, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemStatus, ChatTimelinePage,
-    IdeationSessionId, MessageRole, TaskId,
+    AgentRun, AgentRunActionKind, AgentRunId, AgentRunUsage, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+    ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{AgentRunRepository, ChatTimelineRepository};
 use crate::error::{AppError, AppResult};
@@ -70,6 +71,7 @@ fn agent_waiting_suppresses_automation_run_conversations() {
         ChatContextType::Ideation,
         true,
         false,
+        false,
     ));
 }
 
@@ -79,9 +81,11 @@ fn agent_waiting_suppresses_child_and_background_contexts() {
         ChatContextType::Ideation,
         false,
         true,
+        false,
     ));
     assert!(!is_user_attended_turn_completion(
         ChatContextType::Delegation,
+        false,
         false,
         false,
     ));
@@ -89,6 +93,17 @@ fn agent_waiting_suppresses_child_and_background_contexts() {
         ChatContextType::TaskExecution,
         false,
         false,
+        false,
+    ));
+}
+
+#[test]
+fn agent_waiting_suppresses_backend_owned_actions() {
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Project,
+        false,
+        false,
+        true,
     ));
 }
 
@@ -98,12 +113,155 @@ fn agent_waiting_allows_user_attended_interactive_conversations() {
         ChatContextType::Ideation,
         false,
         false,
+        false,
     ));
     assert!(is_user_attended_turn_completion(
         ChatContextType::Project,
         false,
         false,
+        false,
     ));
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Standalone,
+        false,
+        false,
+        false,
+    ));
+}
+
+#[tokio::test]
+async fn agent_waiting_emits_once_for_user_turn_and_not_for_backend_action() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = ChatConversation::new_project(project_id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("create conversation");
+
+    let ordinary_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id.clone()))
+        .await
+        .expect("create ordinary run");
+    let mut verifier_run = AgentRun::new(conversation.id.clone());
+    verifier_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    let verifier_run = state
+        .agent_run_repo
+        .create(verifier_run)
+        .await
+        .expect("create verifier run");
+
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("build mock app");
+    let handle = app.handle();
+    let verifier_run_id = verifier_run.id.as_str();
+    let ordinary_run_id = ordinary_run.id.as_str();
+    let emitted = [
+        record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &conversation.id,
+            Some(&verifier_run_id),
+        )
+        .await,
+        record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &conversation.id,
+            Some(&ordinary_run_id),
+        )
+        .await,
+    ];
+
+    assert_eq!(emitted, [false, true]);
+}
+
+#[tokio::test]
+async fn agent_waiting_skips_missing_state_entities_and_background_contexts() {
+    let unmanaged_app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("build unmanaged mock app");
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            unmanaged_app.handle(),
+            ChatContextType::Standalone,
+            "standalone",
+            &ChatConversationId::new(),
+            None,
+        )
+        .await
+    );
+
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create conversation");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("build managed mock app");
+    let handle = app.handle();
+    let missing_run_id = AgentRunId::new().as_str();
+
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &ChatConversationId::new(),
+            None,
+        )
+        .await
+    );
+    assert!(
+        record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Project,
+            project_id.as_str(),
+            &conversation.id,
+            Some(&missing_run_id),
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Ideation,
+            "missing-session",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Task,
+            "missing-task",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
+    assert!(
+        !record_agent_waiting_if_user_attended(
+            handle,
+            ChatContextType::Merge,
+            "merge",
+            &conversation.id,
+            None,
+        )
+        .await
+    );
 }
 
 #[async_trait::async_trait]
@@ -208,6 +366,33 @@ async fn spawn_jsonl_process_with_exit_status(
         .expect("spawn codex jsonl fixture with exit status")
 }
 
+async fn spawn_jsonl_process_with_stderr(
+    lines: &[&str],
+    stderr: &str,
+    exit_status: i32,
+) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(
+            "printf '%s' \"$RALPHX_STREAM_LINES\"; printf '%s' \"$RALPHX_STREAM_STDERR\" >&2; exit \"$RALPHX_EXIT_STATUS\"",
+        )
+        .env("RALPHX_STREAM_LINES", payload)
+        .env("RALPHX_STREAM_STDERR", stderr)
+        .env("RALPHX_EXIT_STATUS", exit_status.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command.spawn().expect("spawn Codex stderr fixture")
+}
+
 async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
     let mut command = Command::new("sh");
     command
@@ -275,6 +460,9 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
 }
@@ -314,6 +502,9 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
             None,
             false,
             false,
+            None,
+            None,
+            None,
         ),
     )
     .await
@@ -489,7 +680,9 @@ async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
         matches!(
             result,
             Err(StreamError::NoOutput {
-                context_type: ChatContextType::Ideation
+                context_type: ChatContextType::Ideation,
+                exit_code: Some(1),
+                ..
             })
         ),
         "a non-zero terminal exit without diagnostics must not be reduced to AgentExit"
@@ -531,9 +724,62 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
     .await;
 
     assert!(
-        matches!(result, Err(StreamError::NoOutput { context_type: ChatContextType::Ideation })),
+        matches!(
+            result,
+            Err(StreamError::NoOutput {
+                context_type: ChatContextType::Ideation,
+                exit_code: Some(0),
+                ..
+            })
+        ),
         "a terminal success without text, tool output, or completion signal must not settle as success"
     );
+}
+
+#[tokio::test]
+async fn codex_stdin_notice_only_exit_is_typed_as_no_output_with_details() {
+    let child = spawn_jsonl_process_with_stderr(
+        &[r#"{"type":"thread.started","thread_id":"stdin-notice-thread"}"#],
+        "Reading additional input from stdin...",
+        1,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("stdin-notice-run".to_string()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    match result {
+        Err(StreamError::NoOutput {
+            exit_code, stderr, ..
+        }) => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("Reading additional input from stdin"));
+        }
+        other => panic!("expected typed no-output failure, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -704,6 +950,9 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         None,
         false,
         false,
+        None,
+        None,
+        None,
     )
     .await
     .expect("stream should complete");

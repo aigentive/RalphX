@@ -516,13 +516,35 @@ function mockAgentHarnessAvailability(projectId: string | null) {
 }
 
 const mockManualRoleFamilies = [
-  ["workspace", "Workspace", "workspace_edit", "Workspace Edit"],
-  ["automation", "Automation", "automation_plan_judge", "Plan Judge"],
-  ["feedback_loops", "Feedback Loops", "workspace_repair", "Workspace Repair"],
-  ["ideation", "Ideation", "ideation_primary", "Ideation Primary"],
-  ["delegation", "Delegation", "delegated_subagent", "Delegated Subagent"],
-  ["execution", "Execution", "execution_worker", "Execution Worker"],
-  ["utility", "Utility", "utility_lightweight", "Utility Lightweight"],
+  ["workspace", "Workspace", "workspace_chat", "Chat", "General project conversation and workspace assistance."],
+  ["workspace", "Workspace", "workspace_edit", "Edit", "Implements requested changes in the project workspace."],
+  ["workspace", "Workspace", "workspace_plan", "Plan", "Develops implementation plans for project changes."],
+  ["workspace", "Workspace", "workspace_ideation", "Ideation", "Explores product and technical ideas into actionable plans."],
+  ["workspace", "Workspace", "workspace_review_pr", "Review PR", "Reviews pull request changes and reports actionable findings."],
+  ["workspace", "Workspace", "workspace_automation", "Automation", "Runs configured project automation conversations."],
+  ["automation", "Automation", "automation_plan_judge", "Plan Judge", "Evaluates whether an automation plan is ready to execute."],
+  ["automation", "Automation", "automation_result_judge", "Result Judge", "Evaluates automation results and required follow-up."],
+  ["feedback_loops", "Feedback Loops", "workspace_reviewer", "Reviewer", "Reviews workspace changes and identifies issues."],
+  ["feedback_loops", "Feedback Loops", "workspace_repair", "Repair", "Repairs workspace setup, branch, or execution problems."],
+  ["feedback_loops", "Feedback Loops", "workspace_merge_repair", "Merge Repair", "Resolves merge conflicts and incomplete merge states."],
+  ["feedback_loops", "Feedback Loops", "workspace_pr_fixer", "PR Fixer", "Addresses pull request feedback and failing checks."],
+  ["ideation", "Ideation", "ideation_primary", "Primary", "Leads ideation and produces the working plan."],
+  ["ideation", "Ideation", "ideation_verifier", "Verifier", "Challenges an ideation plan before implementation."],
+  ["ideation", "Ideation", "ideation_subagent", "Subagent", "Explores a focused question for the ideation lead."],
+  ["ideation", "Ideation", "ideation_verifier_subagent", "Verifier Subagent", "Investigates a focused verification concern."],
+  ["delegation", "Delegation", "delegated_subagent", "Delegated Subagent", "Handles a bounded task delegated by another agent."],
+  ["execution", "Execution", "execution_worker", "Worker", "Implements an execution-plan task in its isolated workspace."],
+  ["execution", "Execution", "execution_qa_prep", "QA Prep", "Prepares changed code for quality validation."],
+  ["execution", "Execution", "execution_qa_refiner", "QA Refiner", "Refines changes in response to quality findings."],
+  ["execution", "Execution", "execution_qa_tester", "QA Tester", "Runs targeted tests and reports behavioral evidence."],
+  ["execution", "Execution", "execution_reviewer", "Reviewer", "Reviews completed execution work for correctness and scope."],
+  ["execution", "Execution", "execution_reexecutor", "Re-executor", "Implements follow-up changes requested by review."],
+  ["execution", "Execution", "execution_merger", "Merger", "Completes approved branch integration and merge cleanup."],
+  ["utility", "Utility", "utility_lightweight", "Lightweight", "Handles small utility tasks with minimal runtime overhead."],
+  ["utility", "Utility", "utility_pr_describer", "PR Describer", "Summarizes a completed change for pull request publication."],
+  ["utility", "Utility", "utility_project_analyzer", "Project Analyzer", "Inspects a project and reports relevant implementation context."],
+  ["utility", "Utility", "memory_capture", "Memory Capture", "Extracts durable project knowledge from completed work."],
+  ["utility", "Utility", "memory_maintainer", "Memory Maintainer", "Curates and updates stored project knowledge."],
 ] as const;
 
 const mockManualRoleDefault = {
@@ -591,20 +613,29 @@ function mockManualRoleDefaults(projectId: string | null) {
   return {
     project_id: projectId,
     roles: mockManualRoleFamilies.map(
-      ([family, familyDisplayName, role, displayName]) => {
-        const configured =
-          mockManualRoleDefaultStore.get(mockManualRoleScopeKey(projectId, role)) ??
-          (projectId === null && role === "workspace_edit"
-            ? mockManualRoleDefault
-            : null);
+      ([family, familyDisplayName, role, displayName, description]) => {
+        const scopedConfigured = projectId === null
+          ? null
+          : mockManualRoleDefaultStore.get(
+            mockManualRoleScopeKey(projectId, role),
+          ) ?? null;
+        const globalConfigured =
+          mockManualRoleDefaultStore.get(mockManualRoleScopeKey(null, role)) ??
+          (role === "workspace_edit" ? mockManualRoleDefault : null);
+        const configured = projectId === null
+          ? globalConfigured
+          : scopedConfigured;
         return {
           role,
           display_name: displayName,
+          description,
           family,
           family_display_name: familyDisplayName,
           configured,
-          effective: configured ?? mockManualRoleDefault,
-          source: configured ? "global_ui" : "provider_default",
+          effective: configured ?? globalConfigured ?? mockManualRoleDefault,
+          source: configured
+            ? (projectId === null ? "global_ui" : "project_ui")
+            : (globalConfigured ? "global_ui" : "provider_default"),
           diagnostics: [],
           controls: mockManualRoleControls(family),
         };
@@ -2187,6 +2218,16 @@ const commandHandlers: Record<
   update_notification_settings: async () => mockNotificationSettings,
 
   // Task commands
+  get_session_task_history_availability: async (args) => {
+    const availability = await mockTasksApi.getSessionHistoryAvailability(
+      args.projectId as string,
+      args.ideationSessionId as string,
+    );
+    return {
+      has_history: availability.hasHistory,
+      task_count: availability.taskCount,
+    };
+  },
   list_tasks: async (args) => {
     // Build params object, only including defined properties
     const params: {
@@ -2552,12 +2593,46 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
-  get_agent_conversation_workspace_review: async () => ({
-    changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
-    commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
-    base_ref: "main",
-    head_ref: "HEAD",
+  get_agent_conversation_workspace_staged_file_changes: async () => [],
+  get_agent_conversation_workspace_unstaged_file_changes: async () => [],
+  get_agent_conversation_workspace_cumulative_file_changes: async () =>
+    mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_pr_annotations: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    return {
+      pr_number: workspace?.publicationPrNumber ?? 0,
+      head_sha: null,
+      annotations: [],
+      sources_unavailable: [],
+    };
+  },
+  get_agent_conversation_workspace_review_hunk_annotations: async () => ({
+    artifact_id: null,
+    artifact_version: null,
+    target_scope: null,
+    head_sha: null,
+    diff_fingerprint: null,
+    annotations: [],
   }),
+  get_agent_conversation_workspace_review: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    const publicationStatus = workspace?.publicationPrStatus
+      ?.trim()
+      .toLowerCase();
+    const supportsWorktreeModes =
+      publicationStatus !== "merged" && publicationStatus !== "closed";
+    return {
+      changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
+      commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
+      base_ref: "main",
+      head_ref: "HEAD",
+      supports_worktree_modes: supportsWorktreeModes,
+    };
+  },
   get_agent_conversation_workspace_file_diff: async (args) =>
     mockWorkspaceFileDiff(args.filePath as string),
   get_agent_conversation_workspace_commits: async () => ({

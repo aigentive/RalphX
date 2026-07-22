@@ -19,6 +19,109 @@ import {
 export const AGENT_WORKSPACE_STALE_MS = 5_000;
 export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 60_000;
 
+export type WorkspaceReviewRefreshMode = "status" | "full_target";
+
+type WorkspaceReviewContextFetcher = (
+  conversationId: string,
+  options: { signal?: AbortSignal; refreshTarget?: boolean },
+) => Promise<AgentWorkspaceReviewContext>;
+
+interface WorkspaceReviewRefreshState {
+  requestedMode: WorkspaceReviewRefreshMode | null;
+  running: Promise<void> | null;
+}
+
+const workspaceReviewRefreshes = new WeakMap<
+  QueryClient,
+  Map<string, WorkspaceReviewRefreshState>
+>();
+
+function mergeWorkspaceReviewRefreshMode(
+  current: WorkspaceReviewRefreshMode | null,
+  requested: WorkspaceReviewRefreshMode,
+): WorkspaceReviewRefreshMode {
+  return current === "full_target" || requested === "full_target"
+    ? "full_target"
+    : "status";
+}
+
+export function refreshWorkspaceReviewContext(
+  queryClient: QueryClient,
+  conversationId: string,
+  mode: WorkspaceReviewRefreshMode = "status",
+  fetchContext: WorkspaceReviewContextFetcher =
+    chatApi.getAgentWorkspaceReviewContext,
+): Promise<void> {
+  let clientRefreshes = workspaceReviewRefreshes.get(queryClient);
+  if (!clientRefreshes) {
+    clientRefreshes = new Map();
+    workspaceReviewRefreshes.set(queryClient, clientRefreshes);
+  }
+  let state = clientRefreshes.get(conversationId);
+  if (!state) {
+    state = { requestedMode: null, running: null };
+    clientRefreshes.set(conversationId, state);
+  }
+  state.requestedMode = mergeWorkspaceReviewRefreshMode(
+    state.requestedMode,
+    mode,
+  );
+  if (state.running) {
+    return state.running;
+  }
+
+  const refreshState = state;
+  const refreshes = clientRefreshes;
+  refreshState.running = (async () => {
+    try {
+      while (refreshState.requestedMode) {
+        const requestedMode = refreshState.requestedMode;
+        refreshState.requestedMode = null;
+        const queryKey = agentWorkspaceKeys.workspaceReview(conversationId);
+        const activeQuery = queryClient.getQueryCache().find({
+          queryKey,
+          exact: true,
+        });
+        if (activeQuery?.state.fetchStatus === "fetching") {
+          await queryClient.refetchQueries(
+            { queryKey, exact: true },
+            { cancelRefetch: false },
+          );
+          if (requestedMode === "status") {
+            continue;
+          }
+        }
+        await queryClient.fetchQuery({
+          queryKey,
+          queryFn: ({ signal }) =>
+            fetchContext(conversationId, {
+              signal,
+              refreshTarget: requestedMode === "full_target",
+            }),
+          staleTime: 0,
+        });
+      }
+    } finally {
+      refreshState.running = null;
+      refreshState.requestedMode = null;
+      refreshes.delete(conversationId);
+    }
+  })();
+  return refreshState.running;
+}
+
+export async function refreshWorkspaceReviewAfterSignal(
+  queryClient: QueryClient,
+  conversationId: string,
+): Promise<void> {
+  await refreshWorkspaceReviewContext(queryClient, conversationId, "status");
+  await refreshWorkspaceReviewContext(
+    queryClient,
+    conversationId,
+    "full_target",
+  );
+}
+
 const agentTaskScopeKey = (
   contextType: string | null | undefined,
   contextId: string | null | undefined,
@@ -130,8 +233,14 @@ type WorkspaceReviewContextLike =
   | StartAgentWorkspaceReviewFixerResult
   | StartAgentWorkspaceReviewResult;
 
-const WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
-  new Set(["edit", "ideation", "plan", "review_pr"]);
+const LOCAL_WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
+  new Set(["edit", "ideation"]);
+
+export function isLocalWorkspaceReviewModeEligible(
+  mode: AgentConversationWorkspaceMode | null | undefined,
+): boolean {
+  return mode ? LOCAL_WORKSPACE_REVIEW_OWNER_MODES.has(mode) : false;
+}
 
 export interface WorkspaceReviewOwnerConversationInput {
   activeConversationContextType: string | null | undefined;
@@ -152,14 +261,13 @@ export function resolveWorkspaceReviewOwnerConversationId({
     return null;
   }
 
-  const hasReviewableWorkspaceMode = activeConversationMode
-    ? WORKSPACE_REVIEW_OWNER_MODES.has(activeConversationMode)
-    : false;
-  if (
-    hasReviewableWorkspaceMode &&
-    activeWorkspaceConversationId === activeConversationId
-  ) {
-    return activeConversationId;
+  const selectedConversationOwnsWorkspace =
+    activeWorkspaceConversationId === activeConversationId;
+  const hasReviewableWorkspaceMode = isLocalWorkspaceReviewModeEligible(
+    activeConversationMode,
+  );
+  if (selectedConversationOwnsWorkspace) {
+    return hasReviewableWorkspaceMode ? activeConversationId : null;
   }
 
   if (activeConversationParentId) {
@@ -280,9 +388,6 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prReview(conversationId),
-    }),
-    queryClient.invalidateQueries({
-      queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

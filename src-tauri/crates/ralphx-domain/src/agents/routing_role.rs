@@ -127,7 +127,9 @@ pub const ROUTING_ROLES: [RoutingRole; ROUTING_ROLE_COUNT] = [
 pub struct RoutingRoleMetadata {
     pub key: &'static str,
     pub display_name: &'static str,
+    pub description: &'static str,
     pub family: RoutingRoleFamily,
+    pub requires_tasks: bool,
 }
 
 impl RoutingRole {
@@ -135,81 +137,126 @@ impl RoutingRole {
         use RoutingRoleFamily as Family;
 
         match self {
-            Self::WorkspaceChat => metadata("workspace_chat", "Chat", Family::Workspace),
-            Self::WorkspaceEdit => metadata("workspace_edit", "Edit", Family::Workspace),
-            Self::WorkspacePlan => metadata("workspace_plan", "Plan", Family::Workspace),
+            Self::WorkspaceChat => metadata(self, "workspace_chat", "Chat", Family::Workspace),
+            Self::WorkspaceEdit => metadata(self, "workspace_edit", "Edit", Family::Workspace),
+            Self::WorkspacePlan => metadata(self, "workspace_plan", "Plan", Family::Workspace),
             Self::WorkspaceIdeation => {
-                metadata("workspace_ideation", "Ideation", Family::Workspace)
+                metadata(self, "workspace_ideation", "Ideation", Family::Workspace)
             }
             Self::WorkspaceReviewPr => {
-                metadata("workspace_review_pr", "Review PR", Family::Workspace)
+                metadata(self, "workspace_review_pr", "Review PR", Family::Workspace)
             }
-            Self::WorkspaceAutomation => {
-                metadata("workspace_automation", "Automation", Family::Workspace)
-            }
-            Self::AutomationPlanJudge => {
-                metadata("automation_plan_judge", "Plan Judge", Family::Automation)
-            }
+            Self::WorkspaceAutomation => metadata(
+                self,
+                "workspace_automation",
+                "Automation",
+                Family::Workspace,
+            ),
+            Self::AutomationPlanJudge => metadata(
+                self,
+                "automation_plan_judge",
+                "Plan Judge",
+                Family::Automation,
+            ),
             Self::AutomationResultJudge => metadata(
+                self,
                 "automation_result_judge",
                 "Result Judge",
                 Family::Automation,
             ),
-            Self::WorkspaceReviewer => {
-                metadata("workspace_reviewer", "Reviewer", Family::FeedbackLoops)
+            Self::WorkspaceReviewer => metadata(
+                self,
+                "workspace_reviewer",
+                "Reviewer",
+                Family::FeedbackLoops,
+            ),
+            Self::WorkspaceRepair => {
+                metadata(self, "workspace_repair", "Repair", Family::FeedbackLoops)
             }
-            Self::WorkspaceRepair => metadata("workspace_repair", "Repair", Family::FeedbackLoops),
             Self::WorkspaceMergeRepair => metadata(
+                self,
                 "workspace_merge_repair",
                 "Merge Repair",
                 Family::FeedbackLoops,
             ),
-            Self::WorkspacePrFixer => {
-                metadata("workspace_pr_fixer", "PR Fixer", Family::FeedbackLoops)
+            Self::WorkspacePrFixer => metadata(
+                self,
+                "workspace_pr_fixer",
+                "PR Fixer",
+                Family::FeedbackLoops,
+            ),
+            Self::IdeationPrimary => {
+                metadata(self, "ideation_primary", "Primary", Family::Ideation)
             }
-            Self::IdeationPrimary => metadata("ideation_primary", "Primary", Family::Ideation),
-            Self::IdeationVerifier => metadata("ideation_verifier", "Verifier", Family::Ideation),
-            Self::IdeationSubagent => metadata("ideation_subagent", "Subagent", Family::Ideation),
+            Self::IdeationVerifier => {
+                metadata(self, "ideation_verifier", "Verifier", Family::Ideation)
+            }
+            Self::IdeationSubagent => {
+                metadata(self, "ideation_subagent", "Subagent", Family::Ideation)
+            }
             Self::IdeationVerifierSubagent => metadata(
+                self,
                 "ideation_verifier_subagent",
                 "Verifier Subagent",
                 Family::Ideation,
             ),
             Self::DelegatedSubagent => metadata(
+                self,
                 "delegated_subagent",
                 "Delegated Subagent",
                 Family::Delegation,
             ),
-            Self::ExecutionWorker => metadata("execution_worker", "Worker", Family::Execution),
-            Self::ExecutionQaPrep => metadata("execution_qa_prep", "QA Prep", Family::Execution),
-            Self::ExecutionQaRefiner => {
-                metadata("execution_qa_refiner", "QA Refiner", Family::Execution)
+            Self::ExecutionWorker => {
+                metadata(self, "execution_worker", "Worker", Family::Execution)
             }
+            Self::ExecutionQaPrep => {
+                metadata(self, "execution_qa_prep", "QA Prep", Family::Execution)
+            }
+            Self::ExecutionQaRefiner => metadata(
+                self,
+                "execution_qa_refiner",
+                "QA Refiner",
+                Family::Execution,
+            ),
             Self::ExecutionQaTester => {
-                metadata("execution_qa_tester", "QA Tester", Family::Execution)
+                metadata(self, "execution_qa_tester", "QA Tester", Family::Execution)
             }
             Self::ExecutionReviewer => {
-                metadata("execution_reviewer", "Reviewer", Family::Execution)
+                metadata(self, "execution_reviewer", "Reviewer", Family::Execution)
             }
-            Self::ExecutionReexecutor => {
-                metadata("execution_reexecutor", "Re-executor", Family::Execution)
+            Self::ExecutionReexecutor => metadata(
+                self,
+                "execution_reexecutor",
+                "Re-executor",
+                Family::Execution,
+            ),
+            Self::ExecutionMerger => {
+                metadata(self, "execution_merger", "Merger", Family::Execution)
             }
-            Self::ExecutionMerger => metadata("execution_merger", "Merger", Family::Execution),
             Self::UtilityLightweight => {
-                metadata("utility_lightweight", "Lightweight", Family::Utility)
+                metadata(self, "utility_lightweight", "Lightweight", Family::Utility)
             }
-            Self::UtilityPrDescriber => {
-                metadata("utility_pr_describer", "PR Describer", Family::Utility)
-            }
+            Self::UtilityPrDescriber => metadata(
+                self,
+                "utility_pr_describer",
+                "PR Describer",
+                Family::Utility,
+            ),
             Self::UtilityProjectAnalyzer => metadata(
+                self,
                 "utility_project_analyzer",
                 "Project Analyzer",
                 Family::Utility,
             ),
-            Self::MemoryCapture => metadata("memory_capture", "Memory Capture", Family::Utility),
-            Self::MemoryMaintainer => {
-                metadata("memory_maintainer", "Memory Maintainer", Family::Utility)
+            Self::MemoryCapture => {
+                metadata(self, "memory_capture", "Memory Capture", Family::Utility)
             }
+            Self::MemoryMaintainer => metadata(
+                self,
+                "memory_maintainer",
+                "Memory Maintainer",
+                Family::Utility,
+            ),
         }
     }
 
@@ -244,6 +291,7 @@ impl RoutingRole {
 }
 
 const fn metadata(
+    role: RoutingRole,
     key: &'static str,
     display_name: &'static str,
     family: RoutingRoleFamily,
@@ -251,7 +299,9 @@ const fn metadata(
     RoutingRoleMetadata {
         key,
         display_name,
+        description: super::routing_role_descriptions::routing_role_description(role),
         family,
+        requires_tasks: matches!(family, RoutingRoleFamily::Execution),
     }
 }
 

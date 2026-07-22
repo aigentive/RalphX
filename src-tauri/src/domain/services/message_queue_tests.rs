@@ -22,6 +22,7 @@ fn queued_message_pre_upgrade_payload_without_persona_keys_deserializes_to_inher
     assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
     assert_eq!(queued.agent_name_override, None);
     assert_eq!(queued.composer_selection_snapshot, None);
+    assert!(queued.composer_excerpt_references.is_empty());
 }
 
 #[test]
@@ -106,6 +107,24 @@ fn test_queue_and_pop() {
     // Queue should be empty now
     let popped3 = queue.pop(ChatContextType::Ideation, "session-1");
     assert!(popped3.is_none());
+}
+
+#[test]
+fn standalone_and_branch_update_queue_counts_use_shared_context_parsing() {
+    let queue = MessageQueue::new();
+    queue.queue(
+        ChatContextType::Standalone,
+        "conversation-1",
+        "standalone".to_string(),
+    );
+    queue.queue(
+        ChatContextType::BranchUpdate,
+        "task-1",
+        "branch update".to_string(),
+    );
+
+    assert_eq!(queue.count_for_context("standalone", "conversation-1"), 1);
+    assert_eq!(queue.count_for_context("branch_update", "task-1"), 1);
 }
 
 #[test]
@@ -506,6 +525,7 @@ fn test_remove_stale_drops_old_messages() {
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
             composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
@@ -526,6 +546,7 @@ fn test_remove_stale_drops_old_messages() {
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
             composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }
@@ -635,6 +656,8 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         references.clone(),
         Vec::new(),
         Vec::new(),
+        None,
+        Vec::new(),
         Vec::new(),
     );
 
@@ -666,6 +689,8 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         None,
         Vec::new(),
         references.clone(),
+        Vec::new(),
+        None,
         Vec::new(),
         Vec::new(),
     );
@@ -734,12 +759,52 @@ fn test_queue_with_overrides_preserves_composer_artifact_references() {
         Vec::new(),
         Vec::new(),
         references.clone(),
+        None,
+        Vec::new(),
         Vec::new(),
     );
 
     assert_eq!(queued.composer_artifact_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_artifact_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_composer_excerpt_references() {
+    let queue = MessageQueue::new();
+    let references = vec![ComposerExcerptReference {
+        source_kind: "task".to_string(),
+        source_id: "task-1".to_string(),
+        source_label: "Task".to_string(),
+        title: Some("Implement selection".to_string()),
+        excerpt: "Preserve this exact context".to_string(),
+        artifact_id: None,
+        session_id: None,
+        version: None,
+        url: None,
+        file_path: None,
+        revision: None,
+        locator: Some("Description".to_string()),
+    }];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Use selected task context".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        references.clone(),
+        Vec::new(),
+    );
+
+    assert_eq!(queued.composer_excerpt_references, references);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.composer_excerpt_references, references);
 }
 
 #[test]
@@ -758,6 +823,8 @@ fn test_queue_with_overrides_preserves_attachment_ids() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         attachment_ids.clone(),
     );
@@ -785,6 +852,8 @@ fn test_queue_standard_has_no_overrides() {
     assert!(!queued.force_new_provider_session);
     assert!(queued.composer_project_references.is_empty());
     assert!(queued.composer_integration_references.is_empty());
+    assert_eq!(queued.composer_selection_snapshot, None);
+    assert!(queued.composer_excerpt_references.is_empty());
     assert!(queued.attachment_ids.is_empty());
 }
 
@@ -835,6 +904,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Vec::new(),
         None,
         Vec::new(),
+        Vec::new(),
     );
 
     assert_eq!(queued.harness_override, Some(AgentHarnessKind::Codex));
@@ -874,6 +944,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
             composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }

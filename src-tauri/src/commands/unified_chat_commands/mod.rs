@@ -28,6 +28,7 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
+use crate::application::agent_workspace_terminal_cleanup::TerminalAgentWorkspaceOutcome;
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
@@ -142,15 +143,15 @@ use crate::domain::execution::{
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, ComposerSelectionSnapshot, QueuedMessage, RunningAgentKey,
-    RunningAgentRegistry,
+    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
+    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
+use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
-use crate::infrastructure::agents::claude::{
-    agent_personas_enabled, git_runtime_config, ui_feature_flags_config,
-};
+use crate::infrastructure::agents::agent_personas_enabled;
+use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -203,6 +204,9 @@ pub struct SendAgentMessageInput {
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Immutable whole-line artifact or ticket excerpt selected for this turn.
     pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    /// Bounded plain-text excerpts selected from the artifact pane.
+    #[serde(default)]
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     /// Optional native team-mode overlay request for this send.
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
@@ -226,6 +230,27 @@ fn hidden_user_message_metadata() -> String {
         "recovery_context": true,
     })
     .to_string()
+}
+
+#[doc(hidden)]
+pub fn validate_persona_builder_team_intent_for_send(
+    context_type: ChatContextType,
+    persisted_conversation: Option<&ChatConversation>,
+    requested_capability: CoordinationMode,
+) -> Result<(), String> {
+    let persona_builder_conversation = persisted_conversation.is_some_and(|conversation| {
+        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    });
+    if (context_type == ChatContextType::Standalone || persona_builder_conversation)
+        && requested_capability != CoordinationMode::Solo
+    {
+        return Err(if persona_builder_conversation {
+            "Team mode is not supported for persona builder conversations".to_string()
+        } else {
+            STANDALONE_TEAM_INTENT_REJECTED_ERROR.to_string()
+        });
+    }
+    Ok(())
 }
 
 /// Response from send_agent_message command
@@ -1043,6 +1068,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
+            plan_branch_repo: Arc::clone(&state.plan_branch_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -1703,6 +1729,7 @@ pub struct QueuedMessageResponse {
     pub created_at: String,
     pub is_editing: bool,
     pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
+    pub composer_excerpt_references: Vec<ComposerExcerptReference>,
     pub attachment_ids: Vec<String>,
 }
 
@@ -1714,6 +1741,7 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             created_at: msg.created_at,
             is_editing: msg.is_editing,
             composer_selection_snapshot: msg.composer_selection_snapshot,
+            composer_excerpt_references: msg.composer_excerpt_references,
             attachment_ids: msg
                 .attachment_ids
                 .into_iter()
@@ -1750,6 +1778,7 @@ pub struct AgentConversationResponse {
     pub bound_agent_name: Option<String>,
     pub persona_id: Option<String>,
     pub builder_draft_id: Option<String>,
+    pub builder_result_persona_id: Option<String>,
     pub last_run_persona_run_id: Option<String>,
     pub last_run_persona_id: Option<String>,
     pub last_run_persona_slug: Option<String>,
@@ -1768,6 +1797,12 @@ pub struct AgentConversationResponse {
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveAgentConversationResponse {
+    pub conversation: AgentConversationResponse,
+    pub cleanup: TerminalAgentWorkspaceOutcome,
 }
 
 impl From<ChatConversation> for AgentConversationResponse {
@@ -1793,6 +1828,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             bound_agent_name: c.bound_agent_name,
             persona_id: c.persona_id,
             builder_draft_id: c.builder_draft_id,
+            builder_result_persona_id: c.builder_result_persona_id,
             last_run_persona_run_id: None,
             last_run_persona_id: None,
             last_run_persona_slug: None,
@@ -2866,6 +2902,21 @@ fn parse_agent_workspace_mode(
     mode.parse::<AgentConversationWorkspaceMode>()
 }
 
+fn parse_agent_workspace_mode_for_creation(
+    mode: Option<&str>,
+) -> Result<Option<AgentConversationWorkspaceMode>, String> {
+    let Some(mode) = mode.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let mode = mode.parse::<AgentConversationWorkspaceMode>()?;
+    if mode == AgentConversationWorkspaceMode::PersonaBuilder
+        && !crate::infrastructure::agents::agent_personas_enabled()
+    {
+        return Err("PersonaBuilder mode requires the agent_personas feature flag".to_string());
+    }
+    Ok(Some(mode))
+}
+
 fn parse_agent_workspace_base_kind(
     kind: Option<&str>,
 ) -> Result<Option<IdeationAnalysisBaseRefKind>, String> {
@@ -3196,6 +3247,18 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     .await
 }
 
+#[tauri::command]
+pub async fn abort_seeded_agent_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation(
+        state.inner(),
+        &ChatConversationId::from_string(conversation_id),
+    )
+    .await
+}
+
 #[doc(hidden)]
 pub(crate) async fn start_agent_conversation_for_state<R: Runtime + 'static>(
     input: StartAgentConversationInput,
@@ -3317,12 +3380,14 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
 
     let persona_id = input.persona_id.map(PersonaId::from_string);
     if let Some(persona_id) = persona_id.as_ref() {
+        let conversation_project_id = ProjectId::from_string(conversation.context_id.clone());
         let persona = state
             .persona_repo
             .get_by_id(persona_id)
             .await
             .map_err(|error| error.to_string())?;
-        if !persona.is_some_and(|persona| persona.is_bindable()) {
+        if !persona.is_some_and(|persona| persona.is_bindable_to_project(&conversation_project_id))
+        {
             return Err(format!(
                 "{PERSONA_UNAVAILABLE_PREFIX} persona {persona_id} is not active]"
             ));
@@ -3491,7 +3556,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         }
     }
 
-    let existing_workspace = state
+    let mut existing_workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation.id)
         .await
@@ -3524,6 +3589,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
     let plan_to_edit_handoff = current_mode == AgentConversationWorkspaceMode::Plan
         && target_mode == AgentConversationWorkspaceMode::Edit;
+    let entering_plan_workspace = target_mode == AgentConversationWorkspaceMode::Plan
+        && existing_workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.mode != AgentConversationWorkspaceMode::Plan);
+    let leaving_plan_for_review_eligible_workspace = current_mode
+        == AgentConversationWorkspaceMode::Plan
+        && crate::application::agent_workspace_review::workspace_review_mode_is_eligible(
+            target_mode,
+        )
+        && existing_workspace.is_some();
+    let crossing_plan_review_boundary =
+        entering_plan_workspace || leaving_plan_for_review_eligible_workspace;
+    let _workspace_review_lifecycle_guard = if crossing_plan_review_boundary {
+        Some(
+            crate::application::agent_workspace_review::lock_workspace_review_lifecycle(
+                &conversation.id,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
@@ -3542,6 +3629,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 return Err("Cannot change mode while the agent is running".to_string());
             }
         }
+    }
+
+    if crossing_plan_review_boundary {
+        let cleanup_chat_service = match running_agent_policy {
+            ModeSwitchRunningAgentPolicy::StopWithService(chat_service) => Some(chat_service),
+            ModeSwitchRunningAgentPolicy::Reject | ModeSwitchRunningAgentPolicy::Allow => None,
+        };
+        let workspace = existing_workspace.as_ref().ok_or_else(|| {
+            "Cannot change mode because the Agent Workspace no longer exists".to_string()
+        })?;
+        crate::application::agent_workspace_review::cleanup_workspace_review_for_plan_boundary(
+            state,
+            workspace,
+            cleanup_chat_service,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        existing_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     let workspace = match existing_workspace {
@@ -3754,6 +3863,11 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         }
     }
 
+    if current_mode != target_mode {
+        crate::application::agent_workspace_review_context::
+            invalidate_workspace_review_presentation_context(&conversation.id);
+    }
+
     if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
         state
             .chat_conversation_repo
@@ -3932,6 +4046,11 @@ pub async fn send_agent_message(
                 .map(|conversation| conversation.coordination_mode)
         })
         .unwrap_or_default();
+    validate_persona_builder_team_intent_for_send(
+        context_type,
+        persisted_conversation.as_ref(),
+        requested_capability,
+    )?;
     let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
         .then(|| {
             crate::application::agent_capability_validation::codex_ultra_support_for_model(
@@ -4134,6 +4253,7 @@ pub async fn send_agent_message(
                 composer_integration_references: input.composer_integration_references,
                 composer_artifact_references: input.composer_artifact_references,
                 composer_selection_snapshot: input.composer_selection_snapshot,
+                composer_excerpt_references: input.composer_excerpt_references,
                 team_intent: input.team_intent,
                 team_message_target: input.team_message_target,
                 attachment_ids,
@@ -4422,22 +4542,23 @@ pub async fn archive_agent_conversation_inner(
     conversation_id: &ChatConversationId,
     close_pull_request: bool,
     state: &AppState,
-) -> Result<(), String> {
+) -> Result<TerminalAgentWorkspaceOutcome, String> {
     archive_agent_conversation_for_state(conversation_id, state, close_pull_request).await
 }
 
 /// Archive a conversation.
 /// An open PR is closed only when the caller opts in. Review PR workspaces
-/// never close their reviewed pull request. The local worktree/branch will
-/// be cleaned up on next app restart via the terminal cleanup pipeline.
+/// never close their reviewed pull request. Verified RalphX-owned local
+/// worktree and branch artifacts are cleaned immediately after runtime shutdown.
 #[tauri::command]
 pub async fn archive_agent_conversation(
     conversation_id: String,
     close_pull_request: bool,
     state: State<'_, AppState>,
-) -> Result<AgentConversationResponse, String> {
+) -> Result<ArchiveAgentConversationResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    archive_agent_conversation_inner(&conversation_id, close_pull_request, &state).await?;
+    let cleanup =
+        archive_agent_conversation_inner(&conversation_id, close_pull_request, &state).await?;
 
     let conversation = state
         .chat_conversation_repo
@@ -4445,7 +4566,10 @@ pub async fn archive_agent_conversation(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Conversation not found".to_string())?;
-    agent_conversation_response_for_state(state.inner(), conversation).await
+    Ok(ArchiveAgentConversationResponse {
+        conversation: agent_conversation_response_for_state(state.inner(), conversation).await?,
+        cleanup,
+    })
 }
 
 /// Restore an archived conversation.
@@ -4868,6 +4992,13 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     else {
         return Err("Agent conversation workspace not found".to_string());
     };
+    if !workspace.allows_owned_pr_mutation() {
+        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "PR supervision is unavailable in Review PR mode".to_string()
+        } else {
+            "PR supervision is unavailable for this workspace".to_string()
+        });
+    }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
     let terminal_publication_status = workspace.has_terminal_publication_pr_status()
@@ -5011,6 +5142,13 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
     else {
         return Err("Agent conversation workspace not found".to_string());
     };
+    if !workspace.allows_owned_pr_mutation() {
+        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+            "Auto Publish cannot be changed in Review PR mode".to_string()
+        } else {
+            "Auto Publish cannot be changed for this workspace".to_string()
+        });
+    }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
     let terminal_publication_status = workspace.has_terminal_publication_pr_status()
@@ -10791,11 +10929,27 @@ pub async fn get_agent_conversation_runtime_index_for_app_state(
 #[serde(rename_all = "camelCase")]
 pub struct CreateAgentConversationInput {
     pub context_type: String,
-    pub context_id: String,
+    /// Required for every context except `standalone` (self-keyed; must be
+    /// absent/empty for standalone creation requests — see
+    /// `STANDALONE_CONTEXT_ID_MUST_BE_ABSENT_ERROR`).
+    #[serde(default)]
+    pub context_id: Option<String>,
     pub title: Option<String>,
+    /// Optional initial mode for pre-send seeded conversations.
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
 }
+
+const STANDALONE_CONTEXT_ID_MUST_BE_ABSENT_ERROR: &str =
+    "Standalone conversation creation does not accept a context_id (the backend self-keys it)";
+const STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR: &str =
+    "context_id is required for this context_type";
+const STANDALONE_CONVERSATIONS_DISABLED_ERROR: &str =
+    "Standalone conversations are disabled (flag: standalone_conversations)";
+const STANDALONE_TEAM_INTENT_REJECTED_ERROR: &str =
+    "Team mode is not supported for standalone conversations";
 
 /// Input for update_agent_conversation_title command
 #[derive(Debug, Deserialize)]
@@ -10825,7 +10979,27 @@ pub async fn create_agent_conversation(
     };
 
     let context_type = parse_context_type(&input.context_type)?;
+    let mode = parse_agent_workspace_mode_for_creation(input.mode.as_deref())?;
+    if mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && !ChatConversation::is_persona_builder_identity(context_type, mode)
+    {
+        return Err(
+            "PersonaBuilder conversations must use Project or Standalone context".to_string(),
+        );
+    }
     let coordination_mode = coordination_mode_from_team_intent(input.team_intent.as_ref())?;
+    if (context_type == ChatContextType::Standalone
+        || mode == Some(AgentConversationWorkspaceMode::PersonaBuilder))
+        && coordination_mode != CoordinationMode::Solo
+    {
+        return Err(
+            if mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+                "Team mode is not supported for persona builder conversations".to_string()
+            } else {
+                STANDALONE_TEAM_INTENT_REJECTED_ERROR.to_string()
+            },
+        );
+    }
     crate::application::agent_capability_validation::validate_agent_capability(
         coordination_mode,
         DEFAULT_AGENT_HARNESS,
@@ -10834,33 +11008,67 @@ pub async fn create_agent_conversation(
     )
     .map_err(|error| error.to_string())?;
 
+    let context_id = input
+        .context_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
     let mut conversation = match context_type {
+        ChatContextType::Standalone => {
+            if context_id.is_some() {
+                return Err(STANDALONE_CONTEXT_ID_MUST_BE_ABSENT_ERROR.to_string());
+            }
+            if !crate::infrastructure::agents::standalone_conversations_enabled() {
+                return Err(STANDALONE_CONVERSATIONS_DISABLED_ERROR.to_string());
+            }
+            ChatConversation::new_standalone()
+        }
         ChatContextType::Ideation => {
-            ChatConversation::new_ideation(IdeationSessionId::from_string(&input.context_id))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_ideation(IdeationSessionId::from_string(context_id))
         }
         ChatContextType::Delegation => {
-            ChatConversation::new_delegation(DelegatedSessionId::from_string(&input.context_id))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_delegation(DelegatedSessionId::from_string(context_id))
         }
         ChatContextType::Task => {
-            ChatConversation::new_task(TaskId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_task(TaskId::from_string(context_id.to_string()))
         }
         ChatContextType::Project => {
-            ChatConversation::new_project(ProjectId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_project(ProjectId::from_string(context_id.to_string()))
         }
         ChatContextType::TaskExecution => {
-            ChatConversation::new_task_execution(TaskId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_task_execution(TaskId::from_string(context_id.to_string()))
         }
         ChatContextType::Review => {
-            ChatConversation::new_review(TaskId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_review(TaskId::from_string(context_id.to_string()))
         }
         ChatContextType::Merge => {
-            ChatConversation::new_merge(TaskId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_merge(TaskId::from_string(context_id.to_string()))
         }
         ChatContextType::BranchUpdate => {
-            ChatConversation::new_branch_update(TaskId::from_string(input.context_id.clone()))
+            let context_id = context_id
+                .ok_or_else(|| STANDALONE_CONTEXT_ID_REQUIRED_FOR_CONTEXT_ERROR.to_string())?;
+            ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
         }
     };
     conversation.set_coordination_mode(coordination_mode);
+    if let Some(mode) = mode {
+        conversation.set_agent_mode(Some(mode));
+    }
 
     if let Some(title) = input
         .title
@@ -10876,6 +11084,34 @@ pub async fn create_agent_conversation(
         .create(conversation)
         .await
         .map_err(|e| e.to_string())?;
+    if conversation.context_type == ChatContextType::Standalone
+        || conversation.is_persona_builder()
+    {
+        if let Err(error) = crate::application::standalone_workspace::create_workspace(
+            state.app_paths.app_data_dir(),
+            &conversation.id.as_str(),
+        ) {
+            if let Err(cleanup_error) = state.chat_conversation_repo.delete(&conversation.id).await {
+                tracing::warn!(
+                    conversation_id = %conversation.id,
+                    %cleanup_error,
+                    "Failed to delete seeded conversation after private workspace creation failed"
+                );
+            } else if let Err(cleanup_error) =
+                crate::application::standalone_workspace::remove_workspace_if_present(
+                    state.app_paths.app_data_dir(),
+                    &conversation.id.as_str(),
+                )
+            {
+                tracing::warn!(
+                    conversation_id = %conversation.id,
+                    %cleanup_error,
+                    "Failed to remove partial private workspace after conversation creation failed"
+                );
+            }
+            return Err(error.to_string());
+        }
+    }
     agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
@@ -10896,6 +11132,11 @@ pub async fn update_agent_conversation_coordination_mode(
         .ok_or_else(|| "Conversation not found".to_string())?;
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change capabilities".to_string());
+    }
+    if conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+        && coordination_mode != CoordinationMode::Solo
+    {
+        return Err("Team mode is not supported for persona builder conversations".to_string());
     }
 
     let harness = conversation

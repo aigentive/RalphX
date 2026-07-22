@@ -5,6 +5,7 @@ use crate::application::harness_runtime_registry::{
     default_repo_root_working_directory, resolve_harness_agent_bootstrap,
 };
 use crate::application::session_namer_prompt::build_session_namer_prompt;
+use crate::application::standalone_workspace;
 use crate::application::AppState;
 use crate::domain::agents::{
     AgentConfig, AgentHarnessKind, AgentOutput, AgentRole, AgenticClient, RoutingRole,
@@ -68,7 +69,21 @@ pub(crate) async fn spawn_session_namer_agent(
     state: &AppState,
     target: SessionNamerTarget,
 ) -> AppResult<()> {
-    let spawn = build_session_namer_agent_spawn(state, target).await?;
+    let spawn = match build_session_namer_agent_spawn(state, target).await {
+        Ok(spawn) => spawn,
+        Err(AppError::SessionNamerStandaloneWorkspaceUnavailable {
+            conversation_id,
+            detail,
+        }) => {
+            tracing::warn!(
+                conversation_id,
+                detail,
+                "Skipping standalone session namer because its app-owned workspace is unavailable"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     tokio::spawn(async move {
         tracing::info!(
@@ -115,14 +130,18 @@ pub(crate) async fn build_session_namer_agent_spawn(
         resolved.review_pull_request.as_ref(),
         resolved.conversation_context.as_deref(),
     );
+    let working_directory = resolve_project_working_directory(
+        state,
+        resolved.project_id.as_deref(),
+        resolved.standalone_conversation_id.as_deref(),
+    )
+    .await?;
     let harness_override = match &target {
         SessionNamerTarget::ConversationInitial {
             requested_harness, ..
         } => requested_harness.or(resolved.conversation_harness),
         _ => None,
     };
-    let working_directory =
-        resolve_project_working_directory(state, resolved.project_id.as_deref()).await?;
     let mut runtime = state
         .resolve_manual_role_background_agent_runtime(
             resolved.project_id.as_deref(),
@@ -167,6 +186,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         max_tokens: None,
         timeout_secs: Some(60),
         env,
+        mcp_launch_policy: Default::default(),
     };
 
     Ok(SessionNamerAgentSpawn {
@@ -185,6 +205,7 @@ struct ResolvedSessionNamerTarget {
     conversation_harness: Option<AgentHarnessKind>,
     review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     conversation_context: Option<String>,
+    standalone_conversation_id: Option<String>,
 }
 
 async fn resolve_target_context(
@@ -201,6 +222,7 @@ async fn resolve_target_context(
                 conversation_harness: None,
                 review_pull_request: None,
                 conversation_context: None,
+                standalone_conversation_id: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
@@ -217,11 +239,15 @@ async fn resolve_target_context(
             let review_pull_request =
                 resolve_review_pull_request_context(state, &conversation.id).await?;
             let conversation_context = format_conversation_context(state, &conversation).await?;
+            let standalone_conversation_id = (conversation.context_type
+                == ChatContextType::Standalone)
+                .then(|| conversation.id.as_str());
             Ok(ResolvedSessionNamerTarget {
                 project_id,
                 conversation_harness: conversation.provider_harness,
                 review_pull_request,
                 conversation_context,
+                standalone_conversation_id,
             })
         }
     }
@@ -324,6 +350,7 @@ async fn resolve_conversation_project_id(
 ) -> AppResult<Option<String>> {
     match conversation.context_type {
         ChatContextType::Project => Ok(Some(conversation.context_id.clone())),
+        ChatContextType::Standalone => Ok(None),
         ChatContextType::Ideation => {
             let session = load_session(state, &conversation.context_id).await?;
             Ok(Some(session.project_id.as_str().to_string()))
@@ -354,7 +381,20 @@ async fn resolve_conversation_project_id(
 async fn resolve_project_working_directory(
     state: &AppState,
     project_id: Option<&str>,
+    standalone_conversation_id: Option<&str>,
 ) -> AppResult<PathBuf> {
+    if let Some(conversation_id) = standalone_conversation_id {
+        return standalone_workspace::resolve_workspace(
+            state.app_paths.app_data_dir(),
+            conversation_id,
+        )
+        .map_err(
+            |error| AppError::SessionNamerStandaloneWorkspaceUnavailable {
+                conversation_id: conversation_id.to_string(),
+                detail: error.to_string(),
+            },
+        );
+    }
     let Some(project_id) = project_id else {
         return Ok(default_repo_root_working_directory());
     };

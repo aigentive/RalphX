@@ -19,6 +19,7 @@ Primary project docs:
 - `.claude/rules/codeql-path-safety.md` for CodeQL-safe filesystem sink validation when paths are influenced by env vars, settings, HTTP/MCP payloads, DB state, agent metadata, or repo contents
 - `.claude/rules/multi-harness.md` for provider-neutral runtime/config/event rules and documentation sync requirements
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across canonical agent metadata, harness runtime config, prompt contracts, and MCP registration
+- `.claude/rules/agent-workspace-review-modes.md` for the non-interchangeable local Workspace Review gate and remote GitHub Review PR workflow
 - `.claude/rules/merge-recovery-consistency.md` for the coupled merge-failure behavior across merge outcome handling, manual retry, reconciliation, startup recovery, and MergeIncomplete UI
 - `.claude/rules/stateful-workflow-review.md` for false-success review of completion/cache/retry/recovery/state-machine changes
 - `.claude/rules/task-state-machine.md` for the 28 internal task statuses, the transition table, and the validated transition API contract
@@ -28,6 +29,7 @@ Primary project docs:
 - `.claude/rules/release-script-validation.md` for safe validation of release proposal/wrapper scripts without triggering real publish steps
 - `.claude/rules/icon-only-buttons.md` for accessible tooltip requirements on icon-only controls
 - `.claude/rules/frontend-interaction-performance.md` for non-negotiable lazy loading, first-paint-safe UI transitions, deferred hydration/teardown, and decoupled panel/drawer interactions
+- `.claude/rules/visual-testing.md` for Playwright-first visual QA, scoped dev-server use, and the explicit-request-only Computer Use boundary
 - `.claude/rules/pr-descriptions.md` for reviewer-focused PR bodies: context, impact, decisions, risks; validation logs stay secondary
 
 ## Codex Rules
@@ -72,6 +74,7 @@ Primary project docs:
 - Cargo during refactors: run one targeted Cargo job at a time.
 - Local validation boundary (NON-NEGOTIABLE): agents run only focused tests/checks for touched behavior; never fall back to broad lib/workspace suites, full integration, workspace doctests, dual clippy, llvm-cov, or `scripts/test-rust-fast.sh {pr|main}` unless the user explicitly requests it or a named CI failure must be reproduced. If no exact test exists, use the nearest module/suite/crate check or report no applicable local test. RalphX workspace CI/autofix owns broad validation and remediation.
 - Rust test runner split: use `cargo test` for focused lib filters and `cargo nextest run --test <suite> -E ...` for focused integration tests; broad runs are CI/manual-diagnostic only. Source: `.claude/rules/rust-test-execution.md`.
+- Post-Rust-test cleanup (NON-NEGOTIABLE): if any Rust test command starts (`cargo test`, `cargo nextest run`, Rust coverage, or a wrapper that executes Rust tests), run `cd src-tauri && cargo clean` separately in the active workspace once after the final or aborted test attempt and before handoff, whether it succeeds, fails, times out, is cancelled, or is interrupted; no Rust test means no cleanup. Report cleanup failure and never manually delete target directories as a fallback.
 - Worktree-safe Rust helper: `scripts/test-rust-fast.sh` is for explicit CI reproduction/manual diagnostics from the current checkout; it refuses cross-checkout drift.
 - Rust toolchain source of truth: `rust-toolchain.toml` is authoritative.
 - Rust PATH mismatch: if Cargo still uses Homebrew `rustc`, run through `rustup run` with `RUSTC=$(rustup which --toolchain 1.91.0 rustc)`; details in `.claude/rules/rust-test-execution.md`.
@@ -92,8 +95,9 @@ Primary project docs:
 - Coverage is a byproduct of real tests: close gaps by testing uncovered BEHAVIOR (error arms, guard rejections, round-trips on the concrete repo impl that lacks them), never by executing lines without assertions.
 - Worktree safety (NON-NEGOTIABLE): worktree-mode flows must never silently fall back to the main checkout.
 - Verify before commit: review `git diff` against `HEAD` for every touched file.
-- Frontend Playwright visual runs (NON-NEGOTIABLE): run them from `frontend/`, not repo root.
-- UI design/theme changes (NON-NEGOTIABLE): verify native Tauri/WKWebView in addition to Chromium, and use explicit WebKit-safe bg/border longhands for themed surfaces. Source: `.claude/rules/wkwebview-css-vars.md`.
+- Frontend visual QA (NON-NEGOTIABLE): prefer automated Playwright visual tests, run them from `frontend/`, and start/stop only the scoped dev servers they require.
+- Native Tauri QA through Computer Use is prohibited unless the user explicitly requests it in the current request; never infer permission from UI/theme scope or other repository guidance.
+- UI design/theme changes (NON-NEGOTIABLE): use explicit WebKit-safe bg/border longhands for themed surfaces; prefer Playwright visual coverage, and perform Native Tauri/WKWebView QA through Computer Use only when explicitly requested. Source: `.claude/rules/wkwebview-css-vars.md`.
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.

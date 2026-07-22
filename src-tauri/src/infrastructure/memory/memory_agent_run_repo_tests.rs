@@ -52,6 +52,46 @@ async fn test_get_active_for_conversation() {
 }
 
 #[tokio::test]
+async fn latest_completed_provider_session_ignores_newer_failed_and_foreign_runs() {
+    let repo = MemoryAgentRunRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let mut owning_run = AgentRun::new(conversation_id);
+    owning_run.status = AgentRunStatus::Completed;
+    owning_run.started_at = chrono::Utc::now() - chrono::Duration::minutes(4);
+    owning_run.harness = Some(AgentHarnessKind::Codex);
+    owning_run.provider_session_id = Some("codex-session".to_string());
+    owning_run.effective_model_id = Some("gpt-5.6-sol".to_string());
+    let owning_id = owning_run.id;
+    repo.create(owning_run).await.unwrap();
+
+    let mut failed = AgentRun::new(conversation_id);
+    failed.status = AgentRunStatus::Failed;
+    failed.started_at = chrono::Utc::now();
+    failed.harness = Some(AgentHarnessKind::Codex);
+    repo.create(failed).await.unwrap();
+
+    let mut foreign = AgentRun::new(conversation_id);
+    foreign.status = AgentRunStatus::Completed;
+    foreign.started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+    foreign.harness = Some(AgentHarnessKind::Claude);
+    foreign.provider_session_id = Some("codex-session".to_string());
+    repo.create(foreign).await.unwrap();
+
+    let found = repo
+        .get_latest_completed_for_provider_session(
+            &conversation_id,
+            AgentHarnessKind::Codex,
+            "codex-session",
+        )
+        .await
+        .unwrap()
+        .expect("owning completed provider run");
+
+    assert_eq!(found.id, owning_id);
+    assert_eq!(found.effective_model_id.as_deref(), Some("gpt-5.6-sol"));
+}
+
+#[tokio::test]
 async fn test_complete() {
     let repo = MemoryAgentRunRepository::new();
     let conversation_id = ChatConversationId::new();
@@ -64,6 +104,72 @@ async fn test_complete() {
     let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
     assert_eq!(retrieved.status, AgentRunStatus::Completed);
     assert!(retrieved.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn complete_if_running_is_compare_and_set() {
+    let repo = MemoryAgentRunRepository::new();
+    let running = AgentRun::new(ChatConversationId::new());
+    let running_id = running.id;
+    repo.create(running).await.unwrap();
+
+    assert!(repo.complete_if_running(&running_id).await.unwrap());
+    assert!(!repo.complete_if_running(&running_id).await.unwrap());
+
+    let mut failed = AgentRun::new(ChatConversationId::new());
+    failed.status = AgentRunStatus::Failed;
+    let failed_id = failed.id;
+    repo.create(failed).await.unwrap();
+    assert!(!repo.complete_if_running(&failed_id).await.unwrap());
+    assert_eq!(
+        repo.get_by_id(&failed_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Failed
+    );
+    assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+}
+
+#[tokio::test]
+async fn active_action_is_scoped_to_owning_conversation() {
+    let repo = MemoryAgentRunRepository::new();
+    let owner = ChatConversationId::new();
+    let detached = ChatConversationId::new();
+    let mut owner_run = AgentRun::new(owner);
+    owner_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    owner_run.action_context_id = Some("session-1".to_string());
+    owner_run.action_target_id = Some("artifact-1".to_string());
+    let owner_id = owner_run.id;
+    repo.create(owner_run).await.unwrap();
+
+    let mut detached_run = AgentRun::new(detached);
+    detached_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_run.action_context_id = Some("session-1".to_string());
+    detached_run.action_target_id = Some("artifact-1".to_string());
+    detached_run.started_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+    repo.create(detached_run).await.unwrap();
+
+    let found = repo
+        .get_active_action(
+            &owner,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("owner action");
+    assert_eq!(found.id, owner_id);
+
+    let latest = repo
+        .get_latest_action(
+            &owner,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("latest owner action");
+    assert_eq!(latest.id, owner_id);
 }
 
 #[tokio::test]

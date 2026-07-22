@@ -35,7 +35,7 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
             .run(|conn| {
                 let result = conn.query_row(
                     "SELECT agent_personas, agent_conversation_team,
-                            agent_conversation_workflows, agent_conversation_autopilot
+                             agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {
@@ -105,7 +105,7 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
                 )?;
                 tx.query_row(
                     "SELECT agent_personas, agent_conversation_team,
-                            agent_conversation_workflows, agent_conversation_autopilot
+                             agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {

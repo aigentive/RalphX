@@ -13,9 +13,8 @@ use crate::application::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
-use crate::infrastructure::agents::claude::{
-    apply_claude_provider_permission_settings, set_agent_personas_override,
-};
+use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
+use crate::infrastructure::agents::set_agent_personas_override;
 use crate::AppState;
 
 pub(crate) fn initialize_settings_defaults(

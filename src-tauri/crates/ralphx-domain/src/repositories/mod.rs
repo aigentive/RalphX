@@ -12,6 +12,7 @@ pub mod agent_conversation_workspace_repository;
 mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
 pub mod manual_role_default_repository;
+pub mod mcp_policy_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;
 pub mod agent_provider_settings_repository;
@@ -28,6 +29,7 @@ pub mod branch_update_repository;
 pub mod automation_run_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
+pub mod conversation_folder_reference_repository;
 pub mod chat_message_repository;
 pub mod chat_timeline_repository;
 pub mod delegated_session_repository;
@@ -79,9 +81,14 @@ pub use agent_conversation_issue_repository::{
 };
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
-pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
+pub use agent_conversation_workspace_repository::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
+    AgentWorkspacePrTerminalSettlement,
+};
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use manual_role_default_repository::ManualRoleDefaultRepository;
+pub use mcp_policy_repository::McpPolicyRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;
@@ -109,6 +116,7 @@ pub use branch_update_repository::{
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
+pub use conversation_folder_reference_repository::ConversationFolderReferenceRepository;
 pub use chat_message_repository::ChatMessageRepository;
 pub use chat_timeline_repository::ChatTimelineRepository;
 pub use delegated_session_repository::DelegatedSessionRepository;

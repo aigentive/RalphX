@@ -59,6 +59,10 @@ import {
   type ToolActivitySummary,
   type ToolActivityTask,
 } from "./tool-activity-summary";
+import {
+  foldDelegationTimelineMessages,
+  persistedTimelineToolCall,
+} from "./delegation-timeline";
 
 // ============================================================================
 // Constants
@@ -339,27 +343,6 @@ function collectToolCallGroupRun(
   return group.length >= 1 ? group : null;
 }
 
-function persistedTimelineToolCall(message: ChatMessageData): ToolCall | null {
-  const block = message.contentBlocks?.[0];
-  if (!block || block.type !== "tool_use" || !block.name) {
-    return null;
-  }
-  const matching = block.id
-    ? message.toolCalls?.find((toolCall) => toolCall.id === block.id)
-    : undefined;
-  const toolCall: ToolCall = {
-    id: block.id || matching?.id || message.id,
-    name: block.name || matching?.name || "unknown",
-    arguments: block.arguments ?? matching?.arguments ?? {},
-    result: block.result ?? matching?.result,
-  };
-  const diffContext = block.diffContext ?? matching?.diffContext;
-  if (diffContext) {
-    toolCall.diffContext = diffContext;
-  }
-  return toolCall;
-}
-
 function toolCallGroupKey(messages: ChatMessageData[]): string {
   const first = messages[0];
   const last = messages[messages.length - 1];
@@ -419,6 +402,7 @@ function personaRunBadgeProps(
   }
   return {
     agentPersonasEnabled: true,
+    personaId: agentRun.personaId ?? null,
     personaSlug: agentRun.personaSlug ?? null,
     personaVersion: agentRun.personaVersion ?? null,
     personaInjected: agentRun.personaInjected ?? null,
@@ -1218,7 +1202,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       // Team filter: each tab (lead/teammate) loads its own conversation's messages via
       // useConversation, so all messages in the data set belong to that conversation.
       // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
+      const teamFilteredMessages = foldDelegationTimelineMessages(filteredMessages);
 
       const pushMessageItem = (
         msg: ChatMessageData,

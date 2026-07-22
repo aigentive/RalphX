@@ -112,7 +112,7 @@ Built in `build_cli_args()` (`claude_code_client.rs:348-452`) and `spawn_agent()
 | `--plugin-dir` | `<path>` | `AgentConfig.plugin_dir` → `resolve_plugin_dir()` |
 | `--agent` | `ralphx:<name>` | `AgentConfig.agent` (fully-qualified) |
 | `--mcp-config` | `<temp_path>` | Dynamic per-agent MCP config (see below) |
-| `--strict-mcp-config` | (flag) | Ignores user/global MCP servers |
+| `--disallowedTools` | MCP server/tool patterns | Effective global/project RalphX deny policy |
 | `--tools` | CSV of CLI tools | `get_allowed_tools(agent_name)` from `config/ralphx.yaml` |
 | `--allowedTools` | CSV of pre-approved | `get_preapproved_tools(agent_name)` — MCP + CLI, no prompts |
 | `--model` | `haiku`/`sonnet`/`opus` | Explicit override → per-agent default from `config/ralphx.yaml` |
@@ -238,7 +238,7 @@ Each agent spawn creates a temporary MCP config file that:
 1. Reads the base config from `plugins/app/.mcp.json`
 2. Injects `--agent-type=<short_name>` into the MCP server args
 3. Writes to a temp file with UUID to avoid race conditions between parallel spawns
-4. Passes via `--mcp-config <temp_path> --strict-mcp-config`
+4. Passes via `--mcp-config <temp_path>` without strict isolation, so Claude also loads its native user/project/local MCP layers
 
 **Why `--agent-type` as CLI arg**: Claude CLI does NOT pass its environment variables to MCP servers it spawns. The `--agent-type` CLI arg is the only reliable way to communicate the agent type to the MCP server process.
 
@@ -409,15 +409,9 @@ For non-stale sessions, `--resume <session_id>` continues an existing conversati
 - `build_cli_args()` includes `--resume` + `--agent` (critical: `--agent` enforces tool restrictions on resume)
 - Session ID captured from stream `Result` event for future resumes
 
-## User State Sanitization
+## Provider-Native MCP Inheritance
 
-**File:** `src-tauri/src/infrastructure/agents/claude/mod.rs:210-312`
-
-`sanitize_claude_user_state()` runs before every spawn:
-1. Reads `~/.claude.json`
-2. Backs up if malformed JSON
-3. Removes project entries for non-existent paths
-4. Strips per-project MCP overrides (`mcpServers`, `enabledMcpjsonServers`, etc.) to prevent stale config inheritance
+RalphX never directly rewrites `~/.claude.json` or registers a user-scoped server at app startup. Each launch adds only the required RalphX config and resolved `--disallowedTools` deny patterns; Claude remains authoritative for third-party definitions, trust, approvals, authentication, and native enabled state. The exact Claude user-scoped server ID `ralphx` is reserved RalphX state regardless of definition shape. Startup and launch preflight remove it through the resolved Claude CLI under a process-local lock, force the child `HOME` to the validated discovery root, and rediscover the same provider state after success, non-zero exit, or an explicitly terminated timeout. Only verified absence continues launch; project/local entries, other providers, near names, and `ralphx_internal` remain fail-closed collisions. See [Provider-Native MCP Policy](provider-native-mcp-policy.md).
 
 ## Spawn Safety
 
@@ -594,7 +588,7 @@ claude \
   --plugin-dir <path> \
   --agent ralphx:<agent-name> \
   --mcp-config <temp-mcp-config> \
-  --strict-mcp-config \
+  --disallowedTools <effective-provider-mcp-denies> \
   --tools <csv-of-cli-tools> \
   --allowedTools <csv-of-preapproved> \
   --model <model> \

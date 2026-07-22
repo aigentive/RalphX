@@ -643,7 +643,6 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         "ask_user_question",
         "save_persona_draft",
         "get_persona_draft",
-        "TaskList",
     ];
     let ungranted_tools = [
         "delegate_start",
@@ -679,7 +678,7 @@ fn persona_extractor_prompts_mention_only_live_tools() {
         for granted in granted_tools {
             assert!(
                 prompt.contains(granted),
-                "persona extractor {harness:?} prompt should name granted/inert tool {granted}"
+                "persona extractor {harness:?} prompt should name granted tool {granted}"
             );
         }
         for ungranted in ungranted_tools {
@@ -689,6 +688,25 @@ fn persona_extractor_prompts_mention_only_live_tools() {
             );
         }
     }
+
+    let claude_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-persona-extractor",
+        AgentPromptHarness::Claude,
+    )
+    .expect("persona extractor Claude prompt should exist");
+    assert!(
+        claude_prompt.contains("TaskList"),
+        "Claude prompt should document its inert CLI filler"
+    );
+
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-persona-extractor", AgentPromptHarness::Codex)
+            .expect("persona extractor Codex prompt should exist");
+    assert!(
+        !codex_prompt.contains("TaskList"),
+        "Codex prompt must not mention a Claude-only tool"
+    );
 }
 
 #[test]
@@ -711,6 +729,30 @@ fn persona_extractor_prompt_requires_distilled_persona_output() {
             assert!(
                 prompt.contains(required_contract_text),
                 "persona extractor {harness:?} prompt should require {required_contract_text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_prompt_requires_in_conversation_persistence() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for required_contract_text in [
+            "one Persona lineage",
+            "separate Persona Builder conversation",
+            "`save_persona_draft` succeeds",
+            "Markdown-only response is not successful completion",
+            "Do not present paste-ready persona content",
+            "Persona tab",
+            "Approve persona",
+        ] {
+            assert!(
+                prompt.contains(required_contract_text),
+                "persona extractor {harness:?} prompt should require `{required_contract_text}`"
             );
         }
     }
@@ -1422,6 +1464,8 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "fs_grep",
         "fs_glob",
         "get_workspace_review_context",
+        "list_workspace_review_files",
+        "get_workspace_review_diff_page",
         "write_workspace_review_artifact",
         "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",
@@ -1448,6 +1492,11 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         !prompt.contains("mcp__ralphx__"),
         "Codex workspace reviewer prompt should not use Claude-style MCP names"
     );
+    assert!(
+        prompt.contains("Artifact freshness is historical context")
+            && prompt.contains("can_mutate_review_state=true"),
+        "workspace reviewer prompt should make active-run authority independent from prior artifact freshness"
+    );
     for removed_tool in [
         "get_agent_task",
         "list_agent_tasks",
@@ -1472,6 +1521,62 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
         "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
+    );
+}
+
+#[test]
+fn review_agent_contracts_distinguish_local_workspace_review_from_remote_pr_review() {
+    let root = project_root();
+    let workspace_definition = load_canonical_agent_definition(&root, "ralphx-workspace-reviewer")
+        .expect("expected canonical workspace reviewer definition");
+    let pr_definition = load_canonical_agent_definition(&root, "ralphx-pr-reviewer")
+        .expect("expected canonical PR reviewer definition");
+    let workspace_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-reviewer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected workspace reviewer Codex prompt");
+    let pr_prompt =
+        load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
+            .expect("expected PR reviewer Claude prompt");
+
+    assert!(
+        workspace_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("local agent workspace changes"))
+            && workspace_prompt.contains("local Workspace Review")
+            && workspace_prompt.contains("publish gate"),
+        "workspace reviewer metadata and prompt should identify the local publish-gate workflow"
+    );
+    assert!(
+        !workspace_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && !workspace_prompt.contains("propose_pr_review_action"),
+        "workspace reviewer must not expose the GitHub PR action surface"
+    );
+    assert!(
+        pr_definition
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("remote GitHub pull request"))
+            && pr_prompt.contains("remote GitHub pull request")
+            && pr_prompt.contains("local checkout")
+            && pr_prompt.contains("user-approved GitHub review action"),
+        "PR reviewer metadata and prompt should identify the remote GitHub workflow and local inspection substrate"
+    );
+    assert!(
+        pr_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "propose_pr_review_action")
+            && pr_prompt.contains("propose_pr_review_action"),
+        "PR reviewer should retain the pending GitHub action proposal surface"
     );
 }
 
@@ -2114,11 +2219,25 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
 #[test]
 fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
     let root = project_root();
+    let required_review_lenses = [
+        "industry best practices",
+        "reuses existing components",
+        "UI/UX",
+        "product sense",
+        "remote base branch drift",
+        "instead of assuming no drift",
+    ];
     for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
         let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
             .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
         assert!(prompt.contains("backend-started Verify Plan"));
         assert!(prompt.contains("complete_plan_verification"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} ideation prompt must require the {required_lens:?} review lens"
+            );
+        }
         for retired in [
             "ralphx-plan-verifier",
             "create_child_session(purpose: \"verification\")",
@@ -2141,8 +2260,26 @@ fn ideation_prompts_preserve_model_native_verification_without_legacy_topology()
     .expect("missing Claude prompt for ralphx-ideation-team-lead");
     assert!(team_prompt.contains("backend-started Verify Plan"));
     assert!(team_prompt.contains("complete_plan_verification"));
+    for required_lens in required_review_lenses {
+        assert!(
+            team_prompt.contains(required_lens),
+            "team-lead prompt must require the {required_lens:?} review lens"
+        );
+    }
     assert!(!team_prompt.contains("ralphx-plan-verifier"));
     assert!(!team_prompt.contains("stop_verification"));
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt =
+            load_harness_agent_prompt_for_profile(&root, "ralphx-ideation", harness, Some("plan"))
+                .unwrap_or_else(|| panic!("missing {harness:?} Plan profile prompt"));
+        for required_lens in required_review_lenses {
+            assert!(
+                prompt.contains(required_lens),
+                "{harness:?} Plan profile prompt must require the {required_lens:?} review lens"
+            );
+        }
+    }
 }
 
 #[test]
@@ -2810,14 +2947,22 @@ fn ticket_attachment_surface_stays_off_unrelated_agent_prompts_and_grants() {
 }
 
 #[test]
-fn task_execution_agent_rule_documents_post_change_validation_policy() {
+fn task_execution_agent_rule_documents_focused_validation_policy() {
     let root = project_root();
     let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))
         .expect("read task execution agent rule");
 
     assert!(
-        rule_doc.contains("Execution agents do not run full baseline task validation by default"),
-        "task execution rule should state the default post-change validation policy"
+        rule_doc.contains("Target-project instructions own command selection"),
+        "task execution rule should preserve target-project validation ownership"
+    );
+    assert!(
+        rule_doc.contains("narrowest relevant wave/final/re-execution evidence"),
+        "task execution rule should require focused implementation-agent evidence"
+    );
+    assert!(
+        rule_doc.contains("Execution agents do not run baseline validation by default"),
+        "task execution rule should state the default pre-change validation policy"
     );
     assert!(
         rule_doc.contains("explicit diagnostic"),

@@ -3,170 +3,371 @@ import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import type { ManualRoleCatalogEntry } from "@/api/manual-role-defaults.types";
+import { AGENT_START_MODE_OPTIONS } from "@/components/agents/agentStartModeOptions";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { fetchPersonas, personaKeys } from "@/hooks/usePersonas";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
+import {
+  isAgentDefaultStartMode,
+  useAgentSessionStore,
+  type AgentDefaultStartMode,
+} from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { AgentRoleDefaultRow } from "./AgentRoleDefaultRow";
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
-
-type Scope = "global" | "project";
+import type { AgentsTabValue } from "./settings-ui-state";
+import {
+  ErrorBanner,
+  SectionCard,
+  SelectSettingRow,
+  type SelectOption,
+} from "./SettingsView.shared";
+import { useAgentsSettingsUiState } from "./useAgentsSettingsUiState";
 
 interface FamilyGroup {
   id: string;
   label: string;
   roles: ManualRoleCatalogEntry[];
+  totalCount: number;
+  overrideCount: number;
+  diagnosticCount: number;
+}
+
+const DEFAULT_START_MODE_OPTIONS: SelectOption<AgentDefaultStartMode>[] =
+  AGENT_START_MODE_OPTIONS.flatMap((option) =>
+    isAgentDefaultStartMode(option.id)
+      ? [
+          {
+            value: option.id,
+            label: option.label,
+            description: option.description,
+          },
+        ]
+      : [],
+  );
+
+function roleMatchesSearch(
+  role: ManualRoleCatalogEntry,
+  normalizedSearch: string,
+): boolean {
+  return !normalizedSearch || [
+    role.displayName,
+    role.description,
+    role.role,
+    role.familyDisplayName,
+  ].some((value) => value.toLowerCase().includes(normalizedSearch));
 }
 
 export function AgentsSettingsSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const openModal = useUiStore((state) => state.openModal);
-  const [scope, setScope] = useState<Scope>("global");
-  const [search, setSearch] = useState("");
-  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(
-    () => new Set(),
+  const defaultStartMode = useAgentSessionStore(
+    (state) => state.defaultStartMode,
   );
-  const projectId = scope === "project" ? activeProject?.id ?? null : null;
+  const setDefaultStartMode = useAgentSessionStore(
+    (state) => state.setDefaultStartMode,
+  );
+  const [search, setSearch] = useState("");
+  const [overridesOnly, setOverridesOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const agentsUi = useAgentsSettingsUiState(activeProject?.id ?? null);
+  const { scope, projectId, disclosure } = agentsUi;
   const defaults = useManualRoleDefaults(projectId);
+  const ideationSettings = useIdeationSettings();
+  const tasksEnabled =
+    !ideationSettings.isLoading &&
+    !ideationSettings.isError &&
+    ideationSettings.settings.tasksFeatureState === "enabled";
   const { registry } = useAgentModels();
   const { providers } = useHarnessProviders();
   const { data: featureFlags } = useFeatureFlags();
   const personasQuery = useQuery({
     queryKey: personaKeys.list(),
-    queryFn: fetchPersonas,
+    queryFn: () => fetchPersonas(),
     enabled: featureFlags.agentPersonas ?? false,
   });
 
   const providerIds = useMemo(() => {
-    const enabled = providers.filter((provider) => provider.enabled).map((provider) => provider.provider);
+    const enabled = providers
+      .filter((provider) => provider.enabled)
+      .map((provider) => provider.provider);
     return enabled.length > 0 ? enabled : ["claude", "codex"];
   }, [providers]);
   const families = useMemo<FamilyGroup[]>(() => {
     const normalizedSearch = search.trim().toLowerCase();
     const groups = new Map<string, FamilyGroup>();
     for (const role of defaults.catalog?.roles ?? []) {
-      if (
-        normalizedSearch &&
-        !`${role.displayName} ${role.role} ${role.familyDisplayName}`
-          .toLowerCase()
-          .includes(normalizedSearch)
-      ) {
-        continue;
-      }
-      const group = groups.get(role.family) ?? {
+      if (!tasksEnabled && role.requiresTasks) continue;
+      const existing = groups.get(role.family);
+      const group = existing ?? {
         id: role.family,
         label: role.familyDisplayName,
         roles: [],
+        totalCount: 0,
+        overrideCount: 0,
+        diagnosticCount: 0,
       };
-      group.roles.push(role);
-      groups.set(role.family, group);
+      group.totalCount += 1;
+      if (role.configured) group.overrideCount += 1;
+      if (role.diagnostics.length > 0) group.diagnosticCount += 1;
+      if (
+        roleMatchesSearch(role, normalizedSearch) &&
+        (!overridesOnly || role.configured !== null) &&
+        (!attentionOnly || role.diagnostics.length > 0)
+      ) {
+        group.roles.push(role);
+      }
+      if (!existing) groups.set(role.family, group);
     }
-    return [...groups.values()];
-  }, [defaults.catalog?.roles, search]);
+    const filtering = Boolean(normalizedSearch || overridesOnly || attentionOnly);
+    return [...groups.values()].filter(
+      (group) => !filtering || group.roles.length > 0,
+    );
+  }, [attentionOnly, defaults.catalog?.roles, overridesOnly, search, tasksEnabled]);
   const activePersonas = (personasQuery.data ?? []).filter(
     (persona) => persona.status === "active",
   );
+  const filtersForceVisibility = Boolean(
+    search.trim() || overridesOnly || attentionOnly,
+  );
+  const allFamiliesExpanded =
+    families.length > 0 &&
+    families.every((family) => disclosure.families[family.id] === true);
 
-  const toggleFamily = (family: string) => {
-    setCollapsedFamilies((current) => {
-      const next = new Set(current);
-      if (next.has(family)) next.delete(family);
-      else next.add(family);
-      return next;
-    });
+  const selectScope = (nextScope: AgentsTabValue) => {
+    if (defaults.isSaving) return;
+    defaults.dismissSaveError();
+    agentsUi.setScope(nextScope);
   };
 
   return (
     <SectionCard
       icon={<Bot className="h-5 w-5" />}
       title="Agents"
-      description="Configure the Manual default used by each backend-owned agent role."
+      description="Configure new-run behavior and backend-owned defaults for every agent role."
     >
-      <div className="space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <Tabs value={scope} onValueChange={(value) => setScope(value as Scope)}>
+      <div className="agents-settings-content space-y-4">
+        <SelectSettingRow
+          id="agent-default-start-mode"
+          label="Default new-run mode"
+          description="Choose the mode selected when you open Agents > New run"
+          value={defaultStartMode}
+          options={DEFAULT_START_MODE_OPTIONS}
+          disabled={false}
+          onChange={setDefaultStartMode}
+        />
+        {!tasksEnabled && (
+          <p
+            data-testid="tasks-required-roles-hidden-notice"
+            className="rounded-md px-3 py-2 text-xs"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-secondary)",
+            }}
+          >
+            Execution roles are hidden while Tasks are off. Saved overrides are preserved.
+          </p>
+        )}
+        <div className="agents-settings-toolbar">
+          <Tabs
+            value={scope}
+            onValueChange={(value) => selectScope(value as AgentsTabValue)}
+          >
             <TabsList aria-label="Agent default scope">
-              <TabsTrigger value="global">Global Defaults</TabsTrigger>
-              <TabsTrigger value="project" disabled={!activeProject}>
+              <TabsTrigger value="global" disabled={defaults.isSaving}>
+                Global Defaults
+              </TabsTrigger>
+              <TabsTrigger
+                value="project"
+                disabled={!activeProject || defaults.isSaving}
+              >
                 Project Overrides
               </TabsTrigger>
             </TabsList>
           </Tabs>
           <label className="relative min-w-[220px] flex-1 sm:max-w-xs">
             <span className="sr-only">Search agent roles</span>
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-[var(--text-muted)]" />
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-[var(--text-muted)]"
+            />
             <input
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search roles"
-              className="settings-input h-9 w-full pl-8"
+              className="settings-input h-9 w-full pl-8 font-[var(--font-body)]"
             />
           </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-pressed={overridesOnly}
+              onClick={() => setOverridesOnly((current) => !current)}
+              className="agents-filter-button"
+            >
+              Overrides only
+            </button>
+            <button
+              type="button"
+              aria-pressed={attentionOnly}
+              onClick={() => setAttentionOnly((current) => !current)}
+              className="agents-filter-button"
+            >
+              Needs attention
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                agentsUi.setAllFamiliesExpanded(
+                  families.map((family) => family.id),
+                  !allFamiliesExpanded,
+                )
+              }
+              className="agents-filter-button"
+            >
+              {allFamiliesExpanded ? "Collapse families" : "Expand families"}
+            </button>
+          </div>
         </div>
 
         {scope === "project" && activeProject && (
           <p className="text-xs text-[var(--text-muted)]">
-            Overrides for {activeProject.name}. Follow removes the UI row and reveals the next configured source.
+            Overrides for {activeProject.name}. Using an inherited default
+            removes only this project&apos;s UI override.
           </p>
         )}
         {defaults.isError && (
           <ErrorBanner
-            error={defaults.error instanceof Error ? defaults.error.message : "Failed to load agent defaults"}
-            onDismiss={() => undefined}
+            error={
+              defaults.error instanceof Error
+                ? defaults.error.message
+                : "Failed to load agent defaults"
+            }
+          />
+        )}
+        {defaults.saveError && (
+          <ErrorBanner
+            error={
+              defaults.saveError instanceof Error
+                ? defaults.saveError.message
+                : "Failed to save agent default"
+            }
+            onDismiss={defaults.dismissSaveError}
           />
         )}
         {defaults.isLoading && (
-          <div data-testid="agents-settings-loading" className="space-y-3" aria-label="Loading agent defaults">
+          <div
+            data-testid="agents-settings-loading"
+            className="space-y-3"
+            aria-label="Loading agent defaults"
+          >
             <div className="h-10 rounded-md bg-[var(--bg-hover)]" />
-            <div className="h-28 rounded-md bg-[var(--bg-surface)]" />
+            <div className="h-20 rounded-md bg-[var(--bg-surface)]" />
+            <div className="h-20 rounded-md bg-[var(--bg-surface)]" />
           </div>
         )}
 
-        {!defaults.isLoading && families.map((family) => {
-          const collapsed = collapsedFamilies.has(family.id) && !search;
-          return (
-            <section key={family.id} aria-labelledby={`agent-family-${family.id}`}>
+        {!defaults.isLoading &&
+          !defaults.isError &&
+          families.map((family) => {
+            const forcedOpen =
+              filtersForceVisibility || family.diagnosticCount > 0;
+            const expanded =
+              forcedOpen || disclosure.families[family.id] === true;
+            return (
+            <section
+              key={family.id}
+              data-testid="agent-family-row"
+              className="agents-family"
+              aria-labelledby={`agent-family-${family.id}`}
+            >
               <button
                 type="button"
-                onClick={() => toggleFamily(family.id)}
-                aria-expanded={!collapsed}
-                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left hover:bg-[var(--bg-hover)]"
+                onClick={() => {
+                  if (!forcedOpen) {
+                    agentsUi.setFamilyExpanded(family.id, !expanded);
+                  }
+                }}
+                aria-disabled={forcedOpen}
+                aria-expanded={expanded}
+                className="agents-family__summary"
               >
-                <span id={`agent-family-${family.id}`} className="font-semibold text-[var(--text-primary)]">
-                  {family.label} <span className="text-xs font-normal text-[var(--text-muted)]">({family.roles.length})</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  {expanded
+                    ? <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0" />
+                    : <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0" />}
+                  <span
+                    id={`agent-family-${family.id}`}
+                    className="font-semibold text-[var(--text-primary)]"
+                  >
+                    {family.label}
+                  </span>
                 </span>
-                {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                <span className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-[var(--text-muted)]">
+                  <span>
+                    {family.roles.length === family.totalCount
+                      ? `${family.totalCount} roles`
+                      : `${family.roles.length} of ${family.totalCount} roles`}
+                  </span>
+                  {family.overrideCount > 0 && (
+                    <span className="agents-count-badge">
+                      {family.overrideCount} configured
+                    </span>
+                  )}
+                  {family.diagnosticCount > 0 && (
+                    <span className="agents-attention-badge">
+                      {family.diagnosticCount} attention
+                    </span>
+                  )}
+                </span>
               </button>
-              {!collapsed && (
-                <div className="mt-2 space-y-3">
+              {expanded && (
+                <div className="agents-family__roles">
                   {family.roles.map((entry) => (
                     <AgentRoleDefaultRow
                       key={entry.role}
                       entry={entry}
+                      expanded={disclosure.roles[entry.role] === true}
                       disabled={defaults.isSaving}
                       providers={providerIds}
                       modelsForProvider={(provider) =>
-                        provider === "codex" || provider === "claude" ? registry[provider] : []
+                        provider === "codex" || provider === "claude"
+                          ? registry[provider]
+                          : []
                       }
                       personas={activePersonas}
-                      onUpdate={(value) => defaults.updateDefault(entry.role, value)}
-                      onFollow={() => defaults.clearDefault(entry.role)}
-                      onManagePersonas={() => openModal("settings", { section: "personas" })}
+                      onUpdate={(value) =>
+                        defaults.updateDefault(entry.role, value)
+                      }
+                      onExpandedChange={(expandedRole) =>
+                        agentsUi.setRoleExpanded(entry.role, expandedRole)
+                      }
+                      onUseInheritedDefault={() =>
+                        defaults.clearDefaultAsync(entry.role)
+                      }
+                      onManagePersonas={() =>
+                        openModal("settings", { section: "personas" })
+                      }
                     />
                   ))}
                 </div>
               )}
             </section>
-          );
-        })}
-        {!defaults.isLoading && families.length === 0 && (
-          <p className="py-8 text-center text-sm text-[var(--text-muted)]">No agent roles match this search.</p>
+            );
+          })}
+        {!defaults.isLoading && !defaults.isError && families.length === 0 && (
+          <p className="py-8 text-center text-sm text-[var(--text-muted)]">
+            No agent roles match these filters.
+          </p>
         )}
       </div>
     </SectionCard>

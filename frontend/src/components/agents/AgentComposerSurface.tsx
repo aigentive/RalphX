@@ -7,12 +7,15 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   useAgentComposerEntries,
+  useAgentComposerIntegrationAvailability,
   useAgentComposerIntegrationResources,
   useAgentComposerPlanReferences,
   useAgentComposerSkills,
+  type AgentComposerIntegrationAvailability,
 } from "@/hooks/useAgentComposerResources";
 import { atlassianApi, type AtlassianResourceSummary } from "@/api/atlassian";
 import {
@@ -22,6 +25,7 @@ import {
   ChevronDown,
   FileText,
   FolderOpen,
+  CircleOff,
   GitFork,
   Loader2,
   Paperclip,
@@ -30,19 +34,22 @@ import {
   ScrollText,
   Square,
   Ticket,
-  X,
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
-import type {
-  CapabilityIntent,
-  ComposerSelectionSnapshot,
-  TeamIntent,
-} from "@/api/chat";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import {
+  useAddConversationFolderReference,
+  useConversationFolderReferences,
+  useRemoveConversationFolderReference,
+} from "@/hooks/useConversationFolderReferences";
+import type { ChatComposerFolder } from "@/stores/chatStore";
+import type { CapabilityIntent, TeamIntent } from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
+import type { MessageFolderReference } from "@/components/Chat/MessageReferences.parse";
 import {
   ChatAttachmentGallery,
   type ChatAttachment as ComposerAttachment,
@@ -61,7 +68,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
-import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
@@ -84,7 +90,16 @@ import {
   type AgentComposerMenuItem,
 } from "./composer/AgentComposerCommandMenu";
 import { ComposerRuntimeSelector } from "./composer/runtime/ComposerRuntimeSelector";
+import { ComposerReferencePill } from "./ComposerReferencePill";
+import { FolderReferenceChips } from "./FolderReferenceChips";
+import { subscribeToComposerExcerptReferences } from "./artifact-selection/composerExcerptBridge";
+import {
+  composerExcerptReferenceKey,
+  normalizeComposerExcerptReferences,
+  type ComposerExcerptReference,
+} from "./artifact-selection/artifactSelection.types";
 import type {
+  ComposerRuntimeCapabilityField,
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
   ComposerRuntimeOption,
@@ -96,6 +111,17 @@ type ComposerOption = ComposerRuntimeOption;
 
 const PLAN_REFINE_COMMAND_MESSAGE =
   "Please verify and refine the current plan.";
+
+const COMPOSER_INTEGRATION_ACTIONS: ReadonlyArray<{
+  kind: AgentComposerIntegrationKind;
+  label: string;
+}> = [
+  { kind: "jira", label: "Jira" },
+  { kind: "confluence", label: "Confluence" },
+  { kind: "linear", label: "Linear" },
+  { kind: "clickup", label: "ClickUp" },
+  { kind: "granola", label: "Granola" },
+];
 
 function integrationReferenceKey(
   reference: AgentComposerIntegrationReference,
@@ -161,14 +187,15 @@ function skillMatchesComposerQuery(
 }
 
 interface ProjectFieldConfig {
-  value: string;
-  onValueChange: (value: string) => void;
+  value: string | null;
+  onValueChange: (value: string | null) => void;
   options: ComposerOption[];
   placeholder: string;
   disabled?: boolean;
-  endAction?: ReactNode;
   testId?: string;
   className?: string;
+  allowNoProject?: boolean;
+  standaloneCaption?: string;
 }
 
 type ProviderFieldConfig = ComposerRuntimeProviderField;
@@ -180,6 +207,7 @@ interface ModeFieldConfig {
   onValueChange: (value: string) => void;
   onOpen?: () => void | Promise<unknown>;
   options: ComposerOption[];
+  secondaryOptionIds?: string[];
   disabled?: boolean;
   testId?: string;
 }
@@ -192,16 +220,7 @@ interface TeamFieldConfig {
   testId?: string;
 }
 
-export interface CapabilityFieldConfig {
-  value: CapabilityIntent["coordinationMode"];
-  onValueChange: (
-    value: CapabilityIntent["coordinationMode"],
-  ) => void | Promise<unknown>;
-  options: ComposerOption[];
-  disabled?: boolean;
-  pending?: boolean;
-  testId?: string;
-}
+export type CapabilityFieldConfig = ComposerRuntimeCapabilityField;
 
 export interface ChatFocusOption {
   id: string;
@@ -228,11 +247,12 @@ export interface AgentComposerQuestionMode {
 }
 
 export interface AgentComposerSendOptions {
+  folderReferences?: MessageFolderReference[];
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
+  excerptReferences?: ComposerExcerptReference[];
   capabilityIntent?: CapabilityIntent | null;
-  selectionSnapshot?: ComposerSelectionSnapshot;
   teamIntent?: TeamIntent | null;
 }
 
@@ -287,11 +307,12 @@ export interface AgentComposerSurfaceProps {
   onFilesSelected?: ((files: File[]) => void | Promise<unknown>) | undefined;
   onRemoveAttachment?: ((id: string) => void | Promise<unknown>) | undefined;
   attachmentsUploading?: boolean;
+  folders?: ChatComposerFolder[];
+  onFoldersSelected?: ((folders: ChatComposerFolder[]) => void) | undefined;
+  onRemoveFolder?: ((id: string) => void) | undefined;
   initialProjectReferences?: AgentComposerProjectReference[];
   initialIntegrationReferences?: AgentComposerIntegrationReference[];
   initialArtifactReferences?: AgentComposerArtifactReference[];
-  selectionSnapshot?: ComposerSelectionSnapshot | null;
-  onClearSelectionSnapshot?: () => void;
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   capability?: CapabilityFieldConfig;
@@ -352,11 +373,12 @@ export function AgentComposerSurface({
   onFilesSelected,
   onRemoveAttachment,
   attachmentsUploading = false,
+  folders = [],
+  onFoldersSelected,
+  onRemoveFolder,
   initialProjectReferences = EMPTY_PROJECT_REFERENCES,
   initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
   initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
-  selectionSnapshot = null,
-  onClearSelectionSnapshot,
   onIntegrationReferencesChange,
   mode,
   capability,
@@ -376,6 +398,15 @@ export function AgentComposerSurface({
   conversationId = null,
   className,
 }: AgentComposerSurfaceProps) {
+  const { data: featureFlags } = useFeatureFlags();
+  const [folderReferencesEnabled, setFolderReferencesEnabled] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const addFolderReference = useAddConversationFolderReference();
+  const removeFolderReference = useRemoveConversationFolderReference();
+  const folderReferences = useConversationFolderReferences(
+    conversationId,
+    folderReferencesEnabled,
+  );
   const isControlled = controlledValue !== undefined;
   const [internalValue, setInternalValue] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -393,6 +424,9 @@ export function AgentComposerSurface({
   const [selectedArtifactReferences, setSelectedArtifactReferences] = useState<
     Map<string, AgentComposerArtifactReference>
   >(() => new Map());
+  const [selectedExcerptReferences, setSelectedExcerptReferences] = useState<
+    Map<string, ComposerExcerptReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -404,6 +438,10 @@ export function AgentComposerSurface({
   const latestValueRef = useRef(value);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const integrationAvailability = useAgentComposerIntegrationAvailability({
+    projectId: project.value,
+    enabled: actionMenuOpen,
+  });
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
@@ -418,6 +456,9 @@ export function AgentComposerSurface({
     !sendDisabledReason &&
     (!isSubmitting || canQueue);
   const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
+  const folderReferencesSupported =
+    (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
+    (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode
@@ -428,7 +469,7 @@ export function AgentComposerSurface({
     [cursorPosition, value],
   );
   const composerAssistEnabled =
-    !isReadOnly && !questionMode && project.value.trim().length > 0;
+    !isReadOnly && !questionMode && Boolean(project.value?.trim());
   const pathQuery = activeTrigger?.kind === "path" ? activeTrigger.query : "";
   const integrationQuery =
     activeTrigger?.kind === "integration" ? activeTrigger.query : "";
@@ -438,7 +479,7 @@ export function AgentComposerSurface({
       ? activeTrigger.integrationKind
       : null;
   const pathEntriesQuery = useAgentComposerEntries({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     query: pathQuery,
     enabled:
@@ -453,13 +494,13 @@ export function AgentComposerSurface({
       activeTrigger?.kind === "integration",
   });
   const planReferencesQuery = useAgentComposerPlanReferences({
-    projectId: project.value,
+    projectId: project.value ?? "",
     query: planQuery,
     enabled:
       composerAssistEnabled && isFocused && activeTrigger?.kind === "plan",
   });
   const skillsQuery = useAgentComposerSkills({
-    projectId: project.value,
+    projectId: project.value ?? "",
     conversationId,
     providerHarness: provider.value,
     mode: mode?.value ?? null,
@@ -539,7 +580,7 @@ export function AgentComposerSurface({
     setValue,
   });
 
-  const clearValue = useCallback(() => {
+  const clearValue = useCallback((options?: { preserveExcerptReferences?: boolean }) => {
     if (isControlled) {
       onChangeProp?.("");
     } else {
@@ -550,6 +591,9 @@ export function AgentComposerSurface({
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
     setSelectedArtifactReferences(new Map());
+    if (!options?.preserveExcerptReferences) {
+      setSelectedExcerptReferences(new Map());
+    }
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
@@ -577,6 +621,23 @@ export function AgentComposerSurface({
       });
     },
     [markComposerFocused],
+  );
+
+  useEffect(
+    () =>
+      subscribeToComposerExcerptReferences(conversationId, (reference) => {
+        setSelectedExcerptReferences((current) => {
+          const next = normalizeComposerExcerptReferences([
+            ...current.values(),
+            reference,
+          ]);
+          return new Map(
+            next.map((item) => [composerExcerptReferenceKey(item), item]),
+          );
+        });
+        focusTextareaAtComposerCursor(latestValueRef.current.length);
+      }),
+    [conversationId, focusTextareaAtComposerCursor],
   );
 
   const applyComposerText = useCallback(
@@ -718,6 +779,10 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  const selectedExcerptReferenceList = useMemo(
+    () => normalizeComposerExcerptReferences([...selectedExcerptReferences.values()]),
+    [selectedExcerptReferences],
+  );
   useEffect(() => {
     onIntegrationReferencesChange?.(selectedIntegrationReferenceList);
   }, [onIntegrationReferencesChange, selectedIntegrationReferenceList]);
@@ -774,8 +839,8 @@ export function AgentComposerSurface({
   const hasSelectedReferences =
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
-    selectedArtifactReferenceList.length > 0;
-  const hasSelectionSnapshot = Boolean(selectionSnapshot);
+    selectedArtifactReferenceList.length > 0 ||
+    selectedExcerptReferenceList.length > 0;
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
   // is focused (cursor active, even with no text yet) or when there is real
@@ -790,7 +855,6 @@ export function AgentComposerSurface({
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
-    hasSelectionSnapshot ||
     hasQueuedMessages ||
     Boolean(questionMode) ||
     isReadOnly;
@@ -1169,7 +1233,6 @@ export function AgentComposerSurface({
       }
       if (item.detail === "clear") {
         clearValue();
-        onClearSelectionSnapshot?.();
         return;
       }
       if (item.detail === "plan:refine") {
@@ -1246,7 +1309,6 @@ export function AgentComposerSurface({
       isReadOnly,
       isSubmitting,
       mode,
-      onClearSelectionSnapshot,
       onSend,
       planReferenceByMenuId,
       sendDisabledReason,
@@ -1260,11 +1322,30 @@ export function AgentComposerSurface({
     (
       message: string,
     ): { message: string; options?: AgentComposerSendOptions } => {
+      const folderReferenceSnapshots = (
+        conversationId ? folderReferences.data ?? [] : folders
+      ).map(
+        (reference): MessageFolderReference => ({
+          ...(reference.id ? { id: reference.id } : {}),
+          folderPath: reference.folderPath,
+          displayName: reference.displayName,
+        }),
+      );
+      const excerptReferences = normalizeComposerExcerptReferences(
+        selectedExcerptReferenceList,
+      );
       if (questionMode) {
         return {
           message,
-          ...(selectionSnapshot
-            ? { options: { selectionSnapshot } }
+          ...(folderReferenceSnapshots.length > 0 || excerptReferences.length > 0
+            ? {
+                options: {
+                  ...(folderReferenceSnapshots.length > 0
+                    ? { folderReferences: folderReferenceSnapshots }
+                    : {}),
+                  ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
+                },
+              }
             : {}),
         };
       }
@@ -1327,14 +1408,18 @@ export function AgentComposerSurface({
         : null;
       return {
         message: withInternalSkillDirectives,
-        ...(projectReferences.length > 0 ||
-        normalizedIntegrationReferences.length > 0 ||
-        normalizedArtifactReferences.length > 0 ||
-        selectionSnapshot ||
-        capabilityIntent ||
-        teamIntent
+        ...(folderReferenceSnapshots.length > 0 ||
+          projectReferences.length > 0 ||
+          normalizedIntegrationReferences.length > 0 ||
+          normalizedArtifactReferences.length > 0 ||
+          excerptReferences.length > 0 ||
+          capabilityIntent ||
+          teamIntent
           ? {
               options: {
+                ...(folderReferenceSnapshots.length > 0
+                  ? { folderReferences: folderReferenceSnapshots }
+                  : {}),
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
                 ...(normalizedIntegrationReferences.length > 0
                   ? { integrationReferences: normalizedIntegrationReferences }
@@ -1342,8 +1427,8 @@ export function AgentComposerSurface({
                 ...(normalizedArtifactReferences.length > 0
                   ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
+                ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
                 ...(capabilityIntent ? { capabilityIntent } : {}),
-                ...(selectionSnapshot ? { selectionSnapshot } : {}),
                 ...(teamIntent ? { teamIntent } : {}),
               },
             }
@@ -1351,12 +1436,15 @@ export function AgentComposerSurface({
       };
     },
     [
+      conversationId,
+      folderReferences.data,
+      folders,
       questionMode,
       selectedArtifactReferenceList,
       selectedIntegrationReferenceList,
+      selectedExcerptReferenceList,
       selectedInternalSkillNames,
       selectedProjectReferenceList,
-      selectionSnapshot,
       skills,
       capability,
       team?.enabled,
@@ -1400,6 +1488,18 @@ export function AgentComposerSurface({
     [cursorPosition, focusTextareaAtComposerCursor],
   );
 
+  const removeSelectedExcerptReference = useCallback(
+    (reference: ComposerExcerptReference) => {
+      setSelectedExcerptReferences((current) => {
+        const next = new Map(current);
+        next.delete(composerExcerptReferenceKey(reference));
+        return next;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
+  );
+
   const handleAttachmentSelect = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const fileList = event.target.files;
@@ -1426,6 +1526,55 @@ export function AgentComposerSurface({
       fileInputRef.current?.click();
     }
   }, [attachmentDisabled]);
+
+  const handleAddFolder = useCallback(async () => {
+    if (attachmentDisabled) return;
+    const selected = await openDialog({ directory: true, multiple: false });
+    const folderPath = Array.isArray(selected) ? selected[0] : selected;
+    if (!folderPath) return;
+    const displayName =
+      folderPath.split(/[\\/]/).filter(Boolean).pop() ?? folderPath;
+    setFolderError(null);
+    if (conversationId) {
+      try {
+        await addFolderReference.mutateAsync({
+          conversationId,
+          folderPath,
+          displayName,
+        });
+      } catch (error) {
+        setFolderError(
+          extractErrorMessage(error, "Unable to add folder."),
+        );
+      }
+      return;
+    }
+    onFoldersSelected?.([
+      ...folders,
+      {
+        id:
+          globalThis.crypto?.randomUUID?.() ??
+          `${folderPath}-${Date.now()}`,
+        folderPath,
+        displayName,
+      },
+    ]);
+  }, [
+    addFolderReference,
+    attachmentDisabled,
+    conversationId,
+    folders,
+    onFoldersSelected,
+  ]);
+
+  useEffect(() => {
+    if (!folderReferencesSupported || !conversationId) return;
+    const frame = requestAnimationFrame(() => setTimeout(() => setFolderReferencesEnabled(true), 0));
+    return () => {
+      cancelAnimationFrame(frame);
+      setFolderReferencesEnabled(false);
+    };
+  }, [conversationId, folderReferencesSupported]);
 
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
@@ -1459,14 +1608,14 @@ export function AgentComposerSurface({
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());
-      onClearSelectionSnapshot?.();
+      setSelectedExcerptReferences(new Map());
       return;
     }
 
-    clearValue();
+    clearValue({ preserveExcerptReferences: true });
     try {
       await sendOutgoing();
-      onClearSelectionSnapshot?.();
+      setSelectedExcerptReferences(new Map());
     } catch {
       // Errors surface through the parent; preserve the current interaction model.
     }
@@ -1479,7 +1628,6 @@ export function AgentComposerSurface({
     isReadOnly,
     isSubmitting,
     onSend,
-    onClearSelectionSnapshot,
     onStop,
     prepareMessageForSend,
     questionMode,
@@ -1756,11 +1904,55 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 ||
+        {(attachments.length > 0 || folders.length > 0 || folderReferences.data?.length ||
+          folderReferences.isError ||
           hasSelectedReferences ||
-          hasSelectionSnapshot ||
           attachmentsUploading) && (
           <div className="px-5 pb-3">
+            {folderReferences.isError && (
+              <div
+                className="mb-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"
+                style={{
+                  borderColor: "var(--status-warning-border)",
+                  backgroundColor: "var(--status-warning-muted)",
+                  color: "var(--status-warning)",
+                }}
+              >
+                <span>
+                  Couldn't load folder references — previously attached folders may still be visible to the agent
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 font-medium underline underline-offset-2"
+                  aria-label="Retry folder references"
+                  onClick={() => void folderReferences.refetch()}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {folderReferences.data && (
+              <FolderReferenceChips
+                references={folderReferences.data}
+                {...(removeFolderReference.isPending &&
+                removeFolderReference.variables?.folderReferenceId
+                  ? { removingId: removeFolderReference.variables.folderReferenceId }
+                  : {})}
+                onRemove={(reference) => {
+                  void removeFolderReference.mutateAsync({
+                    conversationId: reference.conversationId,
+                    folderReferenceId: reference.id,
+                  }).catch((error: unknown) => setFolderError(extractErrorMessage(error, "Unable to remove folder.")));
+                }}
+              />
+            )}
+            {folders.length > 0 && (
+              <FolderReferenceChips
+                references={folders}
+                testId="draft-folder-reference-chips"
+                onRemove={(folder) => onRemoveFolder?.(folder.id)}
+              />
+            )}
             {attachments.length > 0 && (
               <div className="pb-3">
                 <ChatAttachmentGallery
@@ -1779,22 +1971,16 @@ export function AgentComposerSurface({
                   projectReferences={selectedProjectReferenceList}
                   integrationReferences={selectedIntegrationReferenceList}
                   artifactReferences={selectedArtifactReferenceList}
+                  excerptReferences={selectedExcerptReferenceList}
                   onRemoveProjectReference={removeSelectedProjectReference}
                   onRemoveIntegrationReference={
                     removeSelectedIntegrationReference
                   }
                   onRemoveArtifactReference={removeSelectedArtifactReference}
+                  onRemoveExcerptReference={removeSelectedExcerptReference}
                 />
               </div>
             )}
-            {selectionSnapshot ? (
-              <ComposerSelectionPill
-                snapshot={selectionSnapshot}
-                {...(onClearSelectionSnapshot
-                  ? { onClear: onClearSelectionSnapshot }
-                  : {})}
-              />
-            ) : null}
           </div>
         )}
 
@@ -1815,6 +2001,7 @@ export function AgentComposerSurface({
             {helperText}
           </div>
         )}
+        {folderError && <p className="px-5 pb-3 text-xs" role="alert" style={{ color: "var(--status-error)" }}>{folderError}</p>}
 
         <div
           className={cn(
@@ -1848,10 +2035,11 @@ export function AgentComposerSurface({
             )}
 
             <ComposerActionMenu
-              project={project}
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
+              showAddFolder={folderReferencesSupported}
+              onAddFolder={handleAddFolder}
               {...(onForkSession
                 ? {
                     onForkSession,
@@ -1863,6 +2051,7 @@ export function AgentComposerSurface({
                 : {})}
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
+              integrationAvailability={integrationAvailability}
               onInsertIntegrationTrigger={(kind) => {
                 restoreTextareaFocusOnActionMenuCloseRef.current = true;
                 markComposerFocused();
@@ -1914,6 +2103,7 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                {...(capability ? { capability } : {})}
                 {...(runtimeDefault ? { runtimeDefault } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
@@ -1930,13 +2120,8 @@ export function AgentComposerSurface({
               </div>
             )}
 
-            {capability ? (
-              <ComposerCapabilitiesSelector
-                capability={capability}
-                compact={compact}
-              />
-            ) : (
-              team && <ComposerTeamSwitch team={team} compact={compact} />
+            {!capability && team && (
+              <ComposerTeamSwitch team={team} compact={compact} />
             )}
 
             {personaControl && (
@@ -1949,7 +2134,7 @@ export function AgentComposerSurface({
               type="button"
               className={cn(
                 "agent-composer-action-button shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
-                team || capability ? "" : "ml-auto",
+                team && !capability ? "" : "ml-auto",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -2008,35 +2193,44 @@ export function AgentComposerSurface({
 }
 
 function ComposerActionMenu({
-  project,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
+  showAddFolder = false,
+  onAddFolder,
   onForkSession,
   forkSessionDisabled = false,
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
+  integrationAvailability,
   onInsertPlanTrigger,
   onCloseAutoFocus,
   compact = false,
 }: {
-  project: ProjectFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
+  showAddFolder?: boolean;
+  onAddFolder?: () => void;
   onForkSession?: (() => Promise<unknown> | void) | undefined;
   forkSessionDisabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
+  integrationAvailability: AgentComposerIntegrationAvailability;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
   compact?: boolean;
 }) {
+  const availableIntegrationActions = COMPOSER_INTEGRATION_ACTIONS.filter(
+    ({ kind }) => integrationAvailability[kind],
+  );
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments || Boolean(project.endAction) || Boolean(onForkSession);
+    enableAttachments ||
+    showAddFolder ||
+    Boolean(onForkSession);
   const setOpen = onOpenChange;
 
   return (
@@ -2091,21 +2285,25 @@ function ComposerActionMenu({
           </button>
         )}
 
-        {project.endAction && (
-          <>
-            {enableAttachments && (
-              <div
-                className="my-1 h-px"
-                style={{ background: "var(--overlay-weak)" }}
-              />
-            )}
-            <div className="px-1 py-1">{project.endAction}</div>
-          </>
+        {showAddFolder && (
+          <button
+            type="button"
+            disabled={attachmentDisabled}
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors disabled:opacity-50"
+            style={{ color: "var(--text-primary)" }}
+            onClick={() => {
+              onAddFolder?.();
+              setOpen(false);
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            Add folder
+          </button>
         )}
 
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction) && (
+            {(enableAttachments || showAddFolder) && (
               <div
                 className="my-1 h-px"
                 style={{ background: "var(--overlay-weak)" }}
@@ -2148,100 +2346,34 @@ function ComposerActionMenu({
             Plan
           </button>
         </div>
-        <div
-          className="my-1 h-px"
-          style={{ background: "var(--overlay-weak)" }}
-        />
-        <div className="py-1">
-          <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Integrations
-          </div>
-          <div className="space-y-1">
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("jira")}
-            >
-              <Search className="h-4 w-4" />
-              Jira
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("confluence")}
-            >
-              <Search className="h-4 w-4" />
-              Confluence
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("linear")}
-            >
-              <Search className="h-4 w-4" />
-              Linear
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("clickup")}
-            >
-              <Search className="h-4 w-4" />
-              ClickUp
-            </button>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => onInsertIntegrationTrigger("granola")}
-            >
-              <Search className="h-4 w-4" />
-              Granola
-            </button>
-          </div>
-        </div>
+        {availableIntegrationActions.length > 0 && (
+          <>
+            <div
+              className="my-1 h-px"
+              style={{ background: "var(--overlay-weak)" }}
+            />
+            <div className="py-1">
+              <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                Integrations
+              </div>
+              <div className="space-y-1">
+                {availableIntegrationActions.map(({ kind, label }) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+                    onClick={() => onInsertIntegrationTrigger(kind)}
+                  >
+                    <Search className="h-4 w-4" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
-  );
-}
-
-function ComposerSelectionPill({
-  snapshot,
-  onClear,
-}: {
-  snapshot: ComposerSelectionSnapshot;
-  onClear?: () => void;
-}) {
-  const label = getComposerSelectionSourceLabel(snapshot);
-  const lineLabel =
-    snapshot.startLine === snapshot.endLine
-      ? `L${snapshot.startLine}`
-      : `L${snapshot.startLine}–${snapshot.endLine}`;
-
-  return (
-    <div
-      className="flex min-h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-xs"
-      style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--accent-border)",
-        borderStyle: "solid",
-        borderWidth: 1,
-        color: "var(--text-primary)",
-      }}
-      data-testid="agent-composer-selection-snapshot"
-    >
-      <ScrollText className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 truncate font-medium">{`Selection: ${label} · ${lineLabel}`}</span>
-      {onClear ? (
-        <button
-          type="button"
-          className="ml-auto shrink-0 rounded px-1.5 py-1 text-[0.6875rem] font-medium hover:bg-[var(--bg-hover)]"
-          aria-label="Clear selected artifact lines"
-          onClick={onClear}
-        >
-          Clear
-        </button>
-      ) : null}
-    </div>
   );
 }
 
@@ -2249,13 +2381,16 @@ function ComposerReferencePills({
   projectReferences,
   integrationReferences,
   artifactReferences,
+  excerptReferences,
   onRemoveProjectReference,
   onRemoveIntegrationReference,
   onRemoveArtifactReference,
+  onRemoveExcerptReference,
 }: {
   projectReferences: AgentComposerProjectReference[];
   integrationReferences: AgentComposerIntegrationReference[];
   artifactReferences: AgentComposerArtifactReference[];
+  excerptReferences: ComposerExcerptReference[];
   onRemoveProjectReference: (path: string) => void;
   onRemoveIntegrationReference: (
     reference: AgentComposerIntegrationReference,
@@ -2263,11 +2398,13 @@ function ComposerReferencePills({
   onRemoveArtifactReference: (
     reference: AgentComposerArtifactReference,
   ) => void;
+  onRemoveExcerptReference: (reference: ComposerExcerptReference) => void;
 }) {
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
-    artifactReferences.length === 0
+    artifactReferences.length === 0 &&
+    excerptReferences.length === 0
   ) {
     return null;
   }
@@ -2349,64 +2486,30 @@ function ComposerReferencePills({
           />
         );
       })}
+      {excerptReferences.map((reference) => {
+        const label = reference.title ?? reference.sourceId;
+        const description = [
+          reference.version !== undefined ? `v${reference.version}` : null,
+          reference.filePath,
+          reference.locator,
+          reference.excerpt,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ComposerReferencePill
+            key={composerExcerptReferenceKey(reference)}
+            testId={`agent-composer-reference-pill-excerpt:${reference.sourceKind}:${reference.sourceId}`}
+            icon={ScrollText}
+            typeLabel={`${reference.sourceLabel} excerpt`}
+            label={label}
+            description={description}
+            removeLabel={`Remove ${reference.sourceLabel} excerpt ${label}`}
+            onRemove={() => onRemoveExcerptReference(reference)}
+          />
+        );
+      })}
     </div>
-  );
-}
-
-function ComposerReferencePill({
-  testId,
-  icon: Icon,
-  typeLabel,
-  label,
-  description,
-  removeLabel,
-  onRemove,
-}: {
-  testId: string;
-  icon: ComponentType<{ className?: string }>;
-  typeLabel: string;
-  label: string;
-  description?: string;
-  removeLabel: string;
-  onRemove: () => void;
-}) {
-  return (
-    <span
-      data-testid={testId}
-      className="inline-flex h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-[0.75rem]"
-      style={{
-        background: "var(--bg-surface)",
-        borderColor: "var(--bg-hover)",
-        color: "var(--text-primary)",
-      }}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
-      <span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase text-[var(--text-muted)]">
-        {typeLabel}
-      </span>
-      <span
-        className="min-w-0 max-w-[16rem] truncate font-medium"
-        title={label}
-      >
-        {label}
-      </span>
-      {description && description !== label ? (
-        <span
-          className="hidden min-w-0 max-w-[18rem] truncate text-[var(--text-muted)] sm:inline"
-          title={description}
-        >
-          {description}
-        </span>
-      ) : null}
-      <button
-        type="button"
-        className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        aria-label={removeLabel}
-        onClick={onRemove}
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
-    </span>
   );
 }
 
@@ -2671,13 +2774,28 @@ function ComposerModeMenuSection({
   mode: ModeFieldConfig;
   onDone: () => void;
 }) {
+  const secondaryOptionIds = useMemo(
+    () => new Set(mode.secondaryOptionIds ?? []),
+    [mode.secondaryOptionIds],
+  );
+  const [showSecondaryModes, setShowSecondaryModes] = useState(false);
+  const hasSecondaryModes = mode.options.some((option) =>
+    secondaryOptionIds.has(option.id),
+  );
+  const visibleOptions = mode.options.filter(
+    (option) =>
+      !secondaryOptionIds.has(option.id) ||
+      showSecondaryModes ||
+      option.id === mode.value,
+  );
+
   return (
     <div className="py-1">
       <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
         Mode
       </div>
       <div className="space-y-1">
-        {mode.options.map((option) => {
+        {visibleOptions.map((option) => {
           const isSelected = option.id === mode.value;
           const optionDisabled = mode.disabled || option.disabled;
           return (
@@ -2726,6 +2844,26 @@ function ComposerModeMenuSection({
           );
         })}
       </div>
+      {hasSecondaryModes && (
+        <button
+          type="button"
+          aria-expanded={showSecondaryModes}
+          aria-label={
+            showSecondaryModes ? "Show fewer modes" : "Show more modes"
+          }
+          className="mt-1 flex w-full items-center justify-center gap-1.5 border-t border-[var(--border-subtle)] px-2 pt-2 text-[0.6875rem] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+          onClick={() => setShowSecondaryModes((visible) => !visible)}
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "h-3.5 w-3.5 transition-transform",
+              showSecondaryModes && "rotate-180",
+            )}
+          />
+          {showSecondaryModes ? "Show less" : "Show more"}
+        </button>
+      )}
     </div>
   );
 }
@@ -2775,140 +2913,6 @@ function ComposerTeamSwitch({
   );
 }
 
-function ComposerCapabilitiesSelector({
-  capability,
-  compact,
-}: {
-  capability: CapabilityFieldConfig;
-  compact: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const testId = capability.testId ?? "agent-composer-capability";
-  const selected =
-    capability.options.find((option) => option.id === capability.value) ??
-    capability.options[0];
-  const disabled = Boolean(capability.disabled || capability.pending);
-
-  if (!selected) {
-    return null;
-  }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          className={cn(
-            "ml-auto inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[var(--overlay-faint)] px-2.5 font-medium text-[var(--text-secondary)] transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-            compact ? "text-[0.6875rem]" : "text-[0.75rem]",
-          )}
-          style={{
-            backgroundColor:
-              "color-mix(in srgb, var(--bg-base) 18%, var(--bg-surface) 82%)",
-          }}
-          aria-label={`Capabilities: ${selected.label}`}
-          data-testid={testId}
-        >
-          <span>Capabilities</span>
-          <span style={{ color: "var(--text-primary)" }}>{selected.label}</span>
-          {capability.pending ? (
-            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3 w-3" aria-hidden="true" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-72 p-1.5"
-        data-testid={`${testId}-menu`}
-      >
-        <div role="radiogroup" aria-label="Agent capability">
-          {capability.options.map((option) => {
-            const checked = option.id === capability.value;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                role="radio"
-                aria-checked={checked}
-                disabled={option.disabled}
-                className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
-                style={{
-                  backgroundColor: checked
-                    ? "var(--bg-surface-hover)"
-                    : "transparent",
-                }}
-                onClick={() => {
-                  void Promise.resolve(
-                    capability.onValueChange(
-                      option.id as CapabilityIntent["coordinationMode"],
-                    ),
-                  ).then(() => setOpen(false));
-                }}
-                data-testid={`${testId}-${option.id}`}
-              >
-                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)]">
-                  {checked && (
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: "var(--accent-primary)" }}
-                    />
-                  )}
-                </span>
-                <span className="min-w-0">
-                  <span
-                    className="block text-[0.8125rem] font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {option.label}
-                  </span>
-                  {option.description && (
-                    <span
-                      className="mt-0.5 block text-[0.6875rem] leading-snug"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {option.description}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-export function AgentComposerProjectCreateButton({
-  onClick,
-  testId,
-  label = "New project",
-}: {
-  onClick: () => void;
-  testId?: string;
-  label?: string;
-}) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className="h-7 shrink-0 rounded-[10px] px-2 text-[0.625rem] font-medium"
-      style={{
-        color: "var(--text-secondary)",
-        background: "transparent",
-      }}
-      onClick={onClick}
-      data-testid={testId}
-    >
-      <Plus className="h-3.5 w-3.5" />
-      {label}
-    </Button>
-  );
-}
-
 export function AgentComposerProjectLine({
   value,
   onValueChange,
@@ -2916,10 +2920,13 @@ export function AgentComposerProjectLine({
   placeholder,
   disabled = false,
   testId,
+  allowNoProject = false,
+  standaloneCaption,
 }: ProjectFieldConfig) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const selectedProject = options.find((option) => option.id === value) ?? null;
+  const isStandalone = value === null;
   const filteredOptions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) {
@@ -2953,7 +2960,11 @@ export function AgentComposerProjectLine({
       data-theme-button-skip="true"
       aria-label="Project"
     >
-      <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      {isStandalone ? (
+        <CircleOff className="h-3.5 w-3.5 shrink-0" />
+      ) : (
+        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+      )}
       <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
         Project
       </span>
@@ -2965,17 +2976,27 @@ export function AgentComposerProjectLine({
             : "var(--text-secondary)",
         }}
       >
-        {selectedProject?.label ?? placeholder}
+        {isStandalone ? "No project" : (selectedProject?.label ?? placeholder)}
       </span>
       {!disabled && <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
     </button>
   );
 
   if (disabled) {
-    return trigger;
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        {trigger}
+        {isStandalone && standaloneCaption && (
+          <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+            {standaloneCaption}
+          </span>
+        )}
+      </div>
+    );
   }
 
   return (
+    <div className="flex min-w-0 items-center gap-2">
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
@@ -3057,9 +3078,40 @@ export function AgentComposerProjectLine({
                 })}
               </div>
             )}
+            {allowNoProject && (
+              <>
+                <div className="my-1 h-px bg-[var(--border-subtle)]" />
+                <button
+                  type="button"
+                  className={cn(
+                    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors",
+                    isStandalone
+                      ? "bg-[var(--accent-muted)] text-[var(--accent-primary)]"
+                      : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                  )}
+                  onClick={() => {
+                    onValueChange(null);
+                    setOpen(false);
+                    setSearchQuery("");
+                  }}
+                  data-testid={`${testId ?? "project"}-standalone`}
+                >
+                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    {isStandalone ? <Check className="h-3.5 w-3.5" /> : <CircleOff className="h-3.5 w-3.5" />}
+                  </span>
+                  <span>No project (standalone)</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </PopoverContent>
     </Popover>
+    {isStandalone && standaloneCaption && (
+      <span className="shrink-0 text-[0.6875rem] text-[var(--text-muted)]">
+        {standaloneCaption}
+      </span>
+    )}
+    </div>
   );
 }

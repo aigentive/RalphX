@@ -119,12 +119,15 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
+- **Provider MCP Settings** — Harness → MCP uses refreshed enabled/available provider readiness, provider-scoped query keys, redacted catalogs, and global/project tri-state deny controls; provider definitions/auth/trust never enter frontend state.
 - **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.
 - **Persistent Operation Toasts** — long-running confirmed publish/update operations may close the dialog after intent is captured and keep one stable-id Sonner loading toast with title separate from conversation/detail/elapsed metadata until terminal success/error.
 - **Single Scroll Authority** — ALL chat scroll writes go through `ChatScrollController` (`src/components/Chat/scroll/controller.ts`, `pinned`/`free`/`returning` FSM). ❌ Independent `scrollTop`/`scrollIntoView` in chat surfaces. Only explicit user intent enters `free`; programmatic growth never re-enables follow.
 - **Conversation-Keyed Live State** — drafts, attachments, artifact-tab state, review context, and publish state are keyed by conversation id; switching conversations must not leak another conversation's state. Defaults/start-composer may use broader project/provider scopes.
+- **Review-Mode Boundary** — Workspace Review displays the local publish gate; Review PR displays linked remote GitHub head/lifecycle/action state and suppresses stale actions on terminal durable state. See `../../.claude/rules/agent-workspace-review-modes.md`.
 - **Timeline Canonical, Live Supplementary** — persisted timeline pages are the transcript authority (legacy logical history only when no page exists); keep live streamed output visible until the matching persisted message arrives, then release the live duplicate. An incomplete live tail never replaces full persisted history.
 - **Stale-Event Rejection** — chat event handlers validate payloads and reject terminations/updates keyed by BOTH conversation and active run identity, not conversation alone.
+- **Shared Persona Menu** — `src/components/personas/PersonaMenuList.tsx` is the single writer for persona choose-menus (picker + chip); it owns the scoped `globalAndProject` query, grouping, and inspect preview. ❌ New flat/unscoped persona lists.
 
 ### Composition Over Props
 ```tsx
@@ -150,7 +153,7 @@ npm run lint       # ESLint
 npx playwright test tests/visual/views/chat/chat-widget-matrix.spec.ts                     # verify chat widget visuals
 npx playwright test tests/visual/views/chat/chat-widget-matrix.spec.ts --update-snapshots  # refresh chat widget baselines
 ```
-Note: Dev server via `cd frontend && npm run tauri dev` (user manages manually).
+Visual-test dev servers may be started/stopped by agents for the scoped run; prefer Playwright and follow the explicit-request-only Computer Use boundary in `../../.claude/rules/visual-testing.md`.
 Playwright visual rule: run from `frontend/` only; do not launch from repo root with `--config frontend/playwright.config.ts`, or `page.goto('/')` can fail before the configured `baseURL`/`webServer` is applied.
 Playwright report rule: `frontend/playwright.config.ts` keeps `use.screenshot = "on"` so every run has an end-of-test screenshot in the HTML report; use explicit `testInfo.attach(...)` in multi-state specs when one final screenshot is not enough.
 

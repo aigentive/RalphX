@@ -4,7 +4,10 @@ import {
   mergeDelegationContentBlocks,
   mergeDelegationToolCalls,
   normalizeDelegationTranscriptPayload,
+  reconcileDelegationTaskMap,
+  reconcileDelegationTaskMarkers,
 } from "./delegation-tool-calls";
+import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import { makeContentToolUse, makeToolCall } from "./__tests__/chatRenderFixtures";
 
 function makeDelegationResult(payload: Record<string, unknown>) {
@@ -12,6 +15,199 @@ function makeDelegationResult(payload: Record<string, unknown>) {
 }
 
 describe("delegation-tool-calls", () => {
+  function task(
+    toolUseId: string,
+    overrides: Partial<StreamingTask> = {},
+  ): StreamingTask {
+    return {
+      toolUseId,
+      toolName: "delegate_start",
+      description: "",
+      subagentType: "delegated",
+      model: "unknown",
+      status: "running",
+      startedAt: 100,
+      childToolCalls: [],
+      ...overrides,
+    };
+  }
+
+  it("coalesces provider and lifecycle aliases while preserving title, placement, and child calls", () => {
+    const previous = new Map<string, StreamingTask>([
+      ["provider-tool", task("provider-tool", {
+        description: "Trace stale Claude MCP collision handling",
+        startedAt: 100,
+        childToolCalls: [{ id: "child-read", name: "Read", arguments: {} }],
+      })],
+      ["delegate-job:job-1", task("delegate-job:job-1", {
+        description: "ralphx-general-explorer",
+        delegatedJobId: "job-1",
+        providerHarness: "codex",
+        delegatedAgentRunId: "child-run-1",
+        startedAt: 200,
+        childToolCalls: [
+          { id: "child-read", name: "Read", arguments: {}, result: "done" },
+          { id: "child-shell", name: "Bash", arguments: {} },
+        ],
+      })],
+    ]);
+
+    const result = reconcileDelegationTaskMap(previous, {
+      source: "provider",
+      toolUseId: "provider-tool",
+      jobId: "job-1",
+      task: task("provider-tool", {
+        description: "Trace stale Claude MCP collision handling",
+        delegatedJobId: "job-1",
+        startedAt: 300,
+      }),
+    });
+
+    expect([...result.tasks.keys()]).toEqual(["provider-tool"]);
+    expect(result.canonicalKey).toBe("provider-tool");
+    expect(result.tasks.get("provider-tool")).toMatchObject({
+      toolUseId: "provider-tool",
+      description: "Trace stale Claude MCP collision handling",
+      delegatedJobId: "job-1",
+      providerHarness: "codex",
+      delegatedAgentRunId: "child-run-1",
+      startedAt: 100,
+    });
+    expect(result.tasks.get("provider-tool")?.childToolCalls.map((call) => call.id)).toEqual([
+      "child-read",
+      "child-shell",
+    ]);
+    expect(result.tasks.get("provider-tool")?.childToolCalls[0]?.result).toBe("done");
+  });
+
+  it("binds one unresolved provider placeholder but refuses to guess between two", () => {
+    const one = reconcileDelegationTaskMap(
+      new Map([["provider-one", task("provider-one", { description: "One" })]]),
+      {
+        source: "lifecycle-start",
+        toolUseId: "delegate-job:job-1",
+        jobId: "job-1",
+        allowSingleUnresolvedPlaceholder: true,
+        task: task("delegate-job:job-1", { delegatedJobId: "job-1" }),
+      },
+    );
+    expect([...one.tasks.keys()]).toEqual(["provider-one"]);
+    expect(one.tasks.get("provider-one")?.delegatedJobId).toBe("job-1");
+
+    const two = reconcileDelegationTaskMap(
+      new Map([
+        ["provider-one", task("provider-one", { description: "One" })],
+        ["provider-two", task("provider-two", { description: "Two" })],
+      ]),
+      {
+        source: "lifecycle-start",
+        toolUseId: "delegate-job:job-1",
+        jobId: "job-1",
+        allowSingleUnresolvedPlaceholder: true,
+        task: task("delegate-job:job-1", { delegatedJobId: "job-1" }),
+      },
+    );
+    expect([...two.tasks.keys()]).toEqual([
+      "provider-one",
+      "provider-two",
+      "delegate-job:job-1",
+    ]);
+  });
+
+  it("keeps terminal lifecycle evidence monotonic across reordered provider and recovery updates", () => {
+    const terminal = task("provider-tool", {
+      status: "failed",
+      completedAt: 500,
+      textOutput: "backend failure",
+      inputTokens: 100,
+      estimatedUsd: 0.12,
+      delegatedJobId: "job-1",
+      seq: 12,
+    });
+
+    const provider = reconcileDelegationTaskMap(new Map([["provider-tool", terminal]]), {
+      source: "provider",
+      toolUseId: "provider-tool",
+      jobId: "job-1",
+      seq: 10,
+      task: task("provider-tool", {
+        status: "completed",
+        textOutput: "stale provider result",
+        inputTokens: 50,
+        estimatedUsd: 0.05,
+        delegatedJobId: "job-1",
+        seq: 10,
+      }),
+    });
+    const recovered = reconcileDelegationTaskMap(provider.tasks, {
+      source: "active-state",
+      toolUseId: "delegate-job:job-1",
+      jobId: "job-1",
+      task: task("delegate-job:job-1", {
+        status: "running",
+        delegatedJobId: "job-1",
+        inputTokens: 1,
+      }),
+    });
+
+    expect(recovered.tasks.get("provider-tool")).toMatchObject({
+      status: "failed",
+      completedAt: 500,
+      textOutput: "backend failure",
+      inputTokens: 100,
+      estimatedUsd: 0.12,
+      seq: 12,
+    });
+  });
+
+  it("prefers unsequenced lifecycle completion over a conflicting provider terminal result", () => {
+    const completed = reconcileDelegationTaskMap(new Map(), {
+      source: "lifecycle-complete",
+      toolUseId: "delegate-job:job-1",
+      jobId: "job-1",
+      task: task("delegate-job:job-1", {
+        status: "failed",
+        delegatedJobId: "job-1",
+        textOutput: "backend terminal output",
+      }),
+    });
+    const provider = reconcileDelegationTaskMap(completed.tasks, {
+      source: "provider",
+      toolUseId: "provider-tool",
+      providerToolUseId: "provider-tool",
+      jobId: "job-1",
+      task: task("provider-tool", {
+        status: "completed",
+        delegatedJobId: "job-1",
+        textOutput: "conflicting provider output",
+      }),
+    });
+
+    expect(provider.tasks.get("provider-tool")).toMatchObject({
+      status: "failed",
+      textOutput: "backend terminal output",
+      delegationTerminalSource: "lifecycle-complete",
+    });
+  });
+
+  it("replaces alias markers at their earliest position and removes duplicates", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "before" },
+      { type: "task", toolUseId: "provider-tool", seq: 2, receivedAt: 20 },
+      { type: "text", text: "between" },
+      { type: "task", toolUseId: "delegate-job:job-1", seq: 4, receivedAt: 40 },
+    ];
+
+    expect(reconcileDelegationTaskMarkers(previous, {
+      canonicalKey: "provider-tool",
+      aliasKeys: ["provider-tool", "delegate-job:job-1"],
+    })).toEqual([
+      { type: "text", text: "before" },
+      { type: "task", toolUseId: "provider-tool", seq: 2, receivedAt: 20 },
+      { type: "text", text: "between" },
+    ]);
+  });
+
   it("folds delegate_wait into the original delegate_start tool call", () => {
     const startToolCall = makeToolCall("delegate_start", {
       id: "toolu-delegate-start",

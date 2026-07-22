@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::AppState;
@@ -41,12 +41,90 @@ pub(crate) fn spawn_plan_complexity_assessor_after_approval(
     });
 }
 
+pub(crate) fn spawn_plan_complexity_assessor_from_app_handle(
+    app_handle: AppHandle,
+    session_id: String,
+    artifact_id: String,
+    artifact_version: u32,
+) {
+    tokio::spawn(async move {
+        let state = app_handle.state::<AppState>();
+        if let Err(error) =
+            run_plan_complexity_assessor(&state, &session_id, &artifact_id, artifact_version).await
+        {
+            tracing::warn!(
+                session_id,
+                artifact_id,
+                artifact_version,
+                "Re-enabled plan complexity assessor failed: {}",
+                error
+            );
+        }
+    });
+}
+
+pub(crate) fn list_missing_plan_complexity_assessments_sync(
+    conn: &Connection,
+    limit: usize,
+) -> AppResult<Vec<(String, String, u32)>> {
+    let limit = i64::try_from(limit)
+        .map_err(|_| AppError::Validation("Assessment reconciliation limit is too large".into()))?;
+    let mut statement = conn.prepare(
+        "SELECT session.id, artifact.id, artifact.version
+         FROM ideation_sessions session
+         INNER JOIN artifacts artifact ON artifact.id = session.plan_artifact_id
+         INNER JOIN plan_artifact_approvals approval
+            ON approval.session_id = session.id
+           AND approval.artifact_id = artifact.id
+           AND approval.artifact_version = artifact.version
+           AND approval.status = 'approved'
+         INNER JOIN agent_conversation_workspaces workspace
+            ON workspace.linked_ideation_session_id = session.id
+           AND workspace.status = 'active'
+         LEFT JOIN plan_complexity_assessments assessment
+            ON assessment.session_id = session.id
+           AND assessment.artifact_id = artifact.id
+           AND assessment.artifact_version = artifact.version
+         WHERE session.session_flow = 'planning'
+           AND session.status = 'active'
+           AND workspace.task_pipeline_session_id IS NULL
+           AND assessment.id IS NULL
+         GROUP BY session.id, artifact.id, artifact.version, approval.approved_at
+         ORDER BY approval.approved_at ASC
+         LIMIT ?1",
+    )?;
+    let rows = statement
+        .query_map([limit], |row| {
+            let version = row.get::<_, i64>(2)?;
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, version))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(session_id, artifact_id, version)| {
+            let version = u32::try_from(version)
+                .map_err(|_| AppError::Database("Invalid artifact version".to_string()))?;
+            Ok((session_id, artifact_id, version))
+        })
+        .collect()
+}
+
 async fn run_plan_complexity_assessor(
     state: &AppState,
     session_id: &str,
     artifact_id: &str,
     artifact_version: u32,
 ) -> AppResult<()> {
+    let tasks_enabled = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .tasks_enabled;
+    if !tasks_enabled {
+        return Err(AppError::FeatureDisabled(
+            crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+        ));
+    }
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
     let session = state
         .ideation_session_repo
@@ -124,6 +202,7 @@ async fn run_plan_complexity_assessor(
             max_tokens: None,
             timeout_secs: Some(ASSESSOR_TIMEOUT_SECS),
             env,
+            mcp_launch_policy: Default::default(),
         })
         .await
         .map_err(|error| {
@@ -149,6 +228,13 @@ pub(crate) fn upsert_plan_complexity_assessment_sync(
     assessed_by: &str,
 ) -> AppResult<PlanComplexityAssessmentResponse> {
     validate_submit_request(&request)?;
+    if !crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync(conn)?
+        .tasks_enabled
+    {
+        return Err(AppError::FeatureDisabled(
+            crate::application::tasks_feature_policy::TASKS_DISABLED_MESSAGE.to_string(),
+        ));
+    }
     let plan = current_planning_plan_sync(conn, &request.session_id)?
         .ok_or_else(|| AppError::Validation("Planning session has no current plan".to_string()))?;
 

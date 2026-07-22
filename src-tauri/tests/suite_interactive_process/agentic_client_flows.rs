@@ -30,6 +30,9 @@ async fn seed_bound_active_persona() -> (AppState, tempfile::TempDir, String) {
     let now = Utc::now();
     let persona = Persona {
         id: PersonaId::from("excluded-agent-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "excluded-agent-persona".to_string(),
         name: "Excluded Agent Persona".to_string(),
         description: "must not reach excluded spawns".to_string(),

@@ -9,14 +9,19 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
+use crate::application::plan_approval_notification_service::{
+    has_deferred_plan_approval, reconcile_plan_approval_on_publish, PlanApprovalPublishAuthority,
+};
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRun, AgentRunId, AgentRunStatus, ChatAttachment,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
-    IdeationSession, IdeationSessionStatus, Persona, PersonaId, PersonaStatus, ProjectId,
-    SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatTimelineItemStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionStatus, Persona, PersonaId, PersonaStatus,
+    Project, ProjectId, SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot,
+    VerificationStatus,
 };
 use crate::domain::repositories::PersonaRepository;
 use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
@@ -54,6 +59,28 @@ fn claude_spawn_permission_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+async fn seed_completed_continuation_runtime(
+    agent_run_repo: &Arc<dyn crate::domain::repositories::AgentRunRepository>,
+    conversation_id: &ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.complete();
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    let model = match harness {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.6-sol",
+    };
+    run.logical_model = Some(model.to_string());
+    run.effective_model_id = Some(model.to_string());
+    agent_run_repo
+        .create(run)
+        .await
+        .expect("seed completed continuation runtime");
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -79,6 +106,9 @@ impl Drop for EnvVarGuard {
 fn persona_for_send_fixture(id: &str, status: PersonaStatus) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: format!("{id} persona"),
         description: "send failure fixture".to_string(),
@@ -1193,6 +1223,13 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     );
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
     let unused_path = Path::new(".");
 
@@ -1256,6 +1293,126 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     );
 }
 
+#[tokio::test]
+async fn terminal_queued_verifier_failure_releases_deferred_plan_attention() {
+    let state = AppState::new_test();
+    state
+        .db
+        .run(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS deferred_plan_approval_notifications (
+                    session_id TEXT PRIMARY KEY NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Queued verifier failure".to_string(),
+            "/tmp/queued-verifier-failure".to_string(),
+        ))
+        .await
+        .unwrap();
+    let mut session = IdeationSession::new(project.id.clone());
+    session.session_flow = IdeationSessionFlow::Planning;
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id,
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base".to_string()),
+        "plan-workspace".to_string(),
+        "/tmp/plan-workspace".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let publish_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation.id))
+        .await
+        .unwrap();
+    let publish_authority = PlanApprovalPublishAuthority::new(publish_run.id, conversation.id);
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        Some(&publish_authority),
+    )
+    .await;
+    assert!(
+        has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+
+    let mut verifier_run = AgentRun::new(conversation.id);
+    verifier_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    verifier_run.action_context_id = Some(session.id.as_str().to_string());
+    verifier_run.action_target_id = Some("plan-current".to_string());
+    let verifier_run = state.agent_run_repo.create(verifier_run).await.unwrap();
+    state
+        .agent_run_repo
+        .fail(&verifier_run.id, "queued preflight failed")
+        .await
+        .unwrap();
+    let verifier_run_id = verifier_run.id.as_str();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    super::super::chat_service_queue::settle_terminal_queued_plan_verification(
+        Some(&app_handle),
+        &verifier_run_id,
+    )
+    .await;
+
+    let state = app_handle.state::<AppState>();
+    assert!(
+        !has_deferred_plan_approval(state.inner(), &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title, "Plan approval needed");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn queue_persona_resume_attributes_the_continuation_run() {
@@ -1274,6 +1431,9 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
     let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
     let persona = Persona {
         id: PersonaId::from("queue-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queue-persona".to_string(),
         name: "Queue Persona".to_string(),
         description: "queue attribution fixture".to_string(),
@@ -1302,6 +1462,13 @@ async fn queue_persona_resume_attributes_the_continuation_run() {
         .await
         .expect("seed queue conversation");
     let conversation_id = conversation.id;
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1512,6 +1679,14 @@ EOF
         child_id.as_str(),
         "Continue".to_string(),
     );
+    let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1519,7 +1694,7 @@ EOF
             AgentHarnessKind::Claude,
             child_id.as_str(),
             child_id.as_str(),
-            ChatConversationId::new(),
+            conversation_id,
             "session-cli",
             false,
             &message_queue,
@@ -1581,6 +1756,9 @@ async fn process_queue_resume_persona_block(
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     let persona = Persona {
         id: PersonaId::from("queued-resume-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-persona".to_string(),
         name: "Queued Resume Persona".to_string(),
         description: "queue resume fixture".to_string(),
@@ -1601,6 +1779,9 @@ async fn process_queue_resume_persona_block(
         .expect("seed queued resume persona");
     let replacement_persona = Persona {
         id: PersonaId::from("queued-resume-replacement-persona"),
+        artifact_id: None,
+
+        project_id: None,
         slug: "queued-resume-replacement-persona".to_string(),
         name: "Queued Resume Replacement Persona".to_string(),
         description: "queue resume replacement fixture".to_string(),
@@ -1685,6 +1866,13 @@ async fn process_queue_resume_persona_block(
             .await
             .expect("archive explicit persona between enqueue and flush");
     }
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "queue-resume-session",
+    )
+    .await;
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1850,6 +2038,7 @@ async fn send_queued_message_now_preserves_suppress_directive_and_agent_override
         }],
         None,
         Vec::new(),
+        Vec::new(),
     );
 
     let result = service
@@ -1920,6 +2109,13 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     std::fs::write(&unselected_path, "unselected queued attachment").expect("write unselected");
 
     let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
     let selected_attachment = chat_attachment_repo
         .create(ChatAttachment::new(
             conversation_id,
@@ -1950,6 +2146,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
         Vec::new(),
         vec![selected_attachment.id],
     );

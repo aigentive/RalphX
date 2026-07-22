@@ -22,14 +22,15 @@ use axum::{
 use chrono::Utc;
 use tracing::{error, info, warn};
 
-use super::HttpServerState;
+use super::{trusted_conversation_id, HttpServerState};
 use crate::application::team_state_tracker::{
-    PendingTeamPlan, PendingTeammate, PlanDecision, PlanDecisionTeammate, TeammateHandle,
-    TeammateStatus,
+    PendingTeamPlan, PendingTeamPlanRemovalReason, PendingTeammate, PlanDecision,
+    PlanDecisionTeammate, TeammateHandle, TeammateStatus,
 };
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactRelation, ArtifactRelationId,
-    ArtifactRelationType, ArtifactType, TaskId,
+    ArtifactRelationType, ArtifactType, NotificationTargetKind, TaskId,
 };
 use crate::http_server::types::{
     ApproveTeamPlanRequest, ApproveTeamPlanResponse, CreateTeamArtifactRequest,

@@ -11,6 +11,7 @@ import {
 describe("agentSessionStore", () => {
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
+    expect(useAgentSessionStore.getInitialState().showEmptyProjectGroups).toBe(true);
     expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
     expect(useAgentSessionStore.getInitialState().sidebarPublicationStateFilters).toEqual([
       "active",
@@ -20,6 +21,27 @@ describe("agentSessionStore", () => {
       "uncommitted",
       "unpushed",
     ]);
+    expect(useAgentSessionStore.getInitialState().defaultStartMode).toBe("edit");
+  });
+
+  it("migrates invalid new-run mode preferences to Agent", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "persona_builder",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "edit" });
+
+    expect(
+      migrateAgentSessionStore(
+        {
+          defaultStartMode: "plan",
+        },
+        8,
+      ),
+    ).toMatchObject({ defaultStartMode: "plan" });
   });
 
   it("migrates older persisted sidebar filter state to all projects", () => {
@@ -47,6 +69,43 @@ describe("agentSessionStore", () => {
       ),
     ).toMatchObject({
       showAllProjects: false,
+    });
+  });
+
+  it("migrates existing sidebar preferences to show empty project groups", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          showAllProjects: false,
+          projectSort: "za",
+          sidebarGroupBy: "project",
+          sidebarProjectFilterIds: ["project-1", "project-2"],
+          sidebarPublicationStateFilters: ["active", "draft"],
+        },
+        9,
+      ),
+    ).toMatchObject({
+      showAllProjects: false,
+      showEmptyProjectGroups: true,
+      projectSort: "za",
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: ["project-1", "project-2"],
+      sidebarPublicationStateFilters: ["active", "draft"],
+    });
+  });
+
+  it("preserves a current persisted empty-project-group preference", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          showEmptyProjectGroups: false,
+          sidebarProjectFilterIds: ["project-2"],
+        },
+        10,
+      ),
+    ).toEqual({
+      showEmptyProjectGroups: false,
+      sidebarProjectFilterIds: ["project-2"],
     });
   });
 
@@ -293,6 +352,15 @@ describe("agentSessionStore", () => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
     });
 
+    it("persists the preferred ordinary new-run mode", () => {
+      useAgentSessionStore.getState().setDefaultStartMode("plan");
+
+      expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"defaultStartMode":"plan"',
+      );
+    });
+
     it("setFocusedProject expands only the focused project without selecting a conversation", () => {
       const { clearSelection, setFocusedProject, selectConversation, setProjectExpanded } =
         useAgentSessionStore.getState();
@@ -389,6 +457,55 @@ describe("agentSessionStore", () => {
       expect(consumeStartConversationDraft()).toBeNull();
     });
 
+    it("round-trips a standalone start draft without inventing a project id", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        content: "Explore this privately",
+        mode: "chat",
+      });
+    });
+
+    it("preserves persona-builder scope lock and refine provenance in the consumed copy", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+      setStartConversationDraft({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: null,
+        projectLocked: true,
+        content: "",
+        mode: "persona_builder",
+        sourcePersonaId: "persona-1",
+        sourcePersonaName: "Reviewer Voice",
+      });
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+    });
+
+    it("selects a standalone conversation without project focus bookkeeping", () => {
+      useAgentSessionStore.getState().selectConversation(null, "standalone-1");
+
+      const state = useAgentSessionStore.getState();
+      expect(state.selectedProjectId).toBeNull();
+      expect(state.focusedProjectId).toBeNull();
+      expect(state.selectedConversationId).toBe("standalone-1");
+      expect(state.lastSelectedConversationByProjectId).toEqual({});
+    });
+
     it("selectConversation pins focus + remembers per-project last conversation", () => {
       const { selectConversation, clearSelection } = useAgentSessionStore.getState();
 
@@ -423,13 +540,22 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().expandedProjectIds.p1).toBe(false);
     });
 
-    it("setShowAllProjects + setProjectSort persist their values", () => {
-      const { setShowAllProjects, setProjectSort } = useAgentSessionStore.getState();
+    it("persists project scope, empty-group visibility, and sort preferences", () => {
+      const {
+        setProjectSort,
+        setShowAllProjects,
+        setShowEmptyProjectGroups,
+      } = useAgentSessionStore.getState();
       setShowAllProjects(false);
+      setShowEmptyProjectGroups(false);
       setProjectSort("za");
       const s = useAgentSessionStore.getState();
       expect(s.showAllProjects).toBe(false);
+      expect(s.showEmptyProjectGroups).toBe(false);
       expect(s.projectSort).toBe("za");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"showEmptyProjectGroups":false',
+      );
     });
 
     it("persists sidebar filters and pinned conversation ids", () => {
@@ -664,6 +790,28 @@ describe("agentSessionStore", () => {
           "setup-conversation-1"
         ],
       ).toBeUndefined();
+    });
+
+    it("keeps the exact visible Agent scope transient", () => {
+      useAgentSessionStore.getState().setVisibleAgentScope({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+
+      expect(useAgentSessionStore.getState().visibleAgentScope).toEqual({
+        workspaceConversationId: "setup-conversation-1",
+        visibleConversationId: "run-conversation-1",
+        automationRunId: "run-1",
+        automationConversationId: "run-conversation-1",
+      });
+      const partialize = useAgentSessionStore.persist.getOptions().partialize;
+      const persisted = partialize?.(useAgentSessionStore.getState()) as Record<
+        string,
+        unknown
+      >;
+      expect(persisted).not.toHaveProperty("visibleAgentScope");
     });
 
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {

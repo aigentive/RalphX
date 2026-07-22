@@ -112,7 +112,7 @@ pub async fn request_teammate_spawn(
     let teammate_context = TeammateContext {
         context_id: context_id.clone(),
         context_type: context_type.clone(),
-        project_id,
+        project_id: project_id.clone(),
     };
 
     // Always inject team communication tools regardless of spawn request specification.
@@ -143,11 +143,22 @@ pub async fn request_teammate_spawn(
         .with_effort(resolve_effort(Some(mcp_type)))
         .with_working_dir(working_dir.clone())
         .with_plugin_dir(resolve_teammate_plugin_dir(&working_dir));
-    let spawn_config = load_claude_provider_env_for_teammate_spawn(
+    let mut spawn_config = load_claude_provider_env_for_teammate_spawn(
         &state.app_state.agent_provider_settings_repo,
         spawn_config,
     )
     .await?;
+    let mcp_policy = state
+        .app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(
+            AgentHarnessKind::Claude,
+            project_id.as_deref(),
+            Some(&working_dir),
+        )
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+    spawn_config = spawn_config.with_mcp_launch_policy(mcp_policy);
 
     let client = ClaudeCodeClient::new();
     match client.spawn_teammate_interactive(spawn_config).await {

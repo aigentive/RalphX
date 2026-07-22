@@ -42,6 +42,7 @@ const TYPE_LABELS: Record<ArtifactType, string> = {
   review_feedback: "Review Feedback", pr_review: "PR Review", approval: "Approval", findings: "Findings", recommendations: "Recommendations",
   context: "Context", previous_work: "Previous Work", research_brief: "Research Brief",
   activity_log: "Activity Log", alert: "Alert", intervention: "Intervention",
+  persona: "Persona",
 };
 
 // ============================================================================

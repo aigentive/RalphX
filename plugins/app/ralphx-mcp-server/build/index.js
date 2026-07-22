@@ -272,7 +272,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Special handling for permission_request tool (always allowed, not scoped by agent type)
     if (name === "permission_request") {
         try {
-            const result = await handlePermissionRequest(args);
+            const result = await handlePermissionRequest(args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -303,7 +303,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
         try {
-            const result = await handleFilesystemToolCall(name, args);
+            const result = await handleFilesystemToolCall(name, args, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -402,7 +402,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
         try {
-            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId);
+            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId, runtimeContext);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),
@@ -592,6 +592,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (isAgentWorkspaceToolName(name)) {
             result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
                 parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                conversationId: RALPHX_CONVERSATION_ID,
                 agentRunId: RALPHX_AGENT_RUN_ID,
             });
         }
@@ -828,6 +829,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_agent_profile: RALPHX_AGENT_PROFILE,
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
+            }, {
+                headers: {
+                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+                },
             });
         }
         else if (name === "delegate_wait") {

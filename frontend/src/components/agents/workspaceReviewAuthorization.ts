@@ -5,7 +5,10 @@ import type {
 
 export type WorkspaceReviewAuthorizationContext = Pick<
   AgentWorkspaceReviewContext | StartAgentWorkspaceReviewResult,
-  "target" | "monitor" | "isCurrent" | "isOutdated"
+  | "target"
+  | "monitor"
+  | "reviewArtifactIsCurrent"
+  | "reviewArtifactIsOutdated"
 >;
 
 export function isWorkspaceReviewApprovedAnyway(
@@ -16,8 +19,8 @@ export function isWorkspaceReviewApprovedAnyway(
   return Boolean(
     target &&
       monitor &&
-      context.isCurrent &&
-      !context.isOutdated &&
+      context.reviewArtifactIsCurrent &&
+      !context.reviewArtifactIsOutdated &&
       monitor.status === "ready" &&
       monitor.reviewOutcome === "blocking" &&
       monitor.reviewGateStatus === "passed" &&
@@ -34,8 +37,8 @@ export function hasWorkspaceReviewPublishAuthorization(
 ): boolean {
   if (isWorkspaceReviewApprovedAnyway(context)) return true;
   return Boolean(
-    context?.isCurrent &&
-      !context.isOutdated &&
+    context?.reviewArtifactIsCurrent &&
+      !context.reviewArtifactIsOutdated &&
       context.monitor.status === "ready" &&
       context.monitor.reviewGateStatus === "passed" &&
       context.monitor.reviewOutcome !== "blocking" &&

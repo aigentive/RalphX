@@ -10,6 +10,20 @@ import {
 } from "./chat-active-state";
 
 describe("chat-active-state helpers", () => {
+  function taskFixture(overrides: Partial<StreamingTask> = {}): StreamingTask {
+    return {
+      toolUseId: "toolu_task",
+      toolName: "delegate_start",
+      description: "delegated task",
+      subagentType: "delegated",
+      model: "unknown",
+      status: "running",
+      startedAt: 100,
+      childToolCalls: [],
+      ...overrides,
+    };
+  }
+
   it("keeps previous streaming tasks and tool calls when active-state inputs are empty", () => {
     const task: StreamingTask = {
       toolUseId: "toolu_task",
@@ -85,6 +99,7 @@ describe("chat-active-state helpers", () => {
     expect(next.get("toolu_task")).toEqual({
       ...existingTask,
       status: "completed",
+      delegationTerminalSource: "active-state",
     });
   });
 
@@ -178,6 +193,72 @@ describe("chat-active-state helpers", () => {
       },
       { type: "task", toolUseId: "toolu_delegate" },
     ]);
+  });
+
+  it("hydrates provider and synthetic lifecycle aliases into one provider-keyed delegation", () => {
+    const toolCalls = [{
+      id: "provider-tool",
+      name: "delegate_start",
+      arguments: { title: "Trace stale Claude MCP collision handling" },
+      result: { job_id: "job-1", status: "running" },
+    }];
+    const activeTasks: ActiveStreamingTaskResponse[] = [{
+      tool_use_id: "delegate-job:job-1",
+      description: "ralphx-general-explorer",
+      status: "running",
+      delegated_job_id: "job-1",
+      provider_harness: "codex",
+      delegated_agent_run_id: "child-run-1",
+    }];
+
+    const tasks = mergeActiveStreamingTasks(new Map(), activeTasks, toolCalls);
+    const calls = mergeActiveStreamingToolCalls([], toolCalls, activeTasks);
+    const blocks = mergeActiveStreamingContentBlocks([], {
+      partial_text: "",
+      tool_calls: toolCalls,
+      streaming_tasks: activeTasks,
+    });
+
+    expect([...tasks.keys()]).toEqual(["provider-tool"]);
+    expect(tasks.get("provider-tool")).toMatchObject({
+      description: "Trace stale Claude MCP collision handling",
+      delegatedJobId: "job-1",
+      providerHarness: "codex",
+      delegatedAgentRunId: "child-run-1",
+    });
+    expect(calls).toEqual([]);
+    expect(blocks).toEqual([{ type: "task", toolUseId: "provider-tool" }]);
+  });
+
+  it("does not revive a terminal live delegation from a running recovery snapshot", () => {
+    const live = taskFixture({
+      toolUseId: "provider-tool",
+      status: "completed",
+      completedAt: 500,
+      textOutput: "done",
+      delegatedJobId: "job-1",
+      seq: 9,
+    });
+    const next = mergeActiveStreamingTasks(
+      new Map([["provider-tool", live]]),
+      [{
+        tool_use_id: "provider-tool",
+        status: "running",
+      }],
+      [{
+        id: "provider-tool",
+        name: "delegate_start",
+        arguments: {},
+        result: { job_id: "job-1" },
+      }],
+    );
+
+    expect(next.get("provider-tool")).toMatchObject({
+      status: "completed",
+      completedAt: 500,
+      textOutput: "done",
+      seq: 9,
+    });
   });
 
   it("leaves content unchanged when active-state has no partial text", () => {

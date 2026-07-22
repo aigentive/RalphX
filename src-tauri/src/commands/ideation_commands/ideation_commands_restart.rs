@@ -475,6 +475,13 @@ pub async fn restart_ideation_implementation_core(
         .map_err(|error| AppError::Database(error.to_string()))?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await?;
+
     if session.status != IdeationSessionStatus::Accepted {
         return Err(AppError::Validation(
             "Can only restart implementation for an accepted ideation session".to_string(),
@@ -695,6 +702,12 @@ pub async fn restart_ideation_implementation_core(
         .await?;
     let branch_updates =
         preflight_branch_updates_for_restart(app_state, &project, &current_tasks).await?;
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(app_state)
+        .authorize_session(
+            Some(&session_id),
+            crate::domain::ideation::TasksFeatureAction::Progress,
+        )
+        .await?;
     stop_branch_updates_for_restart(app_state, &branch_updates).await?;
     task_cleanup
         .stop_tasks_for_replacement(&current_tasks, StopMode::DirectStop)
@@ -776,6 +789,11 @@ pub async fn restart_ideation_implementation_core(
     let tx_output = app_state
         .db
         .run_transaction(move |conn| {
+            crate::application::tasks_feature_policy::authorize_tasks_session_sync(
+                conn,
+                Some(&session_id_str),
+                crate::domain::ideation::TasksFeatureAction::Progress,
+            )?;
             let now_str = chrono::Utc::now().to_rfc3339();
             let archived_task_count = archive_execution_plan_tasks(
                 conn,

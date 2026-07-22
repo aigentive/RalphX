@@ -5,6 +5,7 @@ import {
   type UpdateWorkspaceReviewRuntimeSettingsInput,
   type WorkspaceReviewRuntimeSettingsResponse,
 } from "@/api/workspace-review-settings";
+import { manualRoleDefaultKeys } from "@/hooks/useManualRoleDefaults";
 
 export const workspaceReviewSettingsKeys = {
   all: ["workspace-review", "runtime-settings"] as const,
@@ -31,9 +32,14 @@ export function useWorkspaceReviewRuntimeSettings(projectId: string | null) {
       input: Omit<UpdateWorkspaceReviewRuntimeSettingsInput, "projectId">,
     ) => workspaceReviewSettingsApi.update({ projectId, ...input }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: workspaceReviewSettingsKeys.all,
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: workspaceReviewSettingsKeys.all,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: manualRoleDefaultKeys.all,
+        }),
+      ]);
     },
   });
 

@@ -4,7 +4,7 @@ use crate::application::services::pr_auto_merge_status::AUTO_MERGE_ENABLE_WARNIN
 use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
 use crate::domain::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspacePrReviewMonitorStatus, AttentionItem,
-    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId, InternalStatus,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, InternalStatus,
     NotificationCategory, NotificationTarget, NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{
@@ -26,6 +26,7 @@ const ATTENTION_TASK_LIMIT: u32 = 1_000;
 /// by UI urgency group (agent requests, reviews, tasks, automations, git), newest first within a
 /// group.
 pub struct AttentionService {
+    db: crate::infrastructure::sqlite::DbConnection,
     task_repo: Arc<dyn TaskRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     automation_repo: Arc<dyn AutomationRepository>,
@@ -42,6 +43,7 @@ pub struct AttentionService {
 impl AttentionService {
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
+            db: state.db.clone(),
             task_repo: Arc::clone(&state.task_repo),
             project_repo: Arc::clone(&state.project_repo),
             automation_repo: Arc::clone(&state.automation_repo),
@@ -296,7 +298,14 @@ impl AttentionService {
                 .get_by_session(&session.id)
                 .await?
                 .is_some_and(|approval| approval.artifact_id == *plan_artifact_id);
+            let approval_deferred = crate::application::plan_approval_notification_service::has_deferred_plan_approval_in_db(
+                &self.db,
+                &session.id,
+                plan_artifact_id.as_str(),
+            )
+            .await?;
             if current_artifact_approved
+                || approval_deferred
                 || self
                     .notification_context
                     .session_is_automation_owned(&session)
@@ -308,27 +317,10 @@ impl AttentionService {
             {
                 continue;
             }
-            let agent_conversation = match self
-                .agent_workspace_repo
-                .get_by_linked_ideation_session_id(&session.id)
-                .await?
-            {
-                Some(workspace) => {
-                    self.chat_conversation_repo
-                        .get_by_id(&workspace.conversation_id)
-                        .await?
-                }
-                None => None,
-            };
-            let conversation = match agent_conversation {
-                Some(conversation) => Some(conversation),
-                None => self
-                    .chat_conversation_repo
-                    .get_by_context(ChatContextType::Ideation, session.id.as_str())
-                    .await?
-                    .into_iter()
-                    .max_by_key(|conversation| conversation.updated_at),
-            };
+            let resolved = self
+                .notification_context
+                .resolve_ideation_session_target(&session)
+                .await?;
             items.push(AttentionItem {
                 id: format!("plan:{}:approval", session.id),
                 category: NotificationCategory::PlanApproval,
@@ -339,7 +331,7 @@ impl AttentionService {
                 detail: Some("Review the workspace plan before implementation begins".to_string()),
                 project_id: Some(project_id.to_string()),
                 created_at: Some(session.updated_at.to_rfc3339()),
-                target: conversation_target(conversation.as_ref(), Some(project_id.to_string())),
+                target: resolved.target,
             });
         }
         Ok(())

@@ -56,6 +56,7 @@ describe("chatStore", () => {
       toolCallCompletionTimestamps: {},
       effectiveModel: {},
       composerDraftsByKey: {},
+      delegateExpansionByConversation: {},
     });
   });
 
@@ -181,6 +182,42 @@ describe("chatStore", () => {
       expect(useChatStore.getState().composerDraftsByKey["conversation:two"]).toMatchObject({
         content: "second",
       });
+    });
+
+    it("keeps folder-reference drafts scoped by composer key and preserves them alongside content", () => {
+      const store = useChatStore.getState();
+
+      store.setComposerDraftFolders("conversation:one", [
+        { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+      ]);
+
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "",
+        attachments: [],
+        folders: [
+          { id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
+        ],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "add design-notes");
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"]?.folders,
+      ).toEqual([{ id: "folder-1", folderPath: "/work/design-notes", displayName: "design-notes" }]);
+
+      useChatStore.getState().setComposerDraftFolders("conversation:one", []);
+      // Content is still set, so the draft entry is not deleted — only folders clear.
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"],
+      ).toMatchObject({
+        content: "add design-notes",
+        folders: [],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "");
+      // Content, attachments, and folders are now all empty — the draft is removed.
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
     });
   });
 
@@ -418,6 +455,23 @@ describe("chatStore", () => {
     it("returns undefined for unknown storeKey", () => {
       const state = useChatStore.getState();
       expect(state.activeConversationIds["unknown:key"]).toBeUndefined();
+    });
+
+    it("preserves delegate expansion within a conversation and prunes it on switch", () => {
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-old");
+      useChatStore.getState().setDelegateExpanded("conv-old", "call-delegate", true);
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"]?.[
+          "call-delegate"
+        ],
+      ).toBe(true);
+
+      useChatStore.getState().setActiveConversation(storeKeyA, "conv-new");
+
+      expect(
+        useChatStore.getState().delegateExpansionByConversation["conv-old"],
+      ).toBeUndefined();
     });
   });
 

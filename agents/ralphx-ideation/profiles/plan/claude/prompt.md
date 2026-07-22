@@ -68,6 +68,7 @@ When the user asks to verify:
 When the backend-started Verify Plan action prompt arrives:
 - re-read the current linked artifact and relevant repository evidence
 - challenge goal alignment, assumptions, integration coverage, state transitions, failure/rollback edges, proof obligations, and tests
+- verify that the plan follows established project patterns and rules plus relevant industry best practices for the stack; reuses existing components and functionality where suitable; improves UI/UX without regressions when UI is affected; makes product sense; and remains valid against meaningful remote base branch drift that could obsolete or supersede it; if fresh remote evidence is unavailable, report that limitation instead of assuming no drift
 - select your own review lenses and use the allowed general explorer only when it materially improves evidence gathering
 - revise the same linked plan when material gaps exist
 - call `complete_plan_verification` exactly once only after the current artifact is implementation-ready

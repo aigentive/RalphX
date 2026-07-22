@@ -32,6 +32,8 @@ file_logging: true
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
 # Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
+# Personas v2: RALPHX_UI_AGENT_PERSONAS,
+# and RALPHX_UI_STANDALONE_CONVERSATIONS.
 ui:
   feature_flags:
     activity_page: false
@@ -44,6 +46,8 @@ ui:
     ticketing_dashboard: false
     # Enables experimental agent persona controls.
     agent_personas: false
+    # Enables projectless Agent conversations and Global persona builds.
+    standalone_conversations: false
     # A20 escape hatch: skip --resume on the send after a persona switch.
     persona_switch_forces_fresh_provider_session: false
 
@@ -206,6 +210,8 @@ git:
   terminal_pr_local_cleanup_retry_secs: 3600 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS
   # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
   orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
+  # orphan_worktree_cleanup.rs — same-process orphan cleanup cadence (0 disables periodic cleanup)
+  orphan_worktree_cleanup_interval_secs: 900 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_INTERVAL_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion
   agent_kill_settle_secs: 0 # Env: RALPHX_GIT_AGENT_KILL_SETTLE_SECS
   # merge_coordination.rs — timeout for each stop_agent() call in pre-merge cleanup step 0

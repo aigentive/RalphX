@@ -6,19 +6,66 @@ import { PersonaChip } from "./PersonaChip";
 
 const mockMutateAsync = vi.fn();
 const mockConfirm = vi.fn();
+const mockOverlayPreview = vi.fn();
+
+type MockPersona = {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  description: string;
+  projectId: string | null;
+  version?: number;
+};
+
+const defaultPersonas: MockPersona[] = [
+  {
+    id: "reviewer",
+    slug: "reviewer",
+    name: "Reviewer Voice",
+    status: "active",
+    description: "",
+    projectId: null,
+    version: 3,
+  },
+  {
+    id: "architect",
+    slug: "architect",
+    name: "Terse Architect",
+    status: "active",
+    description: "",
+    projectId: "project-1",
+  },
+  {
+    id: "75b56f7e-d80a-4648-835c-c5b10a8b6df7",
+    slug: "design-voice",
+    name: "Archived Voice",
+    status: "archived",
+    description: "",
+    projectId: null,
+  },
+  {
+    id: "other-project-persona",
+    slug: "other-voice",
+    name: "Other Project Voice",
+    status: "active",
+    description: "",
+    projectId: "project-2",
+  },
+];
+
 const mockPersonaQuery = vi.fn(() => ({
-  data: [
-    { id: "reviewer", slug: "reviewer", name: "Reviewer Voice", status: "active" },
-    { id: "architect", slug: "architect", name: "Terse Architect", status: "active" },
-    { id: "75b56f7e-d80a-4648-835c-c5b10a8b6df7", slug: "design-voice", name: "Archived Voice", status: "archived" },
-  ],
+  data: defaultPersonas,
   isLoading: false,
   isError: false,
+  refetch: vi.fn(),
 }));
 
 vi.mock("@/hooks/usePersonas", () => ({
   usePersonas: () => mockPersonaQuery(),
   useSwitchConversationPersona: () => ({ mutateAsync: mockMutateAsync }),
+  usePersonaOverlayPreview: (conversationId: string, enabled: boolean) =>
+    mockOverlayPreview(conversationId, enabled),
 }));
 
 vi.mock("@/hooks/useConfirmation", () => ({
@@ -34,6 +81,8 @@ function renderChip(props: Partial<React.ComponentProps<typeof PersonaChip>> = {
     <TooltipProvider delayDuration={0}>
       <PersonaChip
         conversationId="conversation-1"
+        projectId="project-1"
+        projectName="RalphX"
         personaId="reviewer"
         isAgentRunning={false}
         {...props}
@@ -46,16 +95,19 @@ describe("PersonaChip", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPersonaQuery.mockReturnValue({
-      data: [
-        { id: "reviewer", slug: "reviewer", name: "Reviewer Voice", status: "active" },
-        { id: "architect", slug: "architect", name: "Terse Architect", status: "active" },
-        { id: "75b56f7e-d80a-4648-835c-c5b10a8b6df7", slug: "design-voice", name: "Archived Voice", status: "archived" },
-      ],
+      data: defaultPersonas,
       isLoading: false,
       isError: false,
+      refetch: vi.fn(),
     });
     mockMutateAsync.mockResolvedValue(undefined);
     mockConfirm.mockResolvedValue(true);
+    mockOverlayPreview.mockReturnValue({
+      isPending: true,
+      isError: false,
+      data: undefined,
+      error: null,
+    });
   });
 
   it("uses the exact project-only tooltip and an accessible chip trigger", async () => {
@@ -90,6 +142,32 @@ describe("PersonaChip", () => {
     });
   });
 
+  it("never offers a persona outside global plus the conversation's project", () => {
+    renderChip();
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+
+    expect(
+      screen.queryByRole("menuitemradio", { name: "Other Project Voice" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Global" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "RalphX" })).toBeInTheDocument();
+  });
+
+  it("offers a direct project Persona Builder action when no persona is bound", async () => {
+    const onBuildPersona = vi.fn();
+    renderChip({ personaId: null, onBuildPersona });
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Create persona for this project" }),
+    );
+
+    expect(onBuildPersona).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("menu", { name: "Choose persona" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("confirms the exact warning before switching a running conversation", async () => {
     renderChip({ isAgentRunning: true });
     fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
@@ -116,17 +194,18 @@ describe("PersonaChip", () => {
     expect(screen.getByRole("button", { name: "Switch conversation persona" })).not.toHaveTextContent("Reviewer Voice");
   });
 
-  it("shows the applied persona slug and opens the existing switcher", () => {
+  it("shows the applied persona slug with its version and opens the switcher", () => {
     renderChip({
       lastRunPersonaId: "reviewer",
       lastRunPersonaSlug: "reviewer",
+      lastRunPersonaVersion: 3,
       lastRunPersonaInjected: true,
     });
 
     const trigger = screen.getByRole("button", {
       name: "Switch conversation persona",
     });
-    expect(trigger).toHaveTextContent("reviewer");
+    expect(trigger).toHaveTextContent("reviewer v3");
     expect(trigger).not.toHaveTextContent("not applied");
     expect(
       trigger.querySelector("svg.lucide-triangle-alert"),
@@ -134,8 +213,9 @@ describe("PersonaChip", () => {
 
     fireEvent.click(trigger);
     expect(
-      screen.getByRole("menu", { name: "Conversation persona" }),
+      screen.getByRole("menu", { name: "Choose persona" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Applied last run: reviewer v3")).toBeInTheDocument();
   });
 
   it("treats a reason-less false persona attribution as unknown", async () => {
@@ -222,6 +302,7 @@ describe("PersonaChip", () => {
       data: [],
       isLoading: false,
       isError: true,
+      refetch: vi.fn(),
     });
 
     renderChip({
@@ -244,6 +325,60 @@ describe("PersonaChip", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Terse Architect" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Persona is archived");
-    expect(screen.getByRole("menu", { name: "Conversation persona" })).toBeInTheDocument();
+    expect(screen.getByRole("menu", { name: "Choose persona" })).toBeInTheDocument();
+  });
+
+  it("opens the injected-prompt dialog shell before the preview resolves", async () => {
+    renderChip();
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "View injected prompt" }));
+
+    // Shell is visible synchronously while the preview query is still pending.
+    expect(
+      screen.getByRole("dialog", { name: "Injected persona — next send" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("persona-injected-prompt-loading"),
+    ).toBeInTheDocument();
+    // The preview query is enabled only once the dialog is open.
+    expect(mockOverlayPreview).toHaveBeenLastCalledWith("conversation-1", true);
+  });
+
+  it("renders the exact rendered block returned by the preview command", () => {
+    mockOverlayPreview.mockReturnValue({
+      isPending: false,
+      isError: false,
+      data: {
+        personaId: "reviewer",
+        slug: "reviewer",
+        version: 3,
+        renderedBlock: "<ralphx_agent_persona>exact block</ralphx_agent_persona>",
+        skippedReason: null,
+      },
+      error: null,
+    });
+    renderChip();
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "View injected prompt" }));
+
+    expect(
+      screen.getByTestId("persona-injected-prompt-content"),
+    ).toHaveTextContent("<ralphx_agent_persona>exact block</ralphx_agent_persona>");
+  });
+
+  it("shows an explicit error card when the preview query fails", () => {
+    mockOverlayPreview.mockReturnValue({
+      isPending: false,
+      isError: true,
+      data: undefined,
+      error: new Error("backend unavailable"),
+    });
+    renderChip();
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "View injected prompt" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load the injected prompt: backend unavailable",
+    );
   });
 });

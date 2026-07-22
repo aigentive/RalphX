@@ -96,7 +96,13 @@ export function summarizeToolActivity({
     if (isDelegationControlToolCall(toolCall.name)) {
       return;
     }
-    const logicalKey = toolCall.id.trim() || `tool-index:${index}`;
+    const rawLogicalKey = toolCall.id.trim() || `tool-index:${index}`;
+    const delegationMetadata = isDelegationStartToolCall(toolCall.name)
+      ? extractDelegationMetadata(toolCall.arguments, toolCall.result)
+      : null;
+    const logicalKey = delegationMetadata?.jobId
+      ? `delegation-job:${delegationMetadata.jobId}`
+      : rawLogicalKey;
     if (seenToolIds.has(logicalKey)) {
       return;
     }
@@ -105,20 +111,25 @@ export function summarizeToolActivity({
     addMutation(toolCall, createdPaths, editedPaths, changedPaths);
 
     if (isDelegationStartToolCall(toolCall.name)) {
-      const metadata = extractDelegationMetadata(toolCall.arguments, toolCall.result);
-      delegatedJobKeys.add(metadata.jobId ?? logicalKey);
+      delegatedJobKeys.add(delegationMetadata?.jobId ?? rawLogicalKey);
     }
   });
 
   tasks.forEach((task, index) => {
-    const logicalKey = task.toolUseId.trim() || `task-index:${index}`;
+    const rawLogicalKey = task.toolUseId.trim() || `task-index:${index}`;
+    const delegatedJobId = isDelegationStartToolCall(task.toolName)
+      ? task.delegatedJobId?.trim()
+      : undefined;
+    const logicalKey = delegatedJobId
+      ? `delegation-job:${delegatedJobId}`
+      : rawLogicalKey;
     if (seenToolIds.has(logicalKey)) {
       return;
     }
     seenToolIds.add(logicalKey);
     totalTools += 1;
     if (isDelegationStartToolCall(task.toolName)) {
-      delegatedJobKeys.add(task.delegatedJobId?.trim() || logicalKey);
+      delegatedJobKeys.add(delegatedJobId || rawLogicalKey);
     }
   });
 

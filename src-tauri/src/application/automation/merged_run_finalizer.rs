@@ -3,8 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::application::agent_conversation_archive::archive_agent_conversation_for_state;
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+};
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::chat_service::ChatService;
-use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
 use crate::application::AppState;
 use crate::domain::entities::ChatConversationId;
 use crate::error::{AppError, AppResult};
@@ -62,29 +65,37 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                     ))
                 })?;
             let chat_service: Arc<dyn ChatService> = Arc::new(self.state.build_chat_service());
+            if let Err(error) = mark_strict_ticket_cycle_terminal(
+                self.state.ticket_canonical_branch_repo.as_ref(),
+                &workspace,
+                "merged",
+            )
+            .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Automation merged run finalizer: failed to persist strict cycle terminal state"
+                );
+            }
             let terminalized = terminalize_agent_workspace_after_pr(
                 Arc::clone(&self.state.agent_conversation_workspace_repo),
                 Arc::clone(&self.state.agent_run_repo),
+                Some(Arc::clone(&self.state.plan_branch_repo)),
                 Some(chat_service),
                 conversation_id,
                 &project,
-                self.state.github_service.clone(),
-                true,
-                true,
-                Some(Arc::clone(&self.state.ticket_canonical_branch_repo)),
-                "merged",
+                TerminalAgentWorkspaceCause::MergedPr,
             )
             .await;
-            if !terminalized {
-                return Err(AppError::Infrastructure(format!(
-                    "Automation merged conversation {} runtime did not terminalize",
-                    conversation_id.as_str()
-                )));
-            }
+            terminalized
+                .require_runtime_shutdown()
+                .map_err(AppError::Infrastructure)?;
         }
 
         archive_agent_conversation_for_state(conversation_id, &self.state, false)
             .await
+            .map(|_| ())
             .map_err(AppError::Infrastructure)
     }
 }

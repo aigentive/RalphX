@@ -2,6 +2,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 
 import type { AgentSidebarConversationGroup } from "@/api/chat";
 import { revealAgentArtifactTab } from "@/components/agents/agentArtifactState";
+import { buildStoreKey } from "@/lib/chat-context-registry";
 import { getQueryClient } from "@/lib/queryClient";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -21,11 +22,21 @@ export function navigateToIdeationSession(sessionId: string): void {
 
 /** Select an Agent conversation by its durable conversation identity. */
 export function navigateToAgentConversation(
-  projectId: string,
+  projectId: string | null,
   conversationId: string,
 ): void {
   const agentSessionState = useAgentSessionStore.getState();
   agentSessionState.selectConversation(projectId, conversationId);
+  if (projectId === null) {
+    useChatStore
+      .getState()
+      .setActiveConversation(
+        buildStoreKey("standalone", conversationId),
+        conversationId,
+      );
+    useUiStore.getState().setCurrentView("agents");
+    return;
+  }
   useChatStore
     .getState()
     .setActiveConversation(`project:${projectId}`, conversationId);

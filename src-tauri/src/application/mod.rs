@@ -18,6 +18,15 @@ pub mod agent_issue_report;
 pub mod agent_lane_resolution;
 pub mod manual_role_default_service;
 pub mod manual_router_config;
+pub mod mcp_policy_config;
+pub mod mcp_policy_agent_client;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+#[cfg(test)]
+mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
@@ -27,12 +36,25 @@ pub mod agent_workspace_bridge;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
+pub(crate) mod agent_workspace_terminal_cleanup;
+#[cfg(test)]
+mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+mod agent_workspace_review_diff_cursor;
+pub mod agent_workspace_review_diff;
+mod agent_workspace_review_diff_inventory;
+#[cfg(test)]
+mod agent_workspace_review_diff_scope_tests;
+#[cfg(test)]
+mod agent_workspace_review_diff_tests;
+pub mod agent_workspace_review_context;
+#[cfg(test)]
+mod agent_workspace_review_context_tests;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
 pub mod agent_workspace_review_auto_merge;
@@ -40,6 +62,10 @@ pub mod agent_workspace_review_auto_merge;
 mod agent_workspace_review_auto_merge_tests;
 #[cfg(test)]
 mod agent_workspace_review_run_guard_tests;
+#[cfg(test)]
+mod agent_workspace_review_unfinished_git_tests;
+#[cfg(test)]
+mod agent_workspace_review_unfinished_git_recovery_tests;
 pub(crate) mod agent_workspace_review_approval;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
@@ -53,6 +79,10 @@ mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
+pub mod builder_attachment_materializer;
+pub mod conversation_folder_reference_service;
+#[cfg(test)]
+mod conversation_folder_reference_service_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -93,6 +123,8 @@ pub mod interactive_notification_producer;
 #[cfg(test)]
 mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
+#[cfg(test)]
+mod interactive_process_registry_tests;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
@@ -109,17 +141,17 @@ pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod personas;
 pub mod persona_ingest;
-mod persona_ingest_batch;
 pub mod persona_prompt;
 pub mod persona_resolver;
 pub mod permission_state;
-#[cfg(test)]
-mod persona_ingest_tests;
 #[cfg(test)]
 mod persona_prompt_tests;
 #[cfg(test)]
 mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
+pub mod plan_approval_notification_service;
+#[cfg(test)]
+mod plan_approval_notification_service_tests;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_verification_service;
@@ -132,8 +164,11 @@ pub mod priority_service;
 pub mod project_pr_template;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
+pub(crate) mod provider_management_eligibility;
 #[cfg(test)]
 mod provider_onboarding_gate_tests;
+#[cfg(test)]
+mod provider_management_eligibility_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -160,6 +195,12 @@ mod setup_settings_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;
+pub mod seeded_agent_conversation_abort;
+pub mod standalone_workspace;
+#[cfg(test)]
+mod standalone_workspace_path_safety_tests;
+#[cfg(test)]
+mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;
@@ -179,6 +220,12 @@ mod task_diff_base_tests;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
+pub(crate) mod tasks_feature_policy;
+#[cfg(test)]
+mod tasks_feature_policy_tests;
+pub(crate) mod tasks_feature_toggle_service;
+#[cfg(test)]
+mod tasks_feature_toggle_service_tests;
 pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;
@@ -304,7 +351,6 @@ pub use plan_ranking::{
 pub use priority_service::PriorityService;
 pub(crate) use provider_onboarding_gate::{
     ensure_provider_spawn_enabled, resolve_enabled_default_provider,
-    resolve_enabled_provider_or_default,
 };
 pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};

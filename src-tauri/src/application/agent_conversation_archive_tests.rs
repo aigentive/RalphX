@@ -1,8 +1,17 @@
+use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
+use crate::application::agent_conversation_workspace::{
+    agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+};
+use crate::application::agent_workspace_terminal_cleanup::{
+    TerminalCleanupClaimState, TerminalLocalCleanupResult,
+};
+use crate::application::git_service::GitService;
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::PrStatus;
 
@@ -10,10 +19,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
     ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, Task,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::RunningAgentKey;
+use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
 async fn setup_archive_state(
@@ -28,11 +38,17 @@ async fn setup_archive_state(
     Arc<MockGithubService>,
 ) {
     let temp = tempfile::tempdir().expect("tempdir should be created");
-    let project = Project::new(
+    let mut project = Project::new(
         format!("Archive unit {suffix}"),
-        temp.path().to_string_lossy().to_string(),
+        temp.path().join("repo").to_string_lossy().to_string(),
     );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory =
+        Some(temp.path().join("worktrees").to_string_lossy().to_string());
     let conversation_id = ChatConversationId::new();
+    let branch_name = agent_conversation_branch_name(&project, &conversation_id);
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("archive workspace path should resolve");
     let mut workspace = AgentConversationWorkspace::new(
         conversation_id.clone(),
         project.id.clone(),
@@ -41,8 +57,8 @@ async fn setup_archive_state(
         "main".to_string(),
         Some("main".to_string()),
         Some("base-sha".to_string()),
-        format!("agent/archive-{suffix}"),
-        temp.path().join("worktree").to_string_lossy().to_string(),
+        branch_name,
+        worktree_path.to_string_lossy().to_string(),
     );
     workspace.publication_pr_number = pr_number;
     workspace.publication_pr_url =
@@ -74,6 +90,44 @@ async fn setup_archive_state(
     (temp, state, conversation_id, workspace, github)
 }
 
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn initialize_archive_repo(repo: &Path) {
+    std::fs::create_dir_all(repo).expect("create archive repository");
+    run_git(repo, &["init"]);
+    run_git(repo, &["config", "user.email", "test@example.com"]);
+    run_git(repo, &["config", "user.name", "Test User"]);
+    run_git(repo, &["checkout", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("write archive base");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "initial"]);
+}
+
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(repo)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 async fn create_linked_plan_branch(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -88,7 +142,7 @@ async fn create_linked_plan_branch(
         ArtifactId::from_string(format!("artifact-{suffix}")),
         session_id.clone(),
         workspace.project_id.clone(),
-        format!("plan/{suffix}"),
+        format!("ralphx/archive/{suffix}"),
         "main".to_string(),
     );
     plan_branch.execution_plan_id = execution_plan.map(|plan| plan.id.clone());
@@ -143,6 +197,302 @@ async fn archive_closes_workspace_pr_only_when_requested() {
         .unwrap();
     assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("closed"));
+}
+
+#[tokio::test]
+async fn archive_without_remote_close_immediately_force_removes_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "force-local-cleanup",
+        AgentConversationWorkspaceMode::Edit,
+        Some(142),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create archive worktree");
+    std::fs::write(worktree_path.join("uncommitted.txt"), "discard me\n")
+        .expect("write archive local change");
+
+    let outcome = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("archive should remain logically successful");
+
+    assert_eq!(github.state().close_pr_calls, 0);
+    assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(&repo_path, &workspace.branch_name));
+}
+
+#[tokio::test]
+async fn explicit_close_immediately_force_removes_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "explicit-close-force-local",
+        AgentConversationWorkspaceMode::Edit,
+        Some(143),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create explicit-close worktree");
+    std::fs::write(worktree_path.join("uncommitted.txt"), "discard me\n")
+        .expect("write explicit-close local change");
+
+    close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect("explicit close should succeed");
+
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(&repo_path, &workspace.branch_name));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained for history");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("closed"));
+}
+
+#[tokio::test]
+async fn explicit_close_remote_failure_preserves_open_local_workspace() {
+    let (temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "explicit-close-remote-failure",
+        AgentConversationWorkspaceMode::Edit,
+        Some(144),
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    initialize_archive_repo(&repo_path);
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    GitService::create_worktree(&repo_path, worktree_path, &workspace.branch_name, "main")
+        .await
+        .expect("create explicit-close worktree");
+    github.state().close_pr_result = Some(Err(AppError::Infrastructure(
+        "remote close unavailable".to_string(),
+    )));
+
+    let error = close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect_err("remote close failure must block local terminalization");
+
+    assert!(error.contains("remote close unavailable"));
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(worktree_path.exists());
+    assert!(branch_exists(&repo_path, &workspace.branch_name));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn archive_requested_remote_close_failure_preserves_active_state() {
+    let (_temp, state, conversation_id, _workspace, github) = setup_archive_state(
+        "archive-close-remote-failure",
+        AgentConversationWorkspaceMode::Edit,
+        Some(145),
+    )
+    .await;
+    github.state().close_pr_result = Some(Err(AppError::Infrastructure(
+        "remote close unavailable".to_string(),
+    )));
+
+    let error = archive_agent_conversation_for_state(&conversation_id, &state, true)
+        .await
+        .expect_err("requested remote close failure must block archive authority");
+
+    assert!(error.contains("remote close unavailable"));
+    assert_eq!(github.state().close_pr_calls, 1);
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained")
+        .archived_at
+        .is_none());
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn archive_without_workspace_stops_stored_context_and_returns_cleaned_outcome() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("archive-no-workspace".to_string()));
+    conversation.id = conversation_id.clone();
+    conversation.context_type = ChatContextType::Standalone;
+    conversation.context_id = conversation_id.as_str();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Standalone.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str(),
+            "run-standalone-archive".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let outcome = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("archive without workspace should succeed");
+
+    assert!(!state.running_agent_registry.is_running(&running_key).await);
+    assert!(outcome.runtime_shutdown_succeeded);
+    assert_eq!(outcome.cleanup_claim, TerminalCleanupClaimState::NotClaimed);
+    assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
+    assert_eq!(outcome.message, None);
+    let archived = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained");
+    assert!(archived.archived_at.is_some());
+    assert_eq!(archived.context_type, ChatContextType::Standalone);
+
+    state
+        .chat_conversation_repo
+        .restore(&conversation_id)
+        .await
+        .expect("standalone conversation should restore");
+    let restored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("restored conversation lookup")
+        .expect("restored conversation retained");
+    assert!(restored.archived_at.is_none());
+    assert_eq!(restored.context_type, ChatContextType::Standalone);
+}
+
+#[tokio::test]
+async fn archive_workspace_with_missing_project_preserves_active_state() {
+    let state = AppState::new_test();
+    let missing_project_id = ProjectId::from_string("archive-missing-project".to_string());
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(missing_project_id.clone());
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        missing_project_id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/archive/missing-project".to_string(),
+        "/tmp/ralphx-missing-project-worktree".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let error = archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect_err("missing project must block archive authority");
+
+    assert!(error.contains("Project not found"));
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation retained")
+        .archived_at
+        .is_none());
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup")
+            .expect("workspace retained")
+            .status,
+        AgentConversationWorkspaceStatus::Active
+    );
+}
+
+#[tokio::test]
+async fn explicit_close_without_github_service_preserves_open_workspace() {
+    let (_temp, mut state, conversation_id, _workspace, _github) = setup_archive_state(
+        "explicit-close-no-github",
+        AgentConversationWorkspaceMode::Edit,
+        Some(146),
+    )
+    .await;
+    state.github_service = None;
+
+    let error = close_agent_workspace_pr_for_state(&conversation_id, &state)
+        .await
+        .expect_err("missing GitHub integration must block close");
+
+    assert!(error.contains("GitHub integration is unavailable"));
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace retained");
+    assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_local_cleanup_status(&conversation_id)
+        .await
+        .expect("cleanup status lookup")
+        .is_none());
 }
 
 #[tokio::test]

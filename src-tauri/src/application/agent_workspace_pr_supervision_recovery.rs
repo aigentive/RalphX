@@ -16,9 +16,12 @@ use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
 };
+use crate::application::agent_workspace_terminal_cleanup::{
+    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+};
 use crate::application::chat_service::ChatService;
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::git_service::GitService;
-use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
@@ -32,7 +35,7 @@ use crate::domain::repositories::{
     ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, PrSyncState};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
 const STARTUP_PR_SUPERVISION_RECOVERY_LIMIT: usize = 25;
@@ -91,26 +94,13 @@ pub(crate) enum AgentWorkspacePrSupervisionRecoveryOutcome {
     Terminal { pr_number: i64, pr_status: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrSupervisionRecoveryTargetKind {
-    DirectWorkspace,
-    IdeationPlan,
-}
-
 #[derive(Debug, Clone)]
 struct AgentWorkspacePrSupervisionRecoveryTarget {
-    kind: AgentWorkspacePrSupervisionRecoveryTargetKind,
     pr_number: i64,
     pr_url: Option<String>,
     worktree_path: PathBuf,
     branch_name: String,
     plan_branch: Option<PlanBranch>,
-}
-
-impl AgentWorkspacePrSupervisionRecoveryTarget {
-    fn is_ideation_plan(&self) -> bool {
-        self.kind == AgentWorkspacePrSupervisionRecoveryTargetKind::IdeationPlan
-    }
 }
 
 pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
@@ -158,6 +148,35 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
     });
 }
 
+/// Mark a strict ClickUp ticket branch cycle terminal when its workspace PR
+/// reaches a terminal state during supervision recovery. Non-strict workspaces
+/// are ignored by `mark_strict_ticket_cycle_terminal`; failures are logged and
+/// never block runtime terminalization.
+async fn reconcile_strict_ticket_cycle_terminal(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    workspace: &AgentConversationWorkspace,
+    pr_status: &str,
+) {
+    let Some(ticket_branch_repo) = deps
+        .app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<crate::application::AppState>())
+        .map(|state| Arc::clone(&state.ticket_canonical_branch_repo))
+    else {
+        return;
+    };
+    if let Err(error) =
+        mark_strict_ticket_cycle_terminal(ticket_branch_repo.as_ref(), workspace, pr_status).await
+    {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_status,
+            error = %error,
+            "Agent workspace PR supervision recovery: failed to persist strict cycle terminal state"
+        );
+    }
+}
+
 pub(crate) async fn recover_agent_workspace_pr_supervision(
     deps: AgentWorkspacePrSupervisionRecoveryDeps,
     conversation_id: ChatConversationId,
@@ -196,17 +215,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
     if workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.publication_push_status.as_deref() == Some("needs_agent")
     {
-        let current_review_target = match resolve_review_target(&workspace, &project).await {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    error = %error,
-                    "Could not resolve current Workspace Review target for PR supervision stale repair recovery"
-                );
-                None
-            }
-        };
+        let current_review_target = resolve_review_target(&workspace, &project).await?;
         let (recovered_workspace, _was_recovered) =
             recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
                 Arc::clone(&deps.workspace_repo),
@@ -269,23 +278,20 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     ))
                     .await?;
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-                terminalize_agent_workspace_after_pr(
+                reconcile_strict_ticket_cycle_terminal(&deps, &workspace, pr_status).await;
+                let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
+                    Some(Arc::clone(&deps.plan_branch_repo)),
                     deps.chat_service.as_ref().map(Arc::clone),
                     &conversation_id,
                     &project,
-                    matches!(&sync_state.status, GithubPrStatus::Merged { .. })
-                        .then(|| Arc::clone(&deps.github)),
-                    pr_status == "merged",
-                    !target.is_ideation_plan(),
-                    deps.app_handle
-                        .as_ref()
-                        .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                        .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
-                    pr_status,
+                    TerminalAgentWorkspaceCause::from_pr_status(pr_status),
                 )
                 .await;
+                terminalized
+                    .require_runtime_shutdown()
+                    .map_err(AppError::Infrastructure)?;
                 return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
                     pr_number: target.pr_number,
                     pr_status: pr_status.to_string(),
@@ -335,25 +341,20 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-        if !target.is_ideation_plan() {
-            terminalize_agent_workspace_after_pr(
-                Arc::clone(&deps.workspace_repo),
-                Arc::clone(&deps.agent_run_repo),
-                deps.chat_service.as_ref().map(Arc::clone),
-                &conversation_id,
-                &project,
-                matches!(&sync_state.status, GithubPrStatus::Merged { .. })
-                    .then(|| Arc::clone(&deps.github)),
-                pr_status == "merged",
-                true,
-                deps.app_handle
-                    .as_ref()
-                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
-                pr_status,
-            )
-            .await;
-        }
+        reconcile_strict_ticket_cycle_terminal(&deps, &workspace, pr_status).await;
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Some(Arc::clone(&deps.plan_branch_repo)),
+            deps.chat_service.as_ref().map(Arc::clone),
+            &conversation_id,
+            &project,
+            TerminalAgentWorkspaceCause::from_pr_status(pr_status),
+        )
+        .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
             pr_number: target.pr_number,
             pr_status: pr_status.to_string(),
@@ -485,7 +486,6 @@ async fn resolve_pr_supervision_recovery_target(
                 }
             };
             Ok(Ok(AgentWorkspacePrSupervisionRecoveryTarget {
-                kind: AgentWorkspacePrSupervisionRecoveryTargetKind::DirectWorkspace,
                 pr_number,
                 pr_url: workspace.publication_pr_url.clone(),
                 worktree_path,
@@ -534,7 +534,6 @@ async fn resolve_pr_supervision_recovery_target(
                 }
             };
             Ok(Ok(AgentWorkspacePrSupervisionRecoveryTarget {
-                kind: AgentWorkspacePrSupervisionRecoveryTargetKind::IdeationPlan,
                 pr_number,
                 pr_url: plan_branch.pr_url.clone(),
                 worktree_path,
@@ -572,7 +571,6 @@ async fn update_terminal_pr_recovery_state(
                 Some(terminal_pr_recovery_summary(pr_status)),
             )
             .await?;
-        return Ok(());
     }
 
     deps.workspace_repo

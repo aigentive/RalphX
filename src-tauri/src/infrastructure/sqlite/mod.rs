@@ -11,8 +11,11 @@ pub mod sqlite_agent_conversation_issue_repo;
 pub mod sqlite_agent_conversation_jira_issue_repo;
 pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
+#[cfg(test)]
+mod sqlite_agent_conversation_workspace_repo_tests;
 pub mod sqlite_agent_lane_settings_repo;
 pub mod sqlite_manual_role_default_repo;
+pub mod sqlite_mcp_policy_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
@@ -39,6 +42,9 @@ pub mod sqlite_chat_attachment_repo;
 #[cfg(test)]
 mod sqlite_chat_attachment_repo_tests;
 pub mod sqlite_chat_conversation_repo;
+pub mod sqlite_conversation_folder_reference_repo;
+#[cfg(test)]
+mod sqlite_conversation_folder_reference_repo_tests;
 #[cfg(test)]
 mod sqlite_chat_conversation_repo_tests;
 pub mod sqlite_persona_repo;
@@ -144,6 +150,10 @@ pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLine
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
 pub use sqlite_manual_role_default_repo::SqliteManualRoleDefaultRepository;
+pub use sqlite_mcp_policy_repo::SqliteMcpPolicyRepository;
+
+#[cfg(test)]
+mod sqlite_mcp_policy_repo_tests;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
 pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
 pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsRepository;
@@ -159,6 +169,7 @@ pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSe
 pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
 pub use sqlite_branch_update_repo::SqliteBranchUpdateRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
+pub use sqlite_conversation_folder_reference_repo::SqliteConversationFolderReferenceRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
 pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;

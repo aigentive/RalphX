@@ -1,7 +1,9 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
-use crate::domain::entities::{AgentRunAttribution, AgentRunUsage, IdeationSessionId};
+use crate::domain::entities::{
+    AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
+};
 use crate::testing::SqliteTestDb;
 use std::collections::HashSet;
 
@@ -379,6 +381,73 @@ async fn persona_run_attribution_stays_null_when_no_persona_is_set() {
 }
 
 #[tokio::test]
+async fn complete_if_running_never_resurrects_terminal_or_missing_runs() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let running = AgentRun::new(conversation.id);
+    let running_id = running.id;
+    repo.create(running).await.unwrap();
+
+    assert!(repo.complete_if_running(&running_id).await.unwrap());
+    assert!(!repo.complete_if_running(&running_id).await.unwrap());
+
+    let mut cancelled = AgentRun::new(conversation.id);
+    cancelled.status = AgentRunStatus::Cancelled;
+    let cancelled_id = cancelled.id;
+    repo.create(cancelled).await.unwrap();
+    assert!(!repo.complete_if_running(&cancelled_id).await.unwrap());
+    assert_eq!(
+        repo.get_by_id(&cancelled_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Cancelled
+    );
+    assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+}
+
+#[tokio::test]
+async fn active_action_query_ignores_detached_conversation() {
+    let (db, repo) = setup_repo();
+    let owner = db.seed_ideation_conversation();
+    let detached = db.seed_ideation_conversation();
+    let mut owner_run = AgentRun::new(owner.id);
+    owner_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    owner_run.action_context_id = Some("session-1".to_string());
+    owner_run.action_target_id = Some("artifact-1".to_string());
+    let owner_id = owner_run.id;
+    repo.create(owner_run).await.unwrap();
+
+    let mut detached_run = AgentRun::new(detached.id);
+    detached_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    detached_run.action_context_id = Some("session-1".to_string());
+    detached_run.action_target_id = Some("artifact-1".to_string());
+    detached_run.started_at = Utc::now() + chrono::Duration::seconds(1);
+    repo.create(detached_run).await.unwrap();
+
+    let found = repo
+        .get_active_action(
+            &owner.id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("owner action");
+    assert_eq!(found.id, owner_id);
+
+    let latest = repo
+        .get_latest_action(
+            &owner.id,
+            AgentRunActionKind::VerifyPlan,
+            "session-1",
+            "artifact-1",
+        )
+        .await
+        .unwrap()
+        .expect("latest owner action");
+    assert_eq!(latest.id, owner_id);
+}
+
+#[tokio::test]
 async fn test_get_by_id_not_found() {
     let (_db, repo) = setup_repo();
 
@@ -483,6 +552,46 @@ async fn test_get_latest_for_conversation_empty() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn test_latest_completed_provider_session_ignores_newer_failed_and_foreign_runs() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let mut owning_run = AgentRun::new(conv.id);
+    owning_run.status = AgentRunStatus::Completed;
+    owning_run.started_at = Utc::now() - chrono::Duration::minutes(4);
+    owning_run.harness = Some(AgentHarnessKind::Codex);
+    owning_run.provider_session_id = Some("codex-session".to_string());
+    owning_run.effective_model_id = Some("gpt-5.6-sol".to_string());
+    let owning_id = owning_run.id;
+    repo.create(owning_run).await.unwrap();
+
+    let mut failed = AgentRun::new(conv.id);
+    failed.status = AgentRunStatus::Failed;
+    failed.started_at = Utc::now();
+    failed.harness = Some(AgentHarnessKind::Codex);
+    repo.create(failed).await.unwrap();
+
+    let mut foreign = AgentRun::new(conv.id);
+    foreign.status = AgentRunStatus::Completed;
+    foreign.started_at = Utc::now() - chrono::Duration::minutes(1);
+    foreign.harness = Some(AgentHarnessKind::Claude);
+    foreign.provider_session_id = Some("codex-session".to_string());
+    repo.create(foreign).await.unwrap();
+
+    let found = repo
+        .get_latest_completed_for_provider_session(
+            &conv.id,
+            AgentHarnessKind::Codex,
+            "codex-session",
+        )
+        .await
+        .unwrap()
+        .expect("owning completed provider run");
+
+    assert_eq!(found.id, owning_id);
+    assert_eq!(found.effective_model_id.as_deref(), Some("gpt-5.6-sol"));
 }
 
 #[tokio::test]

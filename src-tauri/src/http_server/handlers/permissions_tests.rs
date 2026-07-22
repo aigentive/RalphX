@@ -8,12 +8,14 @@ use chrono::{DateTime, Utc};
 
 use super::{expire_permission_and_emit, request_permission, resolve_permission};
 use crate::application::app_state::AppState;
+use crate::application::interactive_notification_producer::permission_notification_key;
 use crate::application::permission_state::{PendingPermissionInfo, PERMISSION_RESOLVED_EVENT};
 use crate::application::{TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::Notification;
 use crate::domain::entities::{
-    ChatConversation, NotificationCategory, NotificationTargetKind, ProjectId,
+    ChatConversation, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::error::{AppError, AppResult};
@@ -97,6 +99,14 @@ impl NotificationRepository for FailingNotificationRepository {
         Err(AppError::Database("injected notification failure".into()))
     }
 
+    async fn mark_read_by_dedupe_key(
+        &self,
+        _dedupe_key: &str,
+        _read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
     async fn mark_all_read(
         &self,
         _project_id: Option<&str>,
@@ -131,11 +141,16 @@ async fn request_permission_records_one_deduplicated_notification_without_event_
         context_id: Some(conversation.id.to_string()),
     };
 
-    let first = request_permission(State(state.clone()), Json(request))
-        .await
-        .0;
+    let first = request_permission(
+        State(state.clone()),
+        axum::http::HeaderMap::new(),
+        Json(request),
+    )
+    .await
+    .0;
     let second = request_permission(
         State(state.clone()),
+        axum::http::HeaderMap::new(),
         Json(PermissionRequestInput {
             request_id: Some(first.request_id.clone()),
             tool_name: "Bash".into(),
@@ -173,6 +188,27 @@ async fn request_permission_records_one_deduplicated_notification_without_event_
         row.body.as_deref(),
         Some("worker wants to run Bash on “Repository setup” — expires in 5m")
     );
+
+    assert_eq!(
+        resolve_permission(
+            State(state.clone()),
+            Json(ResolvePermissionInput {
+                request_id: first.request_id,
+                decision: "allow".into(),
+                message: None,
+            }),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let settled = state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications;
+    assert!(settled[0].read_at.is_some());
 }
 
 #[tokio::test]
@@ -183,6 +219,7 @@ async fn request_permission_returns_after_notification_repository_failure() {
 
     let response = request_permission(
         State(state.clone()),
+        axum::http::HeaderMap::new(),
         Json(PermissionRequestInput {
             request_id: Some("permission-failure".into()),
             tool_name: "Bash".into(),
@@ -327,12 +364,33 @@ async fn test_expire_permission_and_emit_channel_timeout() {
 #[tokio::test]
 async fn test_expire_permission_and_emit_unknown_request_id() {
     let state = make_test_state();
+    state
+        .app_state
+        .notification_service()
+        .record(NewNotification {
+            project_id: None,
+            category: NotificationCategory::PermissionRequest,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Permission needed".into(),
+            body: None,
+            target: NotificationTarget::none(),
+            dedupe_key: Some(permission_notification_key("nonexistent")),
+        })
+        .await;
 
     let result =
         expire_permission_and_emit(&state, "nonexistent", StatusCode::REQUEST_TIMEOUT).await;
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), StatusCode::REQUEST_TIMEOUT);
+    let notifications = state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications;
+    assert!(notifications[0].read_at.is_none());
 }
 
 /// Verify that `permission:expired` event carries `{ request_id }` in its payload.

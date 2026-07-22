@@ -8,9 +8,6 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 
-export const BULK_ARCHIVE_BLOCKED_REASON =
-  "Archive individually to manage the pull request";
-
 export interface BulkArchiveConversationTarget {
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
@@ -19,6 +16,8 @@ export interface BulkArchiveConversationTarget {
 export interface BulkArchiveConversationsResult {
   archivedConversationIds: string[];
   failedConversationIds: string[];
+  cleanupPendingConversationIds: string[];
+  cleanupUnsafeConversationIds: string[];
 }
 
 export type BulkArchiveConversationHandler = (
@@ -44,10 +43,7 @@ export function hasPotentialOpenPullRequest(
 export function isBulkArchiveConversationEligible(
   target: BulkArchiveConversationTarget
 ): boolean {
-  return (
-    !target.conversation.archivedAt &&
-    !hasPotentialOpenPullRequest(target.workspace)
-  );
+  return !target.conversation.archivedAt;
 }
 
 export function toBulkArchiveConversationTarget(

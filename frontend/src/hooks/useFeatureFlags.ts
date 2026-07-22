@@ -29,6 +29,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   agentPersonas: false,
   agentConversationTeam: false,
   agentConversationWorkflows: false,
+  standaloneConversations: false,
   agentConversationAutopilot: false,
 };
 

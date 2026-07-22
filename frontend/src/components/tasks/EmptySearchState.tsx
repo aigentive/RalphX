@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 
 interface EmptySearchStateProps {
   searchQuery: string;
-  onCreateTask: () => void;
+  onCreateTask?: () => void;
   onClearSearch: () => void;
   showArchived: boolean;
 }
@@ -29,9 +29,11 @@ export function EmptySearchState({
 
       {/* Buttons */}
       <div className="flex gap-3">
-        <Button onClick={onCreateTask} variant="default">
-          + Create "{searchQuery}"
-        </Button>
+        {onCreateTask && (
+          <Button onClick={onCreateTask} variant="default">
+            + Create "{searchQuery}"
+          </Button>
+        )}
         <Button onClick={onClearSearch} variant="outline">
           Clear Search
         </Button>

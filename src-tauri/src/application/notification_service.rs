@@ -370,6 +370,13 @@ impl NotificationService {
         Arc::clone(&self.repo)
     }
     pub async fn record(&self, input: NewNotification) {
+        if let Err(error) = self.record_result(input).await {
+            tracing::warn!(error = %error, "Failed to record notification");
+        }
+    }
+    /// Records a durable notification and reports whether a new row was inserted.
+    /// A deduplicated row is still a successful durable outcome.
+    pub async fn record_result(&self, input: NewNotification) -> AppResult<bool> {
         let notification = input.into_notification(Utc::now());
         match self.repo.create_with_dedupe(notification.clone()).await {
             Ok(true) => {
@@ -377,11 +384,13 @@ impl NotificationService {
                     tracing::warn!(error = %error, notification_id = %notification.id, "Failed to emit notification:created");
                 }
                 self.dispatch_desktop(&notification).await;
+                Ok(true)
             }
             Ok(false) => {
-                tracing::debug!(dedupe_key = ?notification.dedupe_key, "Notification deduplicated")
+                tracing::debug!(dedupe_key = ?notification.dedupe_key, "Notification deduplicated");
+                Ok(false)
             }
-            Err(error) => tracing::warn!(error = %error, "Failed to record notification"),
+            Err(error) => Err(error),
         }
     }
     pub async fn record_ephemeral(&self, input: NewNotification) {
@@ -400,6 +409,24 @@ impl NotificationService {
             Err(error) => return Err(error),
         }
         Ok(())
+    }
+    /// Best-effort settlement after workflow authority commits.
+    pub async fn resolve_workflow_notification(&self, dedupe_key: &str) {
+        match self
+            .repo
+            .mark_read_by_dedupe_key(dedupe_key, Utc::now())
+            .await
+        {
+            Ok(Some(notification)) => {
+                if let Err(error) = self.emitter.emit_updated(Some(&notification)) {
+                    tracing::warn!(error = %error, notification_id = %notification.id, dedupe_key, "Failed to emit workflow notification settlement");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(error = %error, dedupe_key, "Failed to settle workflow notification")
+            }
+        }
     }
     pub async fn mark_all_read(&self, project_id: Option<&str>) -> AppResult<()> {
         match self.repo.mark_all_read(project_id, Utc::now()).await {

@@ -29,12 +29,14 @@
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
-        AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-        ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
-        Project, ProjectId, TaskId,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
+        ProjectId, TaskId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
+    use crate::domain::services::github_generated_markdown::RALPHX_GENERATED_FOOTER;
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
         PrSyncState,
@@ -73,6 +75,74 @@
             team_service,
             delegation_service: Default::default(),
         }
+    }
+
+    fn open_review_pr_health() -> PrHealth {
+        PrHealth {
+            sync_state: PrSyncState {
+                status: PrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: false,
+                head_ref_name: "feature/review-workflow".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: Some("head-sha".to_string()),
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        }
+    }
+
+    async fn pr_review_submission_context() -> (
+        Arc<AppState>,
+        HttpServerState,
+        ChatConversationId,
+        Arc<MockGithubService>,
+    ) {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 411,
+            url: Some("https://github.com/mock/project/pull/411".to_string()),
+            title: Some("Fix review workflow".to_string()),
+            head_ref_name: "feature/review-workflow".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("head-sha".to_string()),
+        });
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .unwrap();
+
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            conversation_id.clone(),
+            workspace.project_id,
+            411,
+            Some("head-sha".to_string()),
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+        monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1"));
+        monitor.review_artifact_head_sha = Some("head-sha".to_string());
+        monitor.review_artifact_version = Some(1);
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let state = test_http_state(Arc::clone(&app_state));
+        (app_state, state, conversation_id, github)
     }
 
     struct RecordingWorkspaceReviewStarter {
@@ -129,6 +199,10 @@
                         goal_context: AgentWorkspaceReviewGoalContext::default(),
                         is_current: false,
                         is_outdated: false,
+                        review_artifact_is_current: false,
+                        review_artifact_is_outdated: false,
+                        can_mutate_review_state: false,
+                        review_runtime_state: AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity,
                         should_show_tab: true,
                     },
                     started: true,
@@ -279,6 +353,7 @@
                     status: "modified".to_string(),
                     sources: vec!["committed".to_string()],
                 }],
+                changed_files_truncated: false,
                 hunk_anchors: vec![
                     crate::application::agent_workspace_review::AgentWorkspaceReviewHunkAnchor {
                         path: "src/lib.rs".to_string(),
@@ -290,6 +365,7 @@
                         new_lines: 2,
                     },
                 ],
+                hunk_anchors_truncated: false,
                 patch_excerpt: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
                 patch_excerpt_truncated: false,
                 notes: vec![],
@@ -420,6 +496,7 @@
             review_packet: AgentWorkspaceReviewPacket {
                 summary: AgentWorkspaceReviewDiffSummary::default(),
                 changed_files: Vec::new(),
+                changed_files_truncated: false,
                 hunk_anchors: vec![AgentWorkspaceReviewHunkAnchor {
                     path: "src/lib.rs".to_string(),
                     source: "committed".to_string(),
@@ -429,6 +506,7 @@
                     new_start: 1,
                     new_lines: 2,
                 }],
+                hunk_anchors_truncated: false,
                 patch_excerpt: String::new(),
                 patch_excerpt_truncated: false,
                 notes: Vec::new(),
@@ -700,6 +778,78 @@
             "feature/pr-description".to_string(),
             "/tmp/pr-description-worktree".to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn review_pr_rejects_fixer_context_and_completion_before_github_reads() {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 267,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            title: Some("External PR".to_string()),
+            head_ref_name: "external/head".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("external-head".to_string()),
+        });
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.pr_autofix_enabled = true;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        let original = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let context_error = get_agent_workspace_pr_fix_context(
+            State(state.clone()),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect_err("Review PR fixer context should fail closed");
+        let completion_error = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Should never publish".to_string(),
+                blocker: None,
+            }),
+        )
+        .await
+        .expect_err("Review PR fixer completion should fail closed");
+
+        assert_eq!(context_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(completion_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(github.state().fetch_pr_health_calls, 0);
+        assert_eq!(github.state().check_pr_status_calls, 0);
+        assert_eq!(github.state().push_branch_calls, 0);
+        assert_eq!(
+            app_state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("workspace lookup should succeed"),
+            Some(original)
+        );
+        assert!(app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list")
+            .is_empty());
     }
 
     fn test_workspace_review_target() -> AgentWorkspaceReviewTarget {
@@ -1095,25 +1245,137 @@
     }
 
     #[tokio::test]
+    async fn pr_review_submit_signs_every_summary_review_event_without_mutating_source_body() {
+        for (action_kind, event) in [
+            (
+                AgentWorkspacePrReviewActionKind::RequestChanges,
+                PrReviewSubmissionEvent::RequestChanges,
+            ),
+            (
+                AgentWorkspacePrReviewActionKind::Approve,
+                PrReviewSubmissionEvent::Approve,
+            ),
+            (
+                AgentWorkspacePrReviewActionKind::Comment,
+                PrReviewSubmissionEvent::Comment,
+            ),
+        ] {
+            let (app_state, state, conversation_id, github) =
+                pr_review_submission_context().await;
+            github.will_submit_pr_review(format!("review-{event}"), None);
+            let source_body = "Agent-authored review body.";
+            let action = app_state
+                .agent_conversation_workspace_repo
+                .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+                    conversation_id.clone(),
+                    411,
+                    "head-sha".to_string(),
+                    action_kind,
+                    "Review summary".to_string(),
+                    source_body.to_string(),
+                    None,
+                    Some("run-1".to_string()),
+                ))
+                .await
+                .unwrap();
+
+            let Json(response) = submit_agent_workspace_pr_review_action(
+                State(state),
+                Path((conversation_id.to_string(), action.id.clone())),
+                Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(response.action.status, "submitted");
+            assert_eq!(response.action.review_body, source_body);
+            let saved_action = app_state
+                .agent_conversation_workspace_repo
+                .get_pr_review_action(&action.id)
+                .await
+                .unwrap()
+                .expect("submitted action should remain stored");
+            assert_eq!(saved_action.review_body, source_body);
+            assert_eq!(saved_action.status, AgentWorkspacePrReviewActionStatus::Submitted);
+            assert_eq!(
+                github
+                    .state()
+                    .last_submit_pr_review_args
+                    .as_ref()
+                    .map(|(pr_number, captured_event, body)| {
+                        (*pr_number, *captured_event, body.clone())
+                    }),
+                Some((
+                    411,
+                    event,
+                    format!("{source_body}\n\n{RALPHX_GENERATED_FOOTER}")
+                ))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_approved_pr_review_uses_the_signed_submission_path() {
+        let (app_state, state, conversation_id, github) = pr_review_submission_context().await;
+        github.will_submit_pr_review("auto-review", None);
+        let mut monitor = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .expect("monitor should exist");
+        monitor.last_review_run_id = Some("run-auto".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .unwrap();
+        app_state
+            .agent_conversation_workspace_repo
+            .mark_pr_review_first_action_resolved(&conversation_id)
+            .await
+            .unwrap();
+        // Proposal consumes the configured health response; automatic signed submission then
+        // falls back to the configured sync-state response for its separate head check.
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
+        github.state().check_pr_sync_state_result = Some(Ok(open_review_pr_health().sync_state));
+
+        let Json(response) = propose_agent_workspace_pr_review_action(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(ProposeAgentWorkspacePrReviewActionRequest {
+                head_sha: "head-sha".to_string(),
+                proposed_action: "approve".to_string(),
+                summary: "No blocking findings".to_string(),
+                review_body: "Automated review passed.".to_string(),
+                findings_json: None,
+                created_by_run_id: Some("run-auto".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.action.status, "submitted");
+        assert_eq!(response.action.review_body, "Automated review passed.");
+        assert_eq!(
+            github
+                .state()
+                .last_submit_pr_review_args
+                .as_ref()
+                .map(|(pr_number, event, body)| (*pr_number, *event, body.clone())),
+            Some((
+                411,
+                PrReviewSubmissionEvent::Approve,
+                format!("Automated review passed.\n\n{RALPHX_GENERATED_FOOTER}")
+            ))
+        );
+    }
+
+    #[tokio::test]
     async fn failed_pr_review_submit_keeps_action_pending_for_retry() {
         let mut app_state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
-        github.state().fetch_pr_health_result = Some(Ok(PrHealth {
-            sync_state: PrSyncState {
-                status: PrStatus::Open,
-                merge_state_status: None,
-                mergeable: None,
-                is_draft: false,
-                head_ref_name: "feature/review-workflow".to_string(),
-                base_ref_name: "main".to_string(),
-                head_ref_oid: Some("head-sha".to_string()),
-                base_ref_oid: None,
-            },
-            review_decision: None,
-            checks: Vec::new(),
-            issue_comments: Vec::new(),
-            auto_merge_request: None,
-        }));
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
         github.will_fail_submit_pr_review("network unavailable");
         app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
         let app_state = Arc::new(app_state);
@@ -1168,7 +1430,7 @@
         let state = test_http_state(Arc::clone(&app_state));
 
         let (status, Json(body)) = submit_agent_workspace_pr_review_action(
-            State(state),
+            State(state.clone()),
             Path((conversation_id.to_string(), action.id.clone())),
             Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
         )
@@ -1220,19 +1482,47 @@
             .unwrap()
             .contains("network unavailable"));
 
-        let github_state = github.state();
-        assert_eq!(github_state.submit_pr_review_calls, 1);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.submit_pr_review_calls, 1);
+            assert_eq!(
+                github_state
+                    .last_submit_pr_review_args
+                    .as_ref()
+                    .map(|(pr_number, event, body)| (*pr_number, *event, body.clone())),
+                Some((
+                    411,
+                    PrReviewSubmissionEvent::RequestChanges,
+                    format!(
+                        "Please fix the regression before merge.\n\n{RALPHX_GENERATED_FOOTER}"
+                    )
+                ))
+            );
+        }
+
+        github.will_submit_pr_review("review-retry", None);
+        github.state().fetch_pr_health_result = Some(Ok(open_review_pr_health()));
+        let Json(response) = submit_agent_workspace_pr_review_action(
+            State(state),
+            Path((conversation_id.to_string(), action.id.clone())),
+            Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+        )
+        .await
+        .expect("retry should submit the pending action");
+
+        assert_eq!(response.action.status, "submitted");
         assert_eq!(
-            github_state
-                .last_submit_pr_review_args
-                .as_ref()
-                .map(|(pr_number, event, body)| (*pr_number, *event, body.as_str())),
-            Some((
-                411,
-                PrReviewSubmissionEvent::RequestChanges,
-                "Please fix the regression before merge."
-            ))
+            response.action.review_body,
+            "Please fix the regression before merge."
         );
+        let github_state = github.state();
+        assert_eq!(github_state.submit_pr_review_calls, 2);
+        let retry_body = &github_state
+            .last_submit_pr_review_args
+            .as_ref()
+            .expect("retry args should be captured")
+            .2;
+        assert_eq!(retry_body.matches(RALPHX_GENERATED_FOOTER).count(), 1);
     }
 
     #[tokio::test]

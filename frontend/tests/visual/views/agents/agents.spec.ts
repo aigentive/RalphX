@@ -286,6 +286,21 @@ async function setupAgentsView(page: Page) {
   await expect(page.getByTestId("agents-view")).toBeVisible();
 }
 
+async function enableStarterCapabilityFixture(page: Page) {
+  await page.evaluate(() => {
+    const queryClient = window.__queryClient;
+    if (!queryClient) {
+      throw new Error("Expected query client for capability fixture");
+    }
+    const current =
+      queryClient.getQueryData<Record<string, boolean>>(["featureFlags"]) ?? {};
+    queryClient.setQueryData(["featureFlags"], {
+      ...current,
+      agentConversationTeam: true,
+    });
+  });
+}
+
 async function seedConversationWithWorkspace(
   page: Page,
   conversation: ChatConversation,
@@ -463,11 +478,7 @@ async function selectAgentConversation(
 }
 
 async function seedPublishHistory(page: Page, conversationId: string) {
-  await page.evaluate(async (targetConversationId) => {
-    const queryClient = window.__queryClient;
-    if (!queryClient) {
-      throw new Error("Expected query client to be available");
-    }
+  const published = await page.evaluate(async (targetConversationId) => {
     const {
       mockGetAgentConversationWorkspace,
       mockListAgentConversationWorkspacePublicationEvents,
@@ -479,15 +490,137 @@ async function seedPublishHistory(page: Page, conversationId: string) {
       result.workspace ?? await mockGetAgentConversationWorkspace(targetConversationId);
     const events = await mockListAgentConversationWorkspacePublicationEvents(
       targetConversationId,
-    );
+      );
 
+    return { events, workspace };
+  }, conversationId);
+
+  await seedPublishedPrToolbarHealth(page, conversationId, published.workspace);
+  await page.evaluate(
+    ({ targetConversationId, events, workspace }) => {
+      const queryClient = window.__queryClient;
+      if (!queryClient) {
+        throw new Error("Expected query client to be available");
+      }
+      queryClient.setQueryData(
+        [
+          "agents",
+          "conversation-workspace-publication-events",
+          targetConversationId,
+        ],
+        events,
+      );
+      queryClient.setQueryData(
+        ["agents", "conversation-workspace", targetConversationId],
+        workspace,
+      );
+    },
+    {
+      targetConversationId: conversationId,
+      events: published.events,
+      workspace: published.workspace,
+    },
+  );
+}
+
+async function seedPublishedPrToolbarHealth(
+  page: Page,
+  conversationId: string,
+  publishedWorkspace?: {
+    projectId: string;
+    publicationPrNumber: number | null;
+    publicationPrUrl: string | null;
+    branchName: string;
+  },
+) {
+  await page.evaluate(
+    async ({ targetConversationId, publishedWorkspace }) => {
+      const queryClient = window.__queryClient;
+      if (!queryClient) {
+        throw new Error("Expected query client to be available");
+      }
+      const workspace =
+        publishedWorkspace ??
+        queryClient.getQueryData<{
+          projectId: string;
+          publicationPrNumber: number | null;
+          publicationPrUrl: string | null;
+          branchName: string;
+        }>(["agents", "conversation-workspace", targetConversationId]);
+      if (!workspace?.publicationPrNumber) {
+        throw new Error("Expected a published PR workspace");
+      }
+      const { prKeys } = await import("/src/hooks/usePullRequestDetail");
+      const selector = {
+        projectId: workspace.projectId,
+        prNumber: workspace.publicationPrNumber,
+      };
+      queryClient.setQueryData(
+        prKeys.detail(selector),
+        {
+          state: "loaded",
+          origin: "ownedOutbound",
+          description: {
+            number: workspace.publicationPrNumber,
+            title: "Persistent Agents workspace toolbar",
+            body: "Keep workspace identity and pull request health visible across every artifact tab.",
+            author: "ralphx",
+            createdAt: "2026-05-13T05:20:00Z",
+            url: workspace.publicationPrUrl,
+            state: "open",
+            isDraft: false,
+            headRefName: workspace.branchName,
+            baseRefName: "main",
+          },
+          checks: [
+            {
+              name: "Frontend tests",
+              status: "completed",
+              conclusion: "success",
+              detailsUrl: null,
+            },
+            {
+              name: "Native UI",
+              status: "in_progress",
+              conclusion: null,
+              detailsUrl: null,
+            },
+          ],
+          reviewSummary: {
+            reviewDecision: "APPROVED",
+            latestChangesRequestedAuthor: null,
+            latestChangesRequestedBody: null,
+            latestChangesRequestedSubmittedAt: null,
+            latestChangesRequestedComments: [],
+          },
+          issueComments: [],
+          reviewThread: [],
+          rxConversations: [],
+          linkedTickets: [],
+          sourcesUnavailable: [],
+        },
+        { updatedAt: Date.now() + 60 * 60 * 1000 },
+    );
+    },
+    { targetConversationId: conversationId, publishedWorkspace },
+  );
+}
+
+async function hydratePublishHistoryCache(page: Page, conversationId: string) {
+  await page.evaluate(async (targetConversationId) => {
+    const queryClient = window.__queryClient;
+    if (!queryClient) {
+      throw new Error("Expected query client to be available");
+    }
+    const { mockListAgentConversationWorkspacePublicationEvents } =
+      await import("/src/api-mock/chat");
+    const events =
+      await mockListAgentConversationWorkspacePublicationEvents(
+        targetConversationId,
+      );
     queryClient.setQueryData(
       ["agents", "conversation-workspace-publication-events", targetConversationId],
       events,
-    );
-    queryClient.setQueryData(
-      ["agents", "conversation-workspace", targetConversationId],
-      workspace,
     );
   }, conversationId);
 }
@@ -789,6 +922,10 @@ async function seedAgentsTaskDetailVisualState(page: Page) {
       queryClient.setQueryData(
         ["stateTransitions", mergedTaskId],
         mergedTransitions,
+      );
+      queryClient.setQueryData(
+        ["tasks", "session-history", seededProjectId, linkedSessionId],
+        { hasHistory: true, taskCount: seededTasks.length },
       );
       queryClient.setQueryData(["tasks", "list", seededProjectId], (existing: Task[] | undefined) => {
         const withoutSeeded = (existing ?? []).filter(
@@ -1186,8 +1323,13 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-start-mode-edit")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-chat")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-plan")).toBeVisible();
+    await expect(page.getByTestId("agents-start-mode-automation")).toHaveCount(0);
     await expect(page.getByTestId("agents-start-mode-ideation")).toHaveCount(0);
+    await expect(page.getByText("Draft and refine a plan before execution.")).toBeVisible();
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
+    await page.getByRole("button", { name: "Show more modes" }).click();
+    await expect(page.getByTestId("agents-start-mode-automation")).toBeVisible();
+    await expect(page.getByTestId("agents-start-mode-ideation")).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
 
@@ -1201,30 +1343,22 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("starter runtime selector exposes polished Quick and Advanced levels", async ({
+  test("starter runtime selector exposes the unified runtime and capabilities menu", async ({
     page,
   }) => {
     await setupAgentsView(page);
+    await enableStarterCapabilityFixture(page);
     await expect(page.getByTestId("agents-start-composer")).toBeVisible();
 
     await page.getByTestId("agent-composer-runtime-pill").click();
-    await expect(page.getByTestId("agent-composer-runtime-quick")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-menu")).toBeVisible();
     await expect(page.getByRole("slider", { name: "Effort" })).toBeVisible();
-    await expect(page).toHaveScreenshot("agents-runtime-selector-quick.png", {
-      fullPage: false,
-      maxDiffPixelRatio: 0.01,
-    });
-
-    await page
-      .getByRole("button", { name: "Advanced provider and model settings" })
-      .click();
-    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
-    await expect(page.getByTestId("agent-composer-runtime-quick")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Provider,/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Model,/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Effort,/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Capabilities,/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Speed,/ })).toBeVisible();
-    await expect(page).toHaveScreenshot("agents-runtime-selector-advanced.png", {
+    await expect(page).toHaveScreenshot("agents-runtime-selector-unified.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
@@ -1234,7 +1368,7 @@ test.describe("Agents View", () => {
     await modelMenuRow.hover();
     await expect(modelMenuRow).toHaveAttribute("aria-expanded", "true");
     await expect(page.getByTestId("agent-composer-runtime-model-submenu")).toBeVisible();
-    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-menu")).toBeVisible();
     await expect(page).toHaveScreenshot("agents-runtime-selector-models-cascade.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
@@ -1242,11 +1376,23 @@ test.describe("Agents View", () => {
 
     await page.getByRole("button", { name: /^Effort,/ }).hover();
     await expect(page.getByTestId("agent-composer-runtime-effort-submenu")).toBeVisible();
-    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-menu")).toBeVisible();
     await expect(page).toHaveScreenshot("agents-runtime-selector-effort-cascade.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+
+    await page.getByRole("button", { name: /^Capabilities,/ }).hover();
+    await expect(
+      page.getByTestId("agent-composer-runtime-capability-submenu"),
+    ).toBeVisible();
+    await expect(page).toHaveScreenshot(
+      "agents-runtime-selector-capabilities-cascade.png",
+      {
+        fullPage: false,
+        maxDiffPixelRatio: 0.01,
+      },
+    );
 
     await page.getByRole("button", { name: /^Speed,/ }).hover();
     await expect(page.getByTestId("agent-composer-runtime-speed-submenu")).toBeVisible();
@@ -1264,18 +1410,67 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
     await expect(page.getByTestId("integrated-chat-messages")).toBeVisible();
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
+    await seedPublishHistory(page, editConversationId);
     await page.getByTestId("agents-publish-workspace").click();
     await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
 
-    await seedPublishHistory(page, editConversationId);
+    await hydratePublishHistoryCache(page, editConversationId);
     await expect(page.getByTestId("agents-publish-events")).toBeVisible();
     await page.getByTestId("agents-publish-history-toggle").click();
     await expect(page.getByTestId("agents-publish-event-published")).toBeVisible();
     await stabilizePublishHistoryTimestamps(page, editConversationId);
     await expect(page.getByText("Published / May 13, 5:20 AM")).toBeVisible();
+    await expect(page.getByTestId("agents-workspace-toolbar")).toBeVisible();
+    await expect(page.getByTestId("pr-status-strip")).toBeVisible();
+    await expect(page.getByText("1 passed")).toBeVisible();
+    await expect(page.getByText("1 pending")).toBeVisible();
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+
+    await page.getByTestId("agents-artifact-tab-pr").click();
+    const prContent = page.getByTestId("agents-artifact-content-pr");
+    await expect(prContent).toBeVisible();
+    await expect(
+      prContent.getByRole("heading", {
+        name: "Persistent Agents workspace toolbar",
+      }),
+    ).toBeVisible();
+    await expect(
+      prContent.getByText("Could not load pull request details."),
+    ).toHaveCount(0);
+    await expect(prContent.getByTestId("pr-status-strip")).toHaveCount(0);
+    await expect(page.getByTestId("pr-status-strip")).toBeVisible();
+    await expect(page.getByTestId("agents-workspace-toolbar")).toBeVisible();
+    const prQueryState = await page.evaluate(async (seededProjectId) => {
+      const queryClient = window.__queryClient;
+      if (!queryClient) {
+        throw new Error("Expected query client to be available");
+      }
+      const { prKeys } = await import("/src/hooks/usePullRequestDetail");
+      const state = queryClient.getQueryState(
+        prKeys.detail({ projectId: seededProjectId, prNumber: 42 }),
+      );
+      return {
+        fetchStatus: state?.fetchStatus,
+        isInvalidated: state?.isInvalidated,
+        status: state?.status,
+      };
+    }, projectId);
+    expect(prQueryState).toEqual({
+      fetchStatus: "idle",
+      isInvalidated: false,
+      status: "success",
+    });
+    await page.waitForTimeout(1_000);
+    await expect(
+      prContent.getByText("Could not load pull request details."),
+    ).toHaveCount(0);
+    await expect(page.getByText("PR health unavailable")).toHaveCount(0);
+    await expect(page).toHaveScreenshot("agents-pr-tab-workspace-toolbar.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
@@ -1430,8 +1625,17 @@ test.describe("Agents View", () => {
     await seedAgentsScenario(page);
     await selectAgentConversation(page, editConversationId);
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
+    await seedPublishHistory(page, editConversationId);
     await page.getByTestId("agents-publish-workspace").click();
     await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
+
+    const toolbar = page.getByTestId("agents-workspace-toolbar");
+    await expect(toolbar).toBeVisible();
+    await expect(page.getByTestId("pr-status-strip")).toBeVisible();
+    const hasHorizontalOverflow = await toolbar.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
 
     const submitButton = page.getByTestId("agents-conversation-submit");
     await expect(submitButton).toBeVisible();

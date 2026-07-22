@@ -522,10 +522,23 @@ export interface ActiveStreamingTaskResponse {
  */
 export interface ConversationActiveStateResponse {
   is_active: boolean;
+  runId?: string;
   tool_calls: unknown[];
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
 }
+
+const ConversationActiveStateResponseSchema = z.object({
+  is_active: z.boolean(),
+  run_id: z.string().min(1).optional(),
+  tool_calls: z.array(z.unknown()).default([]),
+  streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
+    if (value == null || typeof value !== "object") return false;
+    const record = value as Record<string, unknown>;
+    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+  })).default([]),
+  partial_text: z.string().default(""),
+});
 
 /**
  * Fetch the active streaming state for a conversation.
@@ -544,7 +557,14 @@ export async function getConversationActiveState(
   if (!res.ok) {
     throw new Error(`Failed to get conversation active state: ${res.status}`);
   }
-  return res.json() as Promise<ConversationActiveStateResponse>;
+  const parsed = ConversationActiveStateResponseSchema.parse(await res.json());
+  return {
+    is_active: parsed.is_active,
+    ...(parsed.run_id ? { runId: parsed.run_id } : {}),
+    tool_calls: parsed.tool_calls,
+    streaming_tasks: parsed.streaming_tasks,
+    partial_text: parsed.partial_text,
+  };
 }
 
 // ============================================================================
@@ -663,6 +683,7 @@ const ChatConversationResponseSchema = z.object({
   bound_agent_name: z.string().nullable().optional(),
   persona_id: z.string().nullable().optional(),
   builder_draft_id: z.string().nullable().optional(),
+  builder_result_persona_id: z.string().nullable().optional(),
   last_run_persona_run_id: z.string().nullable().optional(),
   last_run_persona_id: z.string().nullable().optional(),
   last_run_persona_slug: z.string().nullable().optional(),
@@ -750,6 +771,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     boundAgentName: raw.bound_agent_name ?? null,
     personaId: raw.persona_id ?? null,
     builderDraftId: raw.builder_draft_id ?? null,
+    builderResultPersonaId: raw.builder_result_persona_id ?? null,
     lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
     lastRunPersonaId: raw.last_run_persona_id ?? null,
     lastRunPersonaSlug: raw.last_run_persona_slug ?? null,
@@ -1535,17 +1557,19 @@ export async function getConversationStats(
  */
 export async function createConversation(
   contextType: ContextType,
-  contextId: string,
+  contextId?: string | null,
   title?: string,
+  mode?: AgentConversationMode,
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "create_agent_conversation",
     {
       input: {
         contextType,
-        contextId,
+        ...(contextId ? { contextId } : {}),
         ...(title !== undefined &&
           title.trim().length > 0 && { title: title.trim() }),
+        ...(mode !== undefined && { mode }),
       },
     },
     ChatConversationResponseSchema,
@@ -1582,16 +1606,58 @@ export async function spawnConversationSessionNamer(
   });
 }
 
+const TerminalCleanupClaimSchema = z.enum([
+  "claimed",
+  "already_in_progress",
+  "already_cleaned",
+  "not_claimed",
+]);
+
+const TerminalLocalCleanupResultSchema = z.enum([
+  "cleaned",
+  "pending",
+  "failed_unsafe",
+  "failed_operational",
+]);
+
+const ArchiveConversationResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  cleanup: z.object({
+    runtime_shutdown_succeeded: z.boolean(),
+    cleanup_claim: TerminalCleanupClaimSchema,
+    local_cleanup: TerminalLocalCleanupResultSchema,
+    message: z.string().nullable(),
+  }),
+});
+
+export interface ArchiveConversationResult {
+  conversation: ChatConversation;
+  cleanup: {
+    runtimeShutdownSucceeded: boolean;
+    cleanupClaim: z.infer<typeof TerminalCleanupClaimSchema>;
+    localCleanup: z.infer<typeof TerminalLocalCleanupResultSchema>;
+    message: string | null;
+  };
+}
+
 export async function archiveConversation(
   conversationId: string,
   options: { closePullRequest: boolean },
-): Promise<ChatConversation> {
+): Promise<ArchiveConversationResult> {
   const raw = await typedInvoke(
     "archive_agent_conversation",
     { conversationId, closePullRequest: options.closePullRequest },
-    ChatConversationResponseSchema,
+    ArchiveConversationResponseSchema,
   );
-  return transformConversation(raw);
+  return {
+    conversation: transformConversation(raw.conversation),
+    cleanup: {
+      runtimeShutdownSucceeded: raw.cleanup.runtime_shutdown_succeeded,
+      cleanupClaim: raw.cleanup.cleanup_claim,
+      localCleanup: raw.cleanup.local_cleanup,
+      message: raw.cleanup.message,
+    },
+  };
 }
 
 export async function restoreConversation(
@@ -1797,15 +1863,6 @@ export interface ComposerIntegrationReference {
   includeTranscript?: boolean;
 }
 
-export interface ComposerArtifactReference {
-  artifactId: string;
-  kind: string;
-  title?: string;
-  sessionId?: string;
-  version?: number;
-  status?: string;
-}
-
 export interface ComposerSelectionSnapshot {
   sourceType: "artifact" | "ticket" | "note";
   sourceKind: "plan" | "jira" | "linear" | "clickup" | "granola";
@@ -1818,6 +1875,42 @@ export interface ComposerSelectionSnapshot {
   startLine: number;
   endLine: number;
   content: string;
+}
+
+export interface ComposerArtifactReference {
+  artifactId: string;
+  kind: string;
+  title?: string;
+  sessionId?: string;
+  version?: number;
+  status?: string;
+}
+
+export type ComposerExcerptSourceKind =
+  | "plan"
+  | "review"
+  | "issue"
+  | "task"
+  | "automation_spec"
+  | "pull_request"
+  | "workspace_diff"
+  | "jira"
+  | "linear"
+  | "granola";
+
+export interface ComposerExcerptReference {
+  sourceKind: ComposerExcerptSourceKind;
+  sourceId: string;
+  sourceLabel: string;
+  title?: string;
+  excerpt: string;
+  artifactId?: string;
+  sessionId?: string;
+  version?: number;
+  url?: string;
+  filePath?: string;
+  revision?: string;
+  locator?: string;
 }
 
 export type TeamIntentStrategy = "research" | "debate" | "execution";
@@ -1852,6 +1945,7 @@ export interface SendAgentMessageOptions {
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
   composerSelectionSnapshot?: ComposerSelectionSnapshot;
+  composerExcerptReferences?: ComposerExcerptReference[];
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -1923,7 +2017,7 @@ export interface WorkspaceOpenTarget {
 }
 
 export interface StartAgentConversationInput {
-  projectId: string;
+  projectId?: string | null;
   content: string;
   conversationId?: string | null;
   parentConversationId?: string | null;
@@ -1932,6 +2026,7 @@ export interface StartAgentConversationInput {
   modelId?: string | null;
   logicalEffort?: string | null;
   personaId?: string | null;
+  sourcePersonaId?: string | null;
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
@@ -2104,6 +2199,11 @@ export type AgentWorkspacePrReviewActionStatus =
   | "failed"
   | "superseded";
 
+export type AgentWorkspacePrReviewActionHeadStatus =
+  | "current"
+  | "stale"
+  | "unverified";
+
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
   projectId: string;
@@ -2151,6 +2251,7 @@ export interface AgentWorkspacePrReviewContext {
   prNumber: number;
   prUrl: string | null;
   currentHeadSha: string | null;
+  pendingActionHeadStatus: AgentWorkspacePrReviewActionHeadStatus | null;
   health: unknown | null;
   reviewFeedback: unknown | null;
   monitor: AgentWorkspacePrReviewMonitor | null;
@@ -2223,10 +2324,21 @@ export interface AgentWorkspaceReviewContext {
   events: AgentConversationWorkspacePublicationEvent[];
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
 }
+
+export type AgentWorkspaceReviewRuntimeState =
+  | "active_owned"
+  | "terminal"
+  | "missing_runtime_identity"
+  | "malformed_runtime_identity"
+  | "stale_runtime";
 
 export interface AgentWorkspaceReviewStartConfirmation {
   targetScope: AgentWorkspaceReviewTargetScope | null;
@@ -2252,6 +2364,10 @@ export interface StartAgentWorkspaceReviewResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
@@ -2264,6 +2380,10 @@ export interface StartAgentWorkspaceReviewFixerResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  reviewArtifactIsCurrent: boolean;
+  reviewArtifactIsOutdated: boolean;
+  canMutateReviewState: boolean;
+  reviewRuntimeState: AgentWorkspaceReviewRuntimeState;
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
@@ -2497,6 +2617,9 @@ const AgentWorkspacePrReviewContextResponseSchema = z.object({
   pr_number: z.number(),
   pr_url: z.string().nullable(),
   current_head_sha: z.string().nullable(),
+  pending_action_head_status: z
+    .enum(["current", "stale", "unverified"])
+    .nullable(),
   health: z.unknown().nullable(),
   review_feedback: z.unknown().nullable(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema.nullable(),
@@ -2603,6 +2726,19 @@ const AgentWorkspaceReviewContextResponseSchema = z.object({
   events: AgentConversationWorkspacePublicationEventListResponseSchema,
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2611,6 +2747,19 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2644,6 +2793,19 @@ const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  review_artifact_is_current: z.boolean().optional(),
+  review_artifact_is_outdated: z.boolean().optional(),
+  can_mutate_review_state: z.boolean().optional().default(false),
+  review_runtime_state: z
+    .enum([
+      "active_owned",
+      "terminal",
+      "missing_runtime_identity",
+      "malformed_runtime_identity",
+      "stale_runtime",
+    ])
+    .optional()
+    .default("missing_runtime_identity"),
   is_current: z.boolean(),
   is_outdated: z.boolean(),
   should_show_tab: z.boolean(),
@@ -2863,7 +3025,7 @@ function transformAgentConversationWorkspace(
   };
 }
 
-function sourcePullRequestInvokeInput(
+export function sourcePullRequestInvokeInput(
   sourcePullRequest: AgentConversationSourcePullRequest,
 ) {
   return {
@@ -2917,7 +3079,7 @@ export function startAgentConversationInvokeInput(
   input: StartAgentConversationInput,
 ) {
   return {
-    projectId: input.projectId,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     content: input.content,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
     ...(input.providerHarness
@@ -2926,6 +3088,7 @@ export function startAgentConversationInvokeInput(
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
     ...(input.personaId ? { personaId: input.personaId } : {}),
+    ...(input.sourcePersonaId ? { sourcePersonaId: input.sourcePersonaId } : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),
@@ -3123,6 +3286,7 @@ function transformAgentWorkspacePrReviewContext(
     prNumber: raw.pr_number,
     prUrl: raw.pr_url,
     currentHeadSha: raw.current_head_sha,
+    pendingActionHeadStatus: raw.pending_action_head_status,
     health: raw.health,
     reviewFeedback: raw.review_feedback,
     monitor: raw.monitor
@@ -3214,6 +3378,11 @@ function transformAgentWorkspaceReviewContext(
     events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3227,6 +3396,11 @@ function transformStartAgentWorkspaceReviewResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3265,6 +3439,11 @@ function transformStartAgentWorkspaceReviewFixerResponse(
     success: raw.success,
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
+    reviewArtifactIsOutdated:
+      raw.review_artifact_is_outdated ?? raw.is_outdated,
+    canMutateReviewState: raw.can_mutate_review_state,
+    reviewRuntimeState: raw.review_runtime_state,
     isCurrent: raw.is_current,
     isOutdated: raw.is_outdated,
     shouldShowTab: raw.should_show_tab,
@@ -3410,6 +3589,7 @@ export async function listAgentConversationWorkspacePublicationEvents(
 
 export class AgentWorkspaceHttpError extends Error {
   readonly status: number;
+  readonly detail: string | null;
 
   constructor(status: number, statusText: string, detail: string | null) {
     super(
@@ -3417,6 +3597,7 @@ export class AgentWorkspaceHttpError extends Error {
     );
     this.name = "AgentWorkspaceHttpError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -3459,10 +3640,16 @@ export async function getAgentWorkspacePrReviewContext(
 
 export async function getAgentWorkspaceReviewContext(
   conversationId: string,
+  options: {
+    signal?: AbortSignal;
+    refreshTarget?: boolean;
+  } = {},
 ): Promise<AgentWorkspaceReviewContext> {
+  const query = options.refreshTarget ? "?refresh_target=true" : "";
   const raw = await fetchAgentWorkspaceJson(
-    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context`,
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context${query}`,
     AgentWorkspaceReviewContextResponseSchema,
+    options.signal ? { signal: options.signal } : undefined,
   );
   return transformAgentWorkspaceReviewContext(raw);
 }
@@ -4220,6 +4407,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.composerSelectionSnapshot
           ? { composerSelectionSnapshot: options.composerSelectionSnapshot }
+          : {}),
+        ...(options?.composerExcerptReferences?.length
+          ? { composerExcerptReferences: options.composerExcerptReferences }
           : {}),
       },
     },

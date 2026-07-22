@@ -34,8 +34,7 @@ export function CapabilitiesSection() {
           Agent conversation capabilities
         </h2>
         <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
-          These experimental orchestration modes are opt-in and apply across the
-          app.
+          These optional Agent capabilities are opt-in and apply across the app.
         </p>
       </div>
 

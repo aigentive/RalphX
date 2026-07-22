@@ -23,6 +23,7 @@ const personas: Persona[] = [
     content: "# Reviewer",
     status: "active",
     version: 1,
+    projectId: null,
     contentHash: "hash-reviewer",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -36,6 +37,7 @@ const personas: Persona[] = [
     content: "# Architect",
     status: "active",
     version: 1,
+    projectId: "project-current",
     contentHash: "hash-architect",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -49,6 +51,7 @@ const personas: Persona[] = [
     content: "# Draft",
     status: "draft",
     version: 1,
+    projectId: "project-current",
     contentHash: "hash-draft",
     sourceSessionId: null,
     createdAt: "2026-01-01T00:00:00Z",
@@ -65,6 +68,8 @@ function renderControl(overrides: Partial<React.ComponentProps<typeof PersonaPic
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
         <PersonaPickerControl
+          currentProjectId="project-current"
+          currentProjectName="RalphX"
           personaId={null}
           onValueChange={onValueChange}
           onOpenPersonas={onOpenPersonas}
@@ -85,16 +90,22 @@ describe("PersonaPickerControl", () => {
     } as ReturnType<typeof usePersonas>);
   });
 
-  it("uses an icon-only trigger with an accessible name and tooltip", async () => {
+  it("uses a labeled pill trigger that names the selected persona", async () => {
     renderControl({ personaId: "reviewer" });
 
     const trigger = screen.getByRole("button", { name: "Choose persona" });
-    expect(trigger).toHaveClass("h-8", "w-8");
-    expect(trigger).not.toHaveClass("w-full");
+    expect(screen.getByTestId("persona-picker-label")).toHaveTextContent(
+      "Reviewer Voice",
+    );
     await userEvent.setup().hover(trigger);
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Persona: Reviewer Voice",
     );
+  });
+
+  it("falls back to the generic pill label when nothing is selected", () => {
+    renderControl();
+    expect(screen.getByTestId("persona-picker-label")).toHaveTextContent("Persona");
   });
 
   it("lists active personas and No persona as the default choice", () => {
@@ -105,18 +116,62 @@ describe("PersonaPickerControl", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.getByRole("menuitemradio", { name: "Reviewer Voice" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: "Terse Architect" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^Terse Architect/ })).toBeInTheDocument();
     expect(screen.queryByText("Not ready")).not.toBeInTheDocument();
+  });
+
+  it("shows persona descriptions and a read-only inspect preview per row", () => {
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByText("Careful reviews")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect Reviewer Voice" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Reviewer Voice · v1" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("persona-inspect-content")).toHaveTextContent(
+      "# Reviewer",
+    );
+  });
+
+  it("groups global and current-project personas and excludes other projects", () => {
+    const otherProjectPersona: Persona = {
+      ...personas[1],
+      id: "other-project",
+      name: "Other Project Voice",
+      projectId: "project-other",
+    };
+    vi.mocked(usePersonas).mockReturnValue({
+      data: [...personas, otherProjectPersona],
+      isLoading: false,
+    } as ReturnType<typeof usePersonas>);
+
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByRole("group", { name: "Global" })).toHaveTextContent(
+      "Reviewer Voice",
+    );
+    expect(screen.getByRole("group", { name: "RalphX" })).toHaveTextContent(
+      "Terse Architect",
+    );
+    expect(screen.queryByText("Other Project Voice")).not.toBeInTheDocument();
+    expect(usePersonas).toHaveBeenCalledWith({
+      type: "globalAndProject",
+      projectId: "project-current",
+    });
   });
 
   it("changes selection and opens persona settings from the popover", () => {
     const { onOpenPersonas, onValueChange } = renderControl();
     fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     expect(onValueChange).toHaveBeenCalledWith("reviewer");
 
-    fireEvent.click(screen.getByRole("button", { name: "Manage personas" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage personas/ }));
     expect(onOpenPersonas).toHaveBeenCalledOnce();
   });
 
@@ -133,6 +188,24 @@ describe("PersonaPickerControl", () => {
     fireEvent.click(trigger);
 
     expect(screen.getByTestId("persona-picker-popover")).toBeInTheDocument();
-    expect(screen.getByTestId("persona-picker-loading")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-menu-loading")).toBeInTheDocument();
+  });
+
+  it("shows a retryable error row instead of the empty No persona option", () => {
+    const refetch = vi.fn();
+    vi.mocked(usePersonas).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof usePersonas>);
+
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByText("Couldn't load personas.")).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: "No persona" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry personas" }));
+    expect(refetch).toHaveBeenCalledOnce();
   });
 });

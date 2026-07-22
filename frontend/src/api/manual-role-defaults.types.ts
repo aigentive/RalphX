@@ -29,8 +29,10 @@ export interface ManualRoleControls {
 export interface ManualRoleCatalogEntry {
   role: string;
   displayName: string;
+  description: string;
   family: string;
   familyDisplayName: string;
+  requiresTasks: boolean;
   configured: ManualRoleDefault | null;
   effective: ManualRoleDefault | null;
   source: string | null;

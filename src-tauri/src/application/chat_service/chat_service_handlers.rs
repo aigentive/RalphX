@@ -8,7 +8,7 @@
 //   agent run failure recording, message finalization, and fallback task transitions
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -65,7 +65,10 @@ use crate::utils::secret_redactor::redact;
 fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
     matches!(
         context_type,
-        ChatContextType::Ideation | ChatContextType::Task | ChatContextType::Project
+        ChatContextType::Ideation
+            | ChatContextType::Task
+            | ChatContextType::Project
+            | ChatContextType::Standalone
     )
 }
 
@@ -245,9 +248,11 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&str>,
+    working_directory: &Path,
     mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
-) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
-    match recovery_retry_provider_decision(
+) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
+    let provider_env = match recovery_retry_provider_decision(
         app_handle,
         agent_provider_settings_repo,
         recovery_harness,
@@ -255,15 +260,37 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
     )
     .await
     {
-        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
-            provider_spawnable.apply_provider_env(&provider_env);
-            Some(provider_spawnable.spawnable)
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => Some(provider_env),
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => None,
+        Err(_) => return Ok(None),
+    };
+    let Some(handle) = app_handle.as_ref() else {
+        return Ok(None);
+    };
+    let app_state = handle.state::<AppState>();
+    let policy = match app_state
+        .mcp_policy_service()
+        .resolve_launch_policy(recovery_harness, project_id, Some(working_directory))
+        .await
+    {
+        Ok(policy) => policy,
+        Err(error) => {
+            let error = error.to_string();
+            if error.contains(crate::domain::agents::MCP_SETUP_PREFLIGHT_MARKER) {
+                return Err(error);
+            }
+            tracing::error!(
+                harness = %recovery_harness,
+                "Failed to resolve MCP policy for recovery retry"
+            );
+            return Ok(None);
         }
-        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
-            Some(provider_spawnable.spawnable)
-        }
-        Err(_) => None,
+    };
+    provider_spawnable.apply_mcp_policy(recovery_harness, &policy);
+    if let Some(provider_env) = provider_env.as_ref() {
+        provider_spawnable.apply_provider_env(provider_env);
     }
+    Ok(Some(provider_spawnable.spawnable))
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +299,8 @@ struct RecoveryRetryProviderGate<'a, R: Runtime> {
     agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
     recovery_harness: AgentHarnessKind,
     context_type: ChatContextType,
+    project_id: Option<&'a str>,
+    working_directory: &'a Path,
 }
 
 impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
@@ -280,12 +309,16 @@ impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
         agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
         recovery_harness: AgentHarnessKind,
         context_type: ChatContextType,
+        project_id: Option<&'a str>,
+        working_directory: &'a Path,
     ) -> Self {
         Self {
             app_handle,
             agent_provider_settings_repo,
             recovery_harness,
             context_type,
+            project_id,
+            working_directory,
         }
     }
 }
@@ -293,7 +326,7 @@ impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
 async fn resolve_recovery_retry_spawnable<R: Runtime>(
     retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
     provider_gate: RecoveryRetryProviderGate<'_, R>,
-) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+) -> Result<Option<crate::infrastructure::agents::claude::SpawnableCommand>, String> {
     match retry_provider_spawnable {
         Ok(provider_spawnable) => {
             recovery_retry_spawnable_with_provider_gate(
@@ -301,6 +334,8 @@ async fn resolve_recovery_retry_spawnable<R: Runtime>(
                 provider_gate.agent_provider_settings_repo,
                 provider_gate.recovery_harness,
                 provider_gate.context_type,
+                provider_gate.project_id,
+                provider_gate.working_directory,
                 provider_spawnable,
             )
             .await
@@ -311,7 +346,7 @@ async fn resolve_recovery_retry_spawnable<R: Runtime>(
                 harness = %provider_gate.recovery_harness,
                 "Failed to build recovery retry spawnable"
             );
-            None
+            Ok(None)
         }
     }
 }
@@ -337,6 +372,36 @@ impl RecoveryRetryAppRepos {
             delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
         }
     }
+}
+
+async fn recovery_retry_folder_refs_context<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    conversation: &ChatConversation,
+    project_id: Option<&str>,
+    working_directory: &Path,
+) -> Result<(Option<String>, Vec<PathBuf>), String> {
+    let Some(handle) = app_handle else {
+        tracing::warn!(
+            conversation_id = conversation.id.as_str(),
+            reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
+            "folder_refs_skipped"
+        );
+        return Ok((None, Vec::new()));
+    };
+    let app_state = handle.state::<AppState>();
+    let resolved = chat_service_context::resolve_conversation_spawn_context(
+        conversation,
+        conversation.agent_mode,
+        project_id,
+        Arc::clone(&app_state.project_repo),
+        working_directory,
+        Some(app_state.app_paths.app_data_dir()),
+        Some(app_state.app_paths.app_data_dir()),
+        Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok((resolved.folder_refs_block, resolved.folder_roots))
 }
 
 async fn resolve_recovery_retry_persona<R: Runtime>(
@@ -1367,7 +1432,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         crate::domain::entities::ChatTimelineItemStatus::Finalized,
     )
     .await;
-    super::chat_service_send_background::finalize_assistant_message(
+    let _ = super::chat_service_send_background::finalize_assistant_message(
         chat_message_repo,
         app_handle,
         event_ctx,
@@ -2498,6 +2563,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         return false;
     }
 
+    let mut terminal_error_override = None;
+
     // Classify error to detect stale session
     let classified_error = classify_agent_error(error, &conversation_id, stored_session_id);
 
@@ -2599,7 +2666,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             app_handle,
                             persona_feature_enabled,
                             conv,
-                            context_type,
+                            conv.context_type,
                             agent_name_override_set,
                         )
                         .await;
@@ -2607,25 +2674,50 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .as_ref()
                             .ok()
                             .and_then(|persona| persona.clone());
+                        let retry_folder_refs = recovery_retry_folder_refs_context(
+                            app_handle,
+                            conv,
+                            resolved_project_id.as_deref(),
+                            working_directory,
+                        )
+                        .await;
 
-                        let retry_provider_spawnable = match retry_persona {
-                            Ok(persona) => {
-                                chat_service_context::build_resume_command_for_harness(
+                        let retry_agent_name =
+                            super::chat_service_helpers::resolve_agent_with_team_mode(
+                                &context_type,
+                                None,
+                                team_mode,
+                            );
+                        let external_readiness = chat_service_context::await_required_external_mcp(
+                            app_handle.as_ref(),
+                            recovery_harness,
+                            plugin_dir,
+                            retry_agent_name,
+                            None,
+                        )
+                        .await;
+                        let retry_provider_spawnable =
+                            match (retry_persona, retry_folder_refs, external_readiness) {
+                            (Ok(persona), Ok((folder_refs_block, filesystem_read_roots)), Ok(())) => {
+                                chat_service_context::build_resume_command_for_harness_with_folder_refs(
                                     recovery_harness,
                                     cli_path,
                                     plugin_dir,
-                                    context_type,
-                                    context_id,
+                                    conv.context_type,
+                                    conv.context_id.as_str(),
                                     conv.coordination_mode,
+                                    &conversation_id.as_str(),
+                                    conv.agent_mode,
                                     msg,
                                     persona,
+                                    folder_refs_block.as_deref(),
                                     None,
                                     None,
                                     working_directory,
                                     &new_session_id,
                                     resolved_project_id.as_deref(),
-                                    &[],
-                                    if context_type == ChatContextType::Project {
+                                    &filesystem_read_roots,
+                                    if conv.context_type == ChatContextType::Project {
                                         Some(conversation_id.as_str())
                                     } else {
                                         None
@@ -2653,19 +2745,34 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 )
                                 .await
                             }
-                            Err(error) => Err(format!("Persona unavailable: {error}")),
+                            (Err(error), _, _) => Err(format!("Persona unavailable: {error}")),
+                            (_, Err(error), _) => {
+                                Err(format!("Folder references unavailable: {error}"))
+                            }
+                            (_, _, Err(error)) => Err(format!(
+                                "External MCP transport is not ready for recovery retry: {error}"
+                            )),
                         };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
                             app_handle,
                             &retry_agent_provider_settings_repo,
                             recovery_harness,
-                            context_type,
+                            conv.context_type,
+                            resolved_project_id.as_deref(),
+                            working_directory,
                         );
-                        let retry_spawnable = resolve_recovery_retry_spawnable(
+                        let retry_spawnable = match resolve_recovery_retry_spawnable(
                             retry_provider_spawnable,
                             retry_provider_gate,
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(spawnable) => spawnable,
+                            Err(error) => {
+                                terminal_error_override = Some(error);
+                                None
+                            }
+                        };
 
                         if let Some(spawnable) = retry_spawnable {
                             let persona_injected = spawnable.persona_injected();
@@ -2743,7 +2850,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             }
                         }
 
-                        tracing::error!("Failed to spawn retry after recovery");
+                        if terminal_error_override.is_none() {
+                            tracing::error!("Failed to spawn retry after recovery");
+                        }
                         // Fall through to error handling
                     }
                     Err(recovery_err) => {
@@ -2780,7 +2889,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
     // Standard error handling (reached if recovery not attempted or failed)
     // Redact secrets from error string before propagating to non-tracing sinks
-    let redacted_error = redact(error);
+    let redacted_error = redact(terminal_error_override.as_deref().unwrap_or(error));
 
     // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
     // execution_complete successfully, green validation was cached for the

@@ -116,6 +116,29 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+/// Response-only classification of whether the current runtime owns Review mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewRuntimeState {
+    ActiveOwned,
+    Terminal,
+    MissingRuntimeIdentity,
+    MalformedRuntimeIdentity,
+    StaleRuntime,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewRuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActiveOwned => write!(f, "active_owned"),
+            Self::Terminal => write!(f, "terminal"),
+            Self::MissingRuntimeIdentity => write!(f, "missing_runtime_identity"),
+            Self::MalformedRuntimeIdentity => write!(f, "malformed_runtime_identity"),
+            Self::StaleRuntime => write!(f, "stale_runtime"),
+        }
+    }
+}
+
 impl std::fmt::Display for AgentWorkspaceReviewMonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -895,6 +918,24 @@ impl AgentConversationWorkspace {
 
     pub fn is_execution_owned(&self) -> bool {
         self.linked_plan_branch_id.is_some()
+    }
+
+    /// Whether this active workspace owns a publication PR mutation surface.
+    ///
+    /// Keep this positive and shape-aware: direct Edit workspaces and linked
+    /// Ideation workspaces are the only established owned-PR mutation modes.
+    pub fn allows_owned_pr_mutation(&self) -> bool {
+        if self.status != AgentConversationWorkspaceStatus::Active {
+            return false;
+        }
+
+        match self.mode {
+            AgentConversationWorkspaceMode::Edit => self.linked_plan_branch_id.is_none(),
+            AgentConversationWorkspaceMode::Ideation => {
+                self.linked_plan_branch_id.is_some() && self.linked_ideation_session_id.is_some()
+            }
+            _ => false,
+        }
     }
 
     pub fn has_terminal_publication_pr_status(&self) -> bool {

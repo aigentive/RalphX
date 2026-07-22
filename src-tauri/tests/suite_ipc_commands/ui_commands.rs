@@ -2,9 +2,9 @@ use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ui_commands::{
     get_ui_feature_flags, update_ui_feature_flags, UpdateUiFeatureFlagsInput,
 };
-use ralphx_lib::infrastructure::agents::claude::{
+use ralphx_lib::infrastructure::agents::claude::ui_feature_flags_config;
+use ralphx_lib::infrastructure::agents::{
     agent_personas_enabled, reset_agent_personas_override_for_test, set_agent_personas_override,
-    ui_feature_flags_config,
 };
 use tauri::Manager;
 

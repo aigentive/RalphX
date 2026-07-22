@@ -43,6 +43,9 @@ use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     Persona {
         id: PersonaId::from(id),
+        artifact_id: None,
+
+        project_id: None,
         slug: id.to_string(),
         name: id.to_string(),
         description: "Gate-1 test persona".to_string(),
@@ -225,6 +228,7 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
             interactive_key.clone(),
             child.stdin.take().expect("cat stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: Some("preserved-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
@@ -307,11 +311,23 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
         provider_session_id: "preserved-provider-session".to_string(),
     });
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .expect("persist bound conversation");
+    let mut completed_run = AgentRun::new(conversation_id);
+    completed_run.complete();
+    completed_run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+    completed_run.provider_session_id = Some("preserved-provider-session".to_string());
+    completed_run.logical_model = Some("sonnet".to_string());
+    completed_run.effective_model_id = Some("sonnet".to_string());
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("seed completed runtime for preserved provider session");
 
     let mut old_process = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
@@ -326,6 +342,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
             interactive_key.clone(),
             old_process.stdin.take().expect("old process stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: Some("preserved-provider-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
@@ -335,7 +352,16 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         .await;
     state
         .persona_repo
-        .update_content(&persona.id, "new persona body", "new-hash")
+        .set_status(&persona.id, PersonaStatus::Archived)
+        .await
+        .expect("release the active slug for fixture replacement");
+    let mut updated_persona = persona.clone();
+    updated_persona.content = "new persona body".to_string();
+    updated_persona.content_hash = "new-hash".to_string();
+    updated_persona.version += 1;
+    state
+        .persona_repo
+        .create(updated_persona)
         .await
         .expect("simulate update_persona content hash bump");
 
@@ -435,6 +461,7 @@ async fn mid_turn_persona_mismatch_queues_behind_active_run() {
             interactive_key.clone(),
             child.stdin.take().expect("active process stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -511,6 +538,7 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -662,6 +690,7 @@ async fn queue_message_persona_mismatch_queues_instead_of_writing_stale_stdin() 
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -738,6 +767,7 @@ async fn queue_message_matching_persona_writes_through() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -804,6 +834,7 @@ async fn queue_message_persona_guard_flag_off_writes_through() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: None,
                 provider_session_id: None,
                 persona_id: Some("stale-persona".to_string()),
@@ -914,6 +945,7 @@ async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
             interactive_key.clone(),
             stdin,
             InteractiveProcessMetadata {
+                agent_run_id: None,
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),

@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 
+use crate::agents::AgentHarnessKind;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
@@ -42,6 +43,25 @@ pub trait AgentRunRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentRun>>;
 
+    /// Get the latest successful run that owns one provider-native session.
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|run| {
+                run.status == AgentRunStatus::Completed
+                    && run.harness == Some(harness)
+                    && run.provider_session_id.as_deref() == Some(provider_session_id)
+            })
+            .max_by_key(|run| run.started_at))
+    }
+
     /// Get the active (running) run for a conversation, if any
     async fn get_active_for_conversation(
         &self,
@@ -51,11 +71,41 @@ pub trait AgentRunRepository: Send + Sync {
     /// Get the latest run for one backend-owned action authority tuple.
     async fn get_latest_action(
         &self,
-        _action_kind: AgentRunActionKind,
-        _action_context_id: &str,
-        _action_target_id: &str,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
     ) -> AppResult<Option<AgentRun>> {
-        Ok(None)
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|run| {
+                run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at))
+    }
+
+    /// Get a running action for one exact owner conversation and action tuple.
+    async fn get_active_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        Ok(self
+            .get_by_conversation(conversation_id)
+            .await?
+            .into_iter()
+            .find(|run| {
+                run.status == AgentRunStatus::Running
+                    && run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            }))
     }
 
     /// Get all runs for a conversation, ordered by started_at DESC
@@ -90,6 +140,18 @@ pub trait AgentRunRepository: Send + Sync {
 
     /// Complete a run (set status to Completed and completed_at timestamp)
     async fn complete(&self, id: &AgentRunId) -> AppResult<()>;
+
+    /// Complete only when this caller owns the current Running -> Completed transition.
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        let Some(run) = self.get_by_id(id).await? else {
+            return Ok(false);
+        };
+        if run.status != AgentRunStatus::Running {
+            return Ok(false);
+        }
+        self.complete(id).await?;
+        Ok(true)
+    }
 
     /// Fail a run (set status to Failed, completed_at timestamp, and error message)
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()>;

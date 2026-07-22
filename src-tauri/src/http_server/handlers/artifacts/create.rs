@@ -1,15 +1,22 @@
 use super::*;
-use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
-use crate::application::NotificationContextResolver;
 
 pub async fn create_plan_artifact(
     State(state): State<HttpServerState>,
     Json(req): Json<CreatePlanArtifactRequest>,
 ) -> Result<Json<ArtifactResponse>, HttpError> {
+    create_plan_artifact_with_headers(State(state), axum::http::HeaderMap::new(), Json(req)).await
+}
+
+pub async fn create_plan_artifact_with_headers(
+    State(state): State<HttpServerState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<CreatePlanArtifactRequest>,
+) -> Result<Json<ArtifactResponse>, HttpError> {
+    let mutation_authority = resolve_artifact_mutation_authority(&headers);
     let session_id_str = req.session_id.clone();
     let title = req.title.clone();
     let content = req.content.clone();
-    let (session_id, created, project_id, session_title, is_planning_flow, notification_session) =
+    let (session_id, created, project_id, session_title, prior_artifact_id, notification_session) =
         state
             .app_state
             .db
@@ -19,8 +26,11 @@ pub async fn create_plan_artifact(
                 let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
                     .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
 
-                let is_planning_flow = session.session_flow == IdeationSessionFlow::Planning;
                 crate::http_server::helpers::assert_session_mutable(&session)?;
+                let prior_artifact_id = session
+                    .plan_artifact_id
+                    .as_ref()
+                    .map(|artifact_id| artifact_id.to_string());
 
                 let bucket_id = ArtifactBucketId::from_string("prd-library");
                 let artifact = Artifact {
@@ -54,7 +64,7 @@ pub async fn create_plan_artifact(
                     created,
                     session.project_id.clone(),
                     session_title,
-                    is_planning_flow,
+                    prior_artifact_id,
                     session,
                 ))
             })
@@ -63,53 +73,16 @@ pub async fn create_plan_artifact(
                 error!("create_plan_artifact transaction failed: {}", e);
                 map_app_err(e)
             })?;
+    let is_planning_flow = notification_session.session_flow == IdeationSessionFlow::Planning;
 
-    if is_planning_flow {
-        let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
-        let excluded = match notification_context
-            .session_is_automation_owned(&notification_session)
-            .await
-        {
-            Ok(true) => true,
-            Ok(false) => match notification_context
-                .session_has_implementation_task(&notification_session)
-                .await
-            {
-                Ok(has_task) => has_task,
-                Err(error) => {
-                    tracing::warn!(error = %error, session_id = %session_id, "Failed to check implementation ownership for plan notification");
-                    true
-                }
-            },
-            Err(error) => {
-                tracing::warn!(error = %error, session_id = %session_id, "Failed to check automation ownership for plan notification");
-                true
-            }
-        };
-        if !excluded {
-            match notification_context
-                .resolve_ideation_session_target(&notification_session)
-                .await
-            {
-                Ok(resolved) => {
-                    state
-                        .app_state
-                        .notification_service()
-                        .record(InteractiveNotificationProducer::plan_approval(
-                            project_id.to_string(),
-                            session_id.as_str(),
-                            created.id.as_str(),
-                            session_title.as_deref(),
-                            resolved.target,
-                        ))
-                        .await;
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, session_id = %session_id, "Failed to resolve plan notification target");
-                }
-            }
-        }
-    }
+    reconcile_plan_notifications(
+        &state,
+        prior_artifact_id.as_deref(),
+        &created,
+        std::slice::from_ref(&notification_session),
+        mutation_authority.as_ref(),
+    )
+    .await;
 
     let content_text = match &created.content {
         ArtifactContent::Inline { text } => text.clone(),

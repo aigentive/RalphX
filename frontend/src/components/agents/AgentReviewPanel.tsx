@@ -62,7 +62,11 @@ const LazyPlanDisplay = lazy(() =>
 
 type ReviewDisplayContext = Pick<
   AgentWorkspaceReviewContext,
-  "target" | "monitor" | "isCurrent" | "isOutdated" | "shouldShowTab"
+  | "target"
+  | "monitor"
+  | "reviewArtifactIsCurrent"
+  | "reviewArtifactIsOutdated"
+  | "shouldShowTab"
 >;
 
 type ReviewAction = {
@@ -97,6 +101,7 @@ interface AgentReviewPanelProps {
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
   onOpenPublish?: () => void;
+  onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
   onApproveAnyway?: () => Promise<void>;
@@ -155,8 +160,8 @@ function canFixBlockingReview(
   if (
     !context?.target ||
     isRunning ||
-    !context.isCurrent ||
-    context.isOutdated
+    !context.reviewArtifactIsCurrent ||
+    context.reviewArtifactIsOutdated
   ) {
     return false;
   }
@@ -176,8 +181,8 @@ function canApproveBlockingReview(
     context?.target &&
       !isRunning &&
       !isFixerActive &&
-      context.isCurrent &&
-      !context.isOutdated &&
+      context.reviewArtifactIsCurrent &&
+      !context.reviewArtifactIsOutdated &&
       context.monitor.status === "ready" &&
       context.monitor.reviewOutcome === "blocking" &&
       context.monitor.reviewGateStatus === "blocking" &&
@@ -208,9 +213,9 @@ function reviewActionForState({
     return { label: "Retry review", kind: "review", force: true };
   if (!hasArtifact)
     return { label: "Run review", kind: "review", force: false };
-  if (context.isOutdated)
+  if (context.reviewArtifactIsOutdated)
     return { label: "Update review", kind: "review", force: true };
-  if (context.isCurrent)
+  if (context.reviewArtifactIsCurrent)
     return { label: "Run again", kind: "review", force: true };
   return { label: "Run review", kind: "review", force: true };
 }
@@ -296,7 +301,7 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
-  if (context?.isOutdated) {
+  if (context?.reviewArtifactIsOutdated) {
     return {
       label: "Review is outdated",
       detail:
@@ -352,6 +357,7 @@ export function AgentReviewPanel({
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
   onOpenPublish,
+  onViewTranscript,
   onStartReview,
   onFixIssues,
   onApproveAnyway,
@@ -405,6 +411,7 @@ export function AgentReviewPanel({
     isFixerActive,
   });
   const targetLabel = reviewTargetLabel(displayContext);
+  const canViewTranscript = !isReviewPrWorkspace && Boolean(onViewTranscript);
   const autoMergeGuardDetail = (() => {
     switch (displayContext?.monitor.autoMergeGuardStatus) {
       case "paused_for_review":
@@ -499,8 +506,8 @@ export function AgentReviewPanel({
     const shouldPromotePublish =
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
-      Boolean(displayContext?.isCurrent) &&
-      !displayContext?.isOutdated &&
+      Boolean(displayContext?.reviewArtifactIsCurrent) &&
+      !displayContext?.reviewArtifactIsOutdated &&
       hasWorkspaceReviewPublishAuthorization(displayContext);
     if (shouldPromotePublish) {
       return (
@@ -746,13 +753,34 @@ export function AgentReviewPanel({
               >
                 {errorMessage ?? autoMergeGuardDetail ?? status.detail}
               </p>
-              {(targetLabel || reviewUpdatedAt) && (
-                <p
-                  className="mt-2 text-[0.6875rem]"
+              {(targetLabel || canViewTranscript || reviewUpdatedAt) && (
+                <div
+                  className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-[0.6875rem]"
                   style={{ color: "var(--text-subtle)" }}
                 >
-                  {[targetLabel, reviewUpdatedAt].filter(Boolean).join(" · ")}
-                </p>
+                  {targetLabel && <span>{targetLabel}</span>}
+                  {canViewTranscript && (
+                    <span className="inline-flex items-center gap-1">
+                      {targetLabel && <span aria-hidden="true">·</span>}
+                      <Button
+                        type="button"
+                        variant="link"
+                        onClick={onViewTranscript}
+                        className="h-auto p-0 text-[0.6875rem] font-medium text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                      >
+                        View transcript
+                      </Button>
+                    </span>
+                  )}
+                  {reviewUpdatedAt && (
+                    <span className="inline-flex items-center gap-1">
+                      {(targetLabel || canViewTranscript) && (
+                        <span aria-hidden="true">·</span>
+                      )}
+                      <span>{reviewUpdatedAt}</span>
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -822,7 +850,7 @@ export function AgentReviewPanel({
                 <span style={{ color: "var(--text-secondary)" }}>
                   {prReviewMonitor.monitorEnabled
                     ? "Monitoring new PR heads"
-                    : "Monitoring paused"}
+                    : "New-head reviews paused · PR lifecycle still monitored"}
                 </span>
                 <Button
                   type="button"
@@ -898,7 +926,7 @@ export function AgentReviewPanel({
 
       <ConfirmationDialog {...confirmationDialogProps} />
 
-      {reviewArtifact && displayContext?.isOutdated && (
+      {reviewArtifact && displayContext?.reviewArtifactIsOutdated && (
         <div
           className="mb-4 rounded-md px-3 py-2 text-xs"
           style={{
@@ -909,8 +937,8 @@ export function AgentReviewPanel({
             color: "var(--text-secondary)",
           }}
         >
-          Outdated for current changes. The Review below is still available for
-          reference.
+          Previous Review covers earlier changes. Run Review to refresh it. The
+          Review below remains available for reference.
         </div>
       )}
 

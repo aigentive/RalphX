@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import {
   chatApi,
   type AgentConversationWorkspace,
+  type ArchiveConversationResult,
   type ChatMessageResponse,
   type ForkAgentConversationResult,
 } from "@/api/chat";
@@ -40,6 +41,7 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
+    warning: vi.fn(),
   },
 }));
 
@@ -58,6 +60,18 @@ vi.mock("@/api/ideation", async (importOriginal) => {
 });
 
 const NOW = "2026-05-22T00:00:00.000Z";
+
+function archivedResult(conversation: AgentConversation): ArchiveConversationResult {
+  return {
+    conversation,
+    cleanup: {
+      runtimeShutdownSucceeded: true,
+      cleanupClaim: "claimed",
+      localCleanup: "cleaned",
+      message: null,
+    },
+  };
+}
 
 function createQueryClient(): QueryClient {
   return new QueryClient({
@@ -197,6 +211,7 @@ function renderActions(
     setOptimisticConversationsById: conversations.setter,
     setOptimisticWorkspacesByConversationId: workspaces.setter,
     setFocusedProject: vi.fn(),
+    setStartConversationDraft: vi.fn(),
     setOptimisticSelectedConversationId: selectedConversationId.setter,
     setRuntimeForConversation: vi.fn(),
     ...overrides,
@@ -215,6 +230,49 @@ function renderActions(
 describe("useAgentConversationActions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("opens a project-locked Persona Builder for a project conversation", () => {
+    const { args, result } = renderActions();
+    const conversation = createConversation({
+      contextType: "project",
+      contextId: "project-1",
+    });
+
+    act(() => {
+      result.current.handleStartPersonaBuilder({
+        ...conversation,
+        projectId: "project-1",
+        ideationSessionId: null,
+      });
+    });
+
+    expect(args.setStartConversationDraft).toHaveBeenCalledWith({
+      projectId: "project-1",
+      projectLocked: true,
+      mode: "persona_builder",
+    });
+    expect(args.setFocusedProject).toHaveBeenCalledWith("project-1");
+    expect(args.clearAgentConversationSelection).toHaveBeenCalledOnce();
+  });
+
+  it("does not open Persona Builder from a standalone conversation", () => {
+    const { args, result } = renderActions();
+    const conversation = createConversation({
+      contextType: "standalone",
+      contextId: "standalone-1",
+    });
+
+    act(() => {
+      result.current.handleStartPersonaBuilder({
+        ...conversation,
+        projectId: null,
+        ideationSessionId: null,
+      });
+    });
+
+    expect(args.setStartConversationDraft).not.toHaveBeenCalled();
+    expect(args.clearAgentConversationSelection).not.toHaveBeenCalled();
   });
 
   it("hydrates local state, workspace cache, selection, and runtime after forking", async () => {
@@ -306,6 +364,49 @@ describe("useAgentConversationActions", () => {
     });
   });
 
+  it.each([
+    [
+      "failed_operational" as const,
+      "Session archived. Local workspace cleanup is pending and will retry automatically.",
+    ],
+    [
+      "failed_unsafe" as const,
+      "Session archived, but RalphX refused unsafe local workspace cleanup. Review the workspace metadata before retrying.",
+    ],
+  ])(
+    "keeps archive success visible when local cleanup returns %s",
+    async (localCleanup, warning) => {
+      const archivedConversation: AgentConversation = {
+        ...createConversation({ id: `archive-${localCleanup}` }),
+        projectId: "project-1",
+        ideationSessionId: null,
+      };
+      vi.mocked(chatApi.archiveConversation).mockResolvedValue({
+        conversation: archivedConversation,
+        cleanup: {
+          runtimeShutdownSucceeded: true,
+          cleanupClaim: "claimed",
+          localCleanup,
+          message: "cleanup detail",
+        },
+      });
+      const { args, result } = renderActions(createQueryClient(), {
+        selectedConversationId: archivedConversation.id,
+      });
+
+      await act(async () => {
+        await result.current.handleArchiveConversation(archivedConversation, {
+          closePullRequest: false,
+        });
+      });
+
+      expect(args.clearAgentConversationSelection).toHaveBeenCalledTimes(1);
+      expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+      expect(toast.warning).toHaveBeenCalledWith(warning);
+      expect(toast.error).not.toHaveBeenCalled();
+    }
+  );
+
   it("bulk archives conversations with ideation-first ordering and one invalidation per project", async () => {
     const projectConversation: AgentConversation = {
       ...createConversation({ id: "project-conversation" }),
@@ -321,7 +422,13 @@ describe("useAgentConversationActions", () => {
       projectId: "project-1",
       ideationSessionId: "ideation-session-1",
     };
-    vi.mocked(chatApi.archiveConversation).mockResolvedValue(undefined);
+    vi.mocked(chatApi.archiveConversation).mockImplementation(async (conversationId) =>
+      archivedResult(
+        conversationId === projectConversation.id
+          ? projectConversation
+          : ideationConversation
+      )
+    );
     vi.mocked(ideationApi.sessions.archive).mockResolvedValue(undefined);
     const { args, result } = renderActions(createQueryClient(), {
       selectedConversationId: ideationConversation.id,
@@ -357,6 +464,8 @@ describe("useAgentConversationActions", () => {
     expect(archiveResult).toEqual({
       archivedConversationIds: [projectConversation.id, ideationConversation.id],
       failedConversationIds: [],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
     });
     expect(toast.success).toHaveBeenCalledWith("Archived 2 sessions");
   });
@@ -377,7 +486,7 @@ describe("useAgentConversationActions", () => {
       ideationSessionId: null,
     };
     vi.mocked(chatApi.archiveConversation)
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(archivedResult(firstConversation))
       .mockRejectedValueOnce(new Error("archive denied"));
     const { args, result } = renderActions();
 
@@ -398,6 +507,8 @@ describe("useAgentConversationActions", () => {
     expect(archiveResult).toEqual({
       archivedConversationIds: [firstConversation.id],
       failedConversationIds: [failedConversation.id],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
     });
     expect(toast.success).toHaveBeenCalledWith("Archived 1 session");
     expect(toast.error).toHaveBeenCalledWith("Failed to archive 1 session", {
@@ -406,13 +517,16 @@ describe("useAgentConversationActions", () => {
     });
   });
 
-  it("rejects a stale bulk target with an open pull request before mutation", async () => {
+  it("archives a bulk target with an open pull request without closing the PR", async () => {
     const blockedConversation: AgentConversation = {
       ...createConversation({ id: "conversation-stale-open-pr" }),
       projectId: "project-1",
       ideationSessionId: null,
     };
     const { args, result } = renderActions();
+    vi.mocked(chatApi.archiveConversation).mockResolvedValue(
+      archivedResult(blockedConversation)
+    );
 
     const archiveResult = await result.current.handleBulkArchiveConversations([
       {
@@ -425,18 +539,17 @@ describe("useAgentConversationActions", () => {
       },
     ]);
 
-    expect(chatApi.archiveConversation).not.toHaveBeenCalled();
-    expect(args.invalidateProjectConversations).not.toHaveBeenCalled();
+    expect(chatApi.archiveConversation).toHaveBeenCalledWith(blockedConversation.id, {
+      closePullRequest: false,
+    });
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
     expect(archiveResult).toEqual({
-      archivedConversationIds: [],
-      failedConversationIds: [blockedConversation.id],
+      archivedConversationIds: [blockedConversation.id],
+      failedConversationIds: [],
+      cleanupPendingConversationIds: [],
+      cleanupUnsafeConversationIds: [],
     });
-    expect(toast.error).toHaveBeenCalledWith("Failed to archive 1 session", {
-      description: expect.stringContaining(
-        "Archive individually to manage the pull request"
-      ),
-      duration: 10000,
-    });
+    expect(toast.success).toHaveBeenCalledWith("Archived 1 session");
   });
 
   it("reruns the session namer from the first user message and conversation provider", async () => {
