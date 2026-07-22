@@ -61,7 +61,7 @@ async fn disable_workspace_review_gate(app_state: &AppState) {
 async fn seed_current_repair_attempt(app_state: &AppState, conversation_id: ChatConversationId) {
     app_state
         .agent_run_repo
-        .create(AgentRun::new(conversation_id.clone()))
+        .create(AgentRun::new(conversation_id))
         .await
         .expect("seed active repair run");
     app_state
