@@ -2054,7 +2054,7 @@ enum AgentWorkspacePrAutofixIssueKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentWorkspacePrAutofixIssue {
+pub(crate) struct AgentWorkspacePrAutofixIssue {
     kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
