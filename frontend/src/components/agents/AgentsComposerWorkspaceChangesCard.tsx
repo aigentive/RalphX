@@ -32,7 +32,10 @@ import {
   isTaskRuntimeContextType,
   type AgentTaskRuntimeContextType,
 } from "./agentTaskRuntimeContext";
-import { canInspectAgentWorkspacePublishDiffs } from "./agentWorkspacePublishState";
+import {
+  canInspectAgentWorkspacePublishDiffs,
+  getAgentWorkspaceTerminalPublicationStatus,
+} from "./agentWorkspacePublishState";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -674,8 +677,12 @@ function AgentsComposerWorkspaceChangesCardContent({
   const hasObservedTaskSnapshot = useRef(false);
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const canInspectChanges =
-    !isFocusedChildChat && canInspectAgentWorkspacePublishDiffs(workspace);
+  const terminalPublicationStatus =
+    getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const canInspectLiveChanges =
+    !isFocusedChildChat &&
+    !terminalPublicationStatus &&
+    canInspectAgentWorkspacePublishDiffs(workspace);
   const taskLedgerScopeKey = taskLedgerContext
     ? `${taskLedgerContext.contextType}:${taskLedgerContext.contextId}`
     : "runtime-only";
@@ -697,11 +704,12 @@ function AgentsComposerWorkspaceChangesCardContent({
   }, [canScheduleReviewHydration, conversationId, pauseHydration]);
   const changeSummaryQuery = useQuery({
     queryKey: agentWorkspaceKeys.changeSummary(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspaceChangeSummary(conversationId),
-    enabled: canInspectChanges && canHydrateReview,
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspaceChangeSummary(conversationId),
+    enabled: canInspectLiveChanges && canHydrateReview,
     staleTime: AGENT_WORKSPACE_STALE_MS,
     refetchInterval:
-      canInspectChanges && canHydrateReview && isAgentGenerating
+      canInspectLiveChanges && canHydrateReview && isAgentGenerating
         ? ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS
         : false,
   });
@@ -802,7 +810,9 @@ function AgentsComposerWorkspaceChangesCardContent({
     conversationId,
     review: null,
     liveSummary,
-    hydrateWorktreeFileLists: activePanel === "changes",
+    hydrateWorktreeFileLists:
+      canInspectLiveChanges && activePanel === "changes",
+    enabled: canInspectLiveChanges,
   });
   const tasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
   const taskLists = taskListsQuery.data ?? EMPTY_AGENT_TASK_LISTS;
@@ -826,7 +836,7 @@ function AgentsComposerWorkspaceChangesCardContent({
   const shouldShowTasks =
     Boolean(taskLedgerContext) && tasksQuery.isSuccess && tasks.length > 0;
   const shouldShowChanges =
-    canInspectChanges &&
+    canInspectLiveChanges &&
     changeSummaryQuery.isSuccess &&
     (summary.workspaceChangeCount > 0 ||
       summary.currentFiles.length > 0);
@@ -959,6 +969,9 @@ function AgentsComposerWorkspaceChangesCardContent({
     return null;
   }
 
+  const renderedActivePanel =
+    activePanel === "changes" && !shouldShowChanges ? null : activePanel;
+
   const changesLabel =
     summary.effectiveMode === "unstaged"
       ? "Unstaged"
@@ -1035,10 +1048,12 @@ function AgentsComposerWorkspaceChangesCardContent({
     }
   };
 
-  const TasksChevron = activePanel === "tasks" ? ChevronDown : ChevronRight;
+  const TasksChevron =
+    renderedActivePanel === "tasks" ? ChevronDown : ChevronRight;
   const RuntimesChevron =
-    activePanel === "runtimes" ? ChevronDown : ChevronRight;
-  const ChangesChevron = activePanel === "changes" ? ChevronDown : ChevronRight;
+    renderedActivePanel === "runtimes" ? ChevronDown : ChevronRight;
+  const ChangesChevron =
+    renderedActivePanel === "changes" ? ChevronDown : ChevronRight;
 
   return (
     <div
@@ -1052,7 +1067,7 @@ function AgentsComposerWorkspaceChangesCardContent({
           data-testid="agents-composer-workspace-changes-header"
           className={cn(
             "flex min-h-7 min-w-0 flex-wrap items-center gap-1.5",
-            activePanel && "mb-0",
+            renderedActivePanel && "mb-0",
           )}
           onClick={handleHeaderClick}
         >
@@ -1060,17 +1075,17 @@ function AgentsComposerWorkspaceChangesCardContent({
             <button
               type="button"
               data-testid="agents-composer-runtimes-toggle"
-              aria-expanded={activePanel === "runtimes"}
+              aria-expanded={renderedActivePanel === "runtimes"}
               onClick={() => togglePanel("runtimes")}
               className={cn(
                 "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
-                activePanel === "runtimes"
+                renderedActivePanel === "runtimes"
                   ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
                   : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
                 borderColor:
-                  activePanel === "runtimes"
+                  renderedActivePanel === "runtimes"
                     ? "var(--border-subtle)"
                     : "transparent",
                 color: "var(--text-secondary)",
@@ -1100,16 +1115,19 @@ function AgentsComposerWorkspaceChangesCardContent({
             <button
               type="button"
               data-testid="agents-composer-tasks-toggle"
-              aria-expanded={activePanel === "tasks"}
+              aria-expanded={renderedActivePanel === "tasks"}
               onClick={() => togglePanel("tasks")}
               className={cn(
                 "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
-                activePanel === "tasks"
+                renderedActivePanel === "tasks"
                   ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
                   : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: activePanel === "tasks" ? "var(--border-subtle)" : "transparent",
+                borderColor:
+                  renderedActivePanel === "tasks"
+                    ? "var(--border-subtle)"
+                    : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
@@ -1134,16 +1152,19 @@ function AgentsComposerWorkspaceChangesCardContent({
             <button
               type="button"
               data-testid="diff-filter-trigger"
-              aria-expanded={activePanel === "changes"}
+              aria-expanded={renderedActivePanel === "changes"}
               onClick={() => togglePanel("changes")}
               className={cn(
                 "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
-                activePanel === "changes"
+                renderedActivePanel === "changes"
                   ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
                   : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: activePanel === "changes" ? "var(--border-subtle)" : "transparent",
+                borderColor:
+                  renderedActivePanel === "changes"
+                    ? "var(--border-subtle)"
+                    : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
@@ -1180,9 +1201,9 @@ function AgentsComposerWorkspaceChangesCardContent({
           )}
         </div>
 
-        {activePanel && (
+        {renderedActivePanel && (
           <div
-            ref={activePanel === "tasks" ? taskListRef : undefined}
+            ref={renderedActivePanel === "tasks" ? taskListRef : undefined}
             className="overflow-y-auto rounded-b rounded-tr border"
             data-testid="agents-composer-context-tray-body"
             style={{
@@ -1190,16 +1211,17 @@ function AgentsComposerWorkspaceChangesCardContent({
               borderColor: "var(--border-subtle)",
               borderStyle: "solid",
               borderWidth: "1px",
-              maxHeight: activePanel === "tasks" && !showAllTasks
-                ? `${
-                    VISIBLE_TASK_COUNT * TASK_ROW_HEIGHT_PX +
-                    hiddenTaskRevealRows * 30 +
-                    taskHistoryRowReserve
-                  }px`
-                : "11rem",
+              maxHeight:
+                renderedActivePanel === "tasks" && !showAllTasks
+                  ? `${
+                      VISIBLE_TASK_COUNT * TASK_ROW_HEIGHT_PX +
+                      hiddenTaskRevealRows * 30 +
+                      taskHistoryRowReserve
+                    }px`
+                  : "11rem",
             }}
           >
-            {activePanel === "runtimes" ? (
+            {renderedActivePanel === "runtimes" ? (
               <div data-testid="agents-composer-runtimes-list">
                 {runtimeIndexQuery.isLoading || !canHydrateReview ? (
                   <div
@@ -1242,7 +1264,7 @@ function AgentsComposerWorkspaceChangesCardContent({
                   </>
                 )}
               </div>
-            ) : activePanel === "tasks" ? (
+            ) : renderedActivePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">
                 {taskWindow.hiddenBefore > 0 && (
                   <button
