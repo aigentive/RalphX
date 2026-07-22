@@ -5,6 +5,7 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import {
   getAutomationRunView,
@@ -13,7 +14,6 @@ import {
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
-import { cn } from "@/lib/utils";
 
 interface AutomationsViewProps {
   projectId: string | null;
@@ -101,24 +101,22 @@ function AutomationsListSkeleton() {
   );
 }
 
-function StatusPill({ status }: { status: Automation["status"] }) {
+function statusPillTone(status: Automation["status"]): StatusPillTone {
+  switch (status) {
+    case "active":
+      return "success";
+    case "paused":
+      return "warning";
+    case "completed":
+      return "accent";
+    default:
+      return "neutral";
+  }
+}
+
+function AutomationStatusPill({ status }: { status: Automation["status"] }) {
   return (
-    <span
-      className={cn(
-        "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        status === "active" && "text-[var(--status-success)]",
-        status === "paused" && "text-[var(--status-warning)]",
-        status === "completed" && "text-[var(--accent-primary)]",
-      )}
-      style={{
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {STATUS_LABELS[status]}
-    </span>
+    <StatusPill label={STATUS_LABELS[status]} size="md" tone={statusPillTone(status)} />
   );
 }
 
@@ -163,7 +161,7 @@ function AutomationRow({
           {formatGoalMetadata(automation)}
         </div>
       </div>
-      <StatusPill status={automation.status} />
+      <AutomationStatusPill status={automation.status} />
       <div className="truncate text-sm" style={{ color: "var(--text-secondary)" }}>
         {projectName}
       </div>

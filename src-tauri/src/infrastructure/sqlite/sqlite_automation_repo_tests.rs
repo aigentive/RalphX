@@ -94,6 +94,7 @@ fn run(
         base_ref_kind: "project_default".to_string(),
         base_ref_used: String::new(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: None,
         pr_number: None,
         pr_url: None,
@@ -1528,4 +1529,39 @@ async fn sqlite_find_run_by_conversation_id_returns_latest_linked_run() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_round_trips_goal_item_id() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let mut mapped = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    mapped.goal_item_id = Some("item-b1".to_string());
+    run_repo.create_run(mapped.clone()).await.unwrap();
+    let mut unmapped = run(
+        "run-2",
+        2,
+        AutomationRunStatus::Pending,
+        AutomationJudgeState::None,
+    );
+    unmapped.goal_item_id = None;
+    run_repo.create_run(unmapped.clone()).await.unwrap();
+
+    let stored_mapped = run_repo.get_by_id(&mapped.id).await.unwrap().unwrap();
+    assert_eq!(stored_mapped.goal_item_id.as_deref(), Some("item-b1"));
+    assert_eq!(stored_mapped, mapped);
+    let stored_unmapped = run_repo.get_by_id(&unmapped.id).await.unwrap().unwrap();
+    assert_eq!(stored_unmapped.goal_item_id, None);
 }
