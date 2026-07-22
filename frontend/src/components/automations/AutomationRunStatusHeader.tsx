@@ -21,6 +21,7 @@ interface AutomationRunStatusHeaderProps {
   activeGoalItem?: AutomationGoalItem | null;
   message?: string | null;
   showPr?: boolean;
+  prTestId?: string;
   phaseTestId?: string;
   className?: string;
   testId?: string;
@@ -40,6 +41,7 @@ export function AutomationRunStatusHeader({
   activeGoalItem = null,
   message = null,
   showPr = true,
+  prTestId,
   phaseTestId,
   className,
   testId,
@@ -116,8 +118,10 @@ export function AutomationRunStatusHeader({
           live: false,
         },
       ];
+  const primaryBadge = badges[0];
+  const primaryBadgeId = primaryBadge ? badgeTestId(primaryBadge, testId) : undefined;
+  const secondaryBadges = badges.slice(1);
   const phaseItem = view?.isOpen ? activeGoalItem : null;
-  const prLabel = showPr && view ? view.pr.value : null;
   return (
     <span
       className={cn(
@@ -130,22 +134,43 @@ export function AutomationRunStatusHeader({
       <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
         Run {run.runIndex}
       </span>
-      {badges.map((badge) => {
-        const badgeId = badgeTestId(badge, testId);
-        return (
-          <StatusPill
-            key={badge.key}
-            label={badge.label}
-            tone={badge.tone}
-            live={badge.live}
-            {...(badgeId ? { testId: badgeId } : {})}
-          />
-        );
-      })}
-      {prLabel ? (
+      {primaryBadge ? (
         <StatusPill
-          label={prLabel}
-          {...(testId ? { testId: `${testId}-pr` } : {})}
+          label={primaryBadge.label}
+          tone={primaryBadge.tone}
+          live={primaryBadge.live}
+          {...(primaryBadgeId ? { testId: primaryBadgeId } : {})}
+        />
+      ) : null}
+      {secondaryBadges.length > 0 ? (
+        <span
+          className="min-w-0 truncate text-xs"
+          style={{ color: "var(--text-muted, #8e8e96)" }}
+          {...(testId ? { "data-testid": `${testId}-secondary-states` } : {})}
+        >
+          {secondaryBadges.map((badge, index) => {
+            const secondaryBadgeId = badgeTestId(badge, testId);
+            return (
+              <span
+                key={badge.key}
+                {...(secondaryBadgeId
+                  ? { "data-testid": secondaryBadgeId }
+                  : {})}
+              >
+                {index > 0 ? " · " : null}
+                {badge.label}
+              </span>
+            );
+          })}
+        </span>
+      ) : null}
+      {showPr && run.prUrl ? (
+        <AutomationRunPrLink
+          run={run}
+          className="pointer-events-auto shrink-0"
+          {...(prTestId || testId
+            ? { testId: prTestId ?? `${testId}-pr-link` }
+            : {})}
         />
       ) : null}
       {phaseItem ? (
@@ -159,12 +184,6 @@ export function AutomationRunStatusHeader({
         >
           {phaseItem.title}
         </span>
-      ) : null}
-      {showPr && run.prUrl ? (
-        <AutomationRunPrLink
-          run={run}
-          {...(testId ? { testId: `${testId}-pr-link` } : {})}
-        />
       ) : null}
     </span>
   );

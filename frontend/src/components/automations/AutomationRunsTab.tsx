@@ -104,7 +104,7 @@ export function AutomationRunsTab({
             No runs have been created yet.
           </p>
         ) : (
-          <div className="relative space-y-4 before:absolute before:bottom-0 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border-default)]">
+          <div className="relative space-y-4 before:absolute before:bottom-0 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border-subtle)]">
             {newestRuns.map((run) => {
               const isLatest = run.runIndex === latest?.runIndex;
               return (

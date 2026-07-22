@@ -54,7 +54,7 @@ function TaskRow({ task }: { task: AgentTaskSummary }) {
       data-testid="automation-run-task-ledger-row"
     >
       <span
-        className="w-10 shrink-0 text-right font-mono text-xs font-semibold"
+        className="w-8 shrink-0 text-right font-mono text-xs font-semibold"
         style={{ color: "var(--text-muted)" }}
       >
         #{task.taskNumber}
@@ -66,14 +66,6 @@ function TaskRow({ task }: { task: AgentTaskSummary }) {
       >
         {task.title}
       </span>
-      {task.ownerAgent && (
-        <span
-          className="max-w-[7rem] shrink-0 truncate text-xs"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {task.ownerAgent}
-        </span>
-      )}
     </div>
   );
 }
@@ -97,10 +89,12 @@ export function AutomationRunTaskLedger({
   conversationId,
   projectId,
   runStatus,
+  onOwnerAgentChange,
 }: {
   conversationId: string;
   projectId: string | null;
   runStatus: AutomationRunStatus;
+  onOwnerAgentChange?: (ownerAgent: string | null) => void;
 }) {
   const lastFingerprintRef = useRef<string | null>(null);
   const unchangedResponsesRef = useRef(0);
@@ -139,6 +133,12 @@ export function AutomationRunTaskLedger({
     unchangedResponsesRef.current = 0;
   }, [query.data, query.dataUpdatedAt]);
 
+  useEffect(() => {
+    if (query.isSuccess) {
+      onOwnerAgentChange?.(query.data[0]?.ownerAgent ?? null);
+    }
+  }, [onOwnerAgentChange, query.data, query.isSuccess]);
+
   const { taskCount, activeTasks, doneCount, droppedCount } = useMemo(() => {
     const tasks = query.data ?? [];
     const active = tasks.filter(
@@ -160,19 +160,24 @@ export function AutomationRunTaskLedger({
   }, [query.data]);
 
   const hasSnapshot = query.isSuccess;
-  const summaryParts: string[] = [];
-  if (doneCount > 0) {
-    summaryParts.push(`${doneCount} done`);
-  }
-  if (droppedCount > 0) {
-    summaryParts.push(`${droppedCount} dropped`);
-  }
 
   return (
     <div className="space-y-2" data-testid="automation-run-task-ledger">
-      <FieldLabel className="block">
-        Task ledger
-      </FieldLabel>
+      <div
+        className="flex items-baseline justify-between gap-3"
+        data-testid="automation-run-task-ledger-label-row"
+      >
+        <FieldLabel>Task ledger</FieldLabel>
+        {hasSnapshot ? (
+          <span
+            className="shrink-0 text-right text-xs"
+            style={{ color: "var(--text-muted, #8e8e96)" }}
+            data-testid="automation-run-task-ledger-summary"
+          >
+            {doneCount} done · {droppedCount} dropped
+          </span>
+        ) : null}
+      </div>
       {!hasSnapshot ? (
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
           {query.isError ? "Could not load agent tasks." : "Loading agent tasks..."}
@@ -188,15 +193,6 @@ export function AutomationRunTaskLedger({
           ) : (
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               No active tasks right now.
-            </p>
-          )}
-          {summaryParts.length > 0 && (
-            <p
-              className="text-xs"
-              style={{ color: "var(--text-muted)" }}
-              data-testid="automation-run-task-ledger-summary"
-            >
-              {summaryParts.join(" · ")}
             </p>
           )}
         </div>

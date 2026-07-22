@@ -195,28 +195,59 @@ function SourcePrInput({ automation }: { automation: Automation }) {
   const title = stringField(sourcePr, "title");
   const url = stringField(sourcePr, "url");
 
-  if (!sourcePr) {
-    return (
-      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-        No setup input references are attached to this automation record.
-      </p>
-    );
-  }
-
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-      <GitPullRequest className="h-4 w-4" aria-hidden="true" />
-      <span>{number ? `PR #${number}` : "Source PR"}</span>
-      {title && <span className="truncate">{title}</span>}
-      {url && (
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-[var(--accent-primary)]"
+    <div className="space-y-3">
+      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+        Setup references provided when this automation was created.
+      </p>
+      {!sourcePr ? (
+        <div className="flex items-start gap-2 py-1">
+          <GitPullRequest
+            className="mt-0.5 h-4 w-4 shrink-0"
+            style={{ color: "var(--text-subtle)" }}
+            aria-hidden="true"
+          />
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            No setup input references are attached to this automation record.
+          </p>
+        </div>
+      ) : (
+        <div
+          className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3"
+          data-testid="automation-source-pr-input"
         >
-          Open <ExternalLink className="h-3 w-3" aria-hidden="true" />
-        </a>
+          <GitPullRequest
+            className="h-4 w-4 shrink-0"
+            style={{ color: "var(--text-muted)" }}
+            aria-hidden="true"
+          />
+          <div className="min-w-0">
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Source pull request
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2 text-sm">
+              <span className="shrink-0 font-medium" style={{ color: "var(--text-primary)" }}>
+                {number ? `PR #${number}` : "Source PR"}
+              </span>
+              {title ? (
+                <span className="truncate" style={{ color: "var(--text-secondary)" }}>
+                  {title}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          {url ? (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${number ? `PR #${number}` : "source PR"}`}
+              className="inline-flex items-center gap-1 text-xs text-[var(--accent-primary)] hover:text-[var(--accent-secondary)]"
+            >
+              Open <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          ) : null}
+        </div>
       )}
     </div>
   );

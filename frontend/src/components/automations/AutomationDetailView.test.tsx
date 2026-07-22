@@ -809,7 +809,7 @@ describe("AutomationDetailView", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("matches timeline card and marker highlights to the run outcome", async () => {
+  it("keeps timeline cards neutral while reserving the accent marker for active runs", async () => {
     renderDetail({
       automation: automation(),
       runs: [
@@ -836,24 +836,24 @@ describe("AutomationDetailView", () => {
     await openRunsTab();
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
-    expect(successCard.style.backgroundColor).toContain("--status-success-muted");
-    expect(successCard.style.borderColor).toContain("--status-success-border");
+    expect(successCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(successCard.style.borderColor).toContain("--border-subtle");
     expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toEqual(
-      expect.stringContaining("--status-success"),
+      expect.stringContaining("--text-subtle"),
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
-    expect(progressCard.style.backgroundColor).toContain("--accent-muted");
-    expect(progressCard.style.borderColor).toContain("--accent-border");
+    expect(progressCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(progressCard.style.borderColor).toContain("--border-subtle");
     expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toEqual(
       expect.stringContaining("--accent-primary"),
     );
 
     const failedCard = screen.getByTestId("automation-run-run-failed-card");
-    expect(failedCard.style.backgroundColor).toContain("--status-error-muted");
-    expect(failedCard.style.borderColor).toContain("--status-error-border");
+    expect(failedCard.style.backgroundColor).toContain("--bg-elevated");
+    expect(failedCard.style.borderColor).toContain("--border-subtle");
     expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toEqual(
-      expect.stringContaining("--status-error"),
+      expect.stringContaining("--text-subtle"),
     );
   });
 
@@ -956,11 +956,15 @@ describe("AutomationDetailView", () => {
 
     await user.click(within(card).getByRole("tab", { name: "Inputs" }));
     expect(
+      within(card).getByText("Setup references provided when this automation was created."),
+    ).toBeInTheDocument();
+    expect(
       within(card).getByText("No setup input references are attached to this automation record."),
     ).toBeInTheDocument();
   });
 
   it("marks populated Spec and Inputs tabs without mounting spec content before selection", async () => {
+    const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
         id: "artifact-spec-1",
@@ -988,6 +992,17 @@ describe("AutomationDetailView", () => {
     const card = await screen.findByTestId("automation-details-card");
     expect(within(card).getByRole("tab", { name: "Spec" })).toHaveTextContent("•");
     expect(within(card).getByRole("tab", { name: "Inputs (1)" })).toBeInTheDocument();
+    expect(useArtifactMock).not.toHaveBeenCalled();
+
+    await user.click(within(card).getByRole("tab", { name: "Inputs (1)" }));
+    const sourcePr = within(card).getByTestId("automation-source-pr-input");
+    expect(within(sourcePr).getByText("Source pull request")).toBeInTheDocument();
+    expect(within(sourcePr).getByText("PR #593")).toBeInTheDocument();
+    expect(within(sourcePr).getByText("Automation backend")).toBeInTheDocument();
+    expect(within(sourcePr).getByRole("link", { name: "Open PR #593" })).toHaveAttribute(
+      "href",
+      "https://github.com/aigentive/ralphx.app/pull/593",
+    );
     expect(useArtifactMock).not.toHaveBeenCalled();
   });
 
@@ -1606,6 +1621,8 @@ describe("AutomationDetailView", () => {
     const configPanel = screen.getByTestId("automation-config-panel");
     expect(within(configPanel).getByText("Not recorded")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Inputs (1)" }));
+    expect(screen.getByText("Setup references provided when this automation was created.")).toBeInTheDocument();
+    expect(screen.getByText("Source pull request")).toBeInTheDocument();
     expect(screen.getByText("PR #41")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeDisabled();
     expect(screen.getByLabelText("Cancel automation")).toBeDisabled();
@@ -1614,7 +1631,7 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
     expect(screen.getByText("invalid-date")).toBeInTheDocument();
     expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeDisabled();
     expect(
       within(screen.getByTestId("automation-run-run-fallback-card")).queryByText("Not recorded"),
     ).not.toBeInTheDocument();

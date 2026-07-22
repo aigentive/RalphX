@@ -1,11 +1,22 @@
 import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { RunTimelineItem } from "./AutomationRunTimelineItem";
+
+const { listConversationTasksMock } = vi.hoisted(() => ({
+  listConversationTasksMock: vi.fn(),
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listConversationTasksMock(...args),
+  },
+}));
 
 function automation(): Automation {
   const now = "2026-07-22T00:00:00Z";
@@ -97,25 +108,76 @@ function renderItem(
   options: {
     isLatest?: boolean;
     onDeleteRun?: (run: AutomationRun) => void;
+    projectId?: string | null;
+    onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+    defaultExpanded?: boolean;
   } = {},
 ) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
   return render(
-    <TooltipProvider delayDuration={0}>
-      <RunTimelineItem
-        run={candidate}
-        automation={automation()}
-        projectId={null}
-        defaultExpanded={false}
-        activeGoalItem={null}
-        setupConversationId={null}
-        {...(options.isLatest !== undefined && { isLatest: options.isLatest })}
-        {...(options.onDeleteRun && { onDeleteRun: options.onDeleteRun })}
-      />
-    </TooltipProvider>,
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <RunTimelineItem
+          run={candidate}
+          automation={automation()}
+          projectId={options.projectId ?? null}
+          defaultExpanded={options.defaultExpanded ?? false}
+          activeGoalItem={null}
+          setupConversationId={null}
+          {...(options.isLatest !== undefined && { isLatest: options.isLatest })}
+          {...(options.onDeleteRun && { onDeleteRun: options.onDeleteRun })}
+          {...(options.onOpenRunConversation && {
+            onOpenRunConversation: options.onOpenRunConversation,
+          })}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 
 describe("RunTimelineItem run deletion", () => {
+  beforeEach(() => {
+    listConversationTasksMock.mockReset();
+    listConversationTasksMock.mockResolvedValue([]);
+  });
+
+  it("keeps the collapsed PR link, timestamp, and chevron on the header line", () => {
+    renderItem(run({
+      status: "completed",
+      judgeState: "done",
+      prNumber: 612,
+      prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+    }));
+
+    const headerRow = screen.getByTestId("automation-run-run-10-header-row");
+    const prLink = screen.getByTestId("automation-run-run-10-pr-link");
+    const updatedAt = screen.getByTestId("automation-run-run-10-updated-at");
+    const expandButton = screen.getByRole("button", { name: "Expand run 10" });
+
+    expect(headerRow).toHaveClass("flex-nowrap");
+    expect(headerRow).toContainElement(prLink);
+    expect(headerRow).toContainElement(updatedAt);
+    expect(prLink.compareDocumentPosition(updatedAt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(expandButton).not.toContainElement(prLink);
+  });
+
+  it("uses a centered compact marker and a uniform neutral card edge", () => {
+    renderItem(run());
+
+    expect(screen.getByTestId("automation-run-run-10-marker")).toHaveClass(
+      "left-[0.5px]",
+      "h-2.5",
+      "w-2.5",
+    );
+    const card = screen.getByTestId("automation-run-run-10-card");
+    expect(card.style.backgroundColor).toContain("--bg-elevated");
+    expect(card.style.borderColor).toContain("--border-subtle");
+    expect(card.style.borderStyle).toBe("solid");
+    expect(card.style.borderWidth).toBe("1px");
+  });
+
   it("keeps collapsed failures to one compact unboxed outcome line", () => {
     renderItem(run({
       judgeState: "done",
@@ -139,6 +201,8 @@ describe("RunTimelineItem run deletion", () => {
 
     const deleteButton = screen.getByTestId("automation-run-run-10-delete");
     expect(deleteButton).toHaveAccessibleName("Delete run 10");
+    expect(screen.getByRole("button", { name: "Expand run 10" }))
+      .not.toContainElement(deleteButton);
 
     await user.click(deleteButton);
 
@@ -193,5 +257,97 @@ describe("RunTimelineItem run deletion", () => {
     expect(
       screen.queryByTestId("automation-run-run-10-body"),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders Run prompt as a minimal inline disclosure", async () => {
+    const user = userEvent.setup();
+    renderItem(run());
+
+    await user.click(screen.getByRole("button", { name: "Expand run 10" }));
+
+    const promptToggle = screen.getByTestId("automation-run-run-10-prompt-toggle");
+    expect(promptToggle).toHaveClass("border-0", "bg-transparent", "p-0", "text-xs");
+    expect(promptToggle).toHaveClass("text-[var(--text-muted)]");
+  });
+
+  it("uses one status pill and demotes secondary run states to joined text", () => {
+    renderItem(run());
+
+    expect(screen.getByTestId("automation-run-run-10-header-status")).toHaveClass(
+      "rounded-full",
+    );
+    const judgeState = screen.getByTestId("automation-run-run-10-header-judge");
+    expect(judgeState).not.toHaveClass("rounded-full");
+    expect(judgeState.closest("[data-testid='automation-run-run-10-header-secondary-states']"))
+      .toHaveTextContent("failed");
+  });
+
+  it("anchors metadata, task ownership, and workflow actions in their zones", async () => {
+    const user = userEvent.setup();
+    const onOpenRunConversation = vi.fn();
+    listConversationTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Implement run card",
+        state: "active",
+        ownerAgent: "frontend-specialist",
+        blockedBy: [],
+        blocks: [],
+        availability: "available",
+        updatedAt: "2026-07-22T00:00:00Z",
+      },
+    ]);
+    renderItem(
+      run({
+        status: "running",
+        judgeState: "none",
+        finishedAt: null,
+        conversationId: "conversation-10",
+        planArtifactId: "plan-10",
+        prNumber: 612,
+        prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+      }),
+      { projectId: "project-1", onOpenRunConversation, defaultExpanded: true },
+    );
+
+    const header = screen.getByTestId("automation-run-run-10-header-row");
+    expect(header).toContainElement(screen.getByTestId("automation-run-run-10-pr-link"));
+    const facts = screen.getByTestId("automation-run-run-10-facts");
+    expect(await screen.findByText("frontend-specialist")).toBeInTheDocument();
+    expect(facts).toHaveTextContent("Agent");
+    expect(facts).toContainElement(screen.getByRole("button", { name: "Copy base ref" }));
+
+    const footer = screen.getByTestId("automation-run-run-10-footer");
+    const planButton = screen.getByRole("button", { name: "View run plan" });
+    const conversationButton = screen.getByRole("button", { name: "Open conversation" });
+    expect(footer).toContainElement(planButton);
+    expect(footer).toContainElement(conversationButton);
+    expect(planButton.compareDocumentPosition(conversationButton) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+
+    await user.click(conversationButton);
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-10");
+  });
+
+  it("renders expanded failures as a left rule and keeps the footer action persistent", async () => {
+    const user = userEvent.setup();
+    renderItem(run());
+
+    await user.click(screen.getByRole("button", { name: "Expand run 10" }));
+
+    const failure = screen.getByTestId("automation-run-run-10-failure");
+    expect(failure.tagName).toBe("DIV");
+    expect(failure.style.borderLeftColor).toContain("--status-error");
+    expect(failure.style.borderLeftStyle).toBe("solid");
+    expect(failure.style.borderLeftWidth).toBe("2px");
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open conversation" })).toHaveTextContent(
+      "Open conversation",
+    );
+    expect(screen.getByTestId("automation-run-run-10-footer")).toBeInTheDocument();
+
+    await user.hover(screen.getByTestId("automation-run-run-10-conversation-disabled-trigger"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Run has not started");
   });
 });
