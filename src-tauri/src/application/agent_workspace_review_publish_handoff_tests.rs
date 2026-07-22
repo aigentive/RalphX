@@ -276,6 +276,14 @@ fn resume_predicate_requires_current_passed_review_and_publishable_pr_fix_state(
     assert!(!pr_fix_publish_can_resume_after_workspace_review(
         &workspace, &monitor, None, &events,
     ));
+    let mut plan_workspace = workspace.clone();
+    plan_workspace.mode = AgentConversationWorkspaceMode::Plan;
+    assert!(!pr_fix_publish_can_resume_after_workspace_review(
+        &plan_workspace,
+        &monitor,
+        Some(&target),
+        &events,
+    ));
     assert!(pr_supervision_block_is_workspace_review_gate(&{
         let mut gated = workspace.clone();
         gated.pr_supervision_summary = Some("Workspace Review is still running".to_string());
@@ -457,6 +465,54 @@ async fn resume_returns_skipped_without_mutating_when_review_is_not_publishable(
         .await
         .expect("list events")
         .is_empty());
+}
+
+#[tokio::test]
+async fn persisted_plan_mode_cannot_resume_publish_from_retained_review_authority() {
+    let repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let mut workspace = pr_fix_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    let target = review_target();
+    let monitor = current_passed_monitor(&target);
+    repo.create_or_update(workspace.clone())
+        .await
+        .expect("seed PLAN workspace");
+    repo.append_publication_event(publication_event(
+        "pr_autofix_workspace_review",
+        "reviewing",
+        Some("workspace_review_started"),
+    ))
+    .await
+    .expect("seed retained review event");
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let outcome = resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &workspace.conversation_id,
+        &workspace,
+        &monitor,
+        Some(&target),
+        {
+            let calls = Arc::clone(&calls);
+            move |_conversation_id| async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(true))
+            }
+        },
+    )
+    .await
+    .expect("PLAN publish handoff should skip cleanly");
+
+    assert_eq!(outcome, PrFixReviewPublishResumeOutcome::Skipped);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        repo.list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should load")
+            .len(),
+        1,
+        "PLAN must not append a publication-resume event"
+    );
 }
 
 #[tokio::test]

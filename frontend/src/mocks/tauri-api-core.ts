@@ -2593,12 +2593,46 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
-  get_agent_conversation_workspace_review: async () => ({
-    changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
-    commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
-    base_ref: "main",
-    head_ref: "HEAD",
+  get_agent_conversation_workspace_staged_file_changes: async () => [],
+  get_agent_conversation_workspace_unstaged_file_changes: async () => [],
+  get_agent_conversation_workspace_cumulative_file_changes: async () =>
+    mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_pr_annotations: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    return {
+      pr_number: workspace?.publicationPrNumber ?? 0,
+      head_sha: null,
+      annotations: [],
+      sources_unavailable: [],
+    };
+  },
+  get_agent_conversation_workspace_review_hunk_annotations: async () => ({
+    artifact_id: null,
+    artifact_version: null,
+    target_scope: null,
+    head_sha: null,
+    diff_fingerprint: null,
+    annotations: [],
   }),
+  get_agent_conversation_workspace_review: async (args) => {
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
+    const publicationStatus = workspace?.publicationPrStatus
+      ?.trim()
+      .toLowerCase();
+    const supportsWorktreeModes =
+      publicationStatus !== "merged" && publicationStatus !== "closed";
+    return {
+      changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
+      commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
+      base_ref: "main",
+      head_ref: "HEAD",
+      supports_worktree_modes: supportsWorktreeModes,
+    };
+  },
   get_agent_conversation_workspace_file_diff: async (args) =>
     mockWorkspaceFileDiff(args.filePath as string),
   get_agent_conversation_workspace_commits: async () => ({

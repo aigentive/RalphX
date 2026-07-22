@@ -12,7 +12,10 @@ const PR_LOADING_PLACEHOLDER_STYLE: CSSProperties = {
   backgroundColor: "var(--bg-hover)",
 };
 
-const PR_MARKDOWN_COMPONENTS = { ...markdownComponents, img: TicketMarkdownImage };
+const PR_MARKDOWN_COMPONENTS = {
+  ...markdownComponents,
+  img: TicketMarkdownImage,
+};
 
 const DETAILS_TAG_RE = /<\/?details\b[^>]*>/gi;
 const SUMMARY_TAG_RE = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i;
@@ -82,7 +85,9 @@ function summaryTextWithoutMarkup(rawSummary: string): string {
 
 function summaryText(rawSummary: string): string {
   const text = summaryTextWithoutMarkup(rawSummary)
-    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity: string) => decodeHtmlEntity(entity))
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity: string) =>
+      decodeHtmlEntity(entity),
+    )
     .replace(/\s+/g, " ")
     .trim();
 
@@ -202,7 +207,10 @@ function findMatchingDetailsClose(
   return null;
 }
 
-function parseDetailsSegment(rawBlock: string, openingTag: string): MarkdownSegment | null {
+function parseDetailsSegment(
+  rawBlock: string,
+  openingTag: string,
+): MarkdownSegment | null {
   const summaryMatch = SUMMARY_TAG_RE.exec(rawBlock);
   if (!summaryMatch || summaryMatch.index === undefined) {
     return null;
@@ -212,7 +220,9 @@ function parseDetailsSegment(rawBlock: string, openingTag: string): MarkdownSegm
   }
 
   const beforeSummary = rawBlock.slice(0, summaryMatch.index).trim();
-  const afterSummary = rawBlock.slice(summaryMatch.index + summaryMatch[0].length).trim();
+  const afterSummary = rawBlock
+    .slice(summaryMatch.index + summaryMatch[0].length)
+    .trim();
   const body = [beforeSummary, afterSummary].filter(Boolean).join("\n\n");
 
   return {
@@ -223,7 +233,10 @@ function parseDetailsSegment(rawBlock: string, openingTag: string): MarkdownSegm
   };
 }
 
-function pushMarkdownSegment(segments: MarkdownSegment[], content: string): void {
+function pushMarkdownSegment(
+  segments: MarkdownSegment[],
+  content: string,
+): void {
   if (content.length === 0) {
     return;
   }
@@ -275,7 +288,10 @@ function splitMarkdownSegments(content: string): MarkdownSegment[] {
 
 function MarkdownContent({ content }: { content: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={PR_MARKDOWN_COMPONENTS}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={PR_MARKDOWN_COMPONENTS}
+    >
       {content}
     </ReactMarkdown>
   );
@@ -373,15 +389,23 @@ export function PrSection({
   );
 }
 
-export function PrStateNotice({ state }: { state: PullRequestDetail["state"] }) {
+export function PrStateNotice({
+  state,
+}: {
+  state: PullRequestDetail["state"];
+}) {
   const copy: Record<PullRequestDetail["state"], string> = {
     loaded: "",
     noPr: "No pull request is linked to this branch.",
-    ghUnauthenticated: "GitHub CLI is not authenticated. Run `gh auth login` and refresh.",
-    fetchUnavailable: "GitHub is temporarily unavailable. Recheck before signing in again.",
+    ghUnauthenticated:
+      "GitHub CLI is not authenticated. Run `gh auth login` and refresh.",
+    fetchUnavailable:
+      "GitHub is temporarily unavailable. Recheck before signing in again.",
     repoUnresolvable: "RalphX could not resolve this repository on GitHub.",
-    cliUnavailable: "GitHub CLI is unavailable. Install or configure gh, then refresh.",
-    fetchTimeout: "GitHub did not return pull request details before the timeout.",
+    cliUnavailable:
+      "GitHub CLI is unavailable. Install or configure gh, then refresh.",
+    fetchTimeout:
+      "GitHub did not return pull request details before the timeout.",
     rateLimited: "GitHub rate limited the pull request detail request.",
   };
   if (state === "loaded") {
@@ -426,10 +450,15 @@ export function PrCommentCard({
       <div className="flex items-center justify-between gap-2">
         <p className="truncate text-xs font-medium text-[var(--text-secondary)]">
           {author ?? "GitHub"}
-          {meta ? <span className="text-[var(--text-muted)]"> · {meta}</span> : null}
+          {meta ? (
+            <span className="text-[var(--text-muted)]"> · {meta}</span>
+          ) : null}
         </p>
         {createdAt ? (
-          <time className="shrink-0 text-[11px] text-[var(--text-muted)]" dateTime={createdAt}>
+          <time
+            className="shrink-0 text-[11px] text-[var(--text-muted)]"
+            dateTime={createdAt}
+          >
             {formatPrDate(createdAt)}
           </time>
         ) : null}

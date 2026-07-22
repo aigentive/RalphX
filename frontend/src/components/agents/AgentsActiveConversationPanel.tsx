@@ -89,10 +89,6 @@ import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
-import {
-  selectArtifactSelection,
-  useArtifactSelectionStore,
-} from "@/stores/artifactSelectionStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
@@ -165,9 +161,10 @@ import {
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
-  PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
+import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
+import { PRIMARY_AGENT_START_MODE_IDS } from "./agentStartModeOptions";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -979,12 +976,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const roleDefaultQuery = useConversationRoleDefault(selectedConversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
-  const artifactSelectionSnapshot = useArtifactSelectionStore(
-    selectArtifactSelection(selectedConversationId),
-  );
-  const clearArtifactSelection = useArtifactSelectionStore(
-    (state) => state.clearSelection,
-  );
   const {
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
@@ -1844,7 +1835,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         (activeWorkspace?.taskPipelineAvailable ??
           Boolean(activeWorkspace?.taskPipelineSessionId)),
       autopilotEnabled: featureFlags.agentConversationAutopilot ?? false,
-    }).filter((option) => tasksEnabled || option.id !== "tasks");
+    });
     if (!resolvedConversationModeLocked) {
       return eligibleOptions;
     }
@@ -1865,6 +1856,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     featureFlags.agentConversationAutopilot,
     tasksEnabled,
   ]);
+  const secondaryModeOptionIds = useMemo(
+    () =>
+      modeOptions
+        .filter(
+          (option) =>
+            option.id !== "tasks" &&
+            option.id !== "ideation" &&
+            !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+        )
+        .map((option) => option.id),
+    [modeOptions],
+  );
   const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
     activeConversationMode === "plan" &&
@@ -2073,49 +2076,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     setIsImplementingPlanDirectly(true);
     try {
-      if (activeWorkspace.mode !== "edit") {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: activeWorkspace.conversationId,
-          mode: "edit",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(activeWorkspace.conversationId),
-            result.workspace,
-          );
-        }
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "edit",
-          result.workspace ?? null,
-        );
-        void invalidateWorkspaceQueries(
-          queryClient,
-          activeWorkspace.conversationId,
-        );
-      } else {
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "edit",
-          activeWorkspace,
-        );
-      }
-
-      await chatApi.sendAgentMessage(
-        "project",
-        activeProjectId!,
-        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-        undefined,
-        undefined,
-        {
-          conversationId: activeWorkspace.conversationId,
+      await implementAgentPlanDirectly({
+        projectId: activeProjectId!,
+        workspace: activeWorkspace,
+        queryClient,
+        onConversationModeSwitched,
+        sendOptions: {
           providerHarness: workspaceSendRuntime.provider,
           modelId: workspaceSendRuntime.modelId,
           logicalEffort: workspaceSendRuntime.effort,
           codexFastMode: activeCodexFastModeOption,
-          suppressUserMessage: true,
         },
-      );
+      });
       toast.success("Implementation started");
     } catch (err) {
       console.error("Failed to implement plan directly:", err);
@@ -2844,12 +2816,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 options.artifactReferences,
                             }
                           : {}),
-                        ...(options?.selectionSnapshot
-                          ? {
-                              composerSelectionSnapshot:
-                                options.selectionSnapshot,
-                            }
-                          : {}),
                         ...(options?.excerptReferences?.length
                           ? {
                               composerExcerptReferences:
@@ -3002,10 +2968,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     }
                     autoFocus={composerProps.autoFocus}
                     conversationId={selectedConversationId}
-                    selectionSnapshot={artifactSelectionSnapshot}
-                    onClearSelectionSnapshot={() =>
-                      clearArtifactSelection(selectedConversationId)
-                    }
                     {...(!isFocusedChildChat
                       ? {
                           onForkSession: () => runForkCommand(""),
@@ -3089,6 +3051,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 value as AgentConversationWorkspaceMode,
                               ),
                             options: modeOptions,
+                            secondaryOptionIds: secondaryModeOptionIds,
                             // Workspace conversation owns mode; child chats
                             // inherit and display it read-only.
                             disabled:

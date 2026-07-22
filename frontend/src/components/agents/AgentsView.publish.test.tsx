@@ -5,9 +5,14 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
+import type { FileChange } from "@/api/diff";
 import { useChatStore } from "@/stores/chatStore";
 import {
   conversationFixture as conversation,
@@ -21,9 +26,12 @@ const {
   getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getWorkspacePrAnnotationsMock,
+  getWorkspaceReviewHunkAnnotationsMock,
   getWorkspaceDiffMock,
   getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
+  getWorkspaceReviewContextMock,
   getWorkspaceStagedChangesMock,
   getWorkspaceUnstagedChangesMock,
   listAgentTaskListTasksMock,
@@ -31,12 +39,560 @@ const {
   listAgentTasksMock,
   preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
+  realPublishPanelState,
   sendAgentMessageMock,
   toastErrorMock,
+  updateWorkspaceFromBaseMock,
 } = getAgentsViewTestMocks();
 
+const reviewFile: FileChange = {
+  path: "frontend/src/App.tsx",
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  isGenerated: false,
+};
+
+const fullFreshness = (
+  overrides: Partial<AgentConversationWorkspaceFreshness> = {},
+): AgentConversationWorkspaceFreshness => ({
+  conversationId: "conversation-1",
+  freshnessScope: "full",
+  baseRef: "main",
+  baseDisplayName: "Project default (main)",
+  targetRef: "origin/main",
+  capturedBaseCommit: "base-sha",
+  targetBaseCommit: "base-sha",
+  isBaseAhead: false,
+  hasUncommittedChanges: false,
+  unpublishedCommitCount: null,
+  remoteRefreshed: true,
+  worktreeStatusChecked: true,
+  baseStatus: "valid",
+  effectiveBaseRef: "main",
+  effectiveBaseDisplayName: "Project default (main)",
+  baseBlockReason: null,
+  ...overrides,
+});
+
+function configurePublishPane({
+  workspace = {},
+  freshness = {},
+  changes = [reviewFile],
+  reviewGateStatus = null,
+}: {
+  workspace?: Partial<AgentConversationWorkspace>;
+  freshness?: Partial<AgentConversationWorkspaceFreshness>;
+  changes?: FileChange[];
+  reviewGateStatus?: "reviewing" | "blocking" | "failed" | "required" | null;
+} = {}) {
+  mockAgentViewData(conversation({ agentMode: workspace.mode ?? "edit" }));
+  getAgentConversationWorkspaceMock.mockResolvedValue(
+    conversationWorkspace({ mode: "edit", ...workspace }),
+  );
+  getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(
+    fullFreshness(freshness),
+  );
+  getWorkspaceReviewMock.mockResolvedValue({
+    changes,
+    commits: [],
+    baseRef: "main",
+    headRef: "HEAD",
+  });
+  const reviewContext = {
+    success: true,
+    workspace: conversationWorkspace({ mode: "edit", ...workspace }),
+    events: [],
+    target: null,
+    monitor: {
+      status: "idle",
+      reviewArtifactId: null,
+      reviewArtifactVersion: null,
+      reviewGateStatus,
+      reviewBlockingSummary:
+        reviewGateStatus === "blocking" ? "Address the blocking finding." : null,
+    },
+    isCurrent: false,
+    isOutdated: false,
+    shouldShowTab: reviewGateStatus !== null,
+  };
+  getWorkspaceReviewContextMock.mockResolvedValue(reviewContext);
+  realPublishPanelState.enabled = true;
+  realPublishPanelState.reviewContext = reviewContext;
+}
+
+async function openPublishPane() {
+  renderAgentsView();
+  selectSidebarConversationRow();
+  fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+  return screen.findByTestId(
+    "agents-publish-actionbar",
+    undefined,
+    deferredHydrationTimeout,
+  );
+}
+
 describe("AgentsView publish", () => {
-  beforeEach(setupAgentsViewTest);
+  beforeEach(() => {
+    setupAgentsViewTest();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  it("labels a current open pull request as published to GitHub", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+      freshness: { unpublishedCommitCount: 0 },
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() => {
+      expect(
+        within(actionbar).getByRole("heading", { name: "Published to GitHub" }),
+      ).toBeInTheDocument();
+      expect(actionbar).toHaveTextContent("1 changed file published for review.");
+    });
+  });
+
+  it.each([
+    {
+      name: "ready changes",
+      workspace: {},
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Ready to publish",
+      detail: "1 changed file ready for review.",
+    },
+    {
+      name: "empty review",
+      workspace: {},
+      freshness: {},
+      changes: [],
+      reviewGateStatus: null,
+      title: "No changes to publish",
+      detail: "No changed files detected yet.",
+    },
+    {
+      name: "repair pending",
+      workspace: { publicationPushStatus: "needs_agent" },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Repair in progress",
+      detail: "Publishing will resume after the repair completes.",
+    },
+    {
+      name: "pull request conflict",
+      workspace: {
+        publicationPrNumber: 78,
+        prSupervisionStatus: "blocked",
+        prSupervisionSummary: "GitHub reported merge conflicts.",
+      },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Pull request conflicts",
+      detail: "Resolve conflicts",
+    },
+    {
+      name: "base update required",
+      workspace: {},
+      freshness: { isBaseAhead: true, hasUncommittedChanges: true },
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Update from base required",
+      detail: "Publishing will continue after this branch is updated.",
+    },
+    {
+      name: "blocked base",
+      workspace: {},
+      freshness: {
+        baseStatus: "blocked",
+        effectiveBaseRef: null,
+        effectiveBaseDisplayName: null,
+        baseBlockReason: "Saved base cannot be resolved.",
+      },
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Publishing blocked",
+      detail: "Publishing is blocked until the workspace base branch is resolved.",
+    },
+    {
+      name: "workspace review running",
+      workspace: {},
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: "reviewing" as const,
+      title: "Workspace Review in progress",
+      detail: "Workspace Review is running.",
+    },
+    {
+      name: "workspace review blocking",
+      workspace: {},
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: "blocking" as const,
+      title: "Workspace Review blocking",
+      detail: "Address the blocking finding.",
+    },
+    {
+      name: "workspace review failed",
+      workspace: {},
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: "failed" as const,
+      title: "Workspace Review failed",
+      detail: "Retry Review before publishing.",
+    },
+    {
+      name: "workspace review required",
+      workspace: {},
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: "required" as const,
+      title: "Workspace Review required",
+      detail: "Workspace Review is required before publishing.",
+    },
+    {
+      name: "task pipeline ownership",
+      workspace: { linkedPlanBranchId: "plan-branch-1" },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Managed by task pipeline",
+      detail: "Publishing is managed by this ideation plan's task pipeline.",
+    },
+    {
+      name: "description failure",
+      workspace: { publicationPushStatus: "description_failed" },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Publishing failed",
+      detail: "could not draft a PR description",
+    },
+    {
+      name: "automatic publishing paused",
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        autoPublishEnabled: false,
+      },
+      freshness: { hasUncommittedChanges: true },
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Automatic publishing paused",
+      detail: "Manual Commit & Publish remains available.",
+    },
+    {
+      name: "automatic publishing armed",
+      workspace: { autoPublishInitialPrEnabled: true },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Auto Publish enabled",
+      detail: "when the agent finishes.",
+    },
+    {
+      name: "merged pull request",
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "merged",
+      },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Pull Request Merged",
+      detail: "a new workspace branch will be created automatically.",
+    },
+    {
+      name: "closed pull request",
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "closed",
+      },
+      freshness: {},
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Pull Request Closed",
+      detail: "a new workspace branch will be created automatically.",
+    },
+  ])("renders the $name presentation", async ({
+    workspace,
+    freshness,
+    changes,
+    reviewGateStatus,
+    title,
+    detail,
+  }) => {
+    configurePublishPane({
+      workspace,
+      freshness,
+      changes,
+      reviewGateStatus,
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() => {
+      expect(within(actionbar).getByRole("heading", { name: title })).toBeInTheDocument();
+      expect(actionbar).toHaveTextContent(detail);
+    });
+  });
+
+  it("opens closed pull requests in count-free historical cumulative mode", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "closed",
+      },
+      changes: [reviewFile],
+    });
+
+    await openPublishPane();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent(
+        "Pull request changes",
+      ),
+    );
+    expect(screen.getByTestId("diff-filter-trigger")).not.toHaveTextContent(
+      "Workspace changes",
+    );
+  });
+
+  it("shows inline-pane hydration while the visible review is loading", async () => {
+    configurePublishPane();
+    getWorkspaceReviewMock.mockImplementation(() => new Promise(() => {}));
+
+    const actionbar = await openPublishPane();
+
+    expect(
+      within(actionbar).getByRole("heading", { name: "Checking workspace changes" }),
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to reviewing workspace changes after review loading fails", async () => {
+    configurePublishPane();
+    getWorkspaceReviewMock.mockRejectedValue(new Error("Review unavailable"));
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Review workspace changes" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps a blocking Workspace Review above otherwise-current publish facts", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+      freshness: { unpublishedCommitCount: 0 },
+      reviewGateStatus: "required",
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Workspace Review required" }),
+      ).toBeInTheDocument(),
+    );
+    expect(within(actionbar).queryByText("Published to GitHub")).not.toBeInTheDocument();
+  });
+
+  it("labels only a normal base-ahead update as updating branch", async () => {
+    updateWorkspaceFromBaseMock.mockImplementation(() => new Promise(() => {}));
+    configurePublishPane({
+      freshness: { isBaseAhead: true, hasUncommittedChanges: true },
+    });
+    const actionbar = await openPublishPane();
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Update from base required" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    const confirmation = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Update branch" }));
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Updating branch" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps conflict recovery above an in-flight branch update", async () => {
+    updateWorkspaceFromBaseMock.mockImplementation(() => new Promise(() => {}));
+    configurePublishPane({
+      workspace: {
+        publicationPrNumber: 78,
+        prSupervisionStatus: "blocked",
+        prSupervisionSummary: "GitHub reported merge conflicts.",
+      },
+      freshness: { isBaseAhead: true, hasUncommittedChanges: true },
+    });
+    const actionbar = await openPublishPane();
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Pull request conflicts" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-resolve-pr-conflicts"));
+    const confirmation = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Resolve conflicts" }));
+
+    expect(
+      within(actionbar).getByRole("heading", { name: "Pull request conflicts" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).queryByText("Updating branch")).not.toBeInTheDocument();
+  });
+
+  it("shows publishing progress as one pipeline card before settling", async () => {
+    let finishPublish: ((result: unknown) => void) | undefined;
+    publishAgentConversationWorkspaceMock.mockImplementation(
+      () => new Promise<unknown>((resolve) => {
+        finishPublish = resolve;
+      }),
+    );
+    configurePublishPane();
+    const actionbar = await openPublishPane();
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit & Publish" }));
+    fireEvent.click(await screen.findByTestId("agents-publish-dialog-close"));
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Publishing workspace" }),
+      ).toBeInTheDocument(),
+    );
+    const pipeline = screen.getByTestId("agents-publish-pipeline");
+    expect(pipeline).toHaveClass("mt-0");
+    expect(screen.queryByTestId("agents-publish-summaries")).not.toBeInTheDocument();
+
+    const publishedWorkspace = conversationWorkspace({
+      mode: "edit",
+      publicationPushStatus: "pushed",
+      publicationPrNumber: 78,
+    });
+    getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(
+      fullFreshness({ unpublishedCommitCount: 0 }),
+    );
+    await act(async () =>
+      finishPublish?.({
+        workspace: publishedWorkspace,
+        commitSha: "commit-sha",
+        pushed: true,
+        createdPr: true,
+        prNumber: 78,
+        prUrl: "https://github.com/mock/project/pull/78",
+      }),
+    );
+  });
+
+  it("keeps loaded inline annotations while removing redundant sync summaries", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+      freshness: { unpublishedCommitCount: 0 },
+    });
+    getWorkspaceDiffMock.mockResolvedValue({
+      filePath: reviewFile.path,
+      language: "typescript",
+      hunks: [],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
+    });
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [{
+        id: "review-comment:1",
+        source: "review_comment",
+        path: reviewFile.path,
+        side: "right",
+        startLine: 1,
+        endLine: 1,
+        startColumn: null,
+        endColumn: null,
+        level: "comment",
+        status: null,
+        title: null,
+        message: "Please adjust this line.",
+        author: "octocat",
+        checkName: null,
+        url: null,
+        isOutdated: false,
+        createdAt: null,
+      }],
+      sourcesUnavailable: [{
+        source: "check_runs",
+        reason: "Missing checks permission",
+      }],
+    });
+    getWorkspaceReviewHunkAnnotationsMock.mockResolvedValue({
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      targetScope: "selected_source",
+      headSha: "head-sha",
+      diffFingerprint: "fingerprint-1",
+      annotations: [{
+        id: "workspace-review-hunk-1",
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        artifactId: "artifact-1",
+        artifactVersion: 1,
+        targetScope: "selected_source",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-1",
+        path: reviewFile.path,
+        diffSource: "selected_source",
+        hunkHeader: "@@ -1,1 +1,1 @@",
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        title: "Review summary",
+        message: "This hunk updates inline diffs.",
+        level: "notice",
+        createdByRunId: "run-1",
+        createdAt: "2026-07-01T00:00:00Z",
+      }],
+    });
+
+    await openPublishPane();
+
+    expect(
+      await screen.findByTestId("agents-pr-annotations-partial-warning"),
+    ).toHaveTextContent("GitHub annotations partially unavailable");
+    expect(await screen.findByTestId("file-diff-annotation-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("file-diff-hunk-annotation-count")).toHaveTextContent("1");
+    expect(screen.queryByText(/GitHub annotation.*synced/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/workspace review note.*synced/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Checking GitHub annotations...")).not.toBeInTheDocument();
+  });
 
   it("opens the right-side publish pane from the Commit & Publish header shortcut", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));

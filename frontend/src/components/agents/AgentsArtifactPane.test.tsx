@@ -387,8 +387,7 @@ vi.mock("@/api/tasks", async (importOriginal) => {
         pauseExecutionPlanMock(...args),
       resumeExecutionPlan: (...args: unknown[]) =>
         resumeExecutionPlanMock(...args),
-      stopExecutionPlan: (...args: unknown[]) =>
-        stopExecutionPlanMock(...args),
+      stopExecutionPlan: (...args: unknown[]) => stopExecutionPlanMock(...args),
     },
   };
 });
@@ -426,7 +425,10 @@ vi.mock("@/components/TaskGraph", () => ({
     hidePlanSelector?: boolean;
     readOnly?: boolean;
   }) => (
-    <div data-testid="mock-agent-task-graph" data-read-only={readOnly ? "true" : "false"}>
+    <div
+      data-testid="mock-agent-task-graph"
+      data-read-only={readOnly ? "true" : "false"}
+    >
       <div data-testid="floating-graph-filters">Graph filters</div>
       {!hidePlanSelector && (
         <div data-testid="global-plan-selector">Global plan selector</div>
@@ -444,7 +446,7 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
   }: {
     onFocusTaskRuntime?: (
       taskId: string,
-      contextType: "task_execution" | "review" | "merge"
+      contextType: "task_execution" | "review" | "merge",
     ) => void;
     selectedTaskIdOverride?: string | null;
     onCloseOverride?: () => void;
@@ -577,9 +579,8 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
 });
 
 vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import("@/hooks/useDependencyGraph")
-  >();
+  const actual =
+    await importOriginal<typeof import("@/hooks/useDependencyGraph")>();
   return {
     ...actual,
     useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
@@ -589,7 +590,10 @@ vi.mock("@/hooks/useDependencyGraph", async (importOriginal) => {
 
 vi.mock("@/hooks/useTasks", () => ({
   useTasks: (...args: unknown[]) => useTasksMock(...args),
-  useSessionTaskHistoryAvailability: (_projectId: string, sessionId: string | null) => {
+  useSessionTaskHistoryAvailability: (
+    _projectId: string,
+    sessionId: string | null,
+  ) => {
     const result = useTasksMock() as {
       data?: Array<{ ideationSessionId?: string | null }>;
       isError?: boolean;
@@ -606,8 +610,12 @@ vi.mock("@/hooks/useTasks", () => ({
     all: ["tasks"],
     lists: () => ["tasks", "list"],
     list: (projectId: string) => ["tasks", "list", projectId],
-    sessionHistory: (projectId: string, sessionId: string) =>
-      ["tasks", "session-history", projectId, sessionId],
+    sessionHistory: (projectId: string, sessionId: string) => [
+      "tasks",
+      "session-history",
+      projectId,
+      sessionId,
+    ],
   },
 }));
 
@@ -1084,7 +1092,8 @@ function workspaceReviewContext(
     autoMergeGuardMethod?: string | null;
     autoMergeGuardLastError?: string | null;
     reviewGateBypassedAt?: string | null;
-    reviewGateBypassedTargetScope?: "selected_source" | "workspace_delta" | null;
+    reviewGateBypassedTargetScope?:
+      "selected_source" | "workspace_delta" | null;
     reviewGateBypassedDiffFingerprint?: string | null;
     reviewGateBypassedArtifactId?: string | null;
     reviewGateBypassedArtifactVersion?: number | null;
@@ -1098,10 +1107,8 @@ function workspaceReviewContext(
     overrides.target === undefined ? workspaceReviewTarget : overrides.target;
   const reviewArtifactId = overrides.reviewArtifactId ?? null;
   const conversationId = overrides.conversationId ?? "conversation-1";
-  const reviewArtifactIsCurrent =
-    overrides.isCurrent ?? false;
-  const reviewArtifactIsOutdated =
-    overrides.isOutdated ?? false;
+  const reviewArtifactIsCurrent = overrides.isCurrent ?? false;
+  const reviewArtifactIsOutdated = overrides.isOutdated ?? false;
 
   return {
     success: true,
@@ -1127,18 +1134,26 @@ function workspaceReviewContext(
         overrides.reviewOutcome === "passed"
           ? (target?.diffFingerprint ?? null)
           : null,
-      selectedSourceBaseRef: target?.scope === "selected_source" ? target.baseRef : null,
-      selectedSourceBaseSha: target?.scope === "selected_source" ? target.baseSha : null,
-      selectedSourceHeadRef: target?.scope === "selected_source" ? target.headRef : null,
-      selectedSourceHeadSha: target?.scope === "selected_source" ? target.headSha : null,
+      selectedSourceBaseRef:
+        target?.scope === "selected_source" ? target.baseRef : null,
+      selectedSourceBaseSha:
+        target?.scope === "selected_source" ? target.baseSha : null,
+      selectedSourceHeadRef:
+        target?.scope === "selected_source" ? target.headRef : null,
+      selectedSourceHeadSha:
+        target?.scope === "selected_source" ? target.headSha : null,
       selectedSourcePullRequestNumber:
         target?.scope === "selected_source"
           ? (target.sourcePullRequestNumber ?? null)
           : null,
-      workspaceBaseRef: target?.scope === "workspace_delta" ? target.baseRef : null,
-      workspaceBaseSha: target?.scope === "workspace_delta" ? target.baseSha : null,
-      workspaceHeadRef: target?.scope === "workspace_delta" ? target.headRef : null,
-      workspaceHeadSha: target?.scope === "workspace_delta" ? target.headSha : null,
+      workspaceBaseRef:
+        target?.scope === "workspace_delta" ? target.baseRef : null,
+      workspaceBaseSha:
+        target?.scope === "workspace_delta" ? target.baseSha : null,
+      workspaceHeadRef:
+        target?.scope === "workspace_delta" ? target.headRef : null,
+      workspaceHeadSha:
+        target?.scope === "workspace_delta" ? target.headSha : null,
       currentDiffFingerprint: target?.diffFingerprint ?? null,
       previousVersionId: null,
       reviewGateBypassedAt: overrides.reviewGateBypassedAt ?? null,
@@ -1981,8 +1996,7 @@ describe("AgentsArtifactPane", () => {
     async (fromId, toId) => {
       const queryClient = createTestQueryClient();
       let resolveApproval:
-        | ((value: Record<string, string | number | null>) => void)
-        | undefined;
+        ((value: Record<string, string | number | null>) => void) | undefined;
       const approval = new Promise<Record<string, string | number | null>>(
         (resolve) => {
           resolveApproval = resolve;
@@ -2059,8 +2073,9 @@ describe("AgentsArtifactPane", () => {
       );
 
       rerender(pane(toId));
-      expect(await screen.findByText(`${toId.toUpperCase()} persona content`))
-        .toBeInTheDocument();
+      expect(
+        await screen.findByText(`${toId.toUpperCase()} persona content`),
+      ).toBeInTheDocument();
       const incomingApprove = screen.getByRole("button", {
         name: "Approve Persona",
       });
@@ -2074,13 +2089,15 @@ describe("AgentsArtifactPane", () => {
         await approval;
       });
 
-      expect(screen.getByText(`${toId.toUpperCase()} persona content`))
-        .toBeInTheDocument();
+      expect(
+        screen.getByText(`${toId.toUpperCase()} persona content`),
+      ).toBeInTheDocument();
       expect(
         screen.queryByText(`${fromId.toUpperCase()} persona content`),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve Persona" }))
-        .toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Approve Persona" }),
+      ).toBeInTheDocument();
     },
   );
 
@@ -2096,7 +2113,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     const planTab = await screen.findByTestId("agents-artifact-tab-plan");
-    expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-verification"),
+    ).not.toBeInTheDocument();
 
     fireEvent.contextMenu(planTab);
     await userEvent.click(await screen.findByText("Hide “Plan”"));
@@ -2120,8 +2139,12 @@ describe("AgentsArtifactPane", () => {
 
     const tabRow = screen.getByTestId("agents-artifact-tab-row");
     expect(artifactTabIds(tabRow)).toEqual(["agents-artifact-tab-persona"]);
-    expect(screen.getByTestId("agents-artifact-content-persona")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Customize artifact tabs")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-content-persona"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Customize artifact tabs"),
+    ).not.toBeInTheDocument();
 
     fireEvent.contextMenu(screen.getByTestId("agents-artifact-tab-persona"));
     expect(screen.queryByText("Hide “Persona”")).not.toBeInTheDocument();
@@ -2152,7 +2175,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByText("All tabs are hidden")).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "Customize tabs" })).not.toHaveLength(0);
+    expect(
+      screen.getAllByRole("button", { name: "Customize tabs" }),
+    ).not.toHaveLength(0);
   });
 
   it("defaults to Plan and Commit & Publish when no contextual artifact is attached", async () => {
@@ -2169,10 +2194,7 @@ describe("AgentsArtifactPane", () => {
     await screen.findByTestId("agents-artifact-tab-plan");
     expect(
       artifactTabIds(screen.getByTestId("agents-artifact-tab-row")),
-    ).toEqual([
-      "agents-artifact-tab-plan",
-      "agents-artifact-tab-publish",
-    ]);
+    ).toEqual(["agents-artifact-tab-plan", "agents-artifact-tab-publish"]);
   });
 
   it.each(integrationTabCases)(
@@ -2207,7 +2229,9 @@ describe("AgentsArtifactPane", () => {
         integrationQueryClient(attachments),
       );
 
-      expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeVisible();
+      expect(
+        await screen.findByTestId("agents-artifact-tab-plan"),
+      ).toBeVisible();
       expect(
         screen.queryByTestId(`agents-artifact-tab-${tab}`),
       ).not.toBeInTheDocument();
@@ -2452,7 +2476,10 @@ describe("AgentsArtifactPane", () => {
       isFetching: false,
     });
     getIdeationSessionMock.mockResolvedValue(
-      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+      }),
     );
 
     renderPane(
@@ -2464,7 +2491,9 @@ describe("AgentsArtifactPane", () => {
       { taskMode: "kanban" },
     );
 
-    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-tasks"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
       "Tasks are off",
     );
@@ -2485,7 +2514,10 @@ describe("AgentsArtifactPane", () => {
       isError: true,
     });
     getIdeationSessionMock.mockResolvedValue(
-      ideationSessionResponse({ status: "accepted", acceptanceStatus: "accepted" }),
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+      }),
     );
 
     renderPane(
@@ -2497,7 +2529,9 @@ describe("AgentsArtifactPane", () => {
       { taskMode: "graph" },
     );
 
-    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-tasks"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("tasks-read-only-banner")).toHaveTextContent(
       "Task history could not be checked",
     );
@@ -2520,8 +2554,12 @@ describe("AgentsArtifactPane", () => {
       { taskMode: "graph" },
     );
 
-    expect(await screen.findByTestId("floating-graph-filters")).toBeInTheDocument();
-    expect(screen.queryByTestId("global-plan-selector")).not.toBeInTheDocument();
+    expect(
+      await screen.findByTestId("floating-graph-filters"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("global-plan-selector"),
+    ).not.toBeInTheDocument();
   });
 
   it("passes task runtime focus requests from task details to the host chat", async () => {
@@ -2576,7 +2614,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     fireEvent.click(await screen.findByTestId("mock-agent-task-card"));
-    fireEvent.click(await screen.findByRole("button", { name: "Focus review runtime" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Focus review runtime" }),
+    );
 
     expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-1", "review");
   });
@@ -2663,17 +2703,31 @@ describe("AgentsArtifactPane", () => {
       expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
     );
 
-    expect(screen.getByTestId("agents-artifact-tab-automation")).toBeInTheDocument();
-    expect(await screen.findByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-tab-automation"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-pr"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("agents-artifact-tab-plan")).toHaveAttribute(
       "aria-disabled",
       "true",
     );
-    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-jira")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-granola")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-artifact-content-pr")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-tab-publish"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-jira"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-linear"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-granola"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-content-pr"),
+    ).toBeInTheDocument();
   });
 
   it("shows recovery instead of hidden Automation content when only disabled Plan remains", async () => {
@@ -2711,7 +2765,9 @@ describe("AgentsArtifactPane", () => {
       "aria-disabled",
       "true",
     );
-    expect(await screen.findByTestId("agents-artifact-content-hidden")).toBeVisible();
+    expect(
+      await screen.findByTestId("agents-artifact-content-hidden"),
+    ).toBeVisible();
     expect(
       screen.queryByTestId("agents-artifact-content-automation"),
     ).not.toBeInTheDocument();
@@ -2719,7 +2775,9 @@ describe("AgentsArtifactPane", () => {
     await userEvent.click(
       screen.getAllByRole("button", { name: "Customize tabs" })[0]!,
     );
-    expect(screen.getByText("No run plan has been authored yet.")).toBeVisible();
+    expect(
+      screen.getByText("No run plan has been authored yet."),
+    ).toBeVisible();
   });
 
   it("uses the automation tab as the setup-conversation fallback", async () => {
@@ -2788,25 +2846,25 @@ describe("AgentsArtifactPane", () => {
       queryClient,
     );
 
-    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
-    expect(await screen.findByText("Automation setup plan")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-plan"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Automation setup plan"),
+    ).toBeInTheDocument();
   });
 
   it("reuses Commit & Publish for the automation setup workspace", async () => {
-    renderPane(
-      "publish",
-      workspace({ mode: "automation" }),
-      vi.fn(),
-      false,
-      {
-        ...conversation(),
-        agentMode: "automation",
-        automationId: "automation-1",
-        automationRunId: null,
-      },
-    );
+    renderPane("publish", workspace({ mode: "automation" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "automation",
+      automationId: "automation-1",
+      automationRunId: null,
+    });
 
-    expect(await screen.findByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-publish"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
   });
 
@@ -2902,23 +2960,25 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    renderPane(
-      "plan",
-      workspace({ mode: "edit" }),
-      vi.fn(),
-      false,
-      {
-        ...conversation(),
-        agentMode: "automation",
-        automationId: "automation-1",
-        automationRunId: "run-1",
-      },
-    );
+    renderPane("plan", workspace({ mode: "edit" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "automation",
+      automationId: "automation-1",
+      automationRunId: "run-1",
+    });
 
-    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
-    expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
-    expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
-    expect(await screen.findByText("No ideation run attached")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-tab-plan"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-artifact-content-plan"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-plan-start-panel"),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("No ideation run attached"),
+    ).toBeInTheDocument();
   });
 
   it("keeps a focused automation run scoped to its Plan tab from the setup conversation", async () => {
@@ -2936,14 +2996,15 @@ describe("AgentsArtifactPane", () => {
         ],
       }),
     );
-    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
-      conversationId === "conversation-run-3"
-        ? workspace({
-            conversationId,
-            mode: "plan",
-            linkedIdeationSessionId: "session-1",
-          })
-        : null,
+    getConversationWorkspaceMock.mockImplementation(
+      async (conversationId: string) =>
+        conversationId === "conversation-run-3"
+          ? workspace({
+              conversationId,
+              mode: "plan",
+              linkedIdeationSessionId: "session-1",
+            })
+          : null,
     );
     getIdeationSessionMock.mockResolvedValue(
       ideationSessionResponse({ planArtifactId: "plan-artifact-1" }),
@@ -2980,9 +3041,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-artifact-tab-plan")).not.toHaveAttribute(
-        "aria-disabled",
-      ),
+      expect(
+        screen.getByTestId("agents-artifact-tab-plan"),
+      ).not.toHaveAttribute("aria-disabled"),
     );
     expect(
       await screen.findByTestId("agents-artifact-content-plan"),
@@ -2992,7 +3053,9 @@ describe("AgentsArtifactPane", () => {
         "conversation-run-3",
       ),
     );
-    expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-plan-start-panel"),
+    ).not.toBeInTheDocument();
   });
 
   it("fails closed when a focused automation run has no workspace", async () => {
@@ -3026,8 +3089,12 @@ describe("AgentsArtifactPane", () => {
     expect(
       await screen.findByText("Workspace status unavailable"),
     ).toBeInTheDocument();
-    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
-    expect(screen.queryByText("Loading workspace status…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("parent-workspace-branch"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading workspace status…"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render cached focused workspace metadata after its refresh fails", async () => {
@@ -3075,7 +3142,9 @@ describe("AgentsArtifactPane", () => {
       await screen.findByText("Workspace status unavailable"),
     ).toBeInTheDocument();
     expect(screen.queryByText("stale-focused-branch")).not.toBeInTheDocument();
-    expect(screen.queryByText("parent-workspace-branch")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("parent-workspace-branch"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the empty Plan tab visible when Review is also available", async () => {
@@ -3181,9 +3250,13 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-tab-publish"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-pr")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-pr"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders PR and publish tabs for PR-backed plan workspaces", () => {
@@ -3200,8 +3273,32 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-artifact-tab-publish"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+  });
+
+  it("hides local Review and falls back from a persisted Review tab in PLAN mode", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        reviewArtifactId: "stale-review-artifact",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "plan", linkedIdeationSessionId: null }),
+    );
+
+    expect(
+      await screen.findByTestId("agents-artifact-content-plan"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-review"),
+    ).not.toBeInTheDocument();
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
   });
 
   it("shows the PR artifact tab for DB-backed workspace pull requests", async () => {
@@ -3329,6 +3426,48 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("opens the exact Workspace Review transcript without starting review mutations", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    const onPublishWorkspace = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewConversationId: "review-conversation-current",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane(
+      "review",
+      workspace({ mode: "edit" }),
+      conversation(),
+      {
+        onFocusWorkspaceReview,
+        onPublishWorkspace,
+      },
+    );
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(onFocusWorkspaceReview).toHaveBeenCalledOnce();
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
+      "review-conversation-current",
+    );
+    expect(
+      screen
+        .getByTestId("agents-artifact-tab-review")
+        .querySelector("span[style='background: var(--accent-primary);']"),
+    ).not.toBeNull();
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+    expect(startWorkspaceReviewFixerMock).not.toHaveBeenCalled();
+    expect(approveWorkspaceReviewAnywayMock).not.toHaveBeenCalled();
+    expect(onPublishWorkspace).not.toHaveBeenCalled();
+  });
+
   it("does not focus Review chat when the Review tab has no child conversation", async () => {
     const onFocusWorkspaceReview = vi.fn();
     getWorkspaceReviewContextMock.mockResolvedValue(
@@ -3355,6 +3494,9 @@ describe("AgentsArtifactPane", () => {
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "View transcript" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens Review and focuses the Review chat from the publish Review CTA", async () => {
@@ -4686,7 +4828,9 @@ describe("AgentsArtifactPane", () => {
       await screen.findByRole("button", { name: "Stop Monitoring" }),
     );
     expect(
-      await screen.findByRole("heading", { name: "Stop PR review monitoring?" }),
+      await screen.findByRole("heading", {
+        name: "Stop PR review monitoring?",
+      }),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Stop After Review" }));
 
@@ -4729,7 +4873,9 @@ describe("AgentsArtifactPane", () => {
     await user.click(toggle);
 
     await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith("Auto Approve is unavailable"),
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Auto Approve is unavailable",
+      ),
     );
     expect(toggle).toBeChecked();
   });
@@ -4967,9 +5113,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
-        "Waiting for checks",
-      ),
+      expect(
+        screen.getByTestId("agents-pr-supervision-status"),
+      ).toHaveTextContent("Waiting for checks"),
     );
     expect(
       screen.getByRole("switch", { name: "GitHub auto-merge" }),
@@ -4988,9 +5134,9 @@ describe("AgentsArtifactPane", () => {
         screen.getByRole("switch", { name: "GitHub auto-merge" }),
       ).toBeChecked(),
     );
-    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
-      "Monitoring PR",
-    );
+    expect(
+      screen.getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Monitoring PR");
   });
 
   it("clears the PR supervision result override when refreshed workspace data advances", async () => {
@@ -5009,9 +5155,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
-        "Waiting for checks",
-      ),
+      expect(
+        screen.getByTestId("agents-pr-supervision-status"),
+      ).toHaveTextContent("Waiting for checks"),
     );
     expect(
       screen.getByRole("switch", { name: "GitHub auto-merge" }),
@@ -5028,9 +5174,9 @@ describe("AgentsArtifactPane", () => {
         screen.getByRole("switch", { name: "GitHub auto-merge" }),
       ).toBeChecked(),
     );
-    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
-      "Monitoring PR",
-    );
+    expect(
+      screen.getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Monitoring PR");
   });
 
   it("clears the PR supervision result override when switching workspaces", async () => {
@@ -5137,7 +5283,7 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("opens Execution settings from PR automation tooltip actions", async () => {
+  it("opens Workspace settings from PR automation tooltip actions", async () => {
     const user = userEvent.setup();
     renderPane(
       "publish",
@@ -5156,13 +5302,13 @@ describe("AgentsArtifactPane", () => {
       }),
     );
     const settingsActions = await screen.findAllByTestId(
-      "agents-tooltip-settings-execution",
+      "agents-tooltip-settings-workspace",
     );
     await user.click(settingsActions[0]);
 
     expect(useUiStore.getState().activeModal).toBe("settings");
     expect(useUiStore.getState().modalContext).toEqual({
-      section: "execution",
+      section: "workspace",
     });
   });
 
@@ -5562,9 +5708,7 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    expect(
-      screen.getByText("Review changes before publishing."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Loading changed files...")).toBeInTheDocument();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(getWorkspaceChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
@@ -6062,9 +6206,9 @@ describe("AgentsArtifactPane", () => {
       "conversation-1",
       "session-1",
     );
-    expect(useChatStore.getState().activeConversationIds["session:session-1"]).toBe(
-      "ideation-conversation-1",
-    );
+    expect(
+      useChatStore.getState().activeConversationIds["session:session-1"],
+    ).toBe("ideation-conversation-1");
     expect(sendAgentMessageMock.mock.invocationCallOrder[0]!).toBeGreaterThan(
       activateAgentTaskPipelineMock.mock.invocationCallOrder[0]!,
     );
@@ -6614,9 +6758,10 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
+    await screen.findByTestId("plan-display-chromeless");
     expect(
-      await screen.findByTestId("plan-lifecycle-banner"),
-    ).toHaveAttribute("data-lifecycle-state", "approved");
+      screen.queryByTestId("plan-lifecycle-banner"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("restart-implementation-button"),
     ).not.toBeInTheDocument();
@@ -6645,9 +6790,13 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
-    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("accepted-session-banner"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-tasks"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps durable session history visible when the active execution plan is foreign", async () => {
@@ -6688,7 +6837,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
-    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("accepted-session-banner"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
   });
@@ -6789,9 +6940,7 @@ describe("AgentsArtifactPane", () => {
     );
     let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
-    expect(dialog).toHaveTextContent(
-      "The accepted plan will remain unchanged",
-    );
+    expect(dialog).toHaveTextContent("The accepted plan will remain unchanged");
     expect(dialog).toHaveTextContent(
       "current implementation attempt, Kanban tasks, and uncommitted implementation changes will be discarded",
     );
@@ -6829,7 +6978,9 @@ describe("AgentsArtifactPane", () => {
       createdTaskIds: ["task-new"],
     });
 
-    await waitFor(() => expect(loadActivePlan).toHaveBeenCalledWith("project-1"));
+    await waitFor(() =>
+      expect(loadActivePlan).toHaveBeenCalledWith("project-1"),
+    );
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Implementation restarted with 1 task",
     );
@@ -6910,9 +7061,7 @@ describe("AgentsArtifactPane", () => {
     await user.click(screen.getByTestId("plan-lifecycle-stop-button"));
     dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Stop this implementation plan?");
-    await user.click(
-      within(dialog).getByRole("button", { name: "Stop Plan" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "Stop Plan" }));
 
     await waitFor(() =>
       expect(stopExecutionPlanMock).toHaveBeenCalledWith({
@@ -7196,9 +7345,9 @@ describe("AgentsArtifactPane", () => {
     const banner = await screen.findByTestId("plan-lifecycle-banner");
 
     expect(banner).toHaveAttribute("data-lifecycle-state", "needs_approval");
-    expect(
-      banner.style.getPropertyValue("--plan-lifecycle-accent"),
-    ).toBe("var(--status-warning)");
+    expect(banner.style.getPropertyValue("--plan-lifecycle-accent")).toBe(
+      "var(--status-warning)",
+    );
     expect(within(banner).getByText("Plan needs approval")).toBeInTheDocument();
     expect(
       within(banner).getByRole("button", { name: /Approve Plan/i }),
@@ -7206,9 +7355,13 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(banner).getByRole("button", { name: /Verify Plan/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("accepted-session-banner"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-tasks"),
+    ).not.toBeInTheDocument();
 
     const planDisplay = await screen.findByTestId("plan-display-chromeless");
     expect(
@@ -7291,9 +7444,9 @@ describe("AgentsArtifactPane", () => {
     const banner = await screen.findByTestId("plan-lifecycle-banner");
 
     expect(banner).toHaveAttribute("data-lifecycle-state", "approved");
-    expect(
-      banner.style.getPropertyValue("--plan-lifecycle-accent"),
-    ).toBe("var(--status-info)");
+    expect(banner.style.getPropertyValue("--plan-lifecycle-accent")).toBe(
+      "var(--status-info)",
+    );
     expect(within(banner).getByText("Plan approved")).toBeInTheDocument();
     await waitFor(() =>
       expect(
@@ -7311,7 +7464,9 @@ describe("AgentsArtifactPane", () => {
     ).toBeInTheDocument();
     expect(within(banner).queryByText(/\d+ tasks?/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-tasks"),
+    ).not.toBeInTheDocument();
 
     const planDisplay = screen.getByTestId("plan-display-chromeless");
     expect(
@@ -7321,7 +7476,9 @@ describe("AgentsArtifactPane", () => {
       within(planDisplay).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
     expect(
-      within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
+      within(planDisplay).queryByRole("button", {
+        name: /Implement Directly/i,
+      }),
     ).not.toBeInTheDocument();
   });
 
@@ -7348,7 +7505,10 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(banner).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
-    expect(within(banner).getByText(/Tasks is off/i)).toBeInTheDocument();
+    expect(within(banner).queryByText(/Tasks is off/i)).not.toBeInTheDocument();
+    expect(
+      within(banner).getByText(/Choose the next step/i),
+    ).toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
@@ -7438,9 +7598,9 @@ describe("AgentsArtifactPane", () => {
     const banner = await screen.findByTestId("plan-lifecycle-banner");
 
     expect(banner).toHaveAttribute("data-lifecycle-state", "accepted");
-    expect(
-      banner.style.getPropertyValue("--plan-lifecycle-accent"),
-    ).toBe("var(--status-success)");
+    expect(banner.style.getPropertyValue("--plan-lifecycle-accent")).toBe(
+      "var(--status-success)",
+    );
     expect(within(banner).getByText("Plan accepted")).toBeInTheDocument();
     expect(within(banner).getByText("2 tasks")).toBeInTheDocument();
     expect(within(banner).getByText("1 in progress")).toBeInTheDocument();
@@ -7497,7 +7657,9 @@ describe("AgentsArtifactPane", () => {
       within(planDisplay).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
     expect(
-      within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
+      within(planDisplay).queryByRole("button", {
+        name: /Implement Directly/i,
+      }),
     ).not.toBeInTheDocument();
   });
 
@@ -7567,6 +7729,15 @@ describe("AgentsArtifactPane", () => {
       createdAt: "2026-04-23T09:31:00Z",
       updatedAt: "2026-04-23T09:31:00Z",
     });
+    switchAgentConversationModeMock.mockResolvedValue({
+      conversation: conversation({ agentMode: "edit" }),
+      workspace: workspace({
+        mode: "edit",
+        linkedIdeationSessionId: "session-1",
+      }),
+    });
+
+    const onConversationModeSwitched = vi.fn();
 
     renderPane(
       "plan",
@@ -7577,6 +7748,7 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      { onConversationModeSwitched },
     );
 
     expect(
@@ -7608,6 +7780,11 @@ describe("AgentsArtifactPane", () => {
     );
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "edit",
+      expect.objectContaining({ mode: "edit" }),
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });
@@ -7835,9 +8012,13 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByText("RalphX continues this run automatically after approval."),
+      await screen.findByText(
+        "RalphX continues this run automatically after approval.",
+      ),
     ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Approve Plan/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Approve Plan/i }),
+    );
 
     await waitFor(() =>
       expect(approvePlanArtifactMock).toHaveBeenCalledWith({
@@ -7895,7 +8076,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByText("RalphX continues this run automatically after approval."),
+      await screen.findByText(
+        "RalphX continues this run automatically after approval.",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Implement Directly/i }),
@@ -8126,9 +8309,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText("Verify this plan again?")).toBeInTheDocument();
     expect(confirmVerificationMock).not.toHaveBeenCalled();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Verify again" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Verify again" }));
     await waitFor(() =>
       expect(confirmVerificationMock).toHaveBeenCalledWith("session-1"),
     );
@@ -8201,7 +8382,10 @@ describe("AgentsArtifactPane", () => {
       },
     );
 
-    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
+    await screen.findByTestId("plan-display-chromeless");
+    expect(
+      screen.queryByTestId("plan-lifecycle-banner"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -8275,7 +8459,10 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
+    await screen.findByTestId("plan-display-chromeless");
+    expect(
+      screen.queryByTestId("plan-lifecycle-banner"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -9180,7 +9367,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(publishButton).toHaveTextContent("Commit & Publish"),
     );
-    await screen.findByText("Review changes before publishing.");
+    await screen.findByText("Loading changed files...");
     expect(publishButton).toBeEnabled();
     expect(publishButton).not.toHaveTextContent("PR is up to date");
 
@@ -10365,6 +10552,7 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
+    const publish = vi.fn();
     renderPane(
       "publish",
       workspace({
@@ -10373,7 +10561,7 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         publicationPushStatus: "needs_agent",
       }),
-      vi.fn(),
+      publish,
       false,
       null,
       {},
@@ -10422,9 +10610,27 @@ describe("AgentsArtifactPane", () => {
       screen.queryByText("Could not load workspace changes"),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByTestId("agents-pr-supervision-controls"),
+      screen.getByTestId("agents-pr-supervision-controls"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Auto Publish" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Autofix CI & Reviews" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+    expect(
+      screen.queryByTestId("agents-update-from-base"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-close-pr")).not.toBeInTheDocument();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+    expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    expect(closeWorkspacePrMock).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(getWorkspaceRepairSummaryMock).toHaveBeenCalledWith(
         "conversation-1",
@@ -10432,6 +10638,189 @@ describe("AgentsArtifactPane", () => {
     );
     expect(getWorkspaceRepairConflictDiffMock).not.toHaveBeenCalled();
     expect(getWorkspaceRepairUnstagedChangesMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps pre-PR repair automation preferences configurable while initial Auto Publish is off", async () => {
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean },
+      ) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          publicationPushStatus: "needs_agent",
+          autoPublishInitialPrEnabled: false,
+          prAutofixEnabled: input.autoFixEnabled,
+          prAutoMergeDesired: input.autoMergeDesired,
+          prAutoMergeMethod: "squash",
+          prSupervisionStatus:
+            input.autoFixEnabled || input.autoMergeDesired
+              ? "monitoring"
+              : "disabled",
+        }),
+    );
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+        autoPublishInitialPrEnabled: false,
+      }),
+    );
+
+    expect(
+      await screen.findByTestId("agents-auto-publish-switch"),
+    ).not.toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-autofix-switch")).toBeChecked(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+  });
+
+  it("preserves published-PR automation pause and resume semantics during repair", async () => {
+    const initialRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      prAutofixEnabled: false,
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "disabled",
+    });
+    const enabledRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      prAutofixEnabled: true,
+      prAutoMergeDesired: true,
+      prAutoMergeCurrent: true,
+      prSupervisionStatus: "monitoring",
+    });
+    const pausedRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      autoPublishEnabled: false,
+      autoPublishPausedPrAutofixEnabled: true,
+      autoPublishPausedPrAutoMergeDesired: true,
+      prAutofixEnabled: false,
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "paused",
+    });
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        _conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean },
+      ) => ({
+        ...initialRepair,
+        prAutofixEnabled: input.autoFixEnabled,
+        prAutoMergeDesired: input.autoMergeDesired,
+        prAutoMergeCurrent: input.autoMergeDesired,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+    setWorkspaceAutoPublishMock.mockImplementation(
+      async (
+        _conversationId: string,
+        input: { autoPublishEnabled: boolean },
+      ) => (input.autoPublishEnabled ? enabledRepair : pausedRepair),
+    );
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialRepair);
+
+    expect(await screen.findByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-autofix-switch")).toBeChecked(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    rerenderWorkspace(enabledRepair);
+
+    fireEvent.click(screen.getByTestId("agents-auto-publish-switch"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Pause Auto Publish",
+      }),
+    );
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        { autoPublishEnabled: false },
+      ),
+    );
+    rerenderWorkspace(pausedRepair);
+
+    expect(screen.getByTestId("agents-auto-publish-switch")).not.toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeDisabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeDisabled();
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+    expect(
+      screen.queryByTestId("agents-update-from-base"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-close-pr")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-auto-publish-switch"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Resume Auto Publish",
+      }),
+    );
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        { autoPublishEnabled: true },
+      ),
+    );
+    rerenderWorkspace(enabledRepair);
+
+    expect(screen.getByTestId("agents-auto-publish-switch")).toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
   });
 
   it("labels merge-paused repair state", async () => {
@@ -10716,7 +11105,9 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
+    expect(
+      screen.getByTestId("agents-publish-review-auto-merge-guard"),
+    ).toHaveTextContent(
       "GitHub auto-merge is paused while Workspace Review is active.",
     );
 
@@ -10731,7 +11122,9 @@ describe("AgentsArtifactPane", () => {
         isCurrent: true,
       }),
     );
-    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
+    expect(
+      screen.getByTestId("agents-publish-review-auto-merge-guard"),
+    ).toHaveTextContent(
       "GitHub auto-merge will resume after these reviewed changes are published.",
     );
 
@@ -10747,9 +11140,9 @@ describe("AgentsArtifactPane", () => {
         isCurrent: true,
       }),
     );
-    expect(screen.getByTestId("agents-publish-review-auto-merge-guard")).toHaveTextContent(
-      "Branch protection changed",
-    );
+    expect(
+      screen.getByTestId("agents-publish-review-auto-merge-guard"),
+    ).toHaveTextContent("Branch protection changed");
   });
 
   it("does not keep auto-merge request progress active while PR supervision is monitoring", () => {
@@ -10772,7 +11165,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText("Monitoring PR")).toBeInTheDocument();
   });
 
-  it("shows synced GitHub PR annotation count for published workspaces", async () => {
+  it("does not render a redundant synced-annotation summary for published workspaces", async () => {
     getWorkspacePrAnnotationsMock.mockResolvedValue({
       prNumber: 78,
       headSha: "head-sha",
@@ -10811,14 +11204,17 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(
       () =>
-        expect(
-          screen.getByTestId("agents-pr-annotations-summary"),
-        ).toHaveTextContent("1 GitHub annotation synced"),
+        expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith(
+          "conversation-1",
+        ),
       deferredHydrationTimeout,
     );
-    expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith(
-      "conversation-1",
-    );
+    expect(
+      screen.queryByText("1 GitHub annotation synced"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-publish-summaries"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows partial GitHub PR annotation unavailability for published workspaces", async () => {
@@ -10846,7 +11242,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(
       () =>
         expect(
-          screen.getByTestId("agents-pr-annotations-summary"),
+          screen.getByTestId("agents-pr-annotations-partial-warning"),
         ).toHaveTextContent("GitHub annotations partially unavailable"),
       deferredHydrationTimeout,
     );

@@ -67,6 +67,21 @@ fn native(state: NativeMcpState) -> NativeMcpServerSnapshot {
     }
 }
 
+#[cfg(unix)]
+fn write_reserved_cleanup_cli(home: &std::path::Path) -> std::path::PathBuf {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let cli = home.join("fake-claude");
+    fs::write(
+        &cli,
+        "#!/bin/sh\nprintf '{\"mcpServers\":{}}' > \"$HOME/.claude.json\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    cli
+}
+
 fn policy(
     server_state: McpOverrideState,
     tool: Option<(&str, McpOverrideState)>,
@@ -323,7 +338,7 @@ async fn provider_native_reserved_id_collision_fails_closed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn retry_retires_exact_legacy_claude_registration_once_before_launch() {
+async fn retry_removes_reserved_claude_registration_once_before_launch() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
@@ -385,11 +400,10 @@ async fn retry_retires_exact_legacy_claude_registration_once_before_launch() {
         repo,
         home.path().join(".ralphx/mcp.yaml"),
     )
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf())
-    .with_legacy_claude_mcp_cleanup_cli_for_test(fake_cli);
+    .with_reserved_claude_mcp_cleanup_cli_for_test(fake_cli);
 
     service
-        .retry_legacy_claude_registration_repair()
+        .retry_reserved_claude_registration_repair()
         .await
         .unwrap();
     service
@@ -403,8 +417,9 @@ async fn retry_retires_exact_legacy_claude_registration_once_before_launch() {
     assert_eq!(remaining, cleaned);
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn retry_rejects_an_ambiguous_legacy_claude_registration_without_running_cleanup() {
+async fn retry_removes_an_arbitrary_reserved_claude_user_registration() {
     use std::fs;
     use std::sync::Arc;
 
@@ -412,7 +427,6 @@ async fn retry_rejects_an_ambiguous_legacy_claude_registration_without_running_c
     use crate::infrastructure::memory::MemoryMcpPolicyRepository;
 
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".ralphx")).unwrap();
     fs::write(
         home.path().join(".claude.json"),
@@ -421,33 +435,35 @@ async fn retry_rejects_an_ambiguous_legacy_claude_registration_without_running_c
                 "ralphx": {
                     "type": "stdio",
                     "command": "node",
-                    "args": [app_data.path().join("custom/ralphx-mcp-server.js")]
+                    "args": ["missing/custom/ralphx-mcp-server.js"]
                 }
             }
         })
         .to_string(),
     )
     .unwrap();
+    let fake_cli = write_reserved_cleanup_cli(home.path());
     let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
     let service = super::mcp_policy_service::McpPolicyService::new(
         repo,
         home.path().join(".ralphx/mcp.yaml"),
     )
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+    .with_reserved_claude_mcp_cleanup_cli_for_test(fake_cli);
 
-    let error = service
-        .retry_legacy_claude_registration_repair()
+    let changed = service
+        .retry_reserved_claude_registration_repair()
         .await
-        .expect_err("ambiguous registrations must require manual cleanup")
-        .to_string();
+        .unwrap();
 
-    assert!(error.contains("[ralphx:mcp_setup_preflight]"));
-    assert!(error.contains("ambiguous_reserved_id"));
-    assert!(home.path().join(".claude.json").exists());
+    assert!(changed);
+    assert!(!fs::read_to_string(home.path().join(".claude.json"))
+        .unwrap()
+        .contains("ralphx"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn launch_preflight_preserves_an_ambiguous_legacy_registration_for_manual_remediation() {
+async fn launch_preflight_removes_arbitrary_reserved_user_registration_and_continues() {
     use std::fs;
     use std::sync::Arc;
 
@@ -455,33 +471,33 @@ async fn launch_preflight_preserves_an_ambiguous_legacy_registration_for_manual_
     use crate::infrastructure::memory::MemoryMcpPolicyRepository;
 
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".ralphx")).unwrap();
     fs::write(
         home.path().join(".claude.json"),
         r#"{"mcpServers":{"ralphx":{"command":"user-owned"}}}"#,
     )
     .unwrap();
+    let fake_cli = write_reserved_cleanup_cli(home.path());
     let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
     let service = super::mcp_policy_service::McpPolicyService::new(
         repo,
         home.path().join(".ralphx/mcp.yaml"),
     )
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+    .with_reserved_claude_mcp_cleanup_cli_for_test(fake_cli);
 
-    let error = service
+    let launch = service
         .resolve_launch_policy(AgentHarnessKind::Claude, None, None)
         .await
-        .expect_err("ambiguous registrations must never be removed automatically")
-        .to_string();
+        .unwrap();
 
-    assert!(error.contains("[ralphx:mcp_setup_preflight]"));
-    assert!(error.contains("ambiguous_reserved_id"));
-    assert!(home.path().join(".claude.json").exists());
+    assert!(launch.disabled_servers.is_empty());
+    assert!(!fs::read_to_string(home.path().join(".claude.json"))
+        .unwrap()
+        .contains("ralphx"));
 }
 
 #[tokio::test]
-async fn retry_without_a_legacy_registration_is_a_safe_noop() {
+async fn retry_without_a_reserved_registration_is_a_safe_noop() {
     use std::fs;
     use std::sync::Arc;
 
@@ -489,24 +505,22 @@ async fn retry_without_a_legacy_registration_is_a_safe_noop() {
     use crate::infrastructure::memory::MemoryMcpPolicyRepository;
 
     let home = tempfile::tempdir().unwrap();
-    let app_data = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".ralphx")).unwrap();
     let repo: Arc<dyn McpPolicyRepository> = Arc::new(MemoryMcpPolicyRepository::new());
     let service = super::mcp_policy_service::McpPolicyService::new(
         repo,
         home.path().join(".ralphx/mcp.yaml"),
-    )
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+    );
 
     assert!(!service
-        .retry_legacy_claude_registration_repair()
+        .retry_reserved_claude_registration_repair()
         .await
         .unwrap());
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn configured_provider_cli_retires_legacy_registration_and_best_effort_stays_nonblocking() {
+async fn configured_provider_cli_removes_reserved_registration_and_best_effort_stays_nonblocking() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Once};
@@ -570,8 +584,7 @@ async fn configured_provider_cli_retires_legacy_registration_and_best_effort_sta
         policy_repo,
         home.path().join(".ralphx/mcp.yaml"),
     )
-    .with_provider_settings_repo(provider_repo)
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf());
+    .with_provider_settings_repo(provider_repo);
 
     assert_eq!(
         service
@@ -581,7 +594,7 @@ async fn configured_provider_cli_retires_legacy_registration_and_best_effort_sta
         home.path()
     );
     assert!(service
-        .retry_legacy_claude_registration_repair()
+        .retry_reserved_claude_registration_repair()
         .await
         .unwrap());
     assert_eq!(
@@ -590,7 +603,7 @@ async fn configured_provider_cli_retires_legacy_registration_and_best_effort_sta
     );
     assert!(
         !service
-            .reconcile_legacy_claude_registration_best_effort()
+            .reconcile_reserved_claude_registration_best_effort()
             .await
             .unwrap(),
         "best-effort reconciliation must not block after the exact entry is gone"
@@ -599,7 +612,7 @@ async fn configured_provider_cli_retires_legacy_registration_and_best_effort_sta
 
 #[cfg(unix)]
 #[tokio::test]
-async fn failed_legacy_cleanup_stays_typed_and_fail_closed() {
+async fn failed_reserved_cleanup_stays_typed_and_fail_closed() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
@@ -641,8 +654,7 @@ async fn failed_legacy_cleanup_stays_typed_and_fail_closed() {
         repo,
         home.path().join(".ralphx/mcp.yaml"),
     )
-    .with_legacy_claude_mcp_cleanup(app_data.path().to_path_buf())
-    .with_legacy_claude_mcp_cleanup_cli_for_test(fake_cli);
+    .with_reserved_claude_mcp_cleanup_cli_for_test(fake_cli);
 
     let error = service
         .resolve_launch_policy(AgentHarnessKind::Claude, None, None)

@@ -118,7 +118,11 @@ function TicketAttachmentPreview({
   return (
     <>
       <article
-        className={compact ? "flex overflow-hidden rounded-md" : "overflow-hidden rounded-md"}
+        className={
+          compact
+            ? "flex overflow-hidden rounded-md"
+            : "overflow-hidden rounded-md"
+        }
         style={{
           backgroundColor: "var(--bg-surface)",
           borderColor: "var(--border-subtle)",
@@ -140,7 +144,11 @@ function TicketAttachmentPreview({
               src={attachment.url ?? ""}
               alt={attachment.filename}
               loading="lazy"
-              className={compact ? "h-full w-full object-cover" : "max-h-64 w-full object-contain"}
+              className={
+                compact
+                  ? "h-full w-full object-cover"
+                  : "max-h-64 w-full object-contain"
+              }
               onError={() => setFailed(true)}
             />
             <span className="absolute inset-0 flex items-center justify-center bg-transparent text-[var(--text-on-scrim)] opacity-0 transition group-hover:bg-[var(--overlay-scrim)] group-hover:opacity-100 group-focus-visible:bg-[var(--overlay-scrim)] group-focus-visible:opacity-100">
@@ -157,13 +165,20 @@ function TicketAttachmentPreview({
         >
           <div className="flex min-w-0 items-center gap-2">
             {!canPreview && (
-              <ImageIcon className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+              <ImageIcon
+                className="h-4 w-4 shrink-0 text-[var(--text-muted)]"
+                aria-hidden="true"
+              />
             )}
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-[var(--text-primary)]">
                 {attachment.filename}
               </p>
-              {meta && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{meta}</p>}
+              {meta && (
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                  {meta}
+                </p>
+              )}
             </div>
           </div>
           {canOpen && (
@@ -228,7 +243,11 @@ function TicketMarkdown({ content }: { content: string }) {
 /** Animated skeleton placeholder shown while the ticket detail loads. */
 function DetailSkeleton({ lines = 3 }: { lines?: number }) {
   return (
-    <div className="mt-2 space-y-2" role="status" aria-label="Loading ticket details">
+    <div
+      className="mt-2 space-y-2"
+      role="status"
+      aria-label="Loading ticket details"
+    >
       {Array.from({ length: lines }).map((_, index) => (
         <div
           key={index}
@@ -429,7 +448,8 @@ function TicketCommentCard({
     >
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium text-[var(--text-secondary)]">
-          {comment.author?.name ?? (isReply ? "Provider reply" : "Provider comment")}
+          {comment.author?.name ??
+            (isReply ? "Provider reply" : "Provider comment")}
         </p>
         <div className="flex shrink-0 items-center gap-2">
           {isNew && (

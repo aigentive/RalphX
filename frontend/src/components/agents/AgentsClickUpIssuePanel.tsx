@@ -1,12 +1,11 @@
 import { ExternalLink, Loader2, RefreshCw, Ticket } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { TicketDetailReadOnlyContent } from "@/components/ticketing/TicketDetailReadOnlyContent";
 import { Button } from "@/components/ui/button";
 import { useConversationTicket, useTicketDetail } from "@/hooks/useTicketing";
 
-import { ArtifactSelectionSource } from "./artifact-selection/ArtifactSelectionSource";
-import { buildTicketSelectionContent } from "./artifact-selection/ticketSelectionContent";
+import { ArtifactSelectableRegion } from "./artifact-selection/ArtifactSelectableRegion";
 
 interface AgentsClickUpIssuePanelProps {
   conversationId: string | null;
@@ -27,29 +26,12 @@ export function AgentsClickUpIssuePanel({
     enabled: Boolean(detailInput),
   });
   const ticket = detailQuery.data ?? null;
-  const selectionContent = useMemo(
-    () =>
-      ticket
-        ? buildTicketSelectionContent({
-            key: ticket.ref.key ?? ticket.ref.id,
-            title: ticket.title,
-            status: ticket.state.name,
-            assignees: ticket.assignees?.map((assignee) => assignee.name),
-            reporter: ticket.reporter?.name,
-            description:
-              ticket.descriptionMarkdown ?? ticket.descriptionText ?? null,
-            acceptanceCriteria: ticket.acceptanceCriteriaMarkdown,
-            comments: ticket.comments.map((comment) => ({
-              author: comment.author?.name,
-              body: comment.bodyMarkdown || comment.bodyText,
-            })),
-          })
-        : null,
-    [ticket],
-  );
 
   const displayKey =
-    ticket?.ref.key ?? binding?.ticketRef.key ?? ticket?.ref.id ?? binding?.ticketRef.id;
+    ticket?.ref.key ??
+    binding?.ticketRef.key ??
+    ticket?.ref.id ??
+    binding?.ticketRef.id;
   const title = ticket?.title ?? binding?.title ?? null;
   const url = ticket?.url ?? binding?.url ?? null;
 
@@ -78,7 +60,10 @@ export function AgentsClickUpIssuePanel({
           <h2 className="truncate text-sm font-semibold">
             {displayKey ?? "ClickUp"}
           </h2>
-          <p className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
+          <p
+            className="truncate text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
             {title ?? "No ClickUp task assigned"}
           </p>
         </div>
@@ -97,26 +82,11 @@ export function AgentsClickUpIssuePanel({
         ) : null}
       </div>
 
-      {ticket && selectionContent ? (
-        <ArtifactSelectionSource
-          conversationId={conversationId}
-          source={{
-            sourceType: "ticket",
-            sourceKind: "clickup",
-            sourceId: ticket.ref.id,
-            ...(ticket.ref.key ? { sourceKey: ticket.ref.key } : {}),
-            sourceTitle: ticket.title,
-            provider: "clickup",
-            sourceRevision: ticket.updatedAt,
-          }}
-          content={selectionContent}
-        />
-      ) : null}
-
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {!conversationId ? (
           <PanelStatus label="No conversation selected" />
-        ) : conversationTicketQuery.isLoading || (binding && detailQuery.isLoading) ? (
+        ) : conversationTicketQuery.isLoading ||
+          (binding && detailQuery.isLoading) ? (
           <PanelStatus label="Loading ClickUp task" busy />
         ) : !binding ? (
           <PanelStatus label="No ClickUp task assigned" />
@@ -133,7 +103,9 @@ export function AgentsClickUpIssuePanel({
                 onClick={() => void detailQuery.refetch()}
               >
                 <RefreshCw
-                  className={detailQuery.isFetching ? "animate-spin" : undefined}
+                  className={
+                    detailQuery.isFetching ? "animate-spin" : undefined
+                  }
                   aria-hidden="true"
                 />
                 Refresh
@@ -141,7 +113,17 @@ export function AgentsClickUpIssuePanel({
             }
           />
         ) : ticket ? (
-          <div className="space-y-4">
+          <ArtifactSelectableRegion
+            className="space-y-4"
+            source={{
+              sourceKind: "task",
+              sourceId: ticket.ref.id,
+              sourceLabel: "ClickUp task",
+              title: ticket.title,
+              ...(url ? { url } : {}),
+              ...(ticket.updatedAt ? { revision: ticket.updatedAt } : {}),
+            }}
+          >
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium">{ticket.title}</p>
               <span
@@ -155,7 +137,7 @@ export function AgentsClickUpIssuePanel({
               </span>
             </div>
             <TicketDetailReadOnlyContent ticket={ticket} />
-          </div>
+          </ArtifactSelectableRegion>
         ) : null}
       </div>
     </div>

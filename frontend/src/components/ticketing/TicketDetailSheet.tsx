@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, FolderKanban, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import {
+  ExternalLink,
+  FolderKanban,
+  MessageSquare,
+  Send,
+  UserCheck,
+  UserX,
+  X,
+} from "lucide-react";
 
 import { granolaApi, type GranolaNoteSummary } from "@/api/granola";
 import type {
@@ -25,15 +33,28 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabelEditor } from "./TicketLabelEditor";
 import { TicketLabels } from "./TicketLabels";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { TicketDetailReadOnlyContent } from "./TicketDetailReadOnlyContent";
 import { openExternalTicketUrl } from "./ticketing-open-external";
-import { countNewComments, sortCommentsByCreatedAt, ticketAssignees } from "./ticketing-read-state";
-import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
+import {
+  countNewComments,
+  sortCommentsByCreatedAt,
+  ticketAssignees,
+} from "./ticketing-read-state";
+import {
+  categoryToken,
+  formatTicketDate,
+  providerLabel,
+  ticketKey,
+} from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
   open: boolean;
@@ -51,7 +72,8 @@ interface TicketDetailSheetProps {
   /** Selectable team labels for Linear pick-list mode. */
   labelOptions?: TicketLabelOption[] | undefined;
   isLabelOptionsLoading?: boolean | undefined;
-  onTransitionTicket?: ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
+  onTransitionTicket?:
+    ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
   onAssignToMe?: (() => Promise<void> | void) | undefined;
   onClearAssignee?: (() => Promise<void> | void) | undefined;
   onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
@@ -106,9 +128,11 @@ function granolaNoteMatchesTicket(
   return (note.ticketLinks ?? []).some((ticketLink) => {
     const linkProvider = normalizeAssociationKey(ticketLink.provider);
     const linkLabel = normalizeAssociationKey(ticketLink.label);
-    return ticketKeys.some((key) =>
-      linkLabel === key &&
-      (linkProvider === provider || (provider === "jira" && linkProvider === "atlassian")),
+    return ticketKeys.some(
+      (key) =>
+        linkLabel === key &&
+        (linkProvider === provider ||
+          (provider === "jira" && linkProvider === "atlassian")),
     );
   });
 }
@@ -132,7 +156,6 @@ function ControlTooltip({
     </Tooltip>
   );
 }
-
 
 export function TicketDetailSheet({
   open,
@@ -171,9 +194,11 @@ export function TicketDetailSheet({
   const [commentDraft, setCommentDraft] = useState("");
   const [localComments, setLocalComments] = useState<TicketComment[]>([]);
   const commentsSectionRef = useRef<HTMLElement | null>(null);
-  const ticketIdentity = ticket ? `${ticket.ref.provider}:${ticket.ref.id}` : null;
+  const ticketIdentity = ticket
+    ? `${ticket.ref.provider}:${ticket.ref.id}`
+    : null;
   const providerComments = useMemo(
-    () => ticket && "comments" in ticket ? ticket.comments : [],
+    () => (ticket && "comments" in ticket ? ticket.comments : []),
     [ticket],
   );
   const visibleComments = useMemo(() => {
@@ -194,7 +219,9 @@ export function TicketDetailSheet({
         if (comment.id && providerCommentIds.has(comment.id)) {
           return false;
         }
-        return !providerCommentBodies.has((comment.bodyMarkdown || comment.bodyText).trim());
+        return !providerCommentBodies.has(
+          (comment.bodyMarkdown || comment.bodyText).trim(),
+        );
       }),
     ];
   }, [localComments, providerComments]);
@@ -219,10 +246,17 @@ export function TicketDetailSheet({
         .filter(Boolean),
     );
     setLocalComments((current) =>
-      current.filter((comment) => !providerCommentBodies.has((comment.bodyMarkdown || comment.bodyText).trim())),
+      current.filter(
+        (comment) =>
+          !providerCommentBodies.has(
+            (comment.bodyMarkdown || comment.bodyText).trim(),
+          ),
+      ),
     );
   }, [providerComments, localComments.length]);
-  const writableTransitions = transitions.filter((transition) => !transition.disabledReason);
+  const writableTransitions = transitions.filter(
+    (transition) => !transition.disabledReason,
+  );
   const statusDisabledReason = !capabilities?.statusWrite
     ? "Status write-back is not available for this provider."
     : writableTransitions.length === 0
@@ -236,7 +270,10 @@ export function TicketDetailSheet({
   const commentDisabledReason = !capabilities?.commentWrite
     ? "Comment write-back is not available for this provider."
     : null;
-  const canAddComment = !commentDisabledReason && commentDraft.trim().length > 0 && !isCommentPending;
+  const canAddComment =
+    !commentDisabledReason &&
+    commentDraft.trim().length > 0 &&
+    !isCommentPending;
   const labelDisabledReason = !capabilities?.labelWrite
     ? "Label editing is not available for this provider."
     : null;
@@ -244,14 +281,19 @@ export function TicketDetailSheet({
     () =>
       new Set(
         (associations?.conversations ?? [])
-          .map((conversation) => normalizeAssociationKey(conversation.deepLink.id))
+          .map((conversation) =>
+            normalizeAssociationKey(conversation.deepLink.id),
+          )
           .filter(Boolean),
       ),
     [associations?.conversations],
   );
-  const effectiveProjectId = projectId
-    ?? associations?.conversations.find((conversation) => conversation.deepLink.projectId)?.deepLink.projectId
-    ?? null;
+  const effectiveProjectId =
+    projectId ??
+    associations?.conversations.find(
+      (conversation) => conversation.deepLink.projectId,
+    )?.deepLink.projectId ??
+    null;
   const granolaSettingsQuery = useQuery({
     queryKey: granolaDashboardKeys.settings(),
     queryFn: () => granolaApi.getSettings(),
@@ -291,7 +333,13 @@ export function TicketDetailSheet({
     [allGranolaNotes, linkedGranolaNoteIds],
   );
   const bindGranolaNote = useMutation({
-    mutationFn: async ({ noteId, conversationId }: { noteId: string; conversationId: string }) => {
+    mutationFn: async ({
+      noteId,
+      conversationId,
+    }: {
+      noteId: string;
+      conversationId: string;
+    }) => {
       const note = allGranolaNotes.find((candidate) => candidate.id === noteId);
       if (!note || !conversationId) {
         throw new Error("Select a Granola note and RalphX conversation.");
@@ -308,7 +356,10 @@ export function TicketDetailSheet({
       });
     },
     onSuccess: (_note, variables) => {
-      void invalidateAgentConversationGranolaNote(queryClient, variables.conversationId);
+      void invalidateAgentConversationGranolaNote(
+        queryClient,
+        variables.conversationId,
+      );
       if (effectiveProjectId) {
         void queryClient.invalidateQueries({
           queryKey: granolaDashboardKeys.notes(effectiveProjectId),
@@ -324,7 +375,9 @@ export function TicketDetailSheet({
         : null;
 
   function handleStatusChange(nextStateId: string) {
-    const transition = transitions.find((item) => item.toStateId === nextStateId);
+    const transition = transitions.find(
+      (item) => item.toStateId === nextStateId,
+    );
     if (!transition || transition.disabledReason || statusDisabledReason) {
       return;
     }
@@ -332,7 +385,10 @@ export function TicketDetailSheet({
   }
 
   function handleJumpToComments() {
-    commentsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    commentsSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
   }
 
   async function handleAddComment() {
@@ -355,17 +411,22 @@ export function TicketDetailSheet({
       await onAddComment?.(bodyMarkdown);
       setCommentDraft("");
     } catch {
-      setLocalComments((current) => current.filter((comment) => comment.id !== optimisticComment.id));
+      setLocalComments((current) =>
+        current.filter((comment) => comment.id !== optimisticComment.id),
+      );
       // Rollback and visible errors are owned by the mutation hook; preserve the draft.
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
-      if (!nextOpen) {
-        onClose();
-      }
-    }}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose();
+        }
+      }}
+    >
       <DialogContent
         hideCloseButton
         className="left-auto right-0 top-12 h-[calc(100vh-3rem)] w-[64vw] min-w-[820px] max-w-[1180px] translate-x-0 translate-y-0 rounded-none p-0"
@@ -383,13 +444,19 @@ export function TicketDetailSheet({
               <DialogHeader className="shrink-0 px-5 py-4">
                 <div className="min-w-0">
                   <DialogTitle className="truncate text-base">
-                    {ticketKey(ticket.ref)} · {providerLabel(ticket.ref.provider)}
+                    {ticketKey(ticket.ref)} ·{" "}
+                    {providerLabel(ticket.ref.provider)}
                   </DialogTitle>
                   <DialogDescription className="mt-1 truncate">
                     {ticket.title}
                   </DialogDescription>
                 </div>
-                <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onClose}
+                >
                   <X className="h-4 w-4" aria-hidden="true" />
                   Close
                 </Button>
@@ -409,11 +476,18 @@ export function TicketDetailSheet({
                     <MessageSquare
                       className="h-3.5 w-3.5"
                       aria-hidden="true"
-                      style={newCommentCount > 0 ? { color: "var(--accent-primary)" } : undefined}
+                      style={
+                        newCommentCount > 0
+                          ? { color: "var(--accent-primary)" }
+                          : undefined
+                      }
                     />
                     Comments ({sortedComments.length})
                     {newCommentCount > 0 && (
-                      <span className="font-semibold" style={{ color: "var(--accent-primary)" }}>
+                      <span
+                        className="font-semibold"
+                        style={{ color: "var(--accent-primary)" }}
+                      >
                         · {newCommentCount} new
                       </span>
                     )}
@@ -435,11 +509,15 @@ export function TicketDetailSheet({
                       }}
                     >
                       Open in provider
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      <ExternalLink
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
                     </a>
                   )}
                 </div>
-                {(ticket.project || (!capabilities?.labelWrite && ticket.labels.length > 0)) && (
+                {(ticket.project ||
+                  (!capabilities?.labelWrite && ticket.labels.length > 0)) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
                     {ticket.project && (
                       <span
@@ -460,7 +538,11 @@ export function TicketDetailSheet({
                       </span>
                     )}
                     {!capabilities?.labelWrite && (
-                      <TicketLabels labels={ticket.labels} max={ticket.labels.length} size="md" />
+                      <TicketLabels
+                        labels={ticket.labels}
+                        max={ticket.labels.length}
+                        size="md"
+                      />
                     )}
                   </div>
                 )}
@@ -487,7 +569,9 @@ export function TicketDetailSheet({
                       <TicketSearchableSelect
                         ariaLabel="Ticket status"
                         value={ticket.state.id}
-                        disabled={Boolean(statusDisabledReason) || isTransitionPending}
+                        disabled={
+                          Boolean(statusDisabledReason) || isTransitionPending
+                        }
                         onValueChange={handleStatusChange}
                         className="min-w-[180px] max-w-[280px] text-xs"
                         searchPlaceholder="Search statuses..."
@@ -508,7 +592,8 @@ export function TicketDetailSheet({
                               value: transition.toStateId,
                               label: transition.name,
                               disabled: Boolean(transition.disabledReason),
-                              description: transition.disabledReason ?? undefined,
+                              description:
+                                transition.disabledReason ?? undefined,
                               leadingColor: categoryToken(transition.category),
                             })),
                         ]}
@@ -530,12 +615,17 @@ export function TicketDetailSheet({
                               variant="ghost"
                               size="sm"
                               className="h-7 gap-1 px-2 text-[var(--text-muted)]"
-                              disabled={Boolean(assignDisabledReason) || isAssignPending}
+                              disabled={
+                                Boolean(assignDisabledReason) || isAssignPending
+                              }
                               onClick={() => void onClearAssignee?.()}
                               aria-label="Clear assignee"
                               title="Clear assignee"
                             >
-                              <UserX className="h-3.5 w-3.5" aria-hidden="true" />
+                              <UserX
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
                               {isAssignPending ? "Clearing" : "Clear"}
                             </Button>
                           </ControlTooltip>
@@ -547,10 +637,15 @@ export function TicketDetailSheet({
                           type="button"
                           variant="outline"
                           size="sm"
-                          disabled={Boolean(assignDisabledReason) || isAssignPending}
+                          disabled={
+                            Boolean(assignDisabledReason) || isAssignPending
+                          }
                           onClick={() => void onAssignToMe?.()}
                         >
-                          <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                          <UserCheck
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                          />
                           {isAssignPending ? "Assigning" : "Assign to me"}
                         </Button>
                       </ControlTooltip>
@@ -567,20 +662,24 @@ export function TicketDetailSheet({
                 />
 
                 <section className="mt-6">
-                  <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">Add comment</h3>
+                  <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
+                    Add comment
+                  </h3>
                   <div className="mt-2 space-y-2">
                     <Textarea
                       aria-label="Ticket comment"
                       value={commentDraft}
-                      disabled={Boolean(commentDisabledReason) || isCommentPending}
+                      disabled={
+                        Boolean(commentDisabledReason) || isCommentPending
+                      }
                       onChange={(event) => setCommentDraft(event.target.value)}
                       onKeyDown={(event) => {
                         // Cmd/Ctrl+Enter submits, matching the convention in
                         // Linear/GitHub/Slack comment composers.
                         if (
-                          event.key === "Enter"
-                          && (event.metaKey || event.ctrlKey)
-                          && canAddComment
+                          event.key === "Enter" &&
+                          (event.metaKey || event.ctrlKey) &&
+                          canAddComment
                         ) {
                           event.preventDefault();
                           void handleAddComment();
@@ -629,7 +728,11 @@ export function TicketDetailSheet({
               granolaProjectId={effectiveProjectId}
               granolaNotes={linkedGranolaNotes}
               availableGranolaNotes={availableGranolaNotes}
-              isGranolaLoading={granolaSettingsQuery.isLoading || granolaNotesQuery.isLoading || granolaNotesQuery.isFetching}
+              isGranolaLoading={
+                granolaSettingsQuery.isLoading ||
+                granolaNotesQuery.isLoading ||
+                granolaNotesQuery.isFetching
+              }
               onBindGranolaNote={(input) => bindGranolaNote.mutate(input)}
               isGranolaBindPending={bindGranolaNote.isPending}
               granolaBindError={granolaBindError}
@@ -638,7 +741,9 @@ export function TicketDetailSheet({
             />
           </div>
         ) : (
-          <div className="p-6 text-sm text-[var(--text-muted)]">Loading ticket</div>
+          <div className="p-6 text-sm text-[var(--text-muted)]">
+            Loading ticket
+          </div>
         )}
       </DialogContent>
     </Dialog>

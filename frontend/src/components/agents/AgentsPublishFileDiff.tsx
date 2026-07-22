@@ -172,6 +172,11 @@ export function AgentsPublishFileDiff({
     diffPageRefKind,
     isShowAnywayOverridden,
   });
+  const diffPageIdentity = diffPageRefKind
+    ? diffPageRefKind.kind === "commit"
+      ? `${diffPageRefKind.kind}:${diffPageRefKind.sha}`
+      : diffPageRefKind.kind
+    : "none";
   const pathButtonRef = useRef<HTMLButtonElement | null>(null);
   const showReviewOnlyBody = contentMode === "review-only" && !isConflictMode;
   const groupedHunkAnnotations = groupHunkAnnotations(hunkAnnotations);
@@ -488,8 +493,18 @@ export function AgentsPublishFileDiff({
               </button>
             </div>
           ) : !shouldHydrate ? (
-            /* Pre-hydration placeholder — card is off-screen, defer body mount */
-            <div data-testid="file-diff-pre-hydration" style={{ minHeight: "60px" }} />
+            /* Lightweight frame while the mounted row registers for hydration. */
+            <div
+              data-testid="file-diff-pre-hydration"
+              aria-label="Loading file diff"
+              aria-busy="true"
+              className="space-y-1 p-3"
+              style={{ minHeight: "60px", color: "var(--text-muted)" }}
+            >
+              <span className="sr-only">Loading diff</span>
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-full" />
+            </div>
           ) : (
             /* Hydrated body — render loading / error / diff / empty states */
             <>
@@ -526,7 +541,12 @@ export function AgentsPublishFileDiff({
 
               {usePagedDiff && (
                 <PagedDiffView
-                  key={diffPageReloadKey ?? "stable"}
+                  key={[
+                    conversationId,
+                    file.path,
+                    diffPageIdentity,
+                    diffPageReloadKey ?? "stable",
+                  ].join("\u0000")}
                   conversationId={conversationId!}
                   filePath={file.path}
                   refKind={diffPageRefKind!}

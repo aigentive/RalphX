@@ -32,7 +32,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-const featureFlags = vi.hoisted(() => ({ composerFolderReferences: true }));
+const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: () => ({ data: featureFlags }),
 }));
@@ -277,7 +277,7 @@ describe("AgentComposerSurface", () => {
     ).not.toBeInTheDocument();
     normal.unmount();
 
-    // Persona mode needs the Personas flag in addition to folder references.
+    // Persona mode remains tied to the separate Personas capability.
     renderComposer({
       conversationId: "conversation-2",
       enableAttachments: true,
@@ -621,6 +621,82 @@ describe("AgentComposerSurface", () => {
         },
       ],
     });
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId(
+          "agent-composer-reference-pill-excerpt:plan:artifact-1",
+        ),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("retains staged excerpt references when sending fails", async () => {
+    const onSend = vi.fn().mockRejectedValue(new Error("send failed"));
+    renderComposer({ conversationId: "conversation-1", onSend });
+
+    act(() => {
+      stageComposerExcerptReference("conversation-1", {
+        sourceKind: "task",
+        sourceId: "clickup-task-1",
+        sourceLabel: "ClickUp task",
+        excerpt: "Preserve this acceptance detail",
+      });
+    });
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Use this context" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByTestId(
+        "agent-composer-reference-pill-excerpt:task:clickup-task-1",
+      ),
+    ).toHaveTextContent("Preserve this acceptance detail");
+  });
+
+  it("sends staged excerpt references while answering an agent question", async () => {
+    const onSend = vi.fn();
+    renderComposer({
+      conversationId: "conversation-1",
+      onSend,
+      questionMode: {
+        optionCount: 1,
+        multiSelect: false,
+        onMatchedOptions: vi.fn(),
+      },
+    });
+
+    act(() => {
+      stageComposerExcerptReference("conversation-1", {
+        sourceKind: "task",
+        sourceId: "clickup-task-1",
+        sourceLabel: "ClickUp task",
+        excerpt: "Preserve this acceptance detail",
+      });
+    });
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Use this context" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Use this context", {
+      excerptReferences: [
+        {
+          sourceKind: "task",
+          sourceId: "clickup-task-1",
+          sourceLabel: "ClickUp task",
+          excerpt: "Preserve this acceptance detail",
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId(
+          "agent-composer-reference-pill-excerpt:task:clickup-task-1",
+        ),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("keeps the runtime selector content-sized instead of filling the footer row", () => {
@@ -882,128 +958,6 @@ describe("AgentComposerSurface", () => {
     expect(
       screen.queryByTestId("agent-composer-runtime-capability-submenu"),
     ).not.toBeInTheDocument();
-  });
-
-  it("shows the staged line selection and clears it from the composer", () => {
-    const onClearSelectionSnapshot = vi.fn();
-    renderComposer({
-      selectionSnapshot: {
-        sourceType: "artifact",
-        sourceKind: "plan",
-        sourceId: "artifact-version-2",
-        sourceTitle: "Implementation Plan",
-        artifactVersion: 2,
-        startLine: 10,
-        endLine: 11,
-        content: "first\nsecond",
-      },
-      onClearSelectionSnapshot,
-    });
-
-    expect(screen.getByText("Selection: Implementation Plan · L10–11")).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Clear selected artifact lines" }),
-    );
-
-    expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses a Granola fallback label for a note selection without a title", () => {
-    renderComposer({
-      selectionSnapshot: {
-        sourceType: "note",
-        sourceKind: "granola",
-        sourceId: "not_1234567890ABCD",
-        provider: "granola",
-        startLine: 3,
-        endLine: 3,
-        content: "Decision",
-      },
-    });
-
-    expect(screen.getByText("Selection: Granola · L3")).toBeTruthy();
-  });
-
-  it("sends the frozen selection and clears it only after backend acceptance", async () => {
-    let acceptSend: (() => void) | undefined;
-    const onSend = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          acceptSend = resolve;
-        }),
-    );
-    const onClearSelectionSnapshot = vi.fn();
-    const selectionSnapshot = {
-      sourceType: "ticket" as const,
-      sourceKind: "jira" as const,
-      sourceId: "10042",
-      sourceKey: "RX-42",
-      provider: "atlassian" as const,
-      startLine: 4,
-      endLine: 5,
-      content: "saved first\nsaved second",
-    };
-    renderComposer({ selectionSnapshot, onClearSelectionSnapshot, onSend });
-
-    fireEvent.change(screen.getByLabelText("Message input"), {
-      target: { value: "Review this" },
-    });
-    fireEvent.click(screen.getByTestId("agent-composer-submit"));
-
-    expect(onSend).toHaveBeenCalledWith("Review this", { selectionSnapshot });
-    expect(onClearSelectionSnapshot).not.toHaveBeenCalled();
-
-    acceptSend?.();
-    await waitFor(() => expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1));
-  });
-
-  it("retains the frozen selection when sending fails", async () => {
-    const onClearSelectionSnapshot = vi.fn();
-    renderComposer({
-      selectionSnapshot: {
-        sourceType: "ticket",
-        sourceKind: "linear",
-        sourceId: "issue-1",
-        sourceKey: "ENG-1",
-        provider: "linear",
-        startLine: 2,
-        endLine: 2,
-        content: "selected",
-      },
-      onClearSelectionSnapshot,
-      onSend: vi.fn().mockRejectedValue(new Error("offline")),
-    });
-
-    fireEvent.change(screen.getByLabelText("Message input"), {
-      target: { value: "Review this" },
-    });
-    fireEvent.click(screen.getByTestId("agent-composer-submit"));
-
-    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
-    expect(screen.getByText("Selection: ENG-1 · L2")).toBeTruthy();
-  });
-
-  it("retains a controlled composer's frozen selection without leaking a rejected send", async () => {
-    const onClearSelectionSnapshot = vi.fn();
-    renderComposer({
-      value: "Review this",
-      onChange: vi.fn(),
-      selectionSnapshot: {
-        sourceType: "artifact",
-        sourceKind: "plan",
-        sourceId: "plan-1",
-        startLine: 3,
-        endLine: 3,
-        content: "selected",
-      },
-      onClearSelectionSnapshot,
-      onSend: vi.fn().mockRejectedValue(new Error("offline")),
-    });
-
-    fireEvent.click(screen.getByTestId("agent-composer-submit"));
-
-    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
-    expect(screen.getByText("Selection: Plan · L3")).toBeTruthy();
   });
 
   it("hides the runtime pill when no model is available to show or select", () => {

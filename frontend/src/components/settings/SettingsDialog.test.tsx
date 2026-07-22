@@ -24,9 +24,22 @@ const settingsTasksEnabledRef = vi.hoisted(() => ({ current: true }));
 
 vi.mock("@/hooks/useIdeationSettings", () => ({
   useIdeationSettings: () => ({
-    settings: { tasksEnabled: settingsTasksEnabledRef.current },
+    settings: {
+      tasksEnabled: settingsTasksEnabledRef.current,
+      requireAcceptForFinalize: true,
+      autoVerifyPlans: false,
+      requireVerificationForAccept: false,
+      externalOverrides: {
+        autoVerifyPlans: null,
+        requireVerificationForAccept: null,
+        requireAcceptForFinalize: null,
+      },
+    },
+    updateSettings: vi.fn(),
     isLoading: false,
     isError: false,
+    isUpdating: false,
+    updateError: null,
   }),
 }));
 
@@ -72,6 +85,26 @@ vi.mock("./sections/AutonomyPolicySection", () => ({
   default: () => (
     <div data-testid="autonomy-policy-section">Autonomy Policy</div>
   ),
+}));
+
+vi.mock("./sections/TasksSettingsSection", () => ({
+  default: ({ initialTab }: { initialTab: string }) => (
+    <div data-testid="tasks-section">Tasks {initialTab}</div>
+  ),
+}));
+
+vi.mock("./sections/PlanningSettingsSection", () => ({
+  default: () => <div data-testid="planning-section">Planning</div>,
+}));
+
+vi.mock("./sections/WorkspaceSettingsSection", () => ({
+  default: ({ initialTab }: { initialTab: string }) => (
+    <div data-testid="workspace-section">Workspace {initialTab}</div>
+  ),
+}));
+
+vi.mock("./sections/CapacitySettingsSection", () => ({
+  default: () => <div data-testid="capacity-section">Capacity</div>,
 }));
 
 vi.mock("./ExternalMcpSettingsPanel", () => ({
@@ -241,19 +274,23 @@ describe("SettingsDialog", () => {
     );
   });
 
-  it("registers MCP under Harness and preserves the External MCP deep link", async () => {
+  it("registers External MCP under External Access and preserves the deep link", async () => {
     expect(SETTINGS_SECTIONS).toContainEqual({
       id: "mcp",
       groupId: "harness",
       label: "MCP",
     });
-    expect(SETTINGS_SECTIONS.some((section) => section.id === "external-mcp")).toBe(false);
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "external-mcp",
+      groupId: "access",
+      label: "External MCP",
+    });
     await expect(sectionModuleLoaders.mcp()).resolves.toHaveProperty("McpSettingsSection");
 
     uiState.activeModal = "settings";
     uiState.modalContext = { section: "external-mcp" };
     render(<SettingsDialog {...defaultProps} />);
-    expect(await screen.findByTestId("mcp-section")).toBeInTheDocument();
+    expect(await screen.findByTestId("external-mcp-section")).toBeInTheDocument();
   });
 
   describe("Section initialization via modalContext deep-link", () => {
@@ -294,6 +331,31 @@ describe("SettingsDialog", () => {
       expect(await screen.findByTestId("agents-section")).toBeInTheDocument();
     });
 
+    it.each([
+      ["review", "tasks-section", "review-policy"],
+      ["autonomy", "tasks-section", "autonomy-policy"],
+      ["ideation-workflow", "tasks-section", "general"],
+      ["workspace-review", "workspace-section", "review"],
+      ["execution", "workspace-section", "general"],
+      ["global-execution", "capacity-section", "Capacity"],
+    ])("routes legacy %s to its parent and tab", async (section, testId, expected) => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = {
+        section,
+        provider: "claude",
+        scope: "project",
+        serverId: "ralphx",
+      };
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(await screen.findByTestId(testId)).toHaveTextContent(expected);
+      expect(uiState.modalContext).toMatchObject({
+        provider: "claude",
+        scope: "project",
+        serverId: "ralphx",
+      });
+    });
+
     it("opens the Personas section from a settings deep link when enabled", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = { section: "personas" };
@@ -307,19 +369,17 @@ describe("SettingsDialog", () => {
 
   });
 
-  it("hides Tasks-only settings and redirects their deep links while Tasks are off", async () => {
+  it("keeps Tasks, Planning, Workspace, and Capacity visible while Tasks are off", async () => {
     settingsTasksEnabledRef.current = false;
     uiState.activeModal = "settings";
     uiState.modalContext = { section: "execution" };
     render(<SettingsDialog {...defaultProps} />);
 
-    expect(screen.queryByRole("button", { name: "Execution" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Global Capacity" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Review Policy" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Workspace Review" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Autonomy Policy" })).not.toBeInTheDocument();
-    expect(await screen.findByText("Planning & Verification", { selector: ".cur" }))
-      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Planning" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Capacity" })).toBeInTheDocument();
+    expect(await screen.findByTestId("workspace-section")).toHaveTextContent("general");
   });
 
   // --------------------------------------------------------------------------
@@ -333,7 +393,7 @@ describe("SettingsDialog", () => {
 
       const navigation = screen.getByRole("navigation");
       const groupLabels = within(navigation)
-        .getAllByText(/Harness|Workspace|General|Ideation|Access|Preferences/)
+        .getAllByText(/Harness|Workspace|General|External Access|Preferences/)
         .map((element) => element.textContent);
 
       expect(groupLabels.slice(0, 2)).toEqual(["Harness", "Workspace"]);
@@ -396,11 +456,11 @@ describe("SettingsDialog", () => {
 
       expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
-      await user.click(screen.getByRole("button", { name: "Review Policy" }));
-      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Tasks" }));
+      expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
       await waitFor(() =>
         expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
-          "review",
+          "tasks",
         ),
       );
 
@@ -409,7 +469,7 @@ describe("SettingsDialog", () => {
 
       uiState.activeModal = "settings";
       rerender(<SettingsDialog {...defaultProps} />);
-      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
     });
   });
 
@@ -425,12 +485,11 @@ describe("SettingsDialog", () => {
 
       expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
-      // Click "Review Policy" in the left nav rail
-      const reviewNavItem = screen.getByRole("button", { name: "Review Policy" });
-      await user.click(reviewNavItem);
+      const tasksNavItem = screen.getByRole("button", { name: "Tasks" });
+      await user.click(tasksNavItem);
 
       expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
-      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
     });
 
     it("switches active section via keyboard Enter on left rail item", async () => {
@@ -438,13 +497,11 @@ describe("SettingsDialog", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
-      // Navigate to Review Policy section via keyboard
-      const reviewNavItem = screen.getByRole("button", { name: "Review Policy" });
-      reviewNavItem.focus();
+      const tasksNavItem = screen.getByRole("button", { name: "Tasks" });
+      tasksNavItem.focus();
       await user.keyboard("{Enter}");
 
-      // Review Policy section content is now visible
-      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
     });
   });
 
