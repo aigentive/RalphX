@@ -161,6 +161,13 @@ pub trait AutomationRunRepository: Send + Sync {
         error_detail: Option<String>,
     ) -> AppResult<bool>;
 
+    /// Clear terminal judge state so a reopened run can be judged again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an infrastructure error when the run cannot be updated.
+    async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()>;
+
     async fn compare_and_swap_plan_judge_state(
         &self,
         id: &AutomationRunId,
@@ -201,6 +208,13 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
         agent_phase_started_at: Option<DateTime<Utc>>,
     ) -> AppResult<Option<AutomationRun>>;
+
+    /// Clear the terminal completion timestamp when a run is reopened.
+    ///
+    /// # Errors
+    ///
+    /// Returns an infrastructure error when the run cannot be updated.
+    async fn clear_finished_at(&self, id: &AutomationRunId) -> AppResult<()>;
 
     /// Atomically insert the judge-created successor for the latest judged terminal run.
     /// Returns `None` when the previous run is stale, not `Done`, not signal-terminal, or the

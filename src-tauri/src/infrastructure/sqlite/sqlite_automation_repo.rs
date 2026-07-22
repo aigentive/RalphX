@@ -1221,6 +1221,23 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE automation_runs
+                     SET judge_state = 'none',
+                         judge_verdict_json = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
         let id = id.as_str().to_string();
         self.db
@@ -1372,6 +1389,22 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                 conn.query_row(&sql, [id], Self::row_to_run)
                     .optional()
                     .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn clear_finished_at(&self, id: &AutomationRunId) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE automation_runs
+                     SET finished_at = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
             })
             .await
     }

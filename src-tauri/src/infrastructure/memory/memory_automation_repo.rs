@@ -884,6 +884,17 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(());
+        };
+        run.judge_state = AutomationJudgeState::None;
+        run.judge_verdict_json = None;
+        run.updated_at = Utc::now();
+        Ok(())
+    }
+
     async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
         let mut runs = self.runs.write().unwrap();
         let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
@@ -970,6 +981,20 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.agent_phase_started_at = agent_phase_started_at;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
+    }
+
+    async fn clear_finished_at(&self, id: &AutomationRunId) -> AppResult<()> {
+        if let Some(run) = self
+            .runs
+            .write()
+            .unwrap()
+            .iter_mut()
+            .find(|run| run.id == *id)
+        {
+            run.finished_at = None;
+            run.updated_at = Utc::now();
+        }
+        Ok(())
     }
 
     async fn create_judge_successor_run(

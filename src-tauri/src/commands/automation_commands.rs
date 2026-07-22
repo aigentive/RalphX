@@ -20,6 +20,7 @@ use crate::application::automation::decomposition_verifier::AutomationAuthoringM
 use crate::application::automation::delete::{
     delete_automation_run_with_archive, delete_automation_with_archive,
 };
+use crate::application::automation::reopen::reopen_automation_run;
 use crate::application::automation::service::{
     AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
@@ -433,6 +434,18 @@ pub async fn delete_automation_run(
     let id = parse_automation_id(&input.id)?;
     let run_id = parse_automation_run_id(&input.run_id)?;
     delete_automation_run_with_archive(&state, &id, &run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn resume_automation_run(
+    input: AutomationRunScopedInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = parse_automation_id(&input.id)?;
+    let run_id = parse_automation_run_id(&input.run_id)?;
+    reopen_automation_run(&state, &id, &run_id)
         .await
         .map_err(|error| error.to_string())
 }

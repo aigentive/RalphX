@@ -51,6 +51,7 @@ macro_rules! register_tauri_commands {
             commands::automation_commands::skip_automation_judge,
             commands::automation_commands::cancel_automation_run,
             commands::automation_commands::delete_automation_run,
+            commands::automation_commands::resume_automation_run,
             commands::automation_commands::delete_automation,
             commands::persona_commands::list_personas,
             commands::persona_commands::get_persona,

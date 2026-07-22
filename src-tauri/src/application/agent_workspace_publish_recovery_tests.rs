@@ -343,6 +343,7 @@ async fn recovery_heals_only_an_active_current_repair_to_fixing() {
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         workspace,
     )
     .await
@@ -413,6 +414,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await
         .expect("recover stale repair");
@@ -484,6 +486,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await
         .expect("recover stale repair");
@@ -513,6 +516,7 @@ mod extracted_inline_tests {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await;
 
@@ -526,6 +530,7 @@ mod extracted_inline_tests {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await;
 
@@ -556,6 +561,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -593,6 +599,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -612,6 +619,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -636,10 +644,14 @@ mod extracted_inline_tests {
         run.completed_at = None;
         agent_run_repo.create(run).await.expect("seed run");
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            workspace_repo,
+            agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
         assert!(recovered);
     }
@@ -661,6 +673,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -713,6 +726,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await

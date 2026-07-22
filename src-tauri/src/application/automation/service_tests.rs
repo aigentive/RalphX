@@ -902,6 +902,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn clear_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn clear_plan_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<bool> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
@@ -953,6 +959,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         _id: &AutomationRunId,
         _agent_phase_started_at: Option<chrono::DateTime<Utc>>,
     ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn clear_finished_at(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
         ))
