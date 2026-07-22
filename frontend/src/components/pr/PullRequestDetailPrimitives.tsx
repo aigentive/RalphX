@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 
 import type { PullRequestDetail } from "@/api/github";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
-import { TicketMarkdownImage } from "@/components/ticketing/TicketDetailSheet";
+import { TicketMarkdownImage } from "@/components/ticketing/TicketDetailReadOnlyContent";
 
 import { formatPrDate } from "./PullRequestDetailUtils";
 

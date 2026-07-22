@@ -24,6 +24,7 @@ import type {
 } from "@/api/chat";
 import type { AgentConversationGranolaNote } from "@/api/granola";
 import type { AgentConversationLinearIssue } from "@/api/linear";
+import type { ConversationTicket } from "@/api/ticketing";
 import type {
   Automation,
   AutomationDetail,
@@ -40,6 +41,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import type { Task } from "@/types/task";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
@@ -778,9 +780,20 @@ const granolaNote = (
   ...overrides,
 });
 
+const clickUpTicket = (
+  overrides: Partial<ConversationTicket> = {},
+): ConversationTicket => ({
+  ticketRef: { provider: "clickup", id: "clickup-task-1", key: "CU-1" },
+  projectId: "project-1",
+  title: "Restore rich ClickUp details",
+  url: "https://app.clickup.com/t/clickup-task-1",
+  ...overrides,
+});
+
 type IntegrationAttachments = Partial<{
   jira: AgentConversationJiraIssue | null;
   linear: AgentConversationLinearIssue | null;
+  clickup: ConversationTicket | null;
   granola: AgentConversationGranolaNote | null;
 }>;
 
@@ -796,6 +809,12 @@ function integrationQueryClient(
     enabled: true,
     issueSearchAvailable: true,
   });
+  queryClient.setQueryData(["clickup-integration", "settings"], {
+    enabled: true,
+    hasApiToken: true,
+    validationStatus: "valid",
+    taskSearchAvailable: true,
+  });
   queryClient.setQueryData(["granola", "settings"], {
     enabled: true,
     validationStatus: "valid",
@@ -807,6 +826,10 @@ function integrationQueryClient(
   queryClient.setQueryData(
     agentLinearIssueKeys.issue("conversation-1"),
     attachments.linear ?? null,
+  );
+  queryClient.setQueryData(
+    ticketingKeys.conversationTicket("conversation-1"),
+    attachments.clickup ?? null,
   );
   queryClient.setQueryData(
     agentGranolaNoteKeys.note("conversation-1"),
@@ -825,6 +848,11 @@ const integrationTabCases = [
     label: "Linear",
     tab: "linear" as const,
     attachments: { linear: linearIssue() },
+  },
+  {
+    label: "ClickUp",
+    tab: "clickup" as const,
+    attachments: { clickup: clickUpTicket() },
   },
   {
     label: "Granola",

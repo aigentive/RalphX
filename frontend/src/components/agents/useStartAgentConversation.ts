@@ -62,6 +62,10 @@ import {
   invalidateAgentConversationGranolaNote,
 } from "./agentGranolaNoteQueries";
 import {
+  hasClickUpIntegrationReference,
+  invalidateAgentConversationClickUpTicket,
+} from "./agentClickUpTicketQueries";
+import {
   buildAgentStartConversationRetryInput,
   parseLinkedSetupFailure,
   parseMcpSetupPreflightFailure,
@@ -74,7 +78,7 @@ import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
 type SupportedStartIntegrationTab = Extract<
   AgentArtifactTab,
-  "jira" | "linear" | "granola"
+  "jira" | "linear" | "clickup" | "granola"
 >;
 
 interface HandleAutoManagedTitleArgs {
@@ -104,6 +108,7 @@ interface UseStartAgentConversationArgs {
   ) => void;
   onJiraLinked?: (conversationId: string) => void;
   onLinearLinked?: (conversationId: string) => void;
+  onClickUpLinked?: (conversationId: string) => void;
   onGranolaLinked?: (conversationId: string) => void;
 }
 
@@ -140,6 +145,7 @@ export function useStartAgentConversation({
   setRuntimeForConversation,
   onJiraLinked,
   onLinearLinked,
+  onClickUpLinked,
   onGranolaLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
@@ -635,6 +641,15 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
+        if (hasClickUpIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "clickup") {
+            onClickUpLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationClickUpTicket(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         if (hasGranolaIntegrationReference(composerIntegrationReferences)) {
           if (startIntegrationTab === "granola") {
             onGranolaLinked?.(resolvedConversationId);
@@ -767,6 +782,7 @@ export function useStartAgentConversation({
       setRuntimeForConversation,
       onJiraLinked,
       onLinearLinked,
+      onClickUpLinked,
       onGranolaLinked,
       setSending,
     ]
@@ -809,6 +825,9 @@ function getSupportedStartIntegrationTab(
     }
     if (reference.kind === "linear") {
       return "linear";
+    }
+    if (reference.provider === "clickup" && reference.kind === "clickup") {
+      return "clickup";
     }
     if (reference.provider === "granola" && reference.kind === "note") {
       return "granola";

@@ -20,6 +20,7 @@ import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { personaKeys } from "@/hooks/usePersonas";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -3032,6 +3033,99 @@ describe("AgentsView start conversation", () => {
         isOpen: true,
         activeTab: "linear",
       })
+    );
+  });
+
+  it("opens and invalidates the ClickUp tab after starting with a ClickUp reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-clickup",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-clickup",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-clickup",
+        agentRunId: "run-with-clickup",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onClickUpLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onClickUpLinked,
+        }),
+      { wrapper },
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with clickup",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "task-42",
+          key: "CU-42",
+          title: "Restore rich artifact details",
+        },
+      ],
+    });
+
+    expect(startWorkFromTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticketRef: { provider: "clickup", id: "task-42", key: "CU-42" },
+      }),
+    );
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.conversationTicket("conversation-with-clickup"),
+    });
+    expect(onClickUpLinked).toHaveBeenCalledWith("conversation-with-clickup");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId[
+        "conversation-with-clickup"
+      ],
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "clickup",
+      }),
     );
   });
 
