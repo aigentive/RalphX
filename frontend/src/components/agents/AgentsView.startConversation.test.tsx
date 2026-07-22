@@ -869,7 +869,7 @@ describe("AgentsView start conversation", () => {
       screen.getByRole("button", { name: "Choose persona" }),
     );
     await userEvent.click(
-      screen.getByRole("menuitemradio", { name: "Reviewer Voice" }),
+      screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }),
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "Review the current changes" },
