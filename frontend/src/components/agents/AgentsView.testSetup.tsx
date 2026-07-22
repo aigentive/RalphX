@@ -2191,6 +2191,7 @@ export function setupAgentsViewTest() {
   resetAgentSessionState();
   useAgentArtifactUiStore.setState({
     artifactByConversationId: {},
+    publishSubTabRequest: null,
   });
   useAgentTerminalStore.setState({
     openByConversationId: {},

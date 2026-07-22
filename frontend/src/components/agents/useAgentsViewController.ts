@@ -82,10 +82,7 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
-import type {
-  AgentPublishSubTab,
-  AgentPublishSubTabRequest,
-} from "./agentPublishSubTab";
+import type { AgentPublishSubTab } from "./agentPublishSubTab";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -214,15 +211,11 @@ export function useAgentsViewController({
   );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
-  const [publishSubTabRequest, setPublishSubTabRequest] =
-    useState<AgentPublishSubTabRequest | null>(null);
   const requestPublishSubTab = useCallback(
     (conversationId: string, tab: AgentPublishSubTab) => {
-      setPublishSubTabRequest((current) => ({
-        conversationId,
-        requestId: (current?.requestId ?? 0) + 1,
-        tab,
-      }));
+      useAgentArtifactUiStore
+        .getState()
+        .requestPublishSubTab(conversationId, tab);
     },
     [],
   );
@@ -1694,7 +1687,6 @@ export function useAgentsViewController({
       automationRunFocusTarget,
       panelDockElement: terminalPanelDockElement,
       publishFocusRequest,
-      publishSubTabRequest,
       publishingConversationId,
       selectedConversationId,
       setArtifactPaneVisibility,

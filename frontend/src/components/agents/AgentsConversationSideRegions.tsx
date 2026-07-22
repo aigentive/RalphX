@@ -10,10 +10,10 @@ import type {
 } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
-import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -43,7 +43,6 @@ interface AgentsConversationSideRegionsProps {
   > | null;
   panelDockElement: HTMLDivElement | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
-  publishSubTabRequest: AgentPublishSubTabRequest | null;
   publishingConversationId: string | null;
   selectedConversationId: string | null;
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
@@ -101,7 +100,6 @@ export function AgentsConversationSideRegions({
   automationRunFocusTarget,
   panelDockElement,
   publishFocusRequest,
-  publishSubTabRequest,
   publishingConversationId,
   selectedConversationId,
   setArtifactPaneVisibility,
@@ -125,6 +123,9 @@ export function AgentsConversationSideRegions({
   onSelectArtifact,
   onTaskArtifactSelectionChange,
 }: AgentsConversationSideRegionsProps) {
+  const publishSubTabRequest = useAgentArtifactUiStore(
+    (state) => state.publishSubTabRequest,
+  );
   const workspaceConversationId =
     activeWorkspace?.conversationId ?? selectedConversationId;
 
