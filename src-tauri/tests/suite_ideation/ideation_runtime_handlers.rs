@@ -193,8 +193,9 @@ async fn test_get_child_session_status_likely_generating() {
     state
         .app_state
         .running_agent_registry
-        .update_heartbeat(&key, chrono::Utc::now())
-        .await;
+        .update_heartbeat(&key, "test-run", chrono::Utc::now())
+        .await
+        .expect("matching agent run must accept heartbeat");
 
     let result =
         get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
@@ -232,8 +233,9 @@ async fn test_get_child_session_status_likely_waiting() {
     state
         .app_state
         .running_agent_registry
-        .update_heartbeat(&key, stale)
-        .await;
+        .update_heartbeat(&key, "test-run-2", stale)
+        .await
+        .expect("matching agent run must accept heartbeat");
 
     let result =
         get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
@@ -371,8 +373,9 @@ async fn test_get_child_session_status_heartbeat_at_exact_threshold_is_likely_wa
     state
         .app_state
         .running_agent_registry
-        .update_heartbeat(&key, at_boundary)
-        .await;
+        .update_heartbeat(&key, "test-run-boundary", at_boundary)
+        .await
+        .expect("matching agent run must accept heartbeat");
 
     let result =
         get_child_session_status_handler(State(state), Path(sid_str), Query(no_messages_params()))
