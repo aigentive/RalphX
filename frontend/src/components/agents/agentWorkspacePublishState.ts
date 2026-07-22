@@ -1,7 +1,15 @@
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
+
+const PUBLISH_EVENT_START_SKEW_MS = 5_000;
+
+export type AgentWorkspacePublishTerminalEvent = {
+  event: AgentConversationWorkspacePublicationEvent;
+  kind: "failure" | "needs_agent" | "no_changes" | "success";
+};
 
 export function hasPublishedWorkspacePr(
   workspace: AgentConversationWorkspace | null
@@ -204,6 +212,74 @@ export function isAgentWorkspacePublishCurrent(
     !freshness.hasUncommittedChanges &&
     freshness.unpublishedCommitCount === 0
   );
+}
+
+export function getPostBaselinePublicationEvents(
+  events: AgentConversationWorkspacePublicationEvent[],
+  lastEventId: string | null,
+  startedAtMs: number,
+): AgentConversationWorkspacePublicationEvent[] | null {
+  let suffix = events;
+  if (lastEventId !== null) {
+    const baselineIndexes = events.flatMap((event, index) =>
+      event.id === lastEventId ? [index] : [],
+    );
+    if (baselineIndexes.length !== 1) {
+      return null;
+    }
+    suffix = events.slice((baselineIndexes[0] ?? 0) + 1);
+  }
+
+  const seenEventIds = new Set<string>();
+  return suffix.filter((event) => {
+    if (seenEventIds.has(event.id)) {
+      return false;
+    }
+    seenEventIds.add(event.id);
+    const createdAtMs = new Date(event.createdAt).getTime();
+    return (
+      Number.isFinite(createdAtMs) &&
+      createdAtMs >= startedAtMs - PUBLISH_EVENT_START_SKEW_MS
+    );
+  });
+}
+
+export function classifyAgentWorkspacePublishTerminalEvent(
+  events: AgentConversationWorkspacePublicationEvent[],
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined,
+): AgentWorkspacePublishTerminalEvent | null {
+  const workspacePushStatus = normalizePublicationStatus(
+    workspace?.publicationPushStatus,
+  );
+  for (const event of events) {
+    const step = event.step.trim().toLowerCase();
+    const status = event.status.trim().toLowerCase();
+    const classification = event.classification?.trim().toLowerCase() ?? null;
+    if (step === "published" && status === "succeeded") {
+      if (isAgentWorkspacePublishCurrent(workspace, freshness)) {
+        return { event, kind: "success" };
+      }
+      continue;
+    }
+    if (
+      step === "needs_agent" &&
+      status === "failed" &&
+      (classification === "agent_fixable" || workspacePushStatus === "needs_agent")
+    ) {
+      return { event, kind: "needs_agent" };
+    }
+    if (
+      (step === "failed" || step === "description_failed") &&
+      status === "failed"
+    ) {
+      return { event, kind: "failure" };
+    }
+    if (step === "no_changes" && status === "skipped") {
+      return { event, kind: "no_changes" };
+    }
+  }
+  return null;
 }
 
 export function shouldAutoRefreshCleanAgentWorkspaceFromBase(

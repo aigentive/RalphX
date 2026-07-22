@@ -16,6 +16,7 @@ import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 import type {
   AgentsChatFocus,
   AutomationRunFocusOptions,
@@ -43,7 +44,7 @@ interface AgentsConversationSideRegionsProps {
   > | null;
   panelDockElement: HTMLDivElement | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
-  publishingConversationId: string | null;
+  publishAttemptsByConversationId: Record<string, AgentWorkspacePublishAttempt>;
   selectedConversationId: string | null;
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
   setArtifactTaskMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
@@ -100,7 +101,7 @@ export function AgentsConversationSideRegions({
   automationRunFocusTarget,
   panelDockElement,
   publishFocusRequest,
-  publishingConversationId,
+  publishAttemptsByConversationId,
   selectedConversationId,
   setArtifactPaneVisibility,
   setArtifactTaskMode,
@@ -128,6 +129,9 @@ export function AgentsConversationSideRegions({
   );
   const workspaceConversationId =
     activeWorkspace?.conversationId ?? selectedConversationId;
+  const publishAttempt = selectedConversationId
+    ? publishAttemptsByConversationId[selectedConversationId] ?? null
+    : null;
 
   return (
     <>
@@ -155,7 +159,8 @@ export function AgentsConversationSideRegions({
             setArtifactTaskMode(selectedConversationId, mode)
           }
           onPublishWorkspace={onPublishWorkspace}
-          isPublishingWorkspace={publishingConversationId === selectedConversationId}
+          isPublishingWorkspace={publishAttempt !== null}
+          publishAttempt={publishAttempt}
           publishFocusRequest={publishFocusRequest}
           publishSubTabRequest={publishSubTabRequest}
           taskFocusRequest={taskArtifactFocusRequest}
