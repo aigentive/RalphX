@@ -711,6 +711,18 @@ pub struct AgentWorkspaceReviewFixerSnapshot {
     pub blocking_fingerprint: String,
 }
 
+impl AgentWorkspaceReviewFixerSnapshot {
+    pub fn from_monitor(monitor: &AgentWorkspaceReviewMonitor) -> Option<Self> {
+        Some(Self {
+            target_scope: monitor.current_target_scope?,
+            diff_fingerprint: monitor.current_diff_fingerprint.clone()?,
+            artifact_id: monitor.review_artifact_id.clone()?,
+            artifact_version: monitor.review_artifact_version?,
+            blocking_fingerprint: monitor.review_blocking_fingerprint.clone()?,
+        })
+    }
+}
+
 impl AgentWorkspaceReviewApprovalSnapshot {
     pub fn audit_event(
         &self,

@@ -28,7 +28,11 @@ use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
-use crate::domain::agents::AgentHarnessKind;
+use crate::domain::agents::{
+    default_effort_for_provider, default_model_for_provider, AgentHarnessKind,
+    AgentProviderSettings, LogicalEffort as AgentLogicalEffort, ManualRoleRuntimeOverride,
+    ManualServiceTier,
+};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, CoordinationMode,
@@ -50,6 +54,49 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct QueueProcessingOutcome {
     pub total_processed: u32,
     pub last_run_id: Option<String>,
+}
+
+pub(super) struct CompleteRuntimeQueueSnapshot {
+    pub harness: AgentHarnessKind,
+    pub model: Option<String>,
+    pub effort: Option<AgentLogicalEffort>,
+    pub service_tier: Option<String>,
+}
+
+pub(super) fn resolve_complete_runtime_for_queue(
+    runtime: &ManualRoleRuntimeOverride,
+    provider: &AgentProviderSettings,
+) -> CompleteRuntimeQueueSnapshot {
+    let service_tier = match runtime.service_tier {
+        ManualServiceTier::ProviderDefault => Some(
+            provider
+                .service_tier
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("standard")
+                .to_ascii_lowercase(),
+        ),
+        ManualServiceTier::Standard => Some("standard".to_string()),
+        ManualServiceTier::Fast => Some("fast".to_string()),
+    };
+    CompleteRuntimeQueueSnapshot {
+        harness: runtime.harness,
+        model: Some(
+            runtime
+                .model
+                .clone()
+                .or_else(|| provider.model.clone())
+                .unwrap_or_else(|| default_model_for_provider(runtime.harness).to_string()),
+        ),
+        effort: Some(
+            runtime
+                .effort
+                .or(provider.effort)
+                .unwrap_or_else(|| default_effort_for_provider(runtime.harness)),
+        ),
+        service_tier,
+    }
 }
 
 impl QueueProcessingOutcome {

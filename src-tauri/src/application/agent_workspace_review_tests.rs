@@ -1259,6 +1259,44 @@ async fn start_review_skips_current_and_already_reviewing_targets() {
 }
 
 #[tokio::test]
+async fn refreshed_review_target_invalidates_the_previous_fixer_attempt() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    let mut monitor = context.monitor;
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    monitor.review_blocking_summary = Some("Old blocker".to_string());
+    monitor.review_blocking_fingerprint = Some("blocker-old".to_string());
+    monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+    monitor.review_fixer_attempt_id = Some("attempt-old".to_string());
+
+    let mut refreshed_target = target;
+    refreshed_target.diff_fingerprint = "diff-refreshed".to_string();
+    apply_current_target_to_monitor(&mut monitor, Some(&refreshed_target));
+
+    assert_eq!(
+        monitor.current_diff_fingerprint.as_deref(),
+        Some("diff-refreshed")
+    );
+    assert_eq!(monitor.review_blocking_summary, None);
+    assert_eq!(monitor.review_blocking_fingerprint, None);
+    assert_eq!(monitor.review_fixer_status, None);
+    assert_eq!(monitor.review_fixer_attempt_id, None);
+}
+
+#[tokio::test]
 async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_completion() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);

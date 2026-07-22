@@ -1955,21 +1955,52 @@ impl<R: Runtime> AppChatService<R> {
         conversation_id: Option<String>,
     ) -> Result<QueuedMessage, ChatServiceError> {
         let complete_runtime = options.manual_role_runtime_override.as_ref();
-        let queued_harness = complete_runtime
+        let complete_runtime_snapshot = match complete_runtime {
+            Some(runtime) => {
+                let provider_repo = self.agent_provider_settings_repo.as_ref().ok_or_else(|| {
+                    ChatServiceError::SpawnFailed(
+                        "Provider settings are unavailable for a confirmed runtime selection"
+                            .to_string(),
+                    )
+                })?;
+                crate::application::ensure_provider_spawn_enabled(
+                    provider_repo,
+                    runtime.harness,
+                    "queue confirmed runtime",
+                )
+                .await
+                .map_err(ChatServiceError::SpawnFailed)?;
+                let provider = provider_repo
+                    .get(runtime.harness)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                    .ok_or_else(|| {
+                        ChatServiceError::SpawnFailed(format!(
+                            "Confirmed provider {} is not configured",
+                            runtime.harness
+                        ))
+                    })?;
+                Some(chat_service_queue::resolve_complete_runtime_for_queue(
+                    runtime, &provider,
+                ))
+            }
+            None => None,
+        };
+        let queued_harness = complete_runtime_snapshot
+            .as_ref()
             .map(|runtime| runtime.harness)
             .or(options.harness_override);
-        let queued_model = complete_runtime
+        let queued_model = complete_runtime_snapshot
+            .as_ref()
             .and_then(|runtime| runtime.model.clone())
             .or_else(|| options.model_override.clone());
-        let queued_effort = complete_runtime
+        let queued_effort = complete_runtime_snapshot
+            .as_ref()
             .and_then(|runtime| runtime.effort)
             .or(options.logical_effort_override);
-        let queued_service_tier = complete_runtime
-            .map(|runtime| match runtime.service_tier {
-                crate::domain::agents::ManualServiceTier::ProviderDefault => String::new(),
-                crate::domain::agents::ManualServiceTier::Standard => "standard".to_string(),
-                crate::domain::agents::ManualServiceTier::Fast => "fast".to_string(),
-            })
+        let queued_service_tier = complete_runtime_snapshot
+            .as_ref()
+            .and_then(|runtime| runtime.service_tier.clone())
             .or_else(|| options.service_tier_override.clone());
         let mut queued = self
             .message_queue

@@ -90,6 +90,70 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         .is_none());
 }
 
+#[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-stale-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-old".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-old".to_string(),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.reviewed_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.review_blocking_fingerprint = Some("blocker-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_diff_fingerprint,
+        refreshed.current_diff_fingerprint
+    );
+}
+
 fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
     db.with_connection(|conn| {
         conn.execute(

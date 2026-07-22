@@ -3038,6 +3038,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         &self,
         monitor: AgentWorkspaceReviewMonitor,
         expected_attempt_id: &str,
+        expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
         let fetch_id = monitor.conversation_id;
         let conversation_id = fetch_id.as_str().to_string();
@@ -3048,6 +3049,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .review_fixer_conversation_id
             .map(|id| id.as_str().to_string());
         let last_error = monitor.last_error;
+        let target_scope = expected_snapshot.target_scope.to_string();
+        let diff_fingerprint = expected_snapshot.diff_fingerprint.clone();
+        let artifact_id = expected_snapshot.artifact_id.as_str().to_string();
+        let artifact_version = i64::from(expected_snapshot.artifact_version);
+        let blocking_fingerprint = expected_snapshot.blocking_fingerprint.clone();
         let updated_at = Utc::now().to_rfc3339();
         let changed = self
             .db
@@ -3060,7 +3066,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          last_error = ?6,
                          updated_at = ?7
                      WHERE conversation_id = ?1
-                       AND review_fixer_attempt_id = ?2",
+                       AND review_fixer_attempt_id = ?2
+                       AND current_target_scope = ?8
+                       AND reviewed_target_scope = ?8
+                       AND current_diff_fingerprint = ?9
+                       AND reviewed_diff_fingerprint = ?9
+                       AND review_artifact_id = ?10
+                       AND review_artifact_version = ?11
+                       AND review_blocking_fingerprint = ?12",
                     rusqlite::params![
                         conversation_id,
                         expected_attempt_id,
@@ -3069,6 +3082,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         fixer_conversation_id,
                         last_error,
                         updated_at,
+                        target_scope,
+                        diff_fingerprint,
+                        artifact_id,
+                        artifact_version,
+                        blocking_fingerprint,
                     ],
                 )? == 1)
             })

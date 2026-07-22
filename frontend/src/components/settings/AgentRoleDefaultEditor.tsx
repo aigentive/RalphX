@@ -153,7 +153,10 @@ export function AgentRoleDefaultEditor({
         <ManualRoleRuntimeSelector
           entry={entry}
           value={value}
-          providers={providers}
+          providerOptions={providers.map((provider) => ({
+            id: provider as "claude" | "codex",
+            label: provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider,
+          }))}
           modelsForProvider={modelsForProvider}
           personas={personas}
           disabled={blocked}

@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
+import { harnessProvidersApi } from "@/api/harness-providers";
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation, type ConfirmOptions } from "@/hooks/useConfirmation";
@@ -12,6 +13,8 @@ import {
 } from "@/stores/agentSessionStore";
 
 import { RoleRuntimeConfirmationBody } from "./RoleRuntimeConfirmationBody";
+import { buildAgentProviderAvailabilityOptions } from "./agentProviderAvailability";
+import { getManualRoleRuntimeSelectionIssue } from "./composer/runtime/manualRoleRuntimeValidation";
 
 export function useRoleRuntimeConfirmation({
   conversationId,
@@ -69,8 +72,9 @@ export function useRoleRuntimeConfirmation({
         ...(pendingText ? { pendingText } : {}),
         confirmDisabled: true,
         prepare: async (controller) => {
-          const [catalog, preparedDescription] = await Promise.all([
+          const [catalog, providerSettings, preparedDescription] = await Promise.all([
             manualRoleDefaultsApi.list(projectId),
+            harnessProvidersApi.list({ refreshRuntime: true }),
             prepareDescription?.(),
           ]);
           const entry = catalog.roles.find((candidate) => candidate.role === role);
@@ -80,9 +84,21 @@ export function useRoleRuntimeConfirmation({
           const store = useAgentSessionStore.getState();
           const saved = store.roleRuntimeOverridesByConversationId[conversationId]?.[role];
           const initial: ManualRoleRuntimeSelection = saved ?? entry.effective;
+          const providerOptions = buildAgentProviderAvailabilityOptions({
+            providers: providerSettings.providers,
+            isReady: true,
+          });
+          const initialIssue = getManualRoleRuntimeSelectionIssue({
+            entry,
+            value: initial,
+            providerOptions,
+            modelsForProvider: (provider) =>
+              registry[provider as keyof typeof registry] ?? [],
+            personas,
+          });
           latestSelectionRef.current = initial;
           return {
-            confirmDisabled: false,
+            confirmDisabled: Boolean(initialIssue),
             ...(preparedDescription ? { description: preparedDescription } : {}),
             body: (
               <RoleRuntimeConfirmationBody
@@ -91,18 +107,21 @@ export function useRoleRuntimeConfirmation({
                 hasSavedOverride={Boolean(saved)}
                 modelRegistry={registry}
                 personas={personas}
+                providerOptions={providerOptions}
                 onChange={(selection) => {
                   latestSelectionRef.current = selection;
                   useAgentSessionStore
                     .getState()
                     .setRoleRuntimeOverride(conversationId, role, selection);
-                  controller.update({ confirmDisabled: false });
                 }}
                 onReset={(selection) => {
                   latestSelectionRef.current = selection;
                   useAgentSessionStore
                     .getState()
                     .clearRoleRuntimeOverride(conversationId, role);
+                }}
+                onValidityChange={(issue) => {
+                  controller.update({ confirmDisabled: Boolean(issue) });
                 }}
               />
             ),

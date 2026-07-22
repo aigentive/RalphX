@@ -111,6 +111,25 @@ vi.mock("@/api/manual-role-defaults", () => ({
   },
 }));
 
+vi.mock("@/api/harness-providers", () => ({
+  harnessProvidersApi: {
+    list: vi.fn().mockResolvedValue({
+      defaultProvider: "claude",
+      requiresOnboarding: false,
+      providers: [
+        {
+          provider: "claude",
+          enabled: true,
+          available: true,
+          missingCoreExecFeatures: [],
+          error: null,
+          status: "ready",
+        },
+      ],
+    }),
+  },
+}));
+
 function Harness({
   onStartReview,
 }: {

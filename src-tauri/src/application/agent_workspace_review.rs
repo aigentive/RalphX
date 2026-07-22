@@ -346,8 +346,14 @@ pub async fn reconcile_interrupted_workspace_review_fixers_on_startup(
             }
         }
 
+        let snapshot =
+            AgentWorkspaceReviewFixerSnapshot::from_monitor(&claimed).ok_or_else(|| {
+                AppError::Infrastructure(
+                    "workspace Review fixer recovery is missing target authority".to_string(),
+                )
+            })?;
         if workspace_repo
-            .settle_workspace_review_fixer_attempt(next, attempt_id)
+            .settle_workspace_review_fixer_attempt(next, attempt_id, &snapshot)
             .await?
             .is_some()
         {
@@ -2730,9 +2736,14 @@ async fn settle_workspace_review_fixer_attempt(
             "workspace Review fixer routing is missing attempt identity".to_string(),
         ));
     };
+    let snapshot = AgentWorkspaceReviewFixerSnapshot::from_monitor(claimed).ok_or_else(|| {
+        AppError::Infrastructure(
+            "workspace Review fixer routing is missing target authority".to_string(),
+        )
+    })?;
     state
         .agent_conversation_workspace_repo
-        .settle_workspace_review_fixer_attempt(next, attempt_id)
+        .settle_workspace_review_fixer_attempt(next, attempt_id, &snapshot)
         .await?
         .ok_or_else(|| {
             AppError::Conflict(
@@ -3171,6 +3182,19 @@ pub(crate) fn apply_current_target_to_monitor(
 ) {
     let now = Utc::now();
     monitor.updated_at = now;
+    let target_changed = match target {
+        Some(target) => {
+            monitor.current_target_scope != Some(target.scope)
+                || monitor.current_diff_fingerprint.as_deref()
+                    != Some(target.diff_fingerprint.as_str())
+        }
+        None => {
+            monitor.current_target_scope.is_some() || monitor.current_diff_fingerprint.is_some()
+        }
+    };
+    if target_changed {
+        clear_review_blocking_state(monitor);
+    }
     let bypass_remains_current = target.is_some_and(|target| {
         monitor.has_current_review_bypass_for_target(
             target.scope,

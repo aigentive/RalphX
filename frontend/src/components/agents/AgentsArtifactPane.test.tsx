@@ -65,12 +65,29 @@ vi.mock("./useApprovedPlanContinuation", () => ({
   useApprovedPlanContinuation: () => ({
     confirmImplementDirectly: (
       onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
-    ) => void onConfirm(approvedPlanRuntime),
+    ) => void onConfirm(approvedPlanRuntime).catch(() => undefined),
     confirmCreateProposals: (
       onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
-    ) => void onConfirm(approvedPlanRuntime),
+    ) => void onConfirm(approvedPlanRuntime).catch(() => undefined),
     confirmationDialogProps: {},
     ConfirmationDialog: () => null,
+  }),
+}));
+
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    registry: {
+      claude: [
+        {
+          id: "opus",
+          label: "Opus",
+          menuLabel: "Opus",
+          defaultEffort: "high",
+          supportedEfforts: ["high"],
+        },
+      ],
+      codex: [],
+    },
   }),
 }));
 const initialPlanStoreActions = {

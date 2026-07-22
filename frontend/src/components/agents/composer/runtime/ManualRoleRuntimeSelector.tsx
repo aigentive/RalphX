@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import type {
   ManualRoleCatalogEntry,
@@ -9,8 +9,11 @@ import type { CoordinationMode } from "@/types/chat-conversation";
 import type { AgentModelCatalogEntry } from "@/lib/agent-models";
 import type { Persona } from "@/types/persona";
 import type { AgentProvider } from "@/stores/agentSessionStore";
+import type { AgentProviderAvailabilityOption } from "../../agentProviderAvailability";
 
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { getManualRoleRuntimeSelectionIssue } from "./manualRoleRuntimeValidation";
+import type { ComposerRuntimeOption } from "./runtimeSelectorTypes";
 
 const DEFAULT_VALUE = "__provider_default__";
 const NO_PERSONA = "__no_persona__";
@@ -34,17 +37,18 @@ function capabilityLabel(value: string) {
 export function ManualRoleRuntimeSelector({
   entry,
   value,
-  providers,
+  providerOptions,
   modelsForProvider,
   personas,
   disabled = false,
   runtimeDefault,
   onChange,
   onManagePersonas,
+  onValidityChange,
 }: {
   entry: ManualRoleCatalogEntry;
   value: ManualRoleRuntimeSelection;
-  providers: readonly string[];
+  providerOptions: readonly AgentProviderAvailabilityOption[];
   modelsForProvider: (provider: string) => readonly AgentModelCatalogEntry[];
   personas: readonly Persona[];
   disabled?: boolean;
@@ -56,35 +60,50 @@ export function ManualRoleRuntimeSelector({
   };
   onChange: (value: ManualRoleRuntimeSelection) => void;
   onManagePersonas?: () => void;
+  onValidityChange?: (issue: string | null) => void;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const models = modelsForProvider(value.provider);
   const selectedModel = models.find((model) => model.id === value.model);
-  const providerOptions = useMemo(
+  const displayedProviderOptions = useMemo<AgentProviderAvailabilityOption[]>(
     () =>
-      (providers.includes(value.provider)
-        ? providers
-        : [value.provider, ...providers]
-      ).map((provider) => ({
-        id: provider as AgentProvider,
-        label: providerLabel(provider),
-      })),
-    [providers, value.provider],
+      providerOptions.some((provider) => provider.id === value.provider)
+        ? [...providerOptions]
+        : [
+            {
+              id: value.provider as AgentProvider,
+              label: providerLabel(value.provider),
+              disabled: true,
+              disabledReason: "The selected provider is no longer available.",
+            },
+            ...providerOptions,
+          ],
+    [providerOptions, value.provider],
   );
-  const modelOptions = [
+  const modelOptions: ComposerRuntimeOption[] = [
     { id: DEFAULT_VALUE, label: "Provider default" },
     ...models.map((model) => ({ id: model.id, label: model.menuLabel })),
   ];
   if (value.model && !selectedModel) {
-    modelOptions.push({ id: value.model, label: value.model });
+    modelOptions.push({
+      id: value.model,
+      label: `${value.model} (unavailable)`,
+      disabled: true,
+      disabledReason: "The selected model is no longer available.",
+    });
   }
   const efforts = selectedModel?.supportedEfforts ?? [];
-  const effortOptions = [
+  const effortOptions: ComposerRuntimeOption[] = [
     { id: DEFAULT_VALUE, label: "Provider default" },
     ...efforts.map((effort) => ({ id: effort, label: effort })),
   ];
   if (value.effort && !efforts.some((effort) => effort === value.effort)) {
-    effortOptions.push({ id: value.effort, label: value.effort });
+    effortOptions.push({
+      id: value.effort,
+      label: `${value.effort} (unsupported)`,
+      disabled: true,
+      disabledReason: "The selected effort is not supported by this model.",
+    });
   }
   const capabilityOptions = entry.controls.capabilities.map((option) => ({
     id: option.value,
@@ -106,6 +125,16 @@ export function ManualRoleRuntimeSelector({
 
   const commit = (patch: Partial<ManualRoleRuntimeSelection>) =>
     onChange({ ...value, ...patch });
+  const validationIssue = getManualRoleRuntimeSelectionIssue({
+    entry,
+    value,
+    providerOptions,
+    modelsForProvider,
+    personas,
+  });
+  useEffect(() => {
+    onValidityChange?.(validationIssue);
+  }, [onValidityChange, validationIssue]);
 
   return (
     <div ref={surfaceRef} className="min-w-0">
@@ -113,7 +142,7 @@ export function ManualRoleRuntimeSelector({
         surfaceRef={surfaceRef}
         provider={{
           value: value.provider as AgentProvider,
-          options: providerOptions,
+          options: displayedProviderOptions,
           disabled,
           onValueChange: (provider) => {
             const firstModel = modelsForProvider(provider)[0];
@@ -187,6 +216,11 @@ export function ManualRoleRuntimeSelector({
         }}
         {...(runtimeDefault ? { runtimeDefault } : {})}
       />
+      {validationIssue && (
+        <p role="alert" className="mt-2 text-xs text-[var(--status-error)]">
+          {validationIssue}
+        </p>
+      )}
     </div>
   );
 }

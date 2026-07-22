@@ -760,6 +760,117 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
 }
 
 #[tokio::test]
+async fn explicit_provider_defaults_ignore_the_roles_configured_runtime() {
+    let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
+    manual_repo
+        .upsert_for_project(
+            "project-explicit-provider-default",
+            RoutingRole::WorkspaceEdit,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-5.6-role".to_string()),
+                effort: Some(LogicalEffort::XHigh),
+                service_tier: ManualServiceTier::Fast,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: Some("never".to_string()),
+                sandbox_mode: Some("danger-full-access".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    provider.enabled = true;
+    provider.is_default = true;
+    provider.model = Some("gpt-5.6-provider".to_string());
+    provider.effort = Some(LogicalEffort::Medium);
+    provider.service_tier = Some("standard".to_string());
+    provider_repo.upsert(&provider).await.unwrap();
+    let service = ManualRoleDefaultService::new(
+        manual_repo,
+        Arc::new(MemoryAgentLaneSettingsRepository::new()),
+        provider_repo,
+        Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
+        true,
+        config_root.path().join("router.yaml"),
+    );
+    let selection = crate::domain::agents::ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Codex,
+        model: None,
+        effort: None,
+        service_tier: ManualServiceTier::ProviderDefault,
+        coordination_mode: None,
+        persona_id: None,
+    };
+
+    let resolved = resolve_manual_role_spawn_settings(
+        "ralphx-general-worker",
+        Some("project-explicit-provider-default"),
+        None,
+        RoutingRole::WorkspaceEdit,
+        Some(&selection),
+        None,
+        None,
+        &service,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.model, "gpt-5.6-provider");
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(resolved.service_tier.as_deref(), Some("standard"));
+}
+
+#[tokio::test]
+async fn explicit_runtime_rejects_a_disabled_selected_provider() {
+    let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    provider.is_default = false;
+    let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    provider_repo.upsert(&provider).await.unwrap();
+    let mut default_provider =
+        AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    default_provider.enabled = true;
+    default_provider.is_default = true;
+    provider_repo.upsert(&default_provider).await.unwrap();
+    let service = ManualRoleDefaultService::new(
+        Arc::new(MemoryManualRoleDefaultRepository::new()),
+        Arc::new(MemoryAgentLaneSettingsRepository::new()),
+        provider_repo,
+        Arc::new(MemoryPersonaRepository::new()),
+        Arc::new(crate::application::agent_capability_gate::AgentCapabilityGate::default()),
+        true,
+        config_root.path().join("router.yaml"),
+    );
+    let selection = crate::domain::agents::ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Codex,
+        model: Some("gpt-5.6".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: ManualServiceTier::Standard,
+        coordination_mode: None,
+        persona_id: None,
+    };
+
+    let error = resolve_manual_role_spawn_settings(
+        "ralphx-general-worker",
+        Some("project-disabled-provider"),
+        None,
+        RoutingRole::WorkspaceEdit,
+        Some(&selection),
+        None,
+        None,
+        &service,
+    )
+    .await
+    .expect_err("disabled selected providers must fail before workflow mutation");
+
+    assert!(error.to_string().contains("not enabled"));
+}
+
+#[tokio::test]
 async fn delegated_subagent_uses_provider_default_model_and_effort_as_inherited_values() {
     let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     provider.enabled = true;
@@ -773,6 +884,7 @@ async fn delegated_subagent_uses_provider_default_model_and_effort_as_inherited_
         Some("project-provider-default"),
         None,
         RoutingRole::DelegatedSubagent,
+        None,
         None,
         None,
         &service,
@@ -802,6 +914,7 @@ async fn delegated_subagent_model_override_preserves_compatible_provider_effort(
         Some("project-provider-partial"),
         None,
         RoutingRole::DelegatedSubagent,
+        None,
         Some(AgentHarnessKind::Codex),
         Some("gpt-5.6-explicit"),
         &service,
@@ -831,6 +944,7 @@ async fn delegated_subagent_harness_override_does_not_leak_provider_model_or_eff
         Some("project-cross-harness"),
         None,
         RoutingRole::DelegatedSubagent,
+        None,
         Some(AgentHarnessKind::Claude),
         None,
         &service,
@@ -862,6 +976,7 @@ async fn delegated_subagent_provider_without_model_or_effort_uses_harness_fallba
         RoutingRole::DelegatedSubagent,
         None,
         None,
+        None,
         &service,
     )
     .await
@@ -888,6 +1003,7 @@ async fn provider_default_does_not_override_non_delegated_role_model_or_effort()
         Some("project-provider-boundary"),
         None,
         RoutingRole::UtilityPrDescriber,
+        None,
         None,
         None,
         &service,

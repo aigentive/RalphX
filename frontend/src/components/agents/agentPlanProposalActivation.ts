@@ -40,6 +40,32 @@ interface ActivateAgentPlanProposalsParams {
   onWorkspaceActivated?: () => void;
 }
 
+export async function refreshTransitionedAgentWorkspace({
+  queryClient,
+  conversationId,
+  onConversationModeSwitched,
+}: {
+  queryClient: QueryClient;
+  conversationId: string;
+  onConversationModeSwitched?: (
+    conversationId: string,
+    mode: AgentConversationWorkspaceMode,
+    workspace: AgentConversationWorkspace | null,
+  ) => void;
+}): Promise<AgentConversationWorkspace | null> {
+  try {
+    const workspace = await chatApi.getAgentConversationWorkspace(conversationId);
+    if (!workspace) return null;
+    queryClient.setQueryData(agentWorkspaceKeys.workspace(conversationId), workspace);
+    onConversationModeSwitched?.(conversationId, workspace.mode, workspace);
+    return workspace;
+  } catch {
+    return null;
+  } finally {
+    await invalidateWorkspaceQueries(queryClient, conversationId);
+  }
+}
+
 function pinIdeationConversation(
   queryClient: QueryClient,
   sessionId: string,
@@ -108,14 +134,30 @@ export async function activateAgentPlanProposals({
     onFocusIdeationSessionForConversation?.(conversationId, sessionId);
   }
 
-  const sendResult = await chatApi.sendAgentMessage(
-    "ideation",
-    sessionId,
-    PLAN_TO_PROPOSALS_REQUEST,
-    undefined,
-    undefined,
-    runtimeOverride ? { runtimeOverride } : undefined,
-  );
+  let sendResult: SendAgentMessageResult;
+  try {
+    sendResult = await chatApi.sendAgentMessage(
+      "ideation",
+      sessionId,
+      PLAN_TO_PROPOSALS_REQUEST,
+      undefined,
+      undefined,
+      runtimeOverride ? { runtimeOverride } : undefined,
+    );
+  } catch (error) {
+    if (ownsSession && workspaceIsTasks && conversationId) {
+      await refreshTransitionedAgentWorkspace({
+        queryClient,
+        conversationId,
+        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+      });
+      const detail = error instanceof Error ? ` ${error.message}` : "";
+      throw new Error(
+        `Tasks mode is active, but proposal launch failed. Retry will only send the proposal request; it will not activate Tasks again.${detail}`,
+      );
+    }
+    throw error;
+  }
   pinIdeationConversation(queryClient, sessionId, sendResult.conversationId);
   return sendResult;
 }

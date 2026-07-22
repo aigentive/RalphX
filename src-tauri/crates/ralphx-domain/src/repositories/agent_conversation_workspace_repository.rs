@@ -516,6 +516,7 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         _monitor: AgentWorkspaceReviewMonitor,
         _expected_attempt_id: &str,
+        _expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
         Ok(None)
     }

@@ -93,6 +93,7 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import {
   taskKeys,
   useSessionTaskHistoryAvailability,
@@ -177,7 +178,11 @@ import {
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
-import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
+import {
+  activateAgentPlanProposals,
+  refreshTransitionedAgentWorkspace,
+} from "./agentPlanProposalActivation";
+import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
@@ -2613,6 +2618,7 @@ function AgentPlanPanel({
     ProposalDetailEnrichment | undefined
   >(undefined);
   const queryClient = useQueryClient();
+  const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
   const setFocusedAgentProject = useAgentSessionStore(
@@ -2951,11 +2957,7 @@ function AgentPlanPanel({
       useAgentSessionStore.getState().setRuntimeForConversation(
         workspace.conversationId,
         session.projectId,
-        {
-          provider: runtimeOverride.provider as "claude" | "codex",
-          modelId: runtimeOverride.model ?? "default",
-          effort: (runtimeOverride.effort ?? "medium") as import("@/stores/agentSessionStore").AgentEffort,
-        },
+        materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
       );
       useAgentSessionStore
         .getState()
@@ -2965,6 +2967,17 @@ function AgentPlanPanel({
         );
       toast.success("Implementation started");
       } catch (err) {
+      if (modeTransitionCompleted) {
+        await refreshTransitionedAgentWorkspace({
+          queryClient,
+          conversationId: workspace.conversationId,
+          ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+        });
+        const detail = err instanceof Error ? ` ${err.message}` : "";
+        throw new Error(
+          `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
+        );
+      }
       console.error("Failed to implement plan directly:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to start implementation",
@@ -2977,6 +2990,7 @@ function AgentPlanPanel({
   }, [
     canImplementDirectly,
     confirmImplementDirectly,
+    modelRegistry,
     onConversationModeSwitched,
     queryClient,
     session,

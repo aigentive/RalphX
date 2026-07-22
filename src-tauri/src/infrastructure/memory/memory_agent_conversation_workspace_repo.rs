@@ -1420,20 +1420,34 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
 
     async fn settle_workspace_review_fixer_attempt(
         &self,
-        mut next: AgentWorkspaceReviewMonitor,
+        next: AgentWorkspaceReviewMonitor,
         expected_attempt_id: &str,
+        expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
     ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
         let mut monitors = self.workspace_review_monitors.write().await;
-        let Some(current) = monitors.get(&next.conversation_id) else {
+        let Some(current) = monitors.get_mut(&next.conversation_id) else {
             return Ok(None);
         };
-        if current.review_fixer_attempt_id.as_deref() != Some(expected_attempt_id) {
+        if current.review_fixer_attempt_id.as_deref() != Some(expected_attempt_id)
+            || current.current_target_scope != Some(expected_snapshot.target_scope)
+            || current.reviewed_target_scope != Some(expected_snapshot.target_scope)
+            || current.current_diff_fingerprint.as_deref()
+                != Some(expected_snapshot.diff_fingerprint.as_str())
+            || current.reviewed_diff_fingerprint.as_deref()
+                != Some(expected_snapshot.diff_fingerprint.as_str())
+            || current.review_artifact_id.as_ref() != Some(&expected_snapshot.artifact_id)
+            || current.review_artifact_version != Some(expected_snapshot.artifact_version)
+            || current.review_blocking_fingerprint.as_deref()
+                != Some(expected_snapshot.blocking_fingerprint.as_str())
+        {
             return Ok(None);
         }
-        next.created_at = current.created_at;
-        next.updated_at = Utc::now();
-        monitors.insert(next.conversation_id, next.clone());
-        Ok(Some(next))
+        current.review_fixer_status = next.review_fixer_status;
+        current.review_fixer_run_id = next.review_fixer_run_id;
+        current.review_fixer_conversation_id = next.review_fixer_conversation_id;
+        current.last_error = next.last_error;
+        current.updated_at = Utc::now();
+        Ok(Some(current.clone()))
     }
 
     async fn fail_reserved_workspace_review_start(

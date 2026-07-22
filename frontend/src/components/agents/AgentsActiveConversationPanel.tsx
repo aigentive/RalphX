@@ -162,7 +162,11 @@ import {
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
-import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
+import {
+  activateAgentPlanProposals,
+  refreshTransitionedAgentWorkspace,
+} from "./agentPlanProposalActivation";
+import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { PRIMARY_AGENT_START_MODE_IDS } from "./agentStartModeOptions";
 import {
@@ -2103,11 +2107,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       useAgentSessionStore.getState().setRuntimeForConversation(
         activeWorkspace.conversationId,
         activeProjectId,
-        {
-          provider: runtimeOverride.provider as "claude" | "codex",
-          modelId: runtimeOverride.model ?? workspaceSendRuntime.modelId,
-          effort: (runtimeOverride.effort ?? workspaceSendRuntime.effort) as typeof workspaceSendRuntime.effort,
-        },
+        materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
       );
       useAgentSessionStore
         .getState()
@@ -2117,6 +2117,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         );
       toast.success("Implementation started");
       } catch (err) {
+      if (modeTransitionCompleted) {
+        await refreshTransitionedAgentWorkspace({
+          queryClient,
+          conversationId: activeWorkspace.conversationId,
+          onConversationModeSwitched,
+        });
+        const detail = err instanceof Error ? ` ${err.message}` : "";
+        throw new Error(
+          `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
+        );
+      }
       console.error("Failed to implement plan directly:", err);
       toast.error(err instanceof Error ? err.message : "Failed to start implementation");
         throw err;
@@ -2131,7 +2142,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     onConversationModeSwitched,
     planApprovalSessionId,
     queryClient,
-    workspaceSendRuntime,
+    modelRegistry,
     confirmImplementDirectly,
   ]);
   const handleVerifyPlanFromComposer = useCallback(async () => {

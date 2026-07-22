@@ -6,6 +6,7 @@ import type {
 } from "@/api/manual-role-defaults.types";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 import type { Persona } from "@/types/persona";
+import type { AgentProviderAvailabilityOption } from "./agentProviderAvailability";
 
 import { ManualRoleRuntimeSelector } from "./composer/runtime/ManualRoleRuntimeSelector";
 
@@ -15,16 +16,20 @@ export function RoleRuntimeConfirmationBody({
   hasSavedOverride,
   modelRegistry,
   personas,
+  providerOptions,
   onChange,
   onReset,
+  onValidityChange,
 }: {
   entry: ManualRoleCatalogEntry;
   initialValue: ManualRoleRuntimeSelection;
   hasSavedOverride: boolean;
   modelRegistry: AgentModelRegistry;
   personas: readonly Persona[];
+  providerOptions: readonly AgentProviderAvailabilityOption[];
   onChange: (value: ManualRoleRuntimeSelection) => void;
   onReset: (value: ManualRoleRuntimeSelection) => void;
+  onValidityChange: (issue: string | null) => void;
 }) {
   const [value, setValue] = useState(initialValue);
   const [customized, setCustomized] = useState(hasSavedOverride);
@@ -48,7 +53,7 @@ export function RoleRuntimeConfirmationBody({
       <ManualRoleRuntimeSelector
         entry={entry}
         value={value}
-        providers={Object.keys(modelRegistry)}
+        providerOptions={providerOptions}
         modelsForProvider={(provider) =>
           modelRegistry[provider as keyof AgentModelRegistry] ?? []
         }
@@ -58,6 +63,7 @@ export function RoleRuntimeConfirmationBody({
           setCustomized(true);
           onChange(next);
         }}
+        onValidityChange={onValidityChange}
         runtimeDefault={{
           source: customized ? "conversation override" : entry.source,
           onReset: () => {
