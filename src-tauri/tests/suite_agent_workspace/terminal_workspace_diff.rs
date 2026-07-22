@@ -198,8 +198,7 @@ async fn terminal_transition_does_not_reuse_cached_active_branch_context() {
         .await
         .expect("project should persist");
 
-    let conversation_id =
-        ChatConversationId::from_string("00000000-0000-4000-8000-000000000452");
+    let conversation_id = ChatConversationId::from_string("00000000-0000-4000-8000-000000000452");
     let expected_worktree = resolve_agent_conversation_workspace_path(&project, &conversation_id)
         .expect("canonical worktree path should resolve");
     let mut workspace = AgentConversationWorkspace::new(

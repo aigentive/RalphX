@@ -409,7 +409,10 @@ fn agent_workspace_diff_cache_version(workspace: &AgentConversationWorkspace) ->
             .publication_pr_number
             .map(|number| number.to_string())
             .unwrap_or_default(),
-        workspace.publication_pr_status.as_deref().unwrap_or_default(),
+        workspace
+            .publication_pr_status
+            .as_deref()
+            .unwrap_or_default(),
         workspace
             .publication_push_status
             .as_deref()
