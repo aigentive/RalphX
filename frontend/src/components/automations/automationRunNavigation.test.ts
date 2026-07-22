@@ -156,6 +156,7 @@ function automationDetail(
         baseRefKind: "project_default",
         baseRefUsed: "",
         baseFromRunId: null,
+        goalItemId: null,
         branchName: null,
         prNumber: null,
         prUrl: null,

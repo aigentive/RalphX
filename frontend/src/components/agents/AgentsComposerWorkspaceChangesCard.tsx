@@ -242,6 +242,8 @@ function automationRunStatusColor(tone: AutomationRunStatusTone): string {
       return "var(--status-warning)";
     case "error":
       return "var(--status-error)";
+    case "accent":
+      return "var(--accent-primary)";
     case "neutral":
       return "var(--text-secondary)";
   }
