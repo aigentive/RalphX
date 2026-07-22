@@ -697,6 +697,14 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         Err("simulated stop error".to_string())
     }
 
+    async fn quiesce_if_owned(
+        &self,
+        _key: &RunningAgentKey,
+        _agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        Err("simulated stop error".to_string())
+    }
+
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
         self.0.list_all().await
     }
