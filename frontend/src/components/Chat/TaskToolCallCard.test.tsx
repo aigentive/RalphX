@@ -342,10 +342,10 @@ describe("TaskToolCallCard — RalphX native delegation", () => {
     expect(screen.getByText("gpt-5.4 · high")).toBeInTheDocument();
   });
 
-  it("shows delegated usage and final output when expanded", async () => {
+  it("shows provider-correct delegated usage and final output when expanded", async () => {
     const user = userEvent.setup();
     render(<TaskToolCallCard toolCall={makeDelegateToolCall()} />);
-    expect(screen.getByText(/175 tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/165 tokens/)).toBeInTheDocument();
     expect(screen.getByText(/\$0\.34/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /delegated task: ralphx-execution-reviewer/i }));

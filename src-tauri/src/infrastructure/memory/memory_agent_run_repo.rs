@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
-    ChatConversationId, InterruptedConversation,
+    ChatConversationId, InterruptedConversation, UsageCapture,
 };
 use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
 use crate::error::AppResult;
@@ -169,6 +169,22 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         if let Some(run) = runs.get_mut(id) {
             run.apply_usage(usage);
         }
+        Ok(())
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        let Some(run) = runs.get_mut(id) else {
+            return Err(crate::error::AppError::NotFound(format!(
+                "Agent run not found: {}",
+                id.as_str()
+            )));
+        };
+        run.replace_usage_capture(capture);
         Ok(())
     }
 

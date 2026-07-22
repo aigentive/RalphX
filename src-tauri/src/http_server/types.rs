@@ -150,6 +150,7 @@ pub struct DelegatedRunSummary {
     pub output_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
+    pub processed_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
 }
 

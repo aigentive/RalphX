@@ -109,7 +109,7 @@ if [ -n "$RALPHX_TEST_CODEX_CWD_PATH" ]; then
 fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7},"last_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}}'
 exit 0
 fi
 
@@ -2443,10 +2443,11 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         effective_effort: Some("high".to_string()),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
-        input_tokens: Some(100),
-        output_tokens: Some(40),
-        cache_creation_tokens: Some(6),
-        cache_read_tokens: Some(2),
+        input_tokens: Some(9_116_803),
+        output_tokens: Some(25_881),
+        cache_creation_tokens: Some(0),
+        cache_read_tokens: Some(8_837_504),
+        processed_tokens: Some(9_142_684),
         estimated_usd: Some(0.12),
     };
 
@@ -2465,7 +2466,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.agent_id.as_deref(), Some("run-2"));
     assert_eq!(payload.status.as_deref(), Some("failed"));
     assert_eq!(payload.total_duration_ms, Some(5000));
-    assert_eq!(payload.total_tokens, Some(148));
+    assert_eq!(payload.total_tokens, Some(9_142_684));
     assert_eq!(payload.delegated_job_id.as_deref(), Some("job-456"));
     assert_eq!(
         payload.delegated_session_id.as_deref(),
@@ -2489,10 +2490,10 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.effective_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(payload.input_tokens, Some(100));
-    assert_eq!(payload.output_tokens, Some(40));
-    assert_eq!(payload.cache_creation_tokens, Some(6));
-    assert_eq!(payload.cache_read_tokens, Some(2));
+    assert_eq!(payload.input_tokens, Some(9_116_803));
+    assert_eq!(payload.output_tokens, Some(25_881));
+    assert_eq!(payload.cache_creation_tokens, Some(0));
+    assert_eq!(payload.cache_read_tokens, Some(8_837_504));
     assert_eq!(payload.estimated_usd, Some(0.12));
     assert_eq!(
         payload.text_output.as_deref(),
