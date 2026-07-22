@@ -354,12 +354,13 @@ export function AgentPublishPanel({
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+    // Pane-wide: feeds the no-changes publish guard, header presentation, and
+    // Changes badge even while the Review subtab is the first to mount.
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
-      (reviewOpen ||
-        (inlineDiffsCandidate && mountedSubTabsForConversation.changes)),
+      (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
   const changeSummaryQuery = useQuery({
@@ -397,8 +398,7 @@ export function AgentPublishPanel({
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
-      (reviewOpen ||
-        (inlineDiffsCandidate && mountedSubTabsForConversation.changes)),
+      (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
   });

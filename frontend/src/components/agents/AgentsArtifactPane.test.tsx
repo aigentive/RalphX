@@ -3267,7 +3267,14 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("hides local Review from automation-owned publish workspaces", () => {
+  it("keeps local Review for automation-owned publish workspaces", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+
     renderPane(
       "publish",
       workspace({ mode: "edit" }),
@@ -3283,9 +3290,9 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
     expect(
-      screen.queryByTestId("agents-publish-tab-review"),
-    ).not.toBeInTheDocument();
-    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
+      await screen.findByTestId("agents-publish-tab-review"),
+    ).toBeInTheDocument();
+    expect(getWorkspaceReviewContextMock).toHaveBeenCalled();
   });
 
   it("renders PR and publish tabs for PR-backed plan workspaces", () => {
@@ -3461,6 +3468,72 @@ describe("AgentsArtifactPane", () => {
       screen.getByRole("button", { name: "Run review" }),
     ).toBeInTheDocument();
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the no-changes publish guard active when Review mounts first", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByTestId("agents-artifact-content-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-tab-review")).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "No changes to publish" },
+        deferredHydrationTimeout,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled();
+  });
+
+  it("falls back to Commit & Publish when the workspace review needs attention", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "blocked",
+        reviewOutcome: "blocking",
+        reviewGateStatus: "blocking",
+        reviewArtifactId: "review-artifact-1",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "pr",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-artifact-content-publish",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("does not auto-start Review when the user opens the Review tab", async () => {

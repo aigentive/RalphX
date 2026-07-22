@@ -870,7 +870,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     showPublishTab &&
     scopedWorkspace &&
     isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode) &&
-    !automationId &&
     !isReviewPrWorkspace,
   );
   const [publishSubTabByConversation, setPublishSubTabByConversation] =
@@ -1030,8 +1029,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const shouldLoadWorkspaceReviewContext = Boolean(
     workspaceReviewConversationId &&
     scopedWorkspace &&
-    isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode) &&
-    !automationId,
+    isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode),
   );
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(
@@ -1455,7 +1453,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? "automation"
       : isReviewPrWorkspace && (prReviewContext || reviewArtifactId)
         ? "review"
-        : showPullRequestTab
+        : nestsWorkspaceReview &&
+            (workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId)
+          ? "publish"
+          : showPullRequestTab
           ? "pr"
           : showJiraTab
             ? "jira"
