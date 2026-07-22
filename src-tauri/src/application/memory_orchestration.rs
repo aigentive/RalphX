@@ -12,7 +12,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{MemoryEventRepository, ProjectMemorySettingsRepository};
 use crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context;
+use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -490,7 +492,6 @@ async fn spawn_memory_maintainer(
 
     let conv_id_str = conversation_id.as_str();
     let proj_id_str = project_id.as_str();
-    let context_type_str = format!("{}", context_type);
 
     let prompt = format!(
         "Analyze and maintain memory rules for conversation_id='{}' in project_id='{}' (context: {}, {})",
@@ -514,30 +515,17 @@ async fn spawn_memory_maintainer(
         .await;
     }
 
-    let runtime_context = memory_agent_runtime_context(
+    let cmd = build_memory_agent_direct_command(
+        MemoryAgentKind::Maintainer,
+        cli_path,
+        plugin_dir,
+        &prompt,
         conversation_id,
         context_type,
         context_id,
         project_id,
         working_directory,
-    );
-
-    let mut cmd = build_spawnable_command_with_mcp_runtime_context(
-        cli_path,
-        plugin_dir,
-        &prompt,
-        Some("ralphx:ralphx-memory-maintainer"),
-        None,
-        working_directory,
-        None, // effort_override: memory pipelines use default
-        None, // model_override: use agent config default
-        Some(&runtime_context),
     )?;
-
-    cmd.env("RALPHX_CONVERSATION_ID", &conv_id_str);
-    cmd.env("RALPHX_CONTEXT_TYPE", &context_type_str);
-    cmd.env("RALPHX_CONTEXT_ID", context_id);
-    cmd.env("RALPHX_PROJECT_ID", proj_id_str);
 
     // Spawn and ignore the child process (fire-and-forget)
     let _child = cmd
@@ -571,7 +559,6 @@ async fn spawn_memory_capture(
 
     let conv_id_str = conversation_id.as_str();
     let proj_id_str = project_id.as_str();
-    let context_type_str = format!("{}", context_type);
 
     let prompt = format!(
         "Capture learning from conversation_id='{}' in project_id='{}' (context: {}, {})",
@@ -592,30 +579,17 @@ async fn spawn_memory_capture(
         .await;
     }
 
-    let runtime_context = memory_agent_runtime_context(
+    let cmd = build_memory_agent_direct_command(
+        MemoryAgentKind::Capture,
+        cli_path,
+        plugin_dir,
+        &prompt,
         conversation_id,
         context_type,
         context_id,
         project_id,
         working_directory,
-    );
-
-    let mut cmd = build_spawnable_command_with_mcp_runtime_context(
-        cli_path,
-        plugin_dir,
-        &prompt,
-        Some("ralphx:ralphx-memory-capture"),
-        None,
-        working_directory,
-        None, // effort_override: memory pipelines use default
-        None, // model_override: use agent config default
-        Some(&runtime_context),
     )?;
-
-    cmd.env("RALPHX_CONVERSATION_ID", &conv_id_str);
-    cmd.env("RALPHX_CONTEXT_TYPE", &context_type_str);
-    cmd.env("RALPHX_CONTEXT_ID", context_id);
-    cmd.env("RALPHX_PROJECT_ID", proj_id_str);
 
     // Spawn and ignore the child process (fire-and-forget)
     let _child = cmd
@@ -626,14 +600,14 @@ async fn spawn_memory_capture(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum MemoryAgentKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemoryAgentKind {
     Maintainer,
     Capture,
 }
 
 impl MemoryAgentKind {
-    fn agent_name(self) -> &'static str {
+    pub(crate) fn agent_name(self) -> &'static str {
         match self {
             Self::Maintainer => MEMORY_MAINTAINER_AGENT,
             Self::Capture => MEMORY_CAPTURE_AGENT,
@@ -646,6 +620,77 @@ impl MemoryAgentKind {
             Self::Capture => "ralphx-memory-capture",
         }
     }
+}
+
+pub(crate) struct MemoryAgentLaunchContext {
+    pub(crate) env: HashMap<String, String>,
+    pub(crate) runtime_context: McpRuntimeContext,
+}
+
+pub(crate) fn prepare_memory_agent_launch(
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    working_directory: &Path,
+) -> Result<MemoryAgentLaunchContext, String> {
+    let conversation_id = conversation_id.as_str().to_string();
+    let env = HashMap::from([
+        (
+            "RALPHX_CONVERSATION_ID".to_string(),
+            conversation_id.clone(),
+        ),
+        ("RALPHX_CONTEXT_TYPE".to_string(), context_type.to_string()),
+        ("RALPHX_CONTEXT_ID".to_string(), context_id.to_string()),
+        (
+            "RALPHX_PROJECT_ID".to_string(),
+            project_id.as_str().to_string(),
+        ),
+        ("RALPHX_PARENT_CONVERSATION_ID".to_string(), conversation_id),
+    ]);
+    let runtime_context = McpRuntimeContext::from_agent_env(&env, working_directory)
+        .ok_or_else(|| "Memory agent launch requires a non-blank project ID".to_string())?;
+
+    Ok(MemoryAgentLaunchContext {
+        env,
+        runtime_context,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_memory_agent_direct_command(
+    kind: MemoryAgentKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    working_directory: &Path,
+) -> Result<SpawnableCommand, String> {
+    let launch = prepare_memory_agent_launch(
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+    )?;
+    let mut command = build_spawnable_command_with_mcp_runtime_context(
+        cli_path,
+        plugin_dir,
+        prompt,
+        Some(kind.agent_name()),
+        None,
+        working_directory,
+        None,
+        None,
+        Some(&launch.runtime_context),
+    )?;
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    Ok(command)
 }
 
 async fn spawn_memory_agent_with_runtime(
@@ -667,7 +712,7 @@ async fn spawn_memory_agent_with_runtime(
         context_id,
         project_id,
         working_directory,
-    );
+    )?;
     let client = Arc::clone(&runtime.client);
     let handle = client
         .spawn_agent(config)
@@ -687,7 +732,7 @@ async fn spawn_memory_agent_with_runtime(
     Ok(())
 }
 
-fn build_memory_agent_config(
+pub(crate) fn build_memory_agent_config(
     kind: MemoryAgentKind,
     runtime: &ResolvedBackgroundAgentRuntime,
     prompt: String,
@@ -696,26 +741,24 @@ fn build_memory_agent_config(
     context_id: &str,
     project_id: &ProjectId,
     working_directory: &Path,
-) -> AgentConfig {
+) -> Result<AgentConfig, String> {
     let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
         harness,
         kind.agent_name(),
         working_directory.to_path_buf(),
     );
-    let mut env = bootstrap.env;
-    env.insert(
-        "RALPHX_CONVERSATION_ID".to_string(),
-        conversation_id.as_str().to_string(),
-    );
-    env.insert("RALPHX_CONTEXT_TYPE".to_string(), context_type.to_string());
-    env.insert("RALPHX_CONTEXT_ID".to_string(), context_id.to_string());
-    env.insert(
-        "RALPHX_PROJECT_ID".to_string(),
-        project_id.as_str().to_string(),
-    );
+    let launch = prepare_memory_agent_launch(
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+    )?;
+    let mut env = runtime.env_with_overrides(bootstrap.env);
+    env.extend(launch.env);
 
-    AgentConfig {
+    Ok(AgentConfig {
         role: AgentRole::Custom(bootstrap.agent_role),
         prompt,
         working_directory: bootstrap.working_directory,
@@ -732,22 +775,5 @@ fn build_memory_agent_config(
         timeout_secs: None,
         env,
         mcp_launch_policy: Default::default(),
-    }
-}
-
-fn memory_agent_runtime_context(
-    conversation_id: &ChatConversationId,
-    context_type: ChatContextType,
-    context_id: &str,
-    project_id: &ProjectId,
-    working_directory: &Path,
-) -> McpRuntimeContext {
-    McpRuntimeContext {
-        context_type: Some(context_type.to_string()),
-        context_id: Some(context_id.to_string()),
-        project_id: Some(project_id.as_str().to_string()),
-        working_directory: Some(working_directory.to_path_buf()),
-        parent_conversation_id: Some(conversation_id.as_str().to_string()),
-        ..Default::default()
-    }
+    })
 }

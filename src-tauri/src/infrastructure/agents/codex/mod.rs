@@ -1,5 +1,7 @@
 pub(crate) mod app_server_mcp_catalog;
 mod codex_cli_client;
+#[cfg(test)]
+mod codex_cli_client_tests;
 pub(crate) mod mcp_catalog;
 mod security_policy;
 pub mod stream_processor;
