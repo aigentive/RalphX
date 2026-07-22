@@ -28,13 +28,39 @@ describe("PersonaRunBadge", () => {
 
     const badge = screen.getByTestId("persona-run-badge");
     expect(badge).toHaveTextContent("design-voice");
-    expect(badge.tagName).not.toBe("BUTTON");
     fireEvent.pointerMove(badge);
     expect(
       await screen.findByRole("tooltip", {
         name: "design-voice · v2 — applied to this run",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("opens a details popover with the run outcome and persona deep link", () => {
+    renderBadge({ personaId: "persona-1" });
+
+    fireEvent.click(screen.getByTestId("persona-run-badge"));
+    const details = screen.getByTestId("persona-run-badge-details");
+    expect(details).toHaveTextContent("design-voice");
+    expect(details).toHaveTextContent("Applied to this run.");
+    expect(
+      screen.getByRole("button", { name: "Open persona" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the full skip reason and no deep link without a persona id", () => {
+    renderBadge({
+      personaInjected: false,
+      skippedReason: "native_agent_flag",
+    });
+
+    fireEvent.click(screen.getByTestId("persona-run-badge"));
+    expect(screen.getByTestId("persona-run-badge-details")).toHaveTextContent(
+      "Native agent mode does not support personas",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Open persona" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders a skipped persona with a human-readable native-agent reason", async () => {

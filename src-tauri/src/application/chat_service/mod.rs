@@ -4469,6 +4469,42 @@ impl<R: Runtime> AppChatService<R> {
         .map_err(Into::into)
     }
 
+    /// Resolves the persona overlay for a conversation exactly as the next
+    /// default send would (inherited directive, no overrides), without side
+    /// effects. Preview and spawn share `resolve_persona_for_send`, so the
+    /// returned block is byte-identical to the injected one.
+    pub async fn preview_persona_overlay(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Result<Option<ResolvedPersona>, ChatServiceError> {
+        if !self.persona_feature_enabled() {
+            return Ok(None);
+        }
+        let conversation = self
+            .conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+            .ok_or_else(|| {
+                ChatServiceError::RepositoryError(format!(
+                    "Conversation not found: {conversation_id}"
+                ))
+            })?;
+        let workspace = self
+            .load_agent_conversation_workspace(
+                conversation.context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
+            .await?;
+        self.resolve_persona_for_send(
+            &conversation,
+            &SendMessageOptions::default(),
+            workspace.as_ref().map(|workspace| workspace.mode),
+        )
+        .await
+    }
+
     async fn validate_resumed_persona_builder_feature(
         &self,
         conversation_id: Option<&ChatConversationId>,
@@ -9512,6 +9548,8 @@ mod bulk_running_state_tests {
     }
 }
 
+#[cfg(test)]
+mod chat_service_persona_preview_tests;
 #[cfg(test)]
 mod chat_service_composer_references_tests;
 #[cfg(test)]
