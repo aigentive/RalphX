@@ -7,7 +7,7 @@ use super::decomposition_verifier::{
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
     automation_judge_loop_suspected, build_automation_judge_prompt,
-    build_automation_run_context_block, mark_current_goal_item_in_progress,
+    build_automation_run_context_block, current_goal_item_id, mark_current_goal_item_in_progress,
     parse_automation_judge_verdict, AutomationGoalItemStatus, AutomationJudgeAttachmentContext,
     AutomationJudgeDecision, AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch,
     AutomationJudgeValidationContext, AutomationJudgeVerdict, BuildAutomationJudgePromptInput,
@@ -79,6 +79,7 @@ fn automation_run(index: i64, status: AutomationRunStatus) -> AutomationRun {
         base_ref_kind: "local_branch".to_string(),
         base_ref_used: "main".to_string(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: Some(format!("ralphx/run-{index}")),
         pr_number: Some(100 + index),
         pr_url: Some(format!(
@@ -1150,4 +1151,38 @@ fn xml_section_body(prompt: &str, tag: &str) -> String {
         .expect("expected section end")
         + start;
     prompt[start..end].to_string()
+}
+
+#[test]
+fn current_goal_item_id_returns_first_non_done_item() {
+    let goal_items = json!([
+        {"id": "item-1", "title": "First", "status": "done"},
+        {"id": "item-2", "title": "Second", "status": "skipped"},
+        {"id": "item-3", "title": "Third", "status": "in_progress"},
+        {"id": "item-4", "title": "Fourth", "status": "pending"}
+    ])
+    .to_string();
+
+    assert_eq!(
+        current_goal_item_id(Some(&goal_items)).as_deref(),
+        Some("item-3")
+    );
+}
+
+#[test]
+fn current_goal_item_id_is_none_when_all_items_finished() {
+    let goal_items = json!([
+        {"id": "item-1", "status": "done"},
+        {"id": "item-2", "status": "skipped"}
+    ])
+    .to_string();
+
+    assert_eq!(current_goal_item_id(Some(&goal_items)), None);
+}
+
+#[test]
+fn current_goal_item_id_fails_soft_on_missing_or_invalid_json() {
+    assert_eq!(current_goal_item_id(None), None);
+    assert_eq!(current_goal_item_id(Some("   ")), None);
+    assert_eq!(current_goal_item_id(Some("not-json")), None);
 }

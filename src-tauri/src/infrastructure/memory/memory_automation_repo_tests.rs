@@ -79,6 +79,7 @@ fn run(
         base_ref_kind: "project_default".to_string(),
         base_ref_used: String::new(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: None,
         pr_number: None,
         pr_url: None,
@@ -924,4 +925,22 @@ async fn memory_find_run_by_conversation_id_returns_latest_linked_run() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn memory_run_repo_round_trips_goal_item_id() {
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
+    let mut mapped = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    mapped.goal_item_id = Some("item-b1".to_string());
+    repo.create_run(mapped.clone()).await.unwrap();
+
+    let stored = repo.get_by_id(&mapped.id).await.unwrap().unwrap();
+    assert_eq!(stored.goal_item_id.as_deref(), Some("item-b1"));
+    assert_eq!(stored, mapped);
 }
