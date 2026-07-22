@@ -7,15 +7,17 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition,
 };
 use crate::testing::SqliteTestDb;
 
@@ -31,6 +33,164 @@ fn setup_repo() -> (
     seed_conversation(&db, &conversation_id);
     let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
     (db, repo, conversation_id)
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-claim");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-claim".to_string(),
+        artifact_id,
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-claim".to_string(),
+    };
+
+    let claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-one",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .expect("exact snapshot should win");
+    assert_eq!(
+        claimed.review_fixer_attempt_id.as_deref(),
+        Some("attempt-one")
+    );
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-two",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-stale-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-old".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-old".to_string(),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.reviewed_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.review_blocking_fingerprint = Some("blocker-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_diff_fingerprint,
+        refreshed.current_diff_fingerprint
+    );
+}
+
+#[tokio::test]
+async fn invalid_workspace_review_fixer_attempt_failure_is_attempt_scoped() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = monitor.current_target_scope;
+    monitor.current_diff_fingerprint = Some("diff-current".to_string());
+    monitor.reviewed_diff_fingerprint = monitor.current_diff_fingerprint.clone();
+    monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_blocking_fingerprint = Some("   ".to_string());
+    monitor.review_fixer_status = Some("routing".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    assert!(repo
+        .fail_invalid_workspace_review_fixer_attempt(
+            &conversation_id,
+            Some("attempt-stale"),
+            "invalid authority",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    let failed = repo
+        .fail_invalid_workspace_review_fixer_attempt(&conversation_id, None, "invalid authority")
+        .await
+        .unwrap()
+        .expect("the exact malformed attempt without an id should fail");
+    assert_eq!(failed.review_fixer_status.as_deref(), Some("failed"));
+    assert_eq!(failed.last_error.as_deref(), Some("invalid authority"));
 }
 
 fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
@@ -163,6 +323,72 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn repair_state_cas_is_null_safe_atomic_and_preserves_unrelated_fields() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some("old blocker".to_string());
+    workspace.pr_supervision_updated_at = None;
+    workspace.publication_pr_url = Some("https://example.test/pr/9".to_string());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+
+    let claimed_at = chrono::Utc::now();
+    assert!(repo
+        .compare_and_set_repair_state(
+            &conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+            &AgentWorkspaceRepairStateTransition {
+                publication_push_status: Some("needs_agent".to_string()),
+                pr_supervision_status: Some("fixing".to_string()),
+                pr_supervision_summary: Some("Repair is running.".to_string()),
+                pr_supervision_updated_at: claimed_at,
+                pr_auto_merge_current: Some(false),
+                base_commit: Some("base-repaired".to_string()),
+            },
+        )
+        .await
+        .unwrap());
+    let claimed = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(claimed.pr_auto_merge_current, Some(false));
+    assert_eq!(claimed.base_commit.as_deref(), Some("base-repaired"));
+    assert_eq!(claimed.publication_pr_url, workspace.publication_pr_url);
+
+    let stale_guard = AgentWorkspaceRepairStateGuard {
+        publication_push_status: Some("needs_agent".to_string()),
+        pr_supervision_status: Some("fixing".to_string()),
+        pr_supervision_updated_at: None,
+    };
+    assert!(!repo
+        .compare_and_set_repair_state(
+            &conversation_id,
+            &stale_guard,
+            &AgentWorkspaceRepairStateTransition {
+                publication_push_status: Some("failed".to_string()),
+                pr_supervision_status: Some("blocked".to_string()),
+                pr_supervision_summary: Some("stale failure".to_string()),
+                pr_supervision_updated_at: claimed_at + chrono::Duration::seconds(1),
+                pr_auto_merge_current: Some(true),
+                base_commit: Some("stale-base".to_string()),
+            },
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        claimed
+    );
 }
 
 #[tokio::test]

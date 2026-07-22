@@ -7,8 +7,9 @@ use crate::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -40,6 +41,33 @@ pub enum AgentWorkspacePrReviewActionMutation {
 pub struct AgentWorkspacePrReviewStateTransition {
     pub monitor: AgentWorkspacePrReviewMonitor,
     pub action: Option<AgentWorkspacePrReviewAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateGuard {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_updated_at: Option<DateTime<Utc>>,
+}
+
+impl AgentWorkspaceRepairStateGuard {
+    pub fn from_workspace(workspace: &AgentConversationWorkspace) -> Self {
+        Self {
+            publication_push_status: workspace.publication_push_status.clone(),
+            pr_supervision_status: workspace.pr_supervision_status.clone(),
+            pr_supervision_updated_at: workspace.pr_supervision_updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateTransition {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_summary: Option<String>,
+    pub pr_supervision_updated_at: DateTime<Utc>,
+    pub pr_auto_merge_current: Option<bool>,
+    pub base_commit: Option<String>,
 }
 
 #[async_trait]
@@ -271,6 +299,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         push_status: Option<&str>,
     ) -> AppResult<()>;
 
+    async fn compare_and_set_repair_state(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
@@ -499,6 +536,37 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically reserves the exact current blocking Review for one repair attempt.
+    async fn claim_workspace_review_fixer(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewFixerSnapshot,
+        _attempt_id: &str,
+        _claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Writes a repair routing result only while the same backend attempt owns the claim.
+    async fn settle_workspace_review_fixer_attempt(
+        &self,
+        _monitor: AgentWorkspaceReviewMonitor,
+        _expected_attempt_id: &str,
+        _expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Fails a malformed active repair attempt only while the same attempt still owns the row.
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: Option<&str>,
+        _error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
     /// Atomically records a reviewer launch failure only while the exact reserved launch still
     /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
     async fn fail_reserved_workspace_review_start(
@@ -525,6 +593,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     }
 
     async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Lists active fixer attempts that require startup reconciliation.
+    async fn list_active_workspace_review_fixers(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())

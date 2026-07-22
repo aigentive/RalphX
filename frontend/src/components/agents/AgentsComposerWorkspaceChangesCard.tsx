@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Play,
   ShieldCheck,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -25,6 +26,11 @@ import type {
   AgentConversationRuntimeIndexRow,
   AgentConversationWorkspace,
 } from "@/api/chat";
+import type { AutomationDetail, AutomationRun } from "@/api/automations";
+import {
+  getAutomationRunView,
+  type AutomationRunStatusTone,
+} from "@/components/automations/automationStage";
 import { cn } from "@/lib/utils";
 
 import type { AgentsChatFocus } from "./agentChatFocus";
@@ -66,6 +72,19 @@ interface AgentTaskLedgerContext {
   contextId: string;
 }
 
+interface RuntimeTrayRow {
+  id: string;
+  testId: string;
+  icon: LucideIcon;
+  title: string;
+  targetLabel: string;
+  statusLabel: string;
+  statusColor: string;
+  isCurrent: boolean;
+  isActive: boolean;
+  onClick: (() => void) | null;
+}
+
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   projectId?: string | null | undefined;
@@ -73,6 +92,8 @@ interface AgentsComposerWorkspaceChangesCardProps {
   isFocusedChildChat: boolean;
   currentFocus: AgentsChatFocus;
   taskLedgerContext: AgentTaskLedgerContext | null;
+  automationDetail?: AutomationDetail | null;
+  currentAutomationRunId?: string | null;
   isAgentGenerating?: boolean;
   pauseHydration?: boolean;
   onViewWorkspace: () => void;
@@ -83,6 +104,7 @@ interface AgentsComposerWorkspaceChangesCardProps {
     taskId: string,
     contextType: AgentTaskRuntimeContextType,
   ) => void;
+  onViewAutomationRun: (automationId: string, run: AutomationRun) => void;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }
@@ -212,6 +234,21 @@ function runtimeLifecycleColor(row: AgentConversationRuntimeIndexRow): string {
   }
 }
 
+function automationRunStatusColor(tone: AutomationRunStatusTone): string {
+  switch (tone) {
+    case "success":
+      return "var(--status-success)";
+    case "warning":
+      return "var(--status-warning)";
+    case "error":
+      return "var(--status-error)";
+    case "accent":
+      return "var(--accent-primary)";
+    case "neutral":
+      return "var(--text-secondary)";
+  }
+}
+
 function runtimeGroupTitle(group: AgentConversationRuntimeIndexRow["group"]): string {
   if (group === "main") return "Main";
   if (group === "pipeline") return "Pipeline";
@@ -223,6 +260,25 @@ function runtimeRowTargetLabel(row: AgentConversationRuntimeIndexRow): string {
   if (modeLabel) return modeLabel;
   if (row.providerHarness) return row.providerHarness;
   return row.contextType ?? row.kind;
+}
+
+function runtimeIndexTrayRow(
+  row: AgentConversationRuntimeIndexRow,
+  currentFocus: AgentsChatFocus,
+  onRowClick: (row: AgentConversationRuntimeIndexRow) => void,
+): RuntimeTrayRow {
+  return {
+    id: row.id,
+    testId: `agents-composer-runtime-row-${row.kind}`,
+    icon: runtimeIconForRow(row),
+    title: row.title,
+    targetLabel: runtimeRowTargetLabel(row),
+    statusLabel: row.statusLabel,
+    statusColor: runtimeLifecycleColor(row),
+    isCurrent: isCurrentRuntimeIndexRow(row, currentFocus),
+    isActive: row.lifecycle === "running",
+    onClick: runtimeRowIsClickable(row) ? () => onRowClick(row) : null,
+  };
 }
 
 function isCurrentRuntimeIndexRow(
@@ -387,6 +443,8 @@ export function AgentsComposerWorkspaceChangesCard({
   isFocusedChildChat,
   currentFocus,
   taskLedgerContext,
+  automationDetail = null,
+  currentAutomationRunId = null,
   isAgentGenerating = false,
   pauseHydration = false,
   onViewWorkspace,
@@ -394,6 +452,7 @@ export function AgentsComposerWorkspaceChangesCard({
   onViewWorkspaceReview,
   onViewVerification,
   onViewTaskRuntime,
+  onViewAutomationRun,
   onOpenFile,
   onPreloadPublishPane,
 }: AgentsComposerWorkspaceChangesCardProps) {
@@ -405,6 +464,8 @@ export function AgentsComposerWorkspaceChangesCard({
       isFocusedChildChat={isFocusedChildChat}
       currentFocus={currentFocus}
       taskLedgerContext={taskLedgerContext}
+      automationDetail={automationDetail}
+      currentAutomationRunId={currentAutomationRunId}
       isAgentGenerating={isAgentGenerating}
       pauseHydration={pauseHydration}
       onViewWorkspace={onViewWorkspace}
@@ -412,22 +473,19 @@ export function AgentsComposerWorkspaceChangesCard({
       onViewWorkspaceReview={onViewWorkspaceReview}
       onViewVerification={onViewVerification}
       onViewTaskRuntime={onViewTaskRuntime}
+      onViewAutomationRun={onViewAutomationRun}
       onOpenFile={onOpenFile}
       onPreloadPublishPane={onPreloadPublishPane}
     />
   );
 }
 
-function RuntimeIndexGroupRows({
+function RuntimeGroupRows({
   title,
   rows,
-  currentFocus,
-  onRowClick,
 }: {
   title: string;
-  rows: readonly AgentConversationRuntimeIndexRow[];
-  currentFocus: AgentsChatFocus;
-  onRowClick: (row: AgentConversationRuntimeIndexRow) => void;
+  rows: readonly RuntimeTrayRow[];
 }) {
   if (rows.length === 0) {
     return null;
@@ -452,9 +510,7 @@ function RuntimeIndexGroupRows({
       </div>
       <div>
         {rows.map((row) => {
-          const Icon = runtimeIconForRow(row);
-          const clickable = runtimeRowIsClickable(row);
-          const isCurrent = isCurrentRuntimeIndexRow(row, currentFocus);
+          const Icon = row.icon;
           const rowContent = (
             <>
               <Icon
@@ -470,7 +526,7 @@ function RuntimeIndexGroupRows({
                   >
                     {row.title}
                   </span>
-                  {isCurrent && (
+                  {row.isCurrent && (
                     <span
                       className="shrink-0 rounded px-1 py-0.5 text-[0.625rem] font-medium"
                       style={{
@@ -486,14 +542,14 @@ function RuntimeIndexGroupRows({
                   className="truncate text-[0.6563rem]"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  {runtimeRowTargetLabel(row)}
+                  {row.targetLabel}
                 </div>
               </div>
               <span
                 className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-medium"
                 style={{
                   backgroundColor: "var(--bg-elevated)",
-                  color: runtimeLifecycleColor(row),
+                  color: row.statusColor,
                 }}
               >
                 {row.statusLabel}
@@ -501,11 +557,11 @@ function RuntimeIndexGroupRows({
             </>
           );
 
-          if (!clickable) {
+          if (!row.onClick) {
             return (
               <div
                 key={row.id}
-                data-testid={`agents-composer-runtime-row-${row.kind}`}
+                data-testid={row.testId}
                 className="flex min-h-9 w-full min-w-0 items-center gap-2 px-2 py-1.5 opacity-70"
                 style={{ color: "var(--text-secondary)" }}
               >
@@ -518,8 +574,8 @@ function RuntimeIndexGroupRows({
             <button
               key={row.id}
               type="button"
-              data-testid={`agents-composer-runtime-row-${row.kind}`}
-              onClick={() => onRowClick(row)}
+              data-testid={row.testId}
+              onClick={row.onClick}
               className="flex min-h-9 w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:-1px]"
               style={{ color: "var(--text-secondary)" }}
             >
@@ -640,6 +696,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   isFocusedChildChat,
   currentFocus,
   taskLedgerContext,
+  automationDetail,
+  currentAutomationRunId,
   isAgentGenerating,
   pauseHydration,
   onViewWorkspace,
@@ -647,6 +705,7 @@ function AgentsComposerWorkspaceChangesCardContent({
   onViewWorkspaceReview,
   onViewVerification,
   onViewTaskRuntime,
+  onViewAutomationRun,
   onOpenFile,
   onPreloadPublishPane,
 }: {
@@ -656,6 +715,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   isFocusedChildChat: boolean;
   currentFocus: AgentsChatFocus;
   taskLedgerContext: AgentTaskLedgerContext | null;
+  automationDetail: AutomationDetail | null;
+  currentAutomationRunId: string | null;
   isAgentGenerating: boolean;
   pauseHydration: boolean;
   onViewWorkspace: () => void;
@@ -666,6 +727,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     taskId: string,
     contextType: AgentTaskRuntimeContextType,
   ) => void;
+  onViewAutomationRun: (automationId: string, run: AutomationRun) => void;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }) {
@@ -777,6 +839,31 @@ function AgentsComposerWorkspaceChangesCardContent({
     () => runtimeRows.filter((row) => row.group === "pipeline"),
     [runtimeRows],
   );
+  const automationRunRows = useMemo<RuntimeTrayRow[]>(() => {
+    if (!automationDetail) {
+      return [];
+    }
+    const { automation } = automationDetail;
+    return [...automationDetail.runs]
+      .sort((left, right) => right.runIndex - left.runIndex)
+      .map((run) => {
+        const runView = getAutomationRunView(automation, run);
+        return {
+          id: run.id,
+          testId: `agents-composer-automation-run-${run.id}`,
+          icon: Workflow,
+          title: `Run ${run.runIndex}`,
+          targetLabel: automation.name,
+          statusLabel: runView.statusLabel,
+          statusColor: automationRunStatusColor(runView.statusTone),
+          isCurrent: run.id === currentAutomationRunId,
+          isActive: runView.isOpen,
+          onClick: run.conversationId
+            ? () => onViewAutomationRun(automation.id, run)
+            : null,
+        };
+      });
+  }, [automationDetail, currentAutomationRunId, onViewAutomationRun]);
   const refetchTasks = tasksQuery.refetch;
   const refetchTaskLists = taskListsQuery.refetch;
   const refetchRuntimeIndex = runtimeIndexQuery.refetch;
@@ -841,6 +928,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     (summary.workspaceChangeCount > 0 ||
       summary.currentFiles.length > 0);
   const shouldShowRuntime = Boolean(conversationId);
+  const runtimeCount = runtimeRows.length + automationRunRows.length;
   const shouldShow = shouldShowRuntime || shouldShowTasks || shouldShowChanges;
 
   useEffect(() => {
@@ -1101,9 +1189,10 @@ function AgentsComposerWorkspaceChangesCardContent({
                 className="font-mono"
                 style={{ color: "var(--text-muted)" }}
               >
-                {runtimeRows.length > 0 ? runtimeRows.length : "..."}
+                {runtimeCount > 0 ? runtimeCount : "..."}
               </span>
-              {runtimeRows.some((row) => row.lifecycle === "running") && (
+              {(runtimeRows.some((row) => row.lifecycle === "running") ||
+                automationRunRows.some((row) => row.isActive)) && (
                 <Loader2
                   className="h-3 w-3 shrink-0 animate-spin"
                   style={{ color: "var(--accent-primary)" }}
@@ -1238,31 +1327,40 @@ function AgentsComposerWorkspaceChangesCardContent({
                     Could not load runtimes
                   </div>
                 ) : (
-                  <>
-                    <RuntimeIndexGroupRows
-                      title={runtimeGroupTitle("main")}
-                      rows={runtimeMainRows}
-                      currentFocus={currentFocus}
-                      onRowClick={handleRuntimeRowClick}
-                    />
-                    {runtimeIdeationRows.length > 0 && (
-                      <RuntimeIndexGroupRows
-                        title={runtimeGroupTitle("ideation_verification")}
-                        rows={runtimeIdeationRows}
-                        currentFocus={currentFocus}
-                        onRowClick={handleRuntimeRowClick}
-                      />
+                  <RuntimeGroupRows
+                    title={runtimeGroupTitle("main")}
+                    rows={runtimeMainRows.map((row) =>
+                      runtimeIndexTrayRow(row, currentFocus, handleRuntimeRowClick),
                     )}
-                    {runtimePipelineRows.length > 0 && (
-                      <RuntimeIndexGroupRows
-                        title={runtimeGroupTitle("pipeline")}
-                        rows={runtimePipelineRows}
-                        currentFocus={currentFocus}
-                        onRowClick={handleRuntimeRowClick}
-                      />
-                    )}
-                  </>
+                  />
                 )}
+                <RuntimeGroupRows title="Runs" rows={automationRunRows} />
+                {!runtimeIndexQuery.isLoading &&
+                  canHydrateReview &&
+                  !runtimeIndexQuery.isError && (
+                    <>
+                      <RuntimeGroupRows
+                        title={runtimeGroupTitle("ideation_verification")}
+                        rows={runtimeIdeationRows.map((row) =>
+                          runtimeIndexTrayRow(
+                            row,
+                            currentFocus,
+                            handleRuntimeRowClick,
+                          ),
+                        )}
+                      />
+                      <RuntimeGroupRows
+                        title={runtimeGroupTitle("pipeline")}
+                        rows={runtimePipelineRows.map((row) =>
+                          runtimeIndexTrayRow(
+                            row,
+                            currentFocus,
+                            handleRuntimeRowClick,
+                          ),
+                        )}
+                      />
+                    </>
+                  )}
               </div>
             ) : renderedActivePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">

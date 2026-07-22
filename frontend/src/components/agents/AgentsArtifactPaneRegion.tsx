@@ -21,6 +21,7 @@ import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -74,6 +75,7 @@ interface AgentsArtifactPaneRegionProps {
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  publishSubTabRequest: AgentPublishSubTabRequest | null;
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
   onConversationModeSwitched: (
     conversationId: string,
@@ -128,6 +130,7 @@ export function AgentsArtifactPaneRegion({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  publishSubTabRequest,
   taskFocusRequest,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
@@ -203,6 +206,7 @@ export function AgentsArtifactPaneRegion({
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
                     publishFocusRequest={publishFocusRequest}
+                    publishSubTabRequest={publishSubTabRequest}
                     taskFocusRequest={taskFocusRequest}
                     onConversationModeSwitched={onConversationModeSwitched}
                     onFocusIdeationSessionForConversation={

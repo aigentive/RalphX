@@ -732,6 +732,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         Some(parent.project_id.as_str()),
         Some(std::path::Path::new(&project.working_directory)),
         role,
+        None,
         requested_harness,
         req.model.as_deref(),
         &state.app_state.manual_role_default_service(),

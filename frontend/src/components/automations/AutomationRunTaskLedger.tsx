@@ -7,6 +7,7 @@ import {
   type AgentTaskSummary,
 } from "@/api/agent-tasks";
 import type { AutomationRunStatus } from "@/api/automations";
+import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -20,34 +21,27 @@ const STATE_LABELS: Record<AgentTaskState, string> = {
   dropped: "Dropped",
 };
 
-/** Status token for a task state badge — accent for live, muted/error otherwise. */
-function stateColor(state: AgentTaskState): string {
+/** Tone for a task state badge — accent for live, success/error when settled. */
+function stateTone(state: AgentTaskState): StatusPillTone {
   switch (state) {
     case "active":
-      return "var(--accent-primary)";
+      return "accent";
     case "done":
-      return "var(--status-success)";
+      return "success";
     case "dropped":
-      return "var(--status-error)";
+      return "error";
     default:
-      return "var(--text-secondary)";
+      return "neutral";
   }
 }
 
 function TaskStateBadge({ state }: { state: AgentTaskState }) {
   return (
-    <span
-      className="inline-flex w-fit shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-normal"
-      style={{
-        color: stateColor(state),
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {STATE_LABELS[state]}
-    </span>
+    <StatusPill
+      label={STATE_LABELS[state]}
+      tone={stateTone(state)}
+      className="shrink-0 text-[10px] uppercase tracking-normal"
+    />
   );
 }
 

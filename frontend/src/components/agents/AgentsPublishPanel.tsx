@@ -1,12 +1,14 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  Files,
   GitPullRequestArrow,
   GitBranch,
   Info,
   Loader2,
   MoreVertical,
   Settings2,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import {
@@ -40,6 +42,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -88,10 +91,12 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
+  AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTab } from "./agentPublishSubTab";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
@@ -248,6 +253,13 @@ export function AgentPublishPanel({
   publishFocusRequest,
   reviewContext,
   onOpenReview,
+  activeSubTab,
+  showReviewTab,
+  onSubTabChange,
+  reviewContent,
+  reviewTabStatusColor,
+  reviewTabStatusLabel,
+  isReviewTabRunning,
 }: {
   workspace: AgentConversationWorkspace | null;
   conversationTitle?: string | null;
@@ -257,6 +269,13 @@ export function AgentPublishPanel({
   publishFocusRequest?: AgentPublishFocusRequest | null;
   reviewContext?: AgentWorkspaceReviewContext | null;
   onOpenReview?: () => void;
+  activeSubTab: AgentPublishSubTab;
+  showReviewTab: boolean;
+  onSubTabChange: (tab: AgentPublishSubTab) => void;
+  reviewContent: ReactNode;
+  reviewTabStatusColor?: string | null;
+  reviewTabStatusLabel?: string | null;
+  isReviewTabRunning?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -280,6 +299,34 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const reviewSettingsQuery = useReviewSettings();
   const conversationId = workspace?.conversationId ?? null;
+  const [mountedSubTabs, setMountedSubTabs] = useState<{
+    changes: boolean;
+    conversationId: string | null;
+    review: boolean;
+  }>(() => ({
+    changes: activeSubTab === "changes",
+    conversationId,
+    review: activeSubTab === "review",
+  }));
+  const mountedSubTabsForConversation =
+    mountedSubTabs.conversationId === conversationId
+      ? mountedSubTabs
+      : {
+          changes: activeSubTab === "changes",
+          conversationId,
+          review: activeSubTab === "review",
+        };
+  useEffect(() => {
+    setMountedSubTabs((current) => {
+      const sameConversation = current.conversationId === conversationId;
+      return {
+        changes:
+          (sameConversation && current.changes) || activeSubTab === "changes",
+        conversationId,
+        review: (sameConversation && current.review) || activeSubTab === "review",
+      };
+    });
+  }, [activeSubTab, conversationId]);
   const currentLocalPublishState =
     localPublishState?.conversationId === conversationId ? localPublishState : null;
   const localPublishInFlight = currentLocalPublishState !== null;
@@ -307,12 +354,26 @@ export function AgentPublishPanel({
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+    // Pane-wide: feeds the no-changes publish guard, header presentation, and
+    // Changes badge even while the Review subtab is the first to mount.
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
+  });
+  const changeSummaryQuery = useQuery({
+    queryKey: agentWorkspaceKeys.changeSummary(conversationId),
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspaceChangeSummary(conversationId!),
+    enabled:
+      canHydratePublishFacts &&
+      !!conversationId &&
+      inlineDiffsCandidate &&
+      !isRepairPending &&
+      !terminalPublicationStatus,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   const publicationEventsQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
@@ -715,19 +776,22 @@ export function AgentPublishPanel({
   const workspaceReviewRequired =
     reviewSettingsQuery.data?.require_workspace_review ?? true;
   const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
+  const reviewIsRunning = Boolean(
+    isReviewTabRunning || reviewGateStatus === "reviewing",
+  );
   const autoMergeGuardSummary =
     workspaceReviewAutoMergeGuardSummary(reviewContext);
   const reviewBlocksPublish =
     workspaceReviewRequired &&
-    (reviewGateStatus === "required" ||
-      reviewGateStatus === "reviewing" ||
+    (reviewIsRunning ||
+      reviewGateStatus === "required" ||
       reviewGateStatus === "blocking" ||
       reviewGateStatus === "failed");
   const reviewGateSummary = (() => {
     if (!workspaceReviewRequired) {
       return null;
     }
-    if (reviewGateStatus === "reviewing") {
+    if (reviewIsRunning) {
       return "Workspace Review is running. Open the Review tab to inspect it before publishing.";
     }
     if (reviewGateStatus === "blocking") {
@@ -778,7 +842,7 @@ export function AgentPublishPanel({
   const publishButtonLabel = (() => {
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
-    if (reviewBlocksPublish && reviewGateStatus === "reviewing") return "Reviewing";
+    if (reviewBlocksPublish && reviewIsRunning) return "Reviewing";
     if (reviewBlocksPublish && reviewGateStatus === "required") return "Review required";
     if (reviewBlocksPublish && reviewGateStatus === "blocking") return "Review blocking";
     if (reviewBlocksPublish && reviewGateStatus === "failed") return "Review failed";
@@ -1130,6 +1194,18 @@ export function AgentPublishPanel({
     }
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
+  const handleSubTabValueChange = (value: string) => {
+    if (value !== "changes" && value !== "review") {
+      return;
+    }
+    setMountedSubTabs((current) => ({
+      changes: current.changes || value === "changes",
+      conversationId,
+      review: current.review || value === "review",
+    }));
+    onSubTabChange(value);
+  };
+  const changedFileCount = reviewQuery.isSuccess ? changes.length : null;
 
   return (
     <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
@@ -1140,7 +1216,11 @@ export function AgentPublishPanel({
         startedAtMs={localPublishStartedAtMs}
         status={pipelineStatus}
       />
-      <div className="@container flex w-full min-h-0 flex-1 flex-col gap-4">
+      <Tabs
+        className="@container flex w-full min-h-0 flex-1 flex-col"
+        value={activeSubTab}
+        onValueChange={handleSubTabValueChange}
+      >
         <section
           className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
           data-testid="agents-publish-actionbar"
@@ -1149,8 +1229,8 @@ export function AgentPublishPanel({
             borderColor: "var(--border-subtle)",
           }}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+            <div className="min-w-0">
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">
                 {publishPresentation.title}
               </h2>
@@ -1158,7 +1238,7 @@ export function AgentPublishPanel({
                 {publishPresentation.summary}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="col-span-2 flex max-w-full flex-wrap items-center justify-start gap-2">
               {isRepairPending ? (
                 <Button
                   type="button"
@@ -1229,12 +1309,12 @@ export function AgentPublishPanel({
                   onClick={onOpenReview}
                   disabled={!onOpenReview}
                   data-testid={
-                    reviewGateStatus === "reviewing"
+                    reviewIsRunning
                       ? "agents-publish-reviewing"
                       : "agents-publish-review-required"
                   }
                 >
-                  {reviewGateStatus === "reviewing" ? (
+                  {reviewIsRunning ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -1296,6 +1376,73 @@ export function AgentPublishPanel({
               )}
             </div>
           </div>
+          <TabsList
+            className="mt-4 flex h-10 w-full justify-start gap-5 rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
+            style={{
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px 0",
+            }}
+            aria-label="Commit and publish sections"
+            data-testid="agents-publish-tabs"
+          >
+            <TabsTrigger
+              value="changes"
+              className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
+              data-testid="agents-publish-tab-changes"
+            >
+              <Files className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Changes</span>
+              {changedFileCount !== null && (
+                <span
+                  className="rounded-full px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {changedFileCount}
+                </span>
+              )}
+            </TabsTrigger>
+            {showReviewTab && (
+              <TabsTrigger
+                value="review"
+                className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
+                data-testid="agents-publish-tab-review"
+              >
+                <ShieldCheck
+                  className={
+                    isReviewTabRunning
+                      ? "h-3.5 w-3.5 animate-pulse"
+                      : "h-3.5 w-3.5"
+                  }
+                  style={
+                    reviewTabStatusColor
+                      ? { color: reviewTabStatusColor }
+                      : undefined
+                  }
+                  aria-hidden="true"
+                />
+                <span>Review</span>
+                {reviewTabStatusLabel && (
+                  <span
+                    className="rounded-full border px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                    style={{
+                      backgroundColor: "var(--bg-elevated)",
+                      borderColor:
+                        reviewTabStatusColor ?? "var(--border-subtle)",
+                      borderStyle: "solid",
+                      borderWidth: 1,
+                      color: reviewTabStatusColor ?? "var(--text-secondary)",
+                    }}
+                  >
+                    {reviewTabStatusLabel}
+                  </span>
+                )}
+              </TabsTrigger>
+            )}
+          </TabsList>
           {shouldShowPrSupervisionControls && (
             <div
               className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"
@@ -1496,6 +1643,13 @@ export function AgentPublishPanel({
             </div>
           )}
         </section>
+        {mountedSubTabsForConversation.changes && (
+          <TabsContent
+            value="changes"
+            forceMount
+            className="m-0 flex min-h-0 flex-1 flex-col gap-4 pt-4 data-[state=inactive]:hidden"
+            data-testid="agents-publish-content-changes"
+          >
         {prAnnotationSourcesUnavailable.length > 0 && (
           <div
             className="rounded-md px-2.5 py-1.5 text-[0.6875rem]"
@@ -1556,6 +1710,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              liveSummary={changeSummaryQuery.data ?? null}
               {...(inlineDiffDefaultMode !== undefined && {
                 defaultMode: inlineDiffDefaultMode,
               })}
@@ -1574,7 +1729,19 @@ export function AgentPublishPanel({
           isLoading={isPublicationEventsLoading}
           isPublishing={effectivePublishing}
         />
-      </div>
+          </TabsContent>
+        )}
+        {showReviewTab && mountedSubTabsForConversation.review && (
+          <TabsContent
+            value="review"
+            forceMount
+            className="m-0 min-h-0 flex-1 overflow-y-auto pt-4 data-[state=inactive]:hidden"
+            data-testid="agents-publish-content-review"
+          >
+            {reviewContent}
+          </TabsContent>
+        )}
+      </Tabs>
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
         <DialogContent
           className="flex h-[95vh] w-[95vw] max-w-[95vw] flex-col gap-0 overflow-hidden p-0"

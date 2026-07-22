@@ -27,28 +27,31 @@ use axum::{
 };
 
 use super::*;
-use crate::application::agent_conversation_workspace::{
-    AgentConversationWorkspaceBaseSelection,
-};
+use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
     lock_workspace_review_lifecycle, review_gate_publish_blocker,
-    start_agent_workspace_review_blocking_fixer, workspace_review_mode_is_eligible,
+    start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
-    AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
+};
+use crate::application::agent_workspace_review_auto_merge::{
+    preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
+    start_guarded_agent_workspace_review,
+    start_guarded_agent_workspace_review_with_runtime_override, WorkspaceReviewStartConfirmation,
+    WorkspaceReviewStartOrigin,
 };
 use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
-use crate::application::agent_workspace_review_auto_merge::{
-    preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
-    start_guarded_agent_workspace_review, WorkspaceReviewStartConfirmation,
-    WorkspaceReviewStartOrigin,
-};
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
+};
+use crate::application::agent_workspace_publish_repair_state::{
+    complete_agent_workspace_repair_claim, current_agent_workspace_repair_claim_for_completion,
+    settle_agent_workspace_failure_without_repair,
 };
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
@@ -65,6 +68,9 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+};
+use crate::domain::agents::{
+    AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
@@ -719,12 +725,15 @@ pub struct AgentWorkspaceReviewContextQuery {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartAgentWorkspaceReviewRequest {
     pub force: Option<bool>,
     pub confirmation: Option<StartAgentWorkspaceReviewConfirmationRequest>,
+    pub runtime_override: Option<ManualRoleRuntimeOverrideRequest>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub target_scope: Option<String>,
     pub diff_fingerprint: Option<String>,
@@ -734,6 +743,68 @@ pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub merge_method: Option<String>,
     #[serde(default)]
     pub restore_after_publish: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualRoleRuntimeOverrideRequest {
+    pub provider: AgentHarnessKind,
+    pub model: Option<String>,
+    pub effort: Option<LogicalEffort>,
+    pub service_tier: ManualServiceTier,
+    pub coordination_mode: Option<crate::domain::entities::CoordinationMode>,
+    pub persona_id: Option<String>,
+}
+
+impl From<ManualRoleRuntimeOverrideRequest> for ManualRoleRuntimeOverride {
+    fn from(value: ManualRoleRuntimeOverrideRequest) -> Self {
+        Self {
+            harness: value.provider,
+            model: value.model,
+            effort: value.effort,
+            service_tier: value.service_tier,
+            coordination_mode: value.coordination_mode,
+            persona_id: value
+                .persona_id
+                .map(crate::domain::entities::PersonaId::from_string),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartAgentWorkspaceReviewFixerRequest {
+    pub confirmation: StartAgentWorkspaceReviewFixerConfirmationRequest,
+    pub runtime_override: Option<ManualRoleRuntimeOverrideRequest>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartAgentWorkspaceReviewFixerConfirmationRequest {
+    pub target_scope: String,
+    pub diff_fingerprint: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub blocking_fingerprint: String,
+}
+
+impl TryFrom<StartAgentWorkspaceReviewFixerConfirmationRequest>
+    for WorkspaceReviewFixerConfirmation
+{
+    type Error = AppError;
+
+    fn try_from(
+        value: StartAgentWorkspaceReviewFixerConfirmationRequest,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            target_scope: AgentWorkspaceReviewTargetScope::from_str(&value.target_scope)
+                .map_err(AppError::Validation)?,
+            diff_fingerprint: value.diff_fingerprint,
+            artifact_id: value.artifact_id,
+            artifact_version: value.artifact_version,
+            blocking_fingerprint: value.blocking_fingerprint,
+        })
+    }
 }
 
 impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest> for WorkspaceReviewStartConfirmation {
@@ -1374,12 +1445,14 @@ pub async fn start_agent_workspace_review_run(
         .map_err(workspace_review_action_error)?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let start = start_guarded_agent_workspace_review(
+    let runtime_override = req.runtime_override.map(ManualRoleRuntimeOverride::from);
+    let start = start_guarded_agent_workspace_review_with_runtime_override(
         std::sync::Arc::clone(&state.app_state),
         &workspace,
         force,
         WorkspaceReviewStartOrigin::Manual,
         confirmation.as_ref(),
+        runtime_override.as_ref(),
     )
     .await
     .map_err(workspace_review_action_error)?;
@@ -1440,13 +1513,22 @@ pub async fn start_agent_workspace_review_run(
 pub async fn start_agent_workspace_review_fixer_run(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
+    Json(req): Json<StartAgentWorkspaceReviewFixerRequest>,
 ) -> Result<Json<StartAgentWorkspaceReviewFixerResponse>, JsonError> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let start = start_agent_workspace_review_blocking_fixer(state.app_state.as_ref(), &workspace)
-        .await
+    let confirmation = WorkspaceReviewFixerConfirmation::try_from(req.confirmation)
         .map_err(workspace_review_action_error)?;
+    let runtime_override = req.runtime_override.map(ManualRoleRuntimeOverride::from);
+    let start = start_agent_workspace_review_blocking_fixer_with_override(
+        state.app_state.as_ref(),
+        &workspace,
+        Some(&confirmation),
+        runtime_override.as_ref(),
+    )
+    .await
+    .map_err(workspace_review_action_error)?;
     let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
     let diff_fingerprint = compact_workspace_review_log_fingerprint(
         start
@@ -4289,7 +4371,9 @@ fn repair_queued_from_publication_events(
             "repair_requested" | "repair_deferred" | "repair_sent"
         )
     }) {
-        Some(event) if event.step == "repair_sent" => event.status == "succeeded",
+        Some(event) if event.step == "repair_sent" => {
+            matches!(event.status.as_str(), "started" | "succeeded")
+        }
         Some(event) => matches!(event.status.as_str(), "started" | "succeeded"),
         None => false,
     }
@@ -4495,15 +4579,65 @@ pub async fn complete_agent_workspace_repair(
     })
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
 
-    let mut updated_workspace = workspace.clone();
-    updated_workspace.base_commit = Some(freshness.target_base_commit.clone());
-    updated_workspace.publication_push_status = Some("refreshed".to_string());
-    state
+    let publication_events = state
         .app_state
         .agent_conversation_workspace_repo
-        .create_or_update(updated_workspace.clone())
+        .list_publication_events(&conversation_id)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
+    let completion_supervision = if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly
+        && !should_auto_publish_after_update_only_repair(&workspace)
+    {
+        update_only_repair_pr_supervision_state(&workspace)
+    } else if !workspace.auto_publish_enabled {
+        Some((
+            "paused",
+            "Agent workspace repair verified; Auto Publish is paused.",
+        ))
+    } else {
+        Some((
+            "publishing",
+            "Agent workspace repair verified; publication is continuing.",
+        ))
+    };
+    let claim = current_agent_workspace_repair_claim_for_completion(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        Arc::clone(&state.app_state.agent_run_repo),
+        &workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace repair attempt is no longer current",
+            None,
+        )
+    })?;
+    if !complete_agent_workspace_repair_claim(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        &claim,
+        &freshness.target_base_commit,
+        completion_supervision.map(|(status, _)| status),
+        completion_supervision.map(|(_, summary)| summary),
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace repair attempt was replaced before completion",
+            None,
+        ));
+    }
+    let updated_workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
     state
         .app_state
         .agent_conversation_workspace_repo
@@ -4528,14 +4662,6 @@ pub async fn complete_agent_workspace_repair(
     {
         return Ok(response);
     }
-    let publication_events = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .list_publication_events(&conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
-
     let (
         message,
         new_status,
@@ -4674,6 +4800,20 @@ pub async fn complete_agent_workspace_repair(
                                 None,
                             )
                         })?;
+                    settle_agent_workspace_failure_without_repair(
+                        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                        &conversation_id,
+                        "failed",
+                        &message,
+                    )
+                    .await
+                    .map_err(|repo_error| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            repo_error.to_string(),
+                            None,
+                        )
+                    })?;
                     state
                         .app_state
                         .agent_conversation_workspace_repo
@@ -4729,6 +4869,16 @@ pub async fn complete_agent_workspace_repair(
                 .map_err(|error| {
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
+            settle_agent_workspace_failure_without_repair(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                &conversation_id,
+                "failed",
+                &message,
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
             state
                 .app_state
                 .agent_conversation_workspace_repo

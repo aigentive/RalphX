@@ -33,6 +33,7 @@ const {
   activateAgentTaskPipelineMock,
   getAgentConversationRuntimeIndexMock,
   getAgentConversationRuntimeStatusesMock,
+  getAgentConversationWorkspaceMock,
   getAgentWorkspacePrReviewContextMock,
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
@@ -56,6 +57,8 @@ const {
   toastInfoMock,
   toastSuccessMock,
   tasksEnabledRef,
+  confirmImplementDirectlyMock,
+  confirmCreateProposalsMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -65,6 +68,7 @@ const {
   activateAgentTaskPipelineMock: vi.fn(),
   getAgentConversationRuntimeIndexMock: vi.fn(),
   getAgentConversationRuntimeStatusesMock: vi.fn(),
+  getAgentConversationWorkspaceMock: vi.fn(),
   getAgentWorkspacePrReviewContextMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
@@ -88,6 +92,8 @@ const {
   toastInfoMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   tasksEnabledRef: { current: true },
+  confirmImplementDirectlyMock: vi.fn(),
+  confirmCreateProposalsMock: vi.fn(),
 }));
 
 vi.mock("@/hooks/useIdeationSettings", () => ({
@@ -107,6 +113,29 @@ vi.mock("@/hooks/useIdeationSettings", () => ({
 }));
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+const { approvedPlanRuntime } = vi.hoisted(() => ({
+  approvedPlanRuntime: {
+    provider: "claude",
+    model: "opus",
+    effort: "high",
+    serviceTier: "provider_default",
+    coordinationMode: "solo",
+    personaId: null,
+  } as const,
+}));
+
+vi.mock("./useApprovedPlanContinuation", () => ({
+  useApprovedPlanContinuation: () => ({
+    confirmImplementDirectly: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => confirmImplementDirectlyMock(onConfirm),
+    confirmCreateProposals: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => confirmCreateProposalsMock(onConfirm),
+    confirmationDialogProps: {},
+    ConfirmationDialog: () => null,
+  }),
+}));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
@@ -125,6 +154,12 @@ vi.mock("@/hooks/usePersonas", () => ({
   useSwitchConversationPersona: () => ({
     isPending: false,
     mutateAsync: switchPersonaMock,
+  }),
+  usePersonaOverlayPreview: () => ({
+    isPending: true,
+    isError: false,
+    data: undefined,
+    error: null,
   }),
 }));
 
@@ -378,6 +413,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
       openAgentConversationWorkspacePath: vi.fn().mockResolvedValue(undefined),
       getAgentConversationRuntimeIndex: getAgentConversationRuntimeIndexMock,
       getAgentConversationRuntimeStatuses: getAgentConversationRuntimeStatusesMock,
+      getAgentConversationWorkspace: getAgentConversationWorkspaceMock,
       getAgentWorkspacePrReviewContext: getAgentWorkspacePrReviewContextMock,
       sendAgentMessage: sendAgentMessageMock,
       switchAgentConversationMode: switchAgentConversationModeMock,
@@ -1168,6 +1204,14 @@ describe("AgentsActiveConversationPanel", () => {
     composerPersonaControlRef.current = undefined;
     agentPersonasEnabledRef.current = false;
     tasksEnabledRef.current = true;
+    confirmImplementDirectlyMock.mockImplementation(
+      (onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>) =>
+        void onConfirm(approvedPlanRuntime).catch(() => undefined),
+    );
+    confirmCreateProposalsMock.mockImplementation(
+      (onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>) =>
+        void onConfirm(approvedPlanRuntime).catch(() => undefined),
+    );
     personaQueryMock.mockReturnValue({
       data: [
         {
@@ -1194,6 +1238,10 @@ describe("AgentsActiveConversationPanel", () => {
     });
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: { ...workspace(), mode: "ideation" },
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue({
+      ...workspace(),
+      mode: "edit",
     });
     activateAgentTaskPipelineMock.mockResolvedValue({
       ...workspace(),
@@ -1457,7 +1505,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
     rerenderPanel({ publishingConversationId: "another-conversation" });
 
-    expect(CountingPersonaControl).toHaveBeenCalledOnce();
+    expect(CountingPersonaControl).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
@@ -1621,15 +1669,28 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
   });
 
-  it("labels parked automation setup run chips as awaiting plan approval", () => {
+  it("routes setup automation runs through the Runtime tray with plan focus seeding", async () => {
+    const onFocusAutomationRun = vi.fn();
+    const onSelectArtifact = vi.fn();
     useAutomationDetailMock.mockReturnValue({
       data: {
-        automation: { status: "active" },
+        automation: {
+          id: "automation-1",
+          name: "Nightly release",
+          status: "active",
+          planApprovalMode: "manual",
+        },
         runs: [
           {
             id: "run-1",
+            automationId: "automation-1",
             runIndex: 1,
             status: "awaiting_plan_approval",
+            judgeState: "none",
+            planPhase: true,
+            planArtifactId: "plan-artifact-1",
+            prNumber: null,
+            prUrl: null,
             conversationId: "conversation-run-1",
           },
         ],
@@ -1639,6 +1700,8 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     renderPanel({
+      onFocusAutomationRun,
+      onSelectArtifact,
       activeConversation: {
         ...projectConversation(),
         agentMode: "automation",
@@ -1647,9 +1710,30 @@ describe("AgentsActiveConversationPanel", () => {
       },
     });
 
-    const widget = screen.getByTestId("agents-automation-runs-widget");
-    expect(within(widget).getByText("Awaiting plan approval")).toBeInTheDocument();
-    expect(within(widget).queryByText("Running")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-runs-widget"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+    const runs = await screen.findByTestId("agents-composer-runtimes-group-runs");
+    expect(within(runs).getByText("Awaiting plan approval")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(runs).getByTestId("agents-composer-automation-run-run-1"),
+    );
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
+    expect(onFocusAutomationRun).toHaveBeenCalledWith(
+      "automation-1",
+      "run-1",
+      "conversation-run-1",
+      {
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+      },
+    );
   });
 
   it.each(["running", "provisioning"] as const)(
@@ -3388,18 +3472,163 @@ describe("AgentsActiveConversationPanel", () => {
       expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         sessionId: "planning-session-1",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "ideation",
       "planning-session-1",
       expect.stringContaining("Create implementation task proposals"),
+      undefined,
+      undefined,
+      { runtimeOverride: approvedPlanRuntime },
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
       "tasks",
       promotedWorkspace,
     );
+  });
+
+  it("refetches authoritative Tasks state when proposal launch fails after activation", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-partial",
+      sessionId: "planning-session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "complex",
+      score: 80,
+      recommendedAction: "create_proposals",
+      confidence: 0.9,
+      reasonSummary: "Use tracked proposals.",
+      signals: {},
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-05-23T05:02:00Z",
+      updatedAt: "2026-05-23T05:02:00Z",
+    });
+    setPlanArtifactVisible();
+    const tasksWorkspace = {
+      ...workspace(),
+      mode: "tasks" as const,
+      linkedIdeationSessionId: "planning-session-1",
+      taskPipelineSessionId: "planning-session-1",
+      taskPipelineAvailable: true,
+    };
+    activateAgentTaskPipelineMock.mockResolvedValue(tasksWorkspace);
+    getAgentConversationWorkspaceMock.mockResolvedValue(tasksWorkspace);
+    sendAgentMessageMock.mockRejectedValueOnce(new Error("send failed"));
+    const onConversationModeSwitched = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onConversationModeSwitched,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Create Proposals/i }),
+    );
+
+    await waitFor(() => {
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      );
+    });
+    expect(activateAgentTaskPipelineMock).toHaveBeenCalledTimes(1);
+    expect(onConversationModeSwitched).toHaveBeenLastCalledWith(
+      "conversation-1",
+      "tasks",
+      tasksWorkspace,
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalledWith(
+      "Proposal creation requested",
+    );
+  });
+
+  it("retries proposal launch with the runtime tuple already committed to Tasks", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-retry-runtime",
+      sessionId: "planning-session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "complex",
+      score: 80,
+      recommendedAction: "create_proposals",
+      confidence: 0.9,
+      reasonSummary: "Use tracked proposals.",
+      signals: {},
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-05-23T05:02:00Z",
+      updatedAt: "2026-05-23T05:02:00Z",
+    });
+    setPlanArtifactVisible();
+    const tasksWorkspace = {
+      ...workspace(),
+      mode: "tasks" as const,
+      linkedIdeationSessionId: "planning-session-1",
+      taskPipelineSessionId: "planning-session-1",
+      taskPipelineAvailable: true,
+    };
+    const changedRuntime = {
+      ...approvedPlanRuntime,
+      model: "different-model",
+    };
+    activateAgentTaskPipelineMock.mockResolvedValue(tasksWorkspace);
+    getAgentConversationWorkspaceMock.mockResolvedValue(tasksWorkspace);
+    sendAgentMessageMock
+      .mockRejectedValueOnce(new Error("send failed"))
+      .mockResolvedValueOnce({
+        conversationId: "ideation-conversation-1",
+        agentRunId: "run-retry",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      });
+    confirmCreateProposalsMock.mockImplementation(
+      async (
+        onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+      ) => {
+        await onConfirm(approvedPlanRuntime).catch(() => undefined);
+        await onConfirm(changedRuntime).catch(() => undefined);
+      },
+    );
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Create Proposals/i }),
+    );
+
+    await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalledTimes(2));
+    expect(activateAgentTaskPipelineMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentMessageMock.mock.calls[0]?.[5]).toEqual({
+      runtimeOverride: approvedPlanRuntime,
+    });
+    expect(sendAgentMessageMock.mock.calls[1]?.[5]).toEqual({
+      runtimeOverride: approvedPlanRuntime,
+    });
   });
 
   it("offers only direct implementation for an approved plan while Tasks are off", async () => {
@@ -3906,6 +4135,7 @@ describe("AgentsActiveConversationPanel", () => {
       expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         mode: "edit",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
@@ -3915,10 +4145,7 @@ describe("AgentsActiveConversationPanel", () => {
       undefined,
       {
         conversationId: "conversation-1",
-        providerHarness: "codex",
-        modelId: "gpt-5.5",
-        logicalEffort: "high",
-        codexFastMode: false,
+        runtimeOverride: approvedPlanRuntime,
         suppressUserMessage: true,
       },
     );
@@ -3930,6 +4157,119 @@ describe("AgentsActiveConversationPanel", () => {
       "edit",
       editWorkspace,
     );
+  });
+
+  it("refetches authoritative Edit state when the post-transition launch fails", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+    const transitionedWorkspace = {
+      ...workspace(),
+      mode: "edit" as const,
+      linkedIdeationSessionId: "planning-session-1",
+    };
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: transitionedWorkspace,
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(transitionedWorkspace);
+    sendAgentMessageMock.mockRejectedValueOnce(new Error("provider unavailable"));
+    const onConversationModeSwitched = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onConversationModeSwitched,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Implement Directly/i }),
+    );
+
+    await waitFor(() => {
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      );
+    });
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    expect(onConversationModeSwitched).toHaveBeenLastCalledWith(
+      "conversation-1",
+      "edit",
+      transitionedWorkspace,
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalledWith("Implementation started");
+  });
+
+  it("retries a post-transition launch with the runtime tuple already committed to Edit", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+    const transitionedWorkspace = {
+      ...workspace(),
+      mode: "edit" as const,
+      linkedIdeationSessionId: "planning-session-1",
+    };
+    const changedRuntime = {
+      ...approvedPlanRuntime,
+      model: "different-model",
+    };
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: transitionedWorkspace,
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(transitionedWorkspace);
+    sendAgentMessageMock
+      .mockRejectedValueOnce(new Error("provider unavailable"))
+      .mockResolvedValueOnce({
+        conversationId: "conversation-1",
+        agentRunId: "run-retry",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      });
+    confirmImplementDirectlyMock.mockImplementation(
+      async (
+        onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+      ) => {
+        await onConfirm(approvedPlanRuntime).catch(() => undefined);
+        await onConfirm(changedRuntime).catch(() => undefined);
+      },
+    );
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Implement Directly/i }),
+    );
+
+    await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalledTimes(2));
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentMessageMock.mock.calls[0]?.[5]).toEqual({
+      conversationId: "conversation-1",
+      runtimeOverride: approvedPlanRuntime,
+      suppressUserMessage: true,
+    });
+    expect(sendAgentMessageMock.mock.calls[1]?.[5]).toEqual({
+      conversationId: "conversation-1",
+      runtimeOverride: approvedPlanRuntime,
+      suppressUserMessage: true,
+    });
   });
 
   it("starts plan verification from the composer CTA row", async () => {
@@ -4046,7 +4386,7 @@ describe("AgentsActiveConversationPanel", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "high",
-          codexFastMode: false,
+          codexFastMode: null,
         },
       ),
     );

@@ -70,6 +70,51 @@ fn queued_agent_run_records_explicit_runtime_overrides() {
 }
 
 #[test]
+fn complete_runtime_queue_snapshot_materializes_provider_defaults() {
+    let mut provider =
+        crate::domain::agents::AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    provider.enabled = true;
+    provider.model = Some("gpt-5.6-provider".to_string());
+    provider.effort = Some(LogicalEffort::Medium);
+    provider.service_tier = Some("fast".to_string());
+    let runtime = crate::domain::agents::ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Codex,
+        model: None,
+        effort: None,
+        service_tier: crate::domain::agents::ManualServiceTier::ProviderDefault,
+        coordination_mode: None,
+        persona_id: None,
+    };
+
+    let snapshot = resolve_complete_runtime_for_queue(&runtime, &provider);
+
+    assert_eq!(snapshot.harness, AgentHarnessKind::Codex);
+    assert_eq!(snapshot.model.as_deref(), Some("gpt-5.6-provider"));
+    assert_eq!(snapshot.effort, Some(LogicalEffort::Medium));
+    assert_eq!(snapshot.service_tier.as_deref(), Some("fast"));
+}
+
+#[test]
+fn complete_runtime_queue_snapshot_materializes_standard_provider_speed() {
+    let mut provider =
+        crate::domain::agents::AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    provider.enabled = true;
+    provider.service_tier = None;
+    let runtime = crate::domain::agents::ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Codex,
+        model: Some("gpt-5.6".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: crate::domain::agents::ManualServiceTier::ProviderDefault,
+        coordination_mode: None,
+        persona_id: None,
+    };
+
+    let snapshot = resolve_complete_runtime_for_queue(&runtime, &provider);
+
+    assert_eq!(snapshot.service_tier.as_deref(), Some("standard"));
+}
+
+#[test]
 fn queued_persisted_metadata_embeds_composer_references() {
     let mut message = crate::domain::services::QueuedMessage::new("follow up".to_string());
     message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());

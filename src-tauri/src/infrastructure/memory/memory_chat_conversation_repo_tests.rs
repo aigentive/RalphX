@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AttributionBackfillStatus, CoordinationMode, IdeationSessionId, ProjectId,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, CoordinationMode, IdeationSessionId,
+    ProjectId,
 };
 
 #[tokio::test]
@@ -77,6 +78,33 @@ async fn test_update_builder_draft_binding_sets_and_clears() {
             .builder_draft_id,
         None
     );
+}
+
+#[tokio::test]
+async fn update_agent_mode_and_role_bindings_persists_one_tuple() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-atomic-edit".to_string()));
+    let conversation_id = conversation.id;
+    repo.create(conversation).await.unwrap();
+
+    repo.update_agent_mode_and_role_default_bindings(
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        CoordinationMode::RxNativeWorkflow,
+        Some("persona-edit"),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("persona-edit"));
 }
 
 #[tokio::test]

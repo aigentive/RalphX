@@ -181,6 +181,7 @@ async fn should_defer_on_publish(
             run.action_context_id.as_deref() == Some(session.id.as_str())
                 && run.action_target_id.as_deref() == Some(artifact_id)
         }
+        Some(AgentRunActionKind::WorkspaceReviewFixer) => false,
     }
 }
 

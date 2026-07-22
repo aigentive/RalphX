@@ -10,7 +10,7 @@ import {
 } from "./AgentsView.testSetup";
 import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationKeys } from "@/hooks/useIdeation";
 import {
@@ -102,6 +102,13 @@ function workspaceReviewContext(overrides: {
 
 describe("AgentsView artifact pane", () => {
   beforeEach(setupAgentsViewTest);
+
+  // Warm the lazily imported pane module so the first pane-mounting test does
+  // not pay the one-time dynamic-import transform cost inside findBy's 1s
+  // timeout on loaded CI runners.
+  beforeAll(async () => {
+    await import("./AgentsArtifactPane");
+  });
 
   it("restores persisted artifact width, enforces pane and chat minimums, and resets to default on double click", async () => {
     window.localStorage.setItem("ralphx-agents-artifact-width", "720");
@@ -332,7 +339,7 @@ describe("AgentsView artifact pane", () => {
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
   });
 
-  it("opens the Review tab when a workspace Review artifact is created", async () => {
+  it("keeps Commit & Publish selected when a Workspace Review artifact is created", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     resetAgentSessionState({
@@ -366,9 +373,46 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
         "data-active-tab",
-        "review",
+        "publish",
       ),
     );
+    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-publish-sub-tab",
+      "review",
+    );
+  });
+
+  it("keeps local Workspace Review out of flat header shortcuts", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await screen.findByTestId("agents-artifact-pane");
+    fireEvent.click(screen.getByLabelText("Close panel"));
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("agents-artifact-pane"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+    expect(await screen.findByTestId("agents-publish-workspace")).toBeInTheDocument();
   });
 
   it("does not query or open Workspace Review for a PLAN workspace", async () => {

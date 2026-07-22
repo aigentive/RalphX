@@ -10,6 +10,7 @@ import type {
 } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -122,6 +123,9 @@ export function AgentsConversationSideRegions({
   onSelectArtifact,
   onTaskArtifactSelectionChange,
 }: AgentsConversationSideRegionsProps) {
+  const publishSubTabRequest = useAgentArtifactUiStore(
+    (state) => state.publishSubTabRequest,
+  );
   const workspaceConversationId =
     activeWorkspace?.conversationId ?? selectedConversationId;
 
@@ -153,6 +157,7 @@ export function AgentsConversationSideRegions({
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
           publishFocusRequest={publishFocusRequest}
+          publishSubTabRequest={publishSubTabRequest}
           taskFocusRequest={taskArtifactFocusRequest}
           onConversationModeSwitched={onConversationModeSwitched}
           onFocusIdeationSessionForConversation={

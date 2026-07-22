@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
 import { setupApp } from "../../../fixtures/setup.fixtures";
+import {
+  AgentsPublishPage,
+  type WorkspaceReviewVisualState,
+} from "../../../pages/views/agents-publish.page";
+import { AgentsRuntimePage } from "../../../pages/views/agents-runtime.page";
 import type { StateTransition } from "@/api/tasks";
 import type { ChatMessageResponse } from "@/api/chat";
 import type {
@@ -19,6 +25,7 @@ const baseRef = {
 
 const editConversationId = "conv-agent-edit-visual";
 const ideationConversationId = "conv-agent-ideation-visual";
+const automationConversationId = "conv-agent-automation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
 const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
 
@@ -176,12 +183,14 @@ function makeConversation({
   mode,
   createdAt,
   archivedAt = null,
+  automationId = null,
 }: {
   id: string;
   title: string;
   mode: AgentConversationMode;
   createdAt: string;
   archivedAt?: string | null;
+  automationId?: string | null;
 }): ChatConversation {
   return {
     id,
@@ -193,6 +202,8 @@ function makeConversation({
     upstreamProvider: "openai",
     providerProfile: null,
     agentMode: mode,
+    automationId,
+    automationRunId: null,
     coordinationMode: "solo",
     title,
     messageCount: 0,
@@ -1071,7 +1082,37 @@ async function expectAgentsTaskDetailOneColumn(page: Page, detailTestId: string)
   expect(horizontalOverflow).toBeLessThanOrEqual(2);
 }
 
-async function seedAgentsScenario(page: Page) {
+async function expectPublishVisualAtWidths(
+  page: Page,
+  publishPage: AgentsPublishPage,
+  snapshotName: string,
+) {
+  const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  await publishPage.expectNoPaneOverflow();
+  await expect(page).toHaveScreenshot(`${snapshotName}.png`, {
+    fullPage: false,
+    maxDiffPixelRatio: 0.01,
+  });
+
+  await page.setViewportSize({ width: 960, height: standardViewport.height });
+  await publishPage.expectNoPaneOverflow();
+  await expect(page).toHaveScreenshot(`${snapshotName}-constrained.png`, {
+    fullPage: false,
+    maxDiffPixelRatio: 0.01,
+  });
+  await page.setViewportSize(standardViewport);
+}
+
+const workspaceReviewVisualLabels: Record<WorkspaceReviewVisualState, string> = {
+  running: "Reviewing",
+  blocking: "Review blocking",
+  passed: "Review passed",
+};
+
+async function seedAgentsScenario(
+  page: Page,
+  options: { includeAutomation?: boolean } = {},
+) {
   await page.evaluate(() => {
     window.__mockChatApi?.reset();
   });
@@ -1098,6 +1139,20 @@ async function seedAgentsScenario(page: Page) {
     seededMessages(ideationConversationId),
     "ideation",
   );
+  if (options.includeAutomation) {
+    await seedConversationWithWorkspace(
+      page,
+      makeConversation({
+        id: automationConversationId,
+        title: "Release readiness automation",
+        mode: "automation",
+        automationId: "automation-visual-1",
+        createdAt: "2026-04-25T17:45:00.000Z",
+      }),
+      seededMessages(automationConversationId),
+      "automation",
+    );
+  }
   await seedConversationWithWorkspace(
     page,
     makeConversation({
@@ -1404,13 +1459,13 @@ test.describe("Agents View", () => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
     await selectAgentConversation(page, editConversationId);
+    const publishPage = new AgentsPublishPage(page);
 
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
     await expect(page.getByTestId("integrated-chat-messages")).toBeVisible();
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
     await seedPublishHistory(page, editConversationId);
-    await page.getByTestId("agents-publish-workspace").click();
-    await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
+    await publishPage.openFromHeader();
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
 
     await hydratePublishHistoryCache(page, editConversationId);
@@ -1423,11 +1478,24 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("pr-status-strip")).toBeVisible();
     await expect(page.getByText("1 passed")).toBeVisible();
     await expect(page.getByText("1 pending")).toBeVisible();
+    await publishPage.expectPrimaryActionContained("agents-publish-confirm");
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+
+    const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+    await page.setViewportSize({ width: 960, height: standardViewport.height });
+    await publishPage.expectNoPaneOverflow();
+    await expect(page).toHaveScreenshot(
+      "agents-edit-publish-pane-constrained.png",
+      {
+        fullPage: false,
+        maxDiffPixelRatio: 0.01,
+      },
+    );
+    await page.setViewportSize(standardViewport);
 
     await page.getByTestId("agents-artifact-tab-pr").click();
     const prContent = page.getByTestId("agents-artifact-content-pr");
@@ -1472,6 +1540,74 @@ test.describe("Agents View", () => {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+  });
+
+  test("dirty Changes and Workspace Review states match the visual contract", async ({
+    page,
+  }) => {
+    await setupAgentsView(page);
+    await seedAgentsScenario(page);
+    await selectAgentConversation(page, editConversationId);
+    const publishPage = new AgentsPublishPage(page);
+
+    await publishPage.installPagedDiffRoute();
+    await publishPage.openFromHeader();
+    await publishPage.selectChanges();
+    await publishPage.expectDiffRowsLoaded();
+    await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
+    await publishPage.expectPrimaryActionContained("agents-publish-confirm");
+    await expectPublishVisualAtWidths(
+      page,
+      publishPage,
+      "agents-edit-publish-dirty-changes",
+    );
+
+    for (const reviewState of [
+      "running",
+      "blocking",
+      "passed",
+    ] as const) {
+      await publishPage.seedWorkspaceReviewState(
+        editConversationId,
+        reviewState,
+      );
+      await publishPage.selectReview();
+      await expect(
+        publishPage.reviewContent.getByText(
+          workspaceReviewVisualLabels[reviewState],
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await publishPage.expectPrimaryActionContained(
+        reviewState === "running"
+          ? "agents-publish-reviewing"
+          : reviewState === "blocking"
+            ? "agents-publish-review-required"
+            : "agents-publish-confirm",
+      );
+      if (reviewState !== "running") {
+        await expect(
+          publishPage.reviewContent.getByRole("heading", {
+            name: reviewState === "blocking"
+              ? "Blocking findings"
+              : "Workspace Review",
+          }),
+        ).toBeVisible();
+      }
+      if (reviewState === "passed") {
+        await expect(
+          publishPage.reviewContent.getByRole("button", { name: "Run again" }),
+        ).toBeVisible();
+        await expect(
+          publishPage.reviewContent.getByTestId("agents-review-open-publish"),
+        ).toHaveCount(0);
+      }
+      await expectPublishVisualAtWidths(
+        page,
+        publishPage,
+        `agents-edit-publish-review-${reviewState}`,
+      );
+    }
   });
 
   test("commit publish pane retains its direct git auth repair actions", async ({ page }) => {
@@ -1592,6 +1728,31 @@ test.describe("Agents View", () => {
       "Main chat is showing this runtime transcript",
     );
     await expectAgentsTaskDetailOneColumn(page, "reviewing-task-detail");
+  });
+
+  test("automation runs render as Runtime tray items", async ({ page }) => {
+    await setupAgentsView(page);
+    await seedAgentsScenario(page, { includeAutomation: true });
+    await seedAutomationRuntimeVisualState(page, {
+      automationId: "automation-visual-1",
+      conversationId: automationConversationId,
+      projectId,
+    });
+    await selectAgentConversation(page, automationConversationId);
+
+    const runtime = new AgentsRuntimePage(page);
+    await runtime.openRuntimeRuns();
+    await expect(runtime.standaloneRunsWidget).toHaveCount(0);
+    await expect(runtime.mainGroup).toBeVisible();
+    await expect(runtime.runRow("automation-visual-1-run-2")).toContainText(
+      "Awaiting plan approval",
+    );
+    await expect(runtime.runRow("automation-visual-1-run-1")).toContainText("Merged");
+
+    await expect(page).toHaveScreenshot("agents-automation-runtime-runs.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
   });
 
   test("v27 sidebar tree and static recent block match visual contract", async ({ page }) => {

@@ -376,6 +376,30 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        agent_mode: AgentConversationWorkspaceMode,
+        coordination_mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()> {
+        let mut conversations = self.conversations.write().await;
+        let conversation = conversations.get_mut(id).ok_or_else(|| {
+            crate::error::AppError::NotFound("Chat conversation not found".to_string())
+        })?;
+        conversation.agent_mode = Some(agent_mode);
+        conversation.coordination_mode = coordination_mode;
+        conversation.persona_id = persona_id.map(str::to_string);
+        if clear_provider_session {
+            conversation.claude_session_id = None;
+            conversation.provider_session_id = None;
+            conversation.provider_harness = None;
+        }
+        conversation.updated_at = Utc::now();
+        Ok(())
+    }
+
     async fn update_title(&self, id: &ChatConversationId, title: &str) -> AppResult<()> {
         let mut convos = self.conversations.write().await;
         if let Some(conv) = convos.get_mut(id) {

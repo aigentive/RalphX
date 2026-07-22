@@ -59,6 +59,7 @@ pub async fn invoke_automation_utility_agent(
             Some(automation.project_id.as_str()),
             Some(project_working_directory.as_path()),
             role,
+            None,
             agent_name,
             purpose,
             Some(harness),

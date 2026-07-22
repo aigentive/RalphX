@@ -894,6 +894,7 @@ impl AppState {
         project_id: Option<&str>,
         project_root: Option<&std::path::Path>,
         role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
         agent_name: &str,
         purpose: &str,
         harness_override: Option<AgentHarnessKind>,
@@ -905,6 +906,7 @@ impl AppState {
                 project_id,
                 project_root,
                 role,
+                runtime_override,
                 harness_override,
                 None,
                 &defaults,
@@ -1073,6 +1075,20 @@ impl AppState {
         agent_name: &str,
         purpose: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_workspace_role_runtime_for_project_with_override(
+            project_id, role, None, agent_name, purpose,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_workspace_role_runtime_for_project_with_override(
+        &self,
+        project_id: &str,
+        role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+        agent_name: &str,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         let project = self
             .project_repo
             .get_by_id(&ProjectId::from_string(project_id.to_string()))
@@ -1082,6 +1098,7 @@ impl AppState {
             Some(project_id),
             Some(std::path::Path::new(&project.working_directory)),
             role,
+            runtime_override,
             agent_name,
             purpose,
             None,

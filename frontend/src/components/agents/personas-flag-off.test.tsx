@@ -65,17 +65,36 @@ vi.mock("./AgentComposerSurface", () => ({
   AgentComposerSurface: ({
     mode,
     onSend,
-    personaControl,
+    persona,
   }: {
     mode?: { value: string };
     onSend: (message: string) => Promise<void>;
-    personaControl?: React.ReactNode;
+    persona?: {
+      onValueChange: (value: string) => void;
+      options: Array<{ id: string; label: string }>;
+    };
   }) => {
-    composerProps.hasPersonaControl = personaControl !== undefined;
+    composerProps.hasPersonaControl = persona !== undefined;
     composerProps.modeValue = mode?.value ?? null;
     return (
       <div>
-        {personaControl}
+        {persona && (
+          <>
+            <button type="button" aria-label="Choose persona">
+              Choose persona
+            </button>
+            {persona.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="menuitemradio"
+                onClick={() => persona.onValueChange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </>
+        )}
         <button type="button" onClick={() => void onSend("flag-off submission")}>
           Start Agent
         </button>
@@ -275,6 +294,19 @@ vi.mock("@/hooks/usePersonas", () => ({
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSwitchConversationPersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePersonaOverlayPreview: () => ({
+    isPending: true,
+    isError: false,
+    data: undefined,
+    error: null,
+  }),
+  usePersonaUsage: () => ({ data: [], isLoading: false, isError: false }),
+  useUnarchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useReseedPersonaDraft: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+    error: null,
+  }),
 }));
 
 vi.mock("@/hooks/usePersonaDraftEvents", () => ({
@@ -496,7 +528,7 @@ describe("agent persona start retries", () => {
     );
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Choose persona" }));
-    await userEvent.setup().click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    await userEvent.setup().click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Start Agent" }));
 
     expect(await screen.findByTestId("persona-unavailable-notice")).toHaveTextContent(

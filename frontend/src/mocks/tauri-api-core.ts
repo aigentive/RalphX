@@ -39,6 +39,7 @@ import {
   toSnakeCasePlanBranch,
 } from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
+import { mockArtifactApi } from "@/api-mock/artifact";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -1156,6 +1157,8 @@ const commandHandlers: Record<
     }));
   },
   list_workflows: async () => mockWorkflowsApi.list(),
+  get_artifact_version_history: async (args) =>
+    mockArtifactApi.getVersionHistory(args.id as string),
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),

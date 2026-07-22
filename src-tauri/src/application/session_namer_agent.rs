@@ -150,6 +150,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
                 .as_ref()
                 .map(|_| working_directory.as_path()),
             RoutingRole::UtilityLightweight,
+            None,
             agent_names::AGENT_SESSION_NAMER,
             "session namer",
             harness_override,

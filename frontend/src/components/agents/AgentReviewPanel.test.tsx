@@ -189,6 +189,14 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("removes the outer artifact padding when embedded in Commit & Publish", () => {
+    renderPanel({ embedded: true, reviewArtifact: null });
+
+    const panel = screen.getByTestId("agents-review-panel");
+    expect(panel).toHaveAttribute("data-embedded", "true");
+    expect(panel).not.toHaveClass("px-4", "pb-4", "pt-4");
+  });
+
   it("opens the Workspace Review transcript without hiding its metadata", async () => {
     const user = userEvent.setup();
     const onViewTranscript = vi.fn();

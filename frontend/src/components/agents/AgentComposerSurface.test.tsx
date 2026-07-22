@@ -730,12 +730,17 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => expect(onReset).toHaveBeenCalledTimes(1));
   });
 
-  it("renders an optional compact toolbar control without changing runtime selector layout", () => {
+  it("moves the optional persona control into the runtime selector", async () => {
     renderComposer({
       personaControl: <span data-testid="persona-control-slot">Persona</span>,
     });
 
-    expect(screen.getByTestId("persona-control-slot")).toBeInTheDocument();
+    expect(screen.queryByTestId("persona-control-slot")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      await screen.findByTestId("agent-composer-runtime-persona-menu-trigger"),
+    );
+    expect(await screen.findByTestId("persona-control-slot")).toBeInTheDocument();
     expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
       "max-w-[34rem]",
     );

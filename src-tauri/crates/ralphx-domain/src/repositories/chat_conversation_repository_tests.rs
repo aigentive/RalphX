@@ -238,6 +238,17 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        _id: &ChatConversationId,
+        _agent_mode: AgentConversationWorkspaceMode,
+        _coordination_mode: CoordinationMode,
+        _persona_id: Option<&str>,
+        _clear_provider_session: bool,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_title(&self, _id: &ChatConversationId, _title: &str) -> AppResult<()> {
         Ok(())
     }

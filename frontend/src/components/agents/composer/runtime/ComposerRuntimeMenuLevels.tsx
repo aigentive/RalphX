@@ -8,6 +8,7 @@ import {
   Gauge,
   Layers3,
   Settings,
+  UserRound,
   Zap,
 } from "lucide-react";
 
@@ -19,7 +20,9 @@ import type {
   ComposerRuntimeCapabilityField,
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
+  ComposerRuntimePersonaField,
   ComposerRuntimeProviderField,
+  ComposerRuntimeSpeedField,
 } from "./runtimeSelectorTypes";
 
 function RuntimeLevelShell({
@@ -312,17 +315,14 @@ export function ComposerRuntimeCapabilityLevel({
 }
 
 export function ComposerRuntimeSpeedLevel({
-  model,
+  speed,
   narrow,
   onBack,
 }: {
-  model: ComposerRuntimeModelField;
+  speed: ComposerRuntimeSpeedField;
   narrow: boolean;
   onBack: () => void;
 }) {
-  const fastMode = model.fastMode;
-  if (!fastMode?.visible) return null;
-
   return (
     <RuntimeLevelShell
       testId="agent-composer-runtime-speed-submenu"
@@ -334,31 +334,46 @@ export function ComposerRuntimeSpeedLevel({
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
         <ComposerRuntimeOptionList
           label="Speed"
-          value={fastMode.value ? "fast" : "standard"}
-          options={[
-            {
-              id: "standard",
-              label: "Standard",
-              description: "Default speed.",
-            },
-            {
-              id: "fast",
-              label: "Fast",
-              description:
-                fastMode.description ??
-                "Use priority processing when supported.",
-              ...(fastMode.disabled && {
-                disabled: true,
-                disabledReason:
-                  fastMode.description ?? "Fast mode is unavailable.",
-              }),
-            },
-          ]}
-          disabled={false}
-          testId="agent-composer-runtime-speed"
+          value={speed.value}
+          options={speed.options}
+          disabled={speed.disabled ?? false}
+          testId={speed.testId ?? "agent-composer-runtime-speed"}
           icon={Zap}
-          onValueChange={(value) => fastMode.onValueChange(value === "fast")}
+          onValueChange={speed.onValueChange}
         />
+      </div>
+    </RuntimeLevelShell>
+  );
+}
+
+export function ComposerRuntimePersonaLevel({
+  persona,
+  narrow,
+  onBack,
+}: {
+  persona: ComposerRuntimePersonaField;
+  narrow: boolean;
+  onBack: () => void;
+}) {
+  return (
+    <RuntimeLevelShell
+      testId="agent-composer-runtime-persona-submenu"
+      title="Persona"
+      subtitle="Voice and working style"
+      narrow={narrow}
+      onBack={onBack}
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
+        <ComposerRuntimeOptionList
+          label="Persona"
+          value={persona.value}
+          options={persona.options}
+          disabled={persona.disabled ?? false}
+          testId={persona.testId ?? "agent-composer-runtime-persona"}
+          icon={UserRound}
+          onValueChange={(value) => void persona.onValueChange(value)}
+        />
+        {persona.footerAction}
       </div>
     </RuntimeLevelShell>
   );

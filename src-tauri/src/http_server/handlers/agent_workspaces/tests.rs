@@ -27,10 +27,11 @@
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-        AgentWorkspaceReviewRuntimeState, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-        ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
-        Project, ProjectId, TaskId,
+        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
+        AgentWorkspaceSourcePullRequest, AgentRunId, ArtifactId, ChatContextType, ChatConversation,
+        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
+        ProjectId, TaskId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
@@ -1755,10 +1756,10 @@
             .agent_conversation_workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),
-                "repair_requested",
+                "repair_sent",
                 "started",
-                "Workspace agent repair requested before the base update can complete",
-                Some("agent_fixable:update_only".to_string()),
+                "Starting workspace repair agent for base update failure",
+                Some(format!("agent_fixable:run:{}", AgentRunId::new())),
             ))
             .await
             .unwrap();
@@ -2789,6 +2790,7 @@
                     base_ref_kind: "project_default".to_string(),
                     base_ref_used: "main".to_string(),
                     base_from_run_id: None,
+                    goal_item_id: None,
                     branch_name: None,
                     pr_number: None,
                     pr_url: None,

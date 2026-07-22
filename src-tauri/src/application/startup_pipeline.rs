@@ -759,6 +759,27 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
     startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
 
+    let phase_started_at = startup_phase_started("workspace_review_fixer_startup_reconciliation");
+    match crate::application::agent_workspace_review::reconcile_interrupted_workspace_review_fixers_on_startup(
+        Arc::clone(&agent_conversation_workspace_repo),
+        Arc::clone(&agent_run_repo),
+        Arc::clone(&app_state.queued_message_repo),
+    )
+    .await
+    {
+        Ok(count) if count > 0 => {
+            info!(count, "Startup reconciled interrupted workspace Review fixers");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(error = %error, "Startup workspace Review fixer reconciliation failed");
+        }
+    }
+    startup_phase_completed(
+        "workspace_review_fixer_startup_reconciliation",
+        phase_started_at,
+    );
+
     let phase_started_at =
         startup_phase_started("workspace_review_auto_merge_guard_reconciliation");
     match crate::application::agent_workspace_review_auto_merge::

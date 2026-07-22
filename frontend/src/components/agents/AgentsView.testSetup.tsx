@@ -7,6 +7,8 @@ import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type {
   AgentConversationWorkspace,
   AgentWorkspaceReviewContext,
+  ComposerIntegrationReference,
+  SendAgentMessageResult,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import {
@@ -17,6 +19,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
@@ -104,6 +107,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
+  integratedChatPanelUserMessageSentMock: vi.fn(),
   preloadAgentsArtifactPaneMock: vi.fn(),
   preloadAgentTerminalExperienceMock: vi.fn(),
   artifactPaneModuleLoadedMock: vi.fn(),
@@ -247,6 +251,7 @@ const {
   toastLoadingMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
+  integratedChatPanelUserMessageSentMock,
   preloadAgentsArtifactPaneMock,
   preloadAgentTerminalExperienceMock,
   artifactPaneModuleLoadedMock,
@@ -983,6 +988,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride,
     sendOptions,
     onChildSessionNavigate,
+    onUserMessageSent,
     emptyState,
   }: {
     headerContent?: ReactNode;
@@ -995,6 +1001,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride?: string;
     sendOptions?: Record<string, unknown>;
     onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+    onUserMessageSent?: (payload: {
+      content: string;
+      result: SendAgentMessageResult;
+      composerIntegrationReferences?: ComposerIntegrationReference[];
+    }) => void | Promise<void>;
     emptyState?: ReactNode;
   }) => {
     const agentStatus = useChatStore((state) =>
@@ -1015,6 +1026,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       sendOptions,
       hasChildSessionNavigate: Boolean(onChildSessionNavigate),
     });
+    integratedChatPanelUserMessageSentMock(onUserMessageSent);
     return (
       <div
         data-testid="integrated-chat-panel"
@@ -1070,6 +1082,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       activeTab,
       focusedIdeationSessionId,
       publishFocusRequest,
+      publishSubTabRequest,
       onClose,
       onFocusIdeationSessionForConversation,
       onFocusVerificationSession,
@@ -1084,6 +1097,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       activeTab?: string;
       focusedIdeationSessionId?: string | null;
       publishFocusRequest?: AgentPublishFocusRequest | null;
+      publishSubTabRequest?: AgentPublishSubTabRequest | null;
       projectBaseBranch?: string | null;
       isPublishingWorkspace?: boolean;
       onClose?: () => void;
@@ -1104,6 +1118,11 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-publish-sub-tab={
+          publishSubTabRequest?.conversationId === conversation?.id
+            ? (publishSubTabRequest?.tab ?? "changes")
+            : "changes"
+        }
         data-automation-id={conversation?.automationId ?? ""}
       >
         <AgentPublishPanel
@@ -1116,6 +1135,14 @@ vi.mock("./AgentsArtifactPane", async () => {
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
           }
+          activeSubTab={
+            publishSubTabRequest?.conversationId === conversation?.id
+              ? (publishSubTabRequest?.tab ?? "changes")
+              : "changes"
+          }
+          showReviewTab
+          onSubTabChange={() => {}}
+          reviewContent={null}
         />
       </div>
     ) : (
@@ -1125,6 +1152,11 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-publish-sub-tab={
+          publishSubTabRequest?.conversationId === conversation?.id
+            ? (publishSubTabRequest?.tab ?? "changes")
+            : "changes"
+        }
         data-automation-id={conversation?.automationId ?? ""}
       >
         {onClose ? (
@@ -1630,6 +1662,7 @@ export function setupAgentsViewTest() {
   toastLoadingMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
+  integratedChatPanelUserMessageSentMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
   artifactPaneModuleLoadedMock.mockReset();
   realPublishPanelState.enabled = false;
@@ -2155,6 +2188,7 @@ export function setupAgentsViewTest() {
   resetAgentSessionState();
   useAgentArtifactUiStore.setState({
     artifactByConversationId: {},
+    publishSubTabRequest: null,
   });
   useAgentTerminalStore.setState({
     openByConversationId: {},

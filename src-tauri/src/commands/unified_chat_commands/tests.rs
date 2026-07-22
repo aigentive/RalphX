@@ -62,6 +62,7 @@ use crate::application::agent_conversation_workspace_base::{
     BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
+use crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairClaim;
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::PublishBranchFreshnessStatus;
 use crate::application::{
@@ -71,8 +72,8 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentModelDefinition, AgentOutput, AgentResponse,
-    AgentResult, AgenticClient, ClientCapabilities, LogicalEffort, ProviderSessionRef,
-    ResponseChunk,
+    AgentResult, AgenticClient, ClientCapabilities, LogicalEffort, ManualRoleRuntimeOverride,
+    ManualServiceTier, ProviderSessionRef, ResponseChunk,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
@@ -92,6 +93,7 @@ use crate::domain::entities::{
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth};
 use crate::domain::services::{
@@ -100,6 +102,7 @@ use crate::domain::services::{
     RunningAgentRegistry,
 };
 use crate::error::AppError;
+use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
@@ -1404,6 +1407,10 @@ async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
     assert_eq!(options[0].model_override, None);
     assert_eq!(options[0].logical_effort_override, None);
     assert_eq!(
+        options[0].queue_policy,
+        crate::application::chat_service::SendQueuePolicy::RequireImmediateStart
+    );
+    assert_eq!(
         options[0].working_directory_override.as_deref(),
         Some(Path::new("/tmp/project-repo"))
     );
@@ -1561,6 +1568,17 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("Commit & Publish failed for this agent workspace."));
     assert!(messages[0].contains("Workspace branch: ralphx/test/agent-command"));
+    let claimed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claimed.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(claimed.pr_supervision_status.as_deref(), Some("fixing"));
 
     let events = state
         .agent_conversation_workspace_repo
@@ -1615,6 +1633,17 @@ async fn fixable_update_failure_records_repair_send_failure() {
         .list_publication_events(&workspace.conversation_id)
         .await
         .expect("events should list");
+    let settled = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settled.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
     assert!(events.iter().any(|event| {
         event.step == "repair_requested"
             && event.classification.as_deref() == Some("agent_fixable:update_only")
@@ -1626,6 +1655,94 @@ async fn fixable_update_failure_records_repair_send_failure() {
             && event.summary.contains("Failed to send base update failure")
             && event.classification.as_deref() == Some("operational")
     }));
+}
+
+#[tokio::test]
+async fn repair_request_event_failure_settles_without_dispatch() {
+    let mut state = AppState::new_test();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    state.agent_conversation_workspace_repo =
+        workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
+    let workspace = command_test_workspace();
+    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo.fail_next_matching_publication_event(
+        "repair_requested",
+        "started",
+        "repair request event unavailable",
+    );
+    let service = MockChatService::new();
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await;
+
+    assert!(service.get_sent_messages().await.is_empty());
+    let settled = workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
+}
+
+#[tokio::test]
+async fn successful_dispatch_remains_completable_when_success_event_write_fails() {
+    let mut state = AppState::new_test();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    state.agent_conversation_workspace_repo =
+        workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
+    let workspace = command_test_workspace();
+    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo.fail_next_matching_publication_event(
+        "repair_sent",
+        "succeeded",
+        "repair success event unavailable",
+    );
+    let service = MockChatService::with_agent_run_repo(Arc::clone(&state.agent_run_repo));
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await;
+
+    assert_eq!(service.get_sent_messages().await.len(), 1);
+    let current = workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion(
+        state.agent_conversation_workspace_repo,
+        state.agent_run_repo,
+        &current,
+    )
+    .await
+    .unwrap()
+    .is_some());
 }
 
 #[tokio::test]
@@ -2684,6 +2801,10 @@ async fn deferred_repair_spawn_without_app_handle_noops() {
         AgentWorkspaceRepairRuntimeOverrides::default(),
         target,
         AgentWorkspacePostRepairAction::Publish,
+        AgentWorkspaceRepairClaim {
+            conversation_id: workspace.conversation_id.clone(),
+            guard: AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+        },
     )
     .await;
 
@@ -6892,6 +7013,7 @@ async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -6900,6 +7022,89 @@ async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
 
     assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
     assert!(response.workspace.is_none());
+}
+
+#[tokio::test]
+async fn switching_agent_mode_with_runtime_override_persists_one_conversation_tuple() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-runtime-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("abababab-abab-4bab-8bab-abababababab");
+    let mut project = Project::new(
+        "Runtime Mode Switch".to_string(),
+        "/tmp/runtime-mode-switch".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persisted");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Chat,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        Some("Current branch (main)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/runtime-mode-switch".to_string(),
+        "/tmp/ralphx-runtime-mode-switch".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace persisted");
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            runtime_override: Some(ManualRoleRuntimeOverride {
+                harness: AgentHarnessKind::Codex,
+                model: None,
+                effort: None,
+                service_tier: ManualServiceTier::ProviderDefault,
+                coordination_mode: Some(CoordinationMode::Solo),
+                persona_id: None,
+            }),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect("mode and runtime bindings persist together");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    assert_eq!(response.conversation.coordination_mode, "solo");
+    assert!(response.conversation.persona_id.is_none());
+    assert_eq!(response.workspace.expect("workspace returned").mode, "edit");
+
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(stored.coordination_mode, CoordinationMode::Solo);
+    assert!(stored.persona_id.is_none());
 }
 
 #[tokio::test]
@@ -6953,6 +7158,7 @@ async fn switching_to_edit_without_existing_workspace_creates_workspace() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7020,6 +7226,7 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
                 base_ref_name: Some("main".to_string()),
                 head_ref_oid: Some(source_sha.clone()),
             }),
+            runtime_override: None,
         },
         &state,
     )
@@ -7135,6 +7342,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7153,6 +7361,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         ModeSwitchInitiator::User,
@@ -7236,6 +7445,7 @@ async fn switching_edit_to_plan_quiesces_workspace_review_authority_before_persi
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         &service,
@@ -7334,6 +7544,7 @@ async fn failed_workspace_review_runtime_cleanup_keeps_workspace_out_of_plan_mod
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         &service,
@@ -7454,6 +7665,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7527,6 +7739,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7616,6 +7829,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7693,6 +7907,7 @@ async fn switching_agent_mode_preserves_provider_session_for_native_resume() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
