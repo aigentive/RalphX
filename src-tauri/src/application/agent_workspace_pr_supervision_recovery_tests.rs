@@ -768,7 +768,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
 }
 
 #[tokio::test]
-async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
+async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-needs-agent").await;
     let conversation_id = workspace.conversation_id.clone();
@@ -809,19 +809,16 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
-            pr_number: 257,
-            head_sha,
-        }
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
     );
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .unwrap()
         .expect("workspace should still exist");
-    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
     assert_eq!(updated.publication_pr_status.as_deref(), Some("open"));
-    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
     let events = workspace_repo
         .list_publication_events(&conversation_id)
         .await
@@ -829,7 +826,7 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
     assert!(events
         .iter()
         .any(|event| event.step == "stale_repair_recovered"));
-    assert!(events
+    assert!(!events
         .iter()
         .any(|event| event.step == "pr_supervision_recovered"));
     assert!(!events.iter().any(|event| {
