@@ -26,6 +26,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -153,6 +154,10 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type {
+  AgentPublishSubTab,
+  AgentPublishSubTabRequest,
+} from "./agentPublishSubTab";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -602,6 +607,7 @@ interface AgentsArtifactPaneProps {
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
   publishFocusRequest?: AgentPublishFocusRequest | null;
+  publishSubTabRequest?: AgentPublishSubTabRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   automationRunFocusTarget?: Extract<
     AgentsChatFocus,
@@ -651,6 +657,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onPublishWorkspace,
   isPublishingWorkspace = false,
   publishFocusRequest = null,
+  publishSubTabRequest = null,
   taskFocusRequest = null,
   automationRunFocusTarget = null,
   onOpenAutomation,
@@ -866,6 +873,72 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const prReviewConversationId =
     workspace?.mode === "review_pr" ? workspace.conversationId : null;
   const isReviewPrWorkspace = workspace?.mode === "review_pr";
+  const nestsWorkspaceReview = Boolean(
+    showPublishTab &&
+    scopedWorkspace &&
+    isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode) &&
+    !isReviewPrWorkspace,
+  );
+  const [publishSubTabByConversation, setPublishSubTabByConversation] =
+    useState<Record<string, AgentPublishSubTab>>(() =>
+      conversationId
+        ? {
+            [conversationId]:
+              nestsWorkspaceReview && activeTab === "review"
+                ? "review"
+                : "changes",
+          }
+        : {},
+    );
+  const lastHandledPublishSubTabRequestIdRef = useRef(0);
+  const [pendingReviewFocusConversationId, setPendingReviewFocusConversationId] =
+    useState<string | null>(null);
+  const rememberedPublishSubTab = conversationId
+    ? publishSubTabByConversation[conversationId]
+    : null;
+  const publishSubTab = nestsWorkspaceReview
+    ? (rememberedPublishSubTab ?? (activeTab === "review" ? "review" : "changes"))
+    : "changes";
+  const selectPublishSubTab = useCallback(
+    (tab: AgentPublishSubTab) => {
+      if (!conversationId) return;
+      setPublishSubTabByConversation((current) => ({
+        ...current,
+        [conversationId]: tab,
+      }));
+    },
+    [conversationId],
+  );
+  useEffect(() => {
+    if (
+      !nestsWorkspaceReview ||
+      publishSubTabRequest?.conversationId !== conversationId ||
+      publishSubTabRequest.requestId <=
+        lastHandledPublishSubTabRequestIdRef.current
+    ) {
+      return;
+    }
+    lastHandledPublishSubTabRequestIdRef.current =
+      publishSubTabRequest.requestId;
+    selectPublishSubTab(publishSubTabRequest.tab);
+    if (publishSubTabRequest.tab === "review") {
+      setPendingReviewFocusConversationId(conversationId);
+    } else {
+      setPendingReviewFocusConversationId(null);
+    }
+  }, [
+    conversationId,
+    nestsWorkspaceReview,
+    publishSubTabRequest,
+    selectPublishSubTab,
+  ]);
+  useEffect(() => {
+    if (!nestsWorkspaceReview || activeTab !== "review") {
+      return;
+    }
+    selectPublishSubTab("review");
+    onTabChange("publish");
+  }, [activeTab, nestsWorkspaceReview, onTabChange, selectPublishSubTab]);
   const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
@@ -1313,10 +1386,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       conversation?.contextType === "project" && hasConversationIssues
         ? (["issues", ...availableIdeationTabIds] as IdeationArtifactTab[])
         : availableIdeationTabIds;
-    const shouldShowReviewTab = isReviewPrWorkspace
-      ? Boolean(prReviewContext)
-      : Boolean(reviewArtifactId) ||
-        Boolean(workspaceReviewContext?.shouldShowTab);
+    const shouldShowReviewTab = isReviewPrWorkspace && Boolean(prReviewContext);
     if (!shouldShowReviewTab || tabs.includes("review")) {
       return tabs;
     }
@@ -1327,8 +1397,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     hasConversationIssues,
     isReviewPrWorkspace,
     prReviewContext,
-    reviewArtifactId,
-    workspaceReviewContext?.shouldShowTab,
   ]);
   const personaArtifactOnly = isPersonaArtifactConversation(conversation);
   const availableTabs = useMemo<VisibleArtifactTab[]>(
@@ -1399,15 +1467,18 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
+  const normalizedActiveTab =
+    nestsWorkspaceReview && activeTab === "review" ? "publish" : activeTab;
   const requestedFallbackActiveTab = isAutomationRunConversation
     ? automationRunTabPolicy.defaultTab
     : automationId && conversation?.agentMode === "automation"
       ? "automation"
-      : isReviewPrWorkspace ||
-          workspaceReviewContext?.shouldShowTab ||
-          reviewArtifactId
+      : isReviewPrWorkspace && (prReviewContext || reviewArtifactId)
         ? "review"
-        : showPullRequestTab
+        : nestsWorkspaceReview &&
+            (workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId)
+          ? "publish"
+          : showPullRequestTab
           ? "pr"
           : showJiraTab
             ? "jira"
@@ -1431,15 +1502,19 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     shownEnabledTabs[0]?.id ??
     "automation";
   const effectiveActiveTab = shownTabs.some(
-    (tab) => tab.id === activeTab && tab.enabled,
+    (tab) => tab.id === normalizedActiveTab && tab.enabled,
   )
-    ? activeTab
+    ? normalizedActiveTab
     : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
     ? getAgentConversationStoreKey(conversation)
     : null;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(conversationId, {
-    enabled: Boolean(conversationId && effectiveActiveTab === "review"),
+    enabled: Boolean(
+      conversationId &&
+      (effectiveActiveTab === "review" ||
+        (effectiveActiveTab === "publish" && publishSubTab === "review")),
+    ),
     mirrorToVisibleChatStatus: false,
     storeKey: runtimeStatusStoreKey,
   });
@@ -1508,6 +1583,26 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewTabStatusColor = isWorkspaceReviewRunning
     ? reviewTabIconColor
     : null;
+  const reviewTabStatusLabel = (() => {
+    if (isWorkspaceReviewRunning) return "Running";
+    if (workspaceReviewBlocked) {
+      return workspaceReviewStartError ||
+        workspaceReviewFixIssuesError ||
+        reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
+        reviewDisplayContext?.monitor.reviewOutcome === "run_failed"
+        ? "Failed"
+        : "Issues";
+    }
+    if (isWorkspaceReviewApprovedAnyway(reviewDisplayContext)) return "Approved";
+    if (hasWorkspaceReviewPublishAuthorization(reviewDisplayContext)) {
+      return "Passed";
+    }
+    if (reviewDisplayContext?.reviewArtifactIsOutdated) return "Outdated";
+    if (reviewDisplayContext?.monitor.reviewGateStatus === "required") {
+      return "Required";
+    }
+    return null;
+  })();
   const shouldLoadDependencyGraph =
     shouldLoadIdeationData &&
     (effectiveActiveTab === "tasks" ||
@@ -1724,27 +1819,70 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewDisplayContext,
     workspaceReviewConversationId,
   ]);
-  const handleFocusWorkspaceReview = useCallback(() => {
+  useEffect(() => {
+    if (
+      pendingReviewFocusConversationId !== conversationId ||
+      !nestsWorkspaceReview ||
+      effectiveActiveTab !== "publish" ||
+      publishSubTab !== "review"
+    ) {
+      return;
+    }
     const reviewConversationId =
       reviewDisplayContext?.monitor.reviewConversationId ?? null;
-    if (reviewConversationId) {
-      onFocusWorkspaceReview?.(reviewConversationId);
+    if (!reviewConversationId) {
+      return;
     }
+    onFocusWorkspaceReview?.(reviewConversationId);
+    setPendingReviewFocusConversationId(null);
   }, [
+    conversationId,
+    effectiveActiveTab,
+    nestsWorkspaceReview,
     onFocusWorkspaceReview,
+    pendingReviewFocusConversationId,
+    publishSubTab,
     reviewDisplayContext?.monitor.reviewConversationId,
   ]);
-  const handleOpenReview = useCallback(() => {
-    onTabChange("review");
-    handleFocusWorkspaceReview();
-  }, [handleFocusWorkspaceReview, onTabChange]);
   const handleOpenPublish = useCallback(() => {
+    selectPublishSubTab("changes");
+    setPendingReviewFocusConversationId(null);
     if (onOpenPublish) {
       onOpenPublish();
       return;
     }
     onTabChange("publish");
-  }, [onOpenPublish, onTabChange]);
+  }, [onOpenPublish, onTabChange, selectPublishSubTab]);
+  const handleOpenReview = useCallback(() => {
+    if (!nestsWorkspaceReview) {
+      setPendingReviewFocusConversationId(null);
+      if (activeTab !== "review") {
+        onTabChange("review");
+      }
+      return;
+    }
+    selectPublishSubTab("review");
+    setPendingReviewFocusConversationId(conversationId);
+    if (activeTab !== "publish") {
+      onTabChange("publish");
+    }
+  }, [
+    activeTab,
+    conversationId,
+    nestsWorkspaceReview,
+    onTabChange,
+    selectPublishSubTab,
+  ]);
+  const handlePublishSubTabChange = useCallback(
+    (tab: AgentPublishSubTab) => {
+      if (tab === "review") {
+        handleOpenReview();
+        return;
+      }
+      handleOpenPublish();
+    },
+    [handleOpenPublish, handleOpenReview],
+  );
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {
       if (conversationId)
@@ -2166,6 +2304,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onPublishWorkspace={onPublishWorkspace}
                 isPublishingWorkspace={isPublishingWorkspace}
                 publishFocusRequest={publishFocusRequest}
+                publishSubTab={publishSubTab}
+                showPublishReviewTab={nestsWorkspaceReview}
+                onPublishSubTabChange={handlePublishSubTabChange}
+                reviewTabStatusColor={reviewTabIconColor}
+                reviewTabStatusLabel={reviewTabStatusLabel}
+                isReviewTabRunning={isWorkspaceReviewRunning}
                 onConversationModeSwitched={onConversationModeSwitched}
                 onFocusIdeationSessionForConversation={
                   onFocusIdeationSessionForConversation
@@ -2253,6 +2397,12 @@ type ArtifactContentProps = {
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  publishSubTab: AgentPublishSubTab;
+  showPublishReviewTab: boolean;
+  onPublishSubTabChange: (tab: AgentPublishSubTab) => void;
+  reviewTabStatusColor: string | null;
+  reviewTabStatusLabel: string | null;
+  isReviewTabRunning: boolean;
   onConversationModeSwitched:
     | ((
         conversationId: string,
@@ -2331,6 +2481,12 @@ function ArtifactContent({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  publishSubTab,
+  showPublishReviewTab,
+  onPublishSubTabChange,
+  reviewTabStatusColor,
+  reviewTabStatusLabel,
+  isReviewTabRunning,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
   onFocusVerificationSession: _onFocusVerificationSession,
@@ -2343,6 +2499,34 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
+  const renderReviewPanel = (embedded: boolean) => (
+    <AgentReviewPanel
+      reviewArtifact={reviewArtifact}
+      reviewContext={reviewContext}
+      isReviewPrWorkspace={isReviewPrWorkspace}
+      autoApproveEnabled={autoApproveEnabled}
+      isAutoApproveSaving={isAutoApproveSaving}
+      onAutoApproveChange={onAutoApproveChange}
+      prReviewMonitor={prReviewMonitor}
+      isPrReviewMonitorSaving={isPrReviewMonitorSaving}
+      onPrReviewMonitorChange={onPrReviewMonitorChange}
+      reviewStartResult={reviewStartResult}
+      reviewStartError={reviewStartError}
+      isReviewLoading={isReviewLoading}
+      isReviewActionPending={isReviewActionPending}
+      isFixIssuesActionPending={isFixIssuesActionPending}
+      isApproveAnywayActionPending={isApproveAnywayActionPending}
+      isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
+      isPublishingWorkspace={isPublishingWorkspace}
+      onOpenPublish={onOpenPublish}
+      onStartReview={onStartReview}
+      onFixIssues={onFixIssues}
+      onApproveAnyway={onApproveAnyway}
+      embedded={embedded}
+      {...(onViewTranscript ? { onViewTranscript } : {})}
+    />
+  );
+
   if (
     activeTab === "persona" &&
     conversation &&
@@ -2389,6 +2573,13 @@ function ArtifactContent({
         publishFocusRequest={publishFocusRequest}
         reviewContext={reviewContext}
         onOpenReview={onOpenReview}
+        activeSubTab={publishSubTab}
+        showReviewTab={showPublishReviewTab}
+        onSubTabChange={onPublishSubTabChange}
+        reviewContent={renderReviewPanel(true)}
+        reviewTabStatusColor={reviewTabStatusColor}
+        reviewTabStatusLabel={reviewTabStatusLabel}
+        isReviewTabRunning={isReviewTabRunning}
       />
     );
   }
@@ -2456,32 +2647,7 @@ function ArtifactContent({
   }
 
   if (activeTab === "review") {
-    return (
-      <AgentReviewPanel
-        reviewArtifact={reviewArtifact}
-        reviewContext={reviewContext}
-        isReviewPrWorkspace={isReviewPrWorkspace}
-        autoApproveEnabled={autoApproveEnabled}
-        isAutoApproveSaving={isAutoApproveSaving}
-        onAutoApproveChange={onAutoApproveChange}
-        prReviewMonitor={prReviewMonitor}
-        isPrReviewMonitorSaving={isPrReviewMonitorSaving}
-        onPrReviewMonitorChange={onPrReviewMonitorChange}
-        reviewStartResult={reviewStartResult}
-        reviewStartError={reviewStartError}
-        isReviewLoading={isReviewLoading}
-        isReviewActionPending={isReviewActionPending}
-        isFixIssuesActionPending={isFixIssuesActionPending}
-        isApproveAnywayActionPending={isApproveAnywayActionPending}
-        isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
-        isPublishingWorkspace={isPublishingWorkspace}
-        onOpenPublish={onOpenPublish}
-        onStartReview={onStartReview}
-        onFixIssues={onFixIssues}
-        onApproveAnyway={onApproveAnyway}
-        {...(onViewTranscript ? { onViewTranscript } : {})}
-      />
-    );
+    return renderReviewPanel(false);
   }
 
   if (activeTab === "plan") {
