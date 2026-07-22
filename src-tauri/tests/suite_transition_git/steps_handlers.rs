@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
+use ralphx_lib::application::{AppState, InteractiveProcessKey};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     IdeationSession, InternalStatus, Priority, Project, ProjectId, ProposalCategory,
@@ -18,14 +18,10 @@ use std::sync::Arc;
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

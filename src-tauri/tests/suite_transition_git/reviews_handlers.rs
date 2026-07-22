@@ -18,9 +18,7 @@
 
 use crate::support::real_git_repo::setup_real_git_repo;
 use axum::{extract::State, http::StatusCode, Json};
-use ralphx_lib::application::{
-    interactive_process_registry::InteractiveProcessKey, AppState, TeamService, TeamStateTracker,
-};
+use ralphx_lib::application::{interactive_process_registry::InteractiveProcessKey, AppState};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
@@ -42,14 +40,10 @@ use std::sync::Arc;
 async fn setup_review_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -57,13 +51,9 @@ async fn setup_review_test_state() -> HttpServerState {
 async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     let state = HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     };
 
@@ -184,8 +174,6 @@ async fn test_get_task_context_includes_existing_task_followup_sessions() {
             source_context_id: Some(task.id.as_str().to_string()),
             spawn_reason: Some("out_of_scope_failure".to_string()),
             blocker_fingerprint: None,
-            team_mode: None,
-            team_config: None,
             purpose: Some("follow_up".to_string()),
             is_external_trigger: false,
         }),

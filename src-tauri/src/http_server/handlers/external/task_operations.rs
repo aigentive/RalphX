@@ -78,7 +78,7 @@ pub async fn external_task_transition_http(
     };
 
     let terminal_restart_plan = if is_retry_restart && target_status == InternalStatus::Ready {
-        build_terminal_ready_restart_plan(&state.app_state.task_step_repo, &task, None)
+        build_terminal_ready_restart_plan(&state.app_state.task_step_repo, &task)
             .await
             .map_err(|error| {
                 error!(

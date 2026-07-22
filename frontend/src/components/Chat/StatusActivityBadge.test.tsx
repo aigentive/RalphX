@@ -16,7 +16,6 @@ const allFeatureFlags = {
   ideationPage: true,
   automationsPage: false,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
 };
 

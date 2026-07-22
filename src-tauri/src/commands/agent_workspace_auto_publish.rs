@@ -14,7 +14,7 @@ use crate::application::publish_resilience::{
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
     inspect_publish_branch_freshness_for_source_after_fetch,
 };
-use crate::application::{AppState, GitService, TeamService};
+use crate::application::{AppState, GitService};
 use crate::commands::unified_chat_commands::{
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
     AgentConversationWorkspacePublishTarget,
@@ -256,10 +256,6 @@ where
         .ok_or_else(|| "ExecutionState is not available".to_string())?
         .inner()
         .clone();
-    let team_service = app_handle
-        .try_state::<Arc<TeamService>>()
-        .map(|state| state.inner().clone());
-
     let workspaces = state
         .agent_conversation_workspace_repo
         .list_active_direct_published_workspaces()
@@ -277,7 +273,6 @@ where
             auto_publish_existing_agent_workspace_pr(
                 state.inner(),
                 &execution_state,
-                team_service.clone(),
                 Some(app_handle.clone()),
                 conversation_id,
                 AutoPublishTrigger::BaseFreshness,
@@ -322,14 +317,9 @@ async fn auto_publish_existing_agent_workspace_pr_from_app_handle(
         .ok_or_else(|| "ExecutionState is not available".to_string())?
         .inner()
         .clone();
-    let team_service = app_handle
-        .try_state::<Arc<TeamService>>()
-        .map(|state| state.inner().clone());
-
     auto_publish_existing_agent_workspace_pr(
         state.inner(),
         &execution_state,
-        team_service,
         Some(app_handle.clone()),
         conversation_id,
         trigger,
@@ -340,7 +330,6 @@ async fn auto_publish_existing_agent_workspace_pr_from_app_handle(
 async fn auto_publish_existing_agent_workspace_pr<R>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: Option<Arc<TeamService>>,
     app_handle: Option<tauri::AppHandle<R>>,
     conversation_id: ChatConversationId,
     trigger: AutoPublishTrigger,
@@ -396,7 +385,6 @@ where
     let result = publish_agent_conversation_workspace_for_app_state(
         state,
         execution_state,
-        team_service,
         conversation_id,
         true,
     )
@@ -1246,7 +1234,6 @@ mod tests {
             &state,
             &execution_state,
             None,
-            None,
             conversation_id,
             AutoPublishTrigger::AgentCompletion,
         )
@@ -1276,7 +1263,6 @@ mod tests {
         let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
             &state,
             &execution_state,
-            None,
             None,
             conversation_id,
             AutoPublishTrigger::AgentCompletion,
@@ -1402,7 +1388,6 @@ mod tests {
         let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
             &state,
             &execution_state,
-            None,
             None,
             conversation_id,
             AutoPublishTrigger::AgentCompletion,

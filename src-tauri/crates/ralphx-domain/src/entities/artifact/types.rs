@@ -140,7 +140,6 @@ pub enum ArtifactType {
     TeamResearch,
     TeamAnalysis,
     TeamSummary,
-    VerificationFinding,
 }
 
 impl ArtifactType {
@@ -170,7 +169,6 @@ impl ArtifactType {
             ArtifactType::TeamResearch,
             ArtifactType::TeamAnalysis,
             ArtifactType::TeamSummary,
-            ArtifactType::VerificationFinding,
         ]
     }
 
@@ -200,7 +198,6 @@ impl ArtifactType {
             ArtifactType::TeamResearch => "team_research",
             ArtifactType::TeamAnalysis => "team_analysis",
             ArtifactType::TeamSummary => "team_summary",
-            ArtifactType::VerificationFinding => "verification_finding",
         }
     }
 }
@@ -253,7 +250,6 @@ impl FromStr for ArtifactType {
             "team_research" => Ok(ArtifactType::TeamResearch),
             "team_analysis" => Ok(ArtifactType::TeamAnalysis),
             "team_summary" => Ok(ArtifactType::TeamSummary),
-            "verification_finding" => Ok(ArtifactType::VerificationFinding),
             _ => Err(ParseArtifactTypeError {
                 value: s.to_string(),
             }),
@@ -596,9 +592,7 @@ impl ArtifactBucket {
                     ArtifactType::TeamResearch,
                     ArtifactType::TeamAnalysis,
                     ArtifactType::TeamSummary,
-                    ArtifactType::VerificationFinding,
                 ])
-                .with_writer("team-lead")
                 .with_writer("system"),
         ]
     }
@@ -617,36 +611,6 @@ pub struct TeamArtifactMetadata {
     /// Phase of the team when artifact was created
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_phase: Option<String>,
-    /// Structured verification payload for first-class verifier findings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_finding: Option<VerificationFindingMetadata>,
-}
-
-/// Structured verification metadata stored on first-class verifier finding artifacts
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VerificationFindingMetadata {
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coverage: Option<String>,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub gaps: Vec<VerificationFindingGap>,
-}
-
-/// One structured verification gap published by a verifier critic
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VerificationFindingGap {
-    pub severity: String,
-    pub category: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why_it_matters: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lens: Option<String>,
 }
 
 /// The type of relation between artifacts

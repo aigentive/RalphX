@@ -297,8 +297,6 @@ review_line_read_secs: 600
 review_parse_stall_secs: 120
 default_line_read_secs: 600
 default_parse_stall_secs: 180
-team_line_read_secs: 3600
-team_parse_stall_secs: 3600
 "#;
     let cfg: StreamTimeoutsConfig = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(cfg.merge_line_read_secs, 900);

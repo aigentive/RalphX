@@ -28,14 +28,6 @@ import type {
   StreamingTask,
 } from "@/types/streaming-task";
 
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
-  }),
-}));
-
 // ============================================================================
 // Hoisted mutable state for useChat mock (vi.hoisted runs before vi.mock)
 // ============================================================================
@@ -428,7 +420,6 @@ describe("IntegratedChatPanel", () => {
         isSending: {},
         activeConversationIds: {},
         activeAgentRunIds: {},
-        isTeamActive: {},
         lastAgentEventTimestamp: {},
         toolCallStartTimes: {},
         lastToolCallCompletionTimestamp: {},
@@ -682,7 +673,6 @@ describe("IntegratedChatPanel", () => {
     await waitFor(() => {
       expect(mockChatActions.handleSend).toHaveBeenCalledWith(
         "retry this",
-        undefined,
         undefined,
         undefined,
       );
@@ -2475,8 +2465,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,
@@ -2523,8 +2511,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,

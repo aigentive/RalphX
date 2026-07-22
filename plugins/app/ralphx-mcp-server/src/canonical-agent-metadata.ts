@@ -43,10 +43,6 @@ export function canonicalAgentName(agentType: string): string {
       return "ralphx-ideation";
     case "orchestrator-ideation-readonly":
       return "ralphx-ideation-readonly";
-    case "ideation-team-lead":
-      return "ralphx-ideation-team-lead";
-    case "ideation-team-member":
-      return "ralphx-ideation-team-member";
     case "ideation-advocate":
       return "ralphx-ideation-advocate";
     case "ideation-critic":
@@ -61,10 +57,6 @@ export function canonicalAgentName(agentType: string): string {
       return "ralphx-chat-task";
     case "chat-project":
       return "ralphx-chat-project";
-    case "ralphx-worker-team":
-      return "ralphx-execution-team-lead";
-    case "worker-team-member":
-      return "ralphx-execution-team-member";
     case "ralphx-worker":
       return "ralphx-execution-worker";
     case "ralphx-coder":

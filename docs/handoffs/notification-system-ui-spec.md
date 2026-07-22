@@ -254,7 +254,6 @@ Defaults match the plan: everything ON except run completions (info tier). First
 | permission_request | ShieldQuestion | --status-warning | Respond | re-raise `PermissionDialog` |
 | agent_question | MessageCircleQuestion | --accent-primary | Answer | conversation (`navigateToIdeationSession` / agents view) |
 | plan_approval | FileCheck | --accent-primary | Review plan | session artifact pane, plan tab |
-| team_plan_approval | Users | --accent-primary | Review plan | team plan dialog |
 | review_needed | GitPullRequest | --accent-primary | Review | in-place `ReviewDetailModal` |
 | review_escalated | TriangleAlert | --status-warning | Decide | in-place `ReviewDetailModal` |
 | qa_failed | FlaskConical | --status-error | Open task | `navigateToTask` |

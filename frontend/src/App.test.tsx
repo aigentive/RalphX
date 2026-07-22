@@ -481,7 +481,6 @@ function enableAutomationsPage() {
     ideationPage: false,
     automationsPage: true,
     battleMode: true,
-    teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: false,
   };

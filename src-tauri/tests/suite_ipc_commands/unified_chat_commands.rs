@@ -2655,7 +2655,7 @@ mod ipc_contract {
         wake_agent_workspace_for_bridge_events_with_service_factory,
     };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
-    use ralphx_lib::application::{AppState, MockChatService, TeamService, TeamStateTracker};
+    use ralphx_lib::application::{AppState, MockChatService};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
         UpsertCustomAgentModelInput,
@@ -3120,7 +3120,6 @@ mod ipc_contract {
         let error = publish_agent_conversation_workspace_for_app_state(
             &state,
             &execution_state,
-            None,
             conversation_id,
             false,
         )
@@ -3464,23 +3463,13 @@ mod ipc_contract {
 
     #[test]
     fn send_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh","target":null}"#;
+        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
         let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task_execution");
         assert_eq!(input.context_id, "task-123");
         assert_eq!(input.content, "Hello agent");
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
-        assert!(input.target.is_none());
-    }
-
-    #[test]
-    fn send_agent_message_input_with_target() {
-        let json = r#"{"contextType":"ideation","contextId":"session-456","content":"Plan this","target":"orchestrator"}"#;
-        let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.context_type, "ideation");
-        assert_eq!(input.context_id, "session-456");
-        assert_eq!(input.target, Some("orchestrator".to_string()));
     }
 
     #[test]
@@ -3498,13 +3487,12 @@ mod ipc_contract {
 
     #[test]
     fn queue_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc","target":null}"#;
+        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc"}"#;
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task");
         assert_eq!(input.context_id, "task-789");
         assert_eq!(input.content, "Queued msg");
         assert_eq!(input.client_id, Some("client-abc".to_string()));
-        assert!(input.target.is_none());
     }
 
     #[test]
@@ -3513,7 +3501,6 @@ mod ipc_contract {
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "project");
         assert!(input.client_id.is_none());
-        assert!(input.target.is_none());
     }
 
     // ── CreateAgentConversationInput ────────────────────────────────────────
@@ -3592,13 +3579,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3629,7 +3612,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3687,13 +3669,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3731,7 +3709,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3851,13 +3828,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3888,7 +3861,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3983,13 +3955,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4048,7 +4016,6 @@ mod ipc_contract {
                 },
                 state.clone(),
                 fix.app.state::<Arc<ExecutionState>>(),
-                fix.app.state::<Arc<TeamService>>(),
                 fix.app.handle().clone(),
             )
             .await
@@ -4200,7 +4167,6 @@ mod ipc_contract {
             },
             state.clone(),
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.state::<Arc<TeamService>>(),
             fix.app.handle().clone(),
         )
         .await
@@ -4276,7 +4242,6 @@ mod ipc_contract {
             },
             state,
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.state::<Arc<TeamService>>(),
             fix.app.handle().clone(),
         )
         .await
@@ -4343,13 +4308,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4380,7 +4341,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4446,13 +4406,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4483,7 +4439,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4543,13 +4498,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4580,7 +4531,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4639,13 +4589,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4676,7 +4622,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await

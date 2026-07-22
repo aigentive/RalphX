@@ -28,21 +28,10 @@ import { formatDateTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
-import type { TeamFinding } from "./TeamFindingsSection";
-import { DebateSummary } from "./DebateSummary";
-import type { DebateSummaryData } from "./DebateSummary";
 
 // ============================================================================
 // Types
 // ============================================================================
-
-export interface TeamMetadata {
-  teamIdeated: boolean;
-  teamMode: "research" | "debate";
-  teammateCount: number;
-  findings: TeamFinding[];
-  debateSummary?: DebateSummaryData | undefined;
-}
 
 export interface PlanDisplayConversationReference {
   artifactId: string;
@@ -78,8 +67,6 @@ export interface PlanDisplayProps {
   onExpandedChange?: (expanded: boolean) => void;
   /** @deprecated No longer used - version selection is now inline. Will be removed in Task 2. */
   onViewHistory?: () => void;
-  /** Team ideation metadata — shows findings section + badge when present */
-  teamMetadata?: TeamMetadata;
   /** When set, navigates PlanDisplay to this version number */
   requestedVersion?: number;
   /** Called after requestedVersion has been applied, to clear the parent's state */
@@ -407,7 +394,6 @@ export function PlanDisplay({
   verifyPlanLabel = "Verify Plan",
   isExpanded,
   onExpandedChange,
-  teamMetadata,
   requestedVersion,
   onVersionViewed,
   onCreateProposals,
@@ -978,13 +964,6 @@ export function PlanDisplay({
           )}
         </div>
 
-        {/* Debate summary — shown for debate-mode plans */}
-        {teamMetadata?.teamIdeated && teamMetadata.teamMode === "debate" && teamMetadata.debateSummary && (
-          <div className="mb-4">
-            <DebateSummary data={teamMetadata.debateSummary} />
-          </div>
-        )}
-
         {/* Version banner when viewing historical */}
         {isViewingHistorical && (
           <div
@@ -1109,19 +1088,6 @@ export function PlanDisplay({
                     >
                       v{plan.metadata.version}
                     </span>
-
-                    {teamMetadata?.teamIdeated && (
-                      <span
-                        className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
-                        style={{
-                          background: withAlpha("var(--accent-primary)", 12),
-                          border: "1px solid var(--accent-border)",
-                          color: "var(--accent-primary)",
-                        }}
-                      >
-                        {teamMetadata.teamMode === "research" ? "Research Team" : "Debate Team"}
-                      </span>
-                    )}
 
                   </div>
 
@@ -1406,13 +1372,6 @@ export function PlanDisplay({
               borderLeft: "2px solid var(--accent-border)",
             }}
           >
-            {/* Debate summary — shown for debate-mode plans */}
-            {teamMetadata?.teamIdeated && teamMetadata.teamMode === "debate" && teamMetadata.debateSummary && (
-              <div className="mb-4">
-                <DebateSummary data={teamMetadata.debateSummary} />
-              </div>
-            )}
-
             {/* Version banner when viewing historical */}
             {isViewingHistorical && (
               <div

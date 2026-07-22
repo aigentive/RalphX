@@ -439,7 +439,7 @@ Most agents extend `base_tools` and add Write, Edit, or Task as needed.
 | `get_step_progress` | worker, coder, reviewer, review-history |
 | `get_step_context` | worker, coder |
 | `get_sub_steps` | worker only |
-| `list_ticket_attachments` / `fetch_ticket_attachment` | worker, coder, execution-team-lead only |
+| `list_ticket_attachments` / `fetch_ticket_attachment` | worker and coder only |
 | `complete_review` | reviewer only |
 | `approve_task` / `request_task_changes` | review-chat only |
 | `complete_merge` / `report_conflict` / `report_incomplete` | merger only |

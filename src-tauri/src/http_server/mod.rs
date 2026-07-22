@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::error::AppResult;
 use crate::utils::backend_endpoint::{backend_http_base_url, backend_http_bind_addr};
@@ -54,7 +54,8 @@ pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
     event: &str,
     payload: &T,
 ) {
-    if let Err(error) = ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
+    if let Err(error) =
+        ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
     {
         tracing::warn!(%event, %error, "Failed to serialize HTTP event payload");
     }
@@ -63,28 +64,11 @@ pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
 pub async fn start_http_server(
     app_state: Arc<AppState>,
     execution_state: Arc<ExecutionState>,
-    team_tracker: TeamStateTracker,
     shutdown: crate::application::HttpShutdownHandle,
 ) -> AppResult<()> {
-    // Build TeamService for HTTP handlers (wraps tracker with DB persistence + events)
-    let team_service = {
-        let tracker_arc = Arc::new(team_tracker.clone());
-        match &app_state.app_handle {
-            Some(handle) => Arc::new(TeamService::new_with_repos(
-                tracker_arc,
-                handle.clone(),
-                app_state.team_session_repo.clone(),
-                app_state.team_message_repo.clone(),
-            )),
-            None => Arc::new(TeamService::new_without_events(tracker_arc)),
-        }
-    };
-
     let state = HttpServerState {
         app_state,
         execution_state,
-        team_tracker,
-        team_service,
         delegation_service: Arc::new(DelegationService::new()),
     };
 
@@ -234,7 +218,7 @@ pub async fn start_http_server(
             "/api/plan-verification/complete",
             post(complete_plan_verification_http),
         )
-        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead agents)
+        // Child session tools for the primary ideation agent.
         .route(
             "/api/ideation/sessions/:id/child-status",
             get(get_child_session_status_handler),
@@ -741,20 +725,9 @@ pub async fn start_http_server(
             post(receive_linear_webhook_http),
         )
         .route("/api/external/task-note", post(create_task_note_http))
-        // Team endpoints (agent teams) — two-phase plan flow
-        .route("/api/team/plan/request", post(request_team_plan_register))
-        .route("/api/team/plan/await/:plan_id", get(await_team_plan))
-        .route("/api/team/plan/pending/:context_id", get(get_pending_plan))
-        .route("/api/team/plan/approve", post(approve_team_plan))
-        .route("/api/team/plan/reject", post(reject_team_plan))
-        .route("/api/team/spawn", post(request_teammate_spawn))
+        // RX-native delegated-agent artifact endpoints.
         .route("/api/team/artifact", post(create_team_artifact))
         .route("/api/team/artifacts/:session_id", get(get_team_artifacts))
-        .route(
-            "/api/team/session_state/:session_id",
-            get(get_team_session_state),
-        )
-        .route("/api/team/session_state", post(save_team_session_state))
         // Permissive CORS applied only to public routes — does NOT apply to
         // internal_routes (which need no CORS) or management_routes (which have
         // their own restrictive CorsLayer already).

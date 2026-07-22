@@ -1,4 +1,4 @@
-export type VerificationFindingGap = {
+export type VerificationRoundGap = {
     severity: string;
     category: string;
     description: string;
@@ -6,7 +6,7 @@ export type VerificationFindingGap = {
     source?: string | null;
     lens?: string | null;
 };
-export type VerificationFindingSummary = {
+export type VerificationRoundSummary = {
     artifact_id: string;
     title: string;
     created_at: string;
@@ -16,13 +16,13 @@ export type VerificationFindingSummary = {
     status: string;
     coverage?: string | null;
     summary: string;
-    gaps: VerificationFindingGap[];
+    gaps: VerificationRoundGap[];
 };
 export type VerificationRoundFindingMatch = {
     critic: string;
     found: boolean;
     total_matches: number;
-    finding?: VerificationFindingSummary;
+    finding?: VerificationRoundSummary;
 };
 export type VerificationRoundDelegateInput = {
     job_id: string;
@@ -95,9 +95,9 @@ export declare function aggregateVerificationGaps(findings: ParsedVerificationCr
     merged_gaps: ParsedVerificationGap[];
     gap_counts: VerificationGapCounts;
 };
-export declare function parseTypedVerificationFinding(params: {
+export declare function parseVerificationRoundSummary(params: {
     label: string;
-    finding?: VerificationFindingSummary;
+    finding?: VerificationRoundSummary;
 }): ParsedVerificationCriticArtifact;
 export declare function assessVerificationRound(params: {
     delegates: VerificationRoundDelegateInput[];

@@ -13,13 +13,6 @@ fn native_team_overlay_error_codes_and_messages() {
         "team_mode_disabled: RX-native team mode is disabled in this build"
     );
 
-    let legacy = NativeTeamOverlayError::LegacyReadOnly;
-    assert_eq!(legacy.code(), "legacy_team_read_only");
-    assert_eq!(
-        legacy.to_string(),
-        "legacy_team_read_only: legacy Claude team mode is read-only; use Team mode"
-    );
-
     let unsupported = NativeTeamOverlayError::HarnessUnsupported {
         harness: AgentHarnessKind::Codex,
     };
@@ -87,7 +80,6 @@ fn rx_native_team_rejects_harness_without_capability() {
         validate_native_team_intent_with_capabilities(
             Some(&intent),
             AgentHarnessKind::Codex,
-            false,
             false
         ),
         Err(NativeTeamOverlayError::HarnessUnsupported {
@@ -97,36 +89,9 @@ fn rx_native_team_rejects_harness_without_capability() {
 }
 
 #[test]
-fn legacy_claude_team_intent_is_read_only() {
-    let intent = TeamIntent {
-        coordination_mode: CoordinationMode::LegacyClaudeTeam,
-        strategy: None,
-    };
-
-    assert!(matches!(
-        validate_native_team_intent(Some(&intent), AgentHarnessKind::Claude),
-        Err(NativeTeamOverlayError::LegacyReadOnly)
-    ));
-}
-
-#[test]
-fn legacy_claude_team_rejects_non_legacy_harness_as_read_only() {
-    let intent = TeamIntent {
-        coordination_mode: CoordinationMode::LegacyClaudeTeam,
-        strategy: None,
-    };
-
-    assert!(matches!(
-        validate_native_team_intent(Some(&intent), AgentHarnessKind::Codex),
-        Err(NativeTeamOverlayError::LegacyReadOnly)
-    ));
-}
-
-#[test]
 fn root_lib_coverage_exercises_team_domain_request_contract() {
     for (mode, value) in [
         (CoordinationMode::Solo, "solo"),
-        (CoordinationMode::LegacyClaudeTeam, "legacy_claude_team"),
         (CoordinationMode::RxNativeTeam, "rx_native_team"),
         (CoordinationMode::RxNativeWorkflow, "rx_native_workflow"),
         (CoordinationMode::CodexNativeUltra, "codex_native_ultra"),
@@ -136,7 +101,7 @@ fn root_lib_coverage_exercises_team_domain_request_contract() {
     }
     assert_eq!(
             "unexpected".parse::<CoordinationMode>().unwrap_err(),
-            "Invalid coordination mode 'unexpected'. Valid values: solo, legacy_claude_team, rx_native_team, rx_native_workflow, codex_native_ultra"
+            "Invalid coordination mode 'unexpected'. Valid values: solo, rx_native_team, rx_native_workflow, codex_native_ultra"
         );
 
     let solo_intent = TeamIntent::default();

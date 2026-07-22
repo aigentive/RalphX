@@ -1,6 +1,6 @@
 pub mod live_flags;
+pub mod process_config;
 pub mod runtime_config;
-pub mod team_config;
 mod tool_sets;
 mod ui_config;
 pub use live_flags::{agent_personas_enabled, standalone_conversations_enabled};
@@ -26,13 +26,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tool_sets::canonical_claude_tool_sets;
 
-#[allow(unused_imports)]
-pub use team_config::{
-    canonical_process_mapping, resolve_canonical_process_mapping, ApprovedTeamPlan,
-    ApprovedTeammate, ProcessMapping, ProcessSlot, TeamConstraintError, TeamConstraints,
-    TeamConstraintsConfig, TeamMode, TeammateSpawnRequest, canonical_team_constraints_config,
-    resolve_canonical_team_constraints_config,
-};
+use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
     validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
@@ -241,8 +235,6 @@ struct RalphxConfig {
     agents: Vec<AgentConfigRaw>,
     #[serde(default)]
     process_mapping: ProcessMapping,
-    #[serde(default)]
-    team_constraints: TeamConstraintsConfig,
     /// If true (default), defers merges when conflicts exist or agents are running.
     /// If false, all merges proceed immediately without deferral.
     #[serde(default = "default_defer_merge_enabled")]
@@ -310,8 +302,6 @@ struct CodexConfigOverlay {
 struct ProcessConfigOverlay {
     #[serde(default)]
     process_mapping: Option<ProcessMapping>,
-    #[serde(default)]
-    team_constraints: Option<TeamConstraintsConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -359,7 +349,6 @@ struct LoadedConfig {
     claude: ClaudeRuntimeConfig,
     tool_sets: HashMap<String, Vec<String>>,
     process_mapping: ProcessMapping,
-    team_constraints: TeamConstraintsConfig,
     defer_merge_enabled: bool,
     file_logging: bool,
     runtime: AllRuntimeConfig,
@@ -548,9 +537,6 @@ fn parse_process_config_overlay(yaml: &str) -> Option<ProcessConfigOverlay> {
 fn apply_process_config_overlay(cfg: &mut LoadedConfig, overlay: ProcessConfigOverlay) {
     if let Some(process_mapping) = overlay.process_mapping {
         cfg.process_mapping = resolve_canonical_process_mapping(&process_mapping);
-    }
-    if let Some(team_constraints) = overlay.team_constraints {
-        cfg.team_constraints = resolve_canonical_team_constraints_config(&team_constraints);
     }
 }
 
@@ -1204,14 +1190,12 @@ fn resolve_loaded_config_with_lookup(
     apply_agent_harness_env_overrides_with(&mut agent_harness_defaults, lookup);
 
     let process_mapping = resolve_canonical_process_mapping(&parsed.process_mapping);
-    let team_constraints = resolve_canonical_team_constraints_config(&parsed.team_constraints);
 
     Some(LoadedConfig {
         agents: resolved,
         claude,
         tool_sets: parsed.tool_sets,
         process_mapping,
-        team_constraints,
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
         runtime,
@@ -1664,7 +1648,6 @@ fn load_config() -> LoadedConfig {
                 },
                 tool_sets: canonical_claude_tool_sets().clone(),
                 process_mapping: ProcessMapping::default(),
-                team_constraints: TeamConstraintsConfig::default(),
                 defer_merge_enabled: true,
                 file_logging: true,
                 runtime,
@@ -1785,10 +1768,6 @@ pub fn get_allowed_tools_for_profile(
 
 pub fn process_mapping() -> &'static ProcessMapping {
     &LOADED_CONFIG_CELL.get_or_init(load_config).process_mapping
-}
-
-pub fn team_constraints_config() -> &'static TeamConstraintsConfig {
-    &LOADED_CONFIG_CELL.get_or_init(load_config).team_constraints
 }
 
 pub fn defer_merge_enabled() -> bool {

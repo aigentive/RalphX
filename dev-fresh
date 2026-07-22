@@ -377,15 +377,6 @@ sanitize_seeded_worktree_db() {
        WHERE status = 'running';"
   fi
 
-  if sqlite_table_exists "$db_path" "team_sessions"; then
-    sqlite3 "$db_path" \
-      "UPDATE team_sessions
-       SET phase = 'disbanded',
-           disbanded_at = COALESCE(disbanded_at, CURRENT_TIMESTAMP),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE disbanded_at IS NULL;"
-  fi
-
   if sqlite_table_exists "$db_path" "processes"; then
     sqlite3 "$db_path" \
       "UPDATE processes

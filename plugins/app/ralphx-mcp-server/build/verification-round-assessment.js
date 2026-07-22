@@ -62,7 +62,7 @@ function normalizeSource(value) {
     }
     return undefined;
 }
-export function parseTypedVerificationFinding(params) {
+export function parseVerificationRoundSummary(params) {
     const finding = params.finding;
     const base = {
         prefix: params.label,

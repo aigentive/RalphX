@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::common::MockGithubService;
 use axum::{extract::Path, Json};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use ralphx_lib::domain::entities::{
@@ -37,12 +37,9 @@ fn git(repo: impl AsRef<std::path::Path>, args: &[&str]) -> String {
 }
 
 fn make_http_state(app_state: AppState) -> HttpServerState {
-    let team_tracker = TeamStateTracker::new();
     HttpServerState {
         app_state: Arc::new(app_state),
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: team_tracker.clone(),
-        team_service: Arc::new(TeamService::new_without_events(Arc::new(team_tracker))),
         delegation_service: Default::default(),
     }
 }

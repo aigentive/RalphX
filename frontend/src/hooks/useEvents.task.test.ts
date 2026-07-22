@@ -66,24 +66,6 @@ vi.mock("@/stores/taskStore", () => ({
     }),
 }));
 
-const mockClearTeamForContext = vi.fn();
-
-vi.mock("@/stores/teamStore", () => ({
-  useTeamStore: (selector: (s: unknown) => unknown) =>
-    selector({ clearTeamForContext: mockClearTeamForContext }),
-}));
-
-const mockSetTeamActive = vi.fn();
-
-vi.mock("@/stores/chatStore", () => ({
-  useChatStore: (selector: (s: unknown) => unknown) =>
-    selector({ setTeamActive: mockSetTeamActive }),
-}));
-
-vi.mock("@/lib/chat-context-registry", () => ({
-  buildStoreKey: (type: string, id: string) => `${type}:${id}`,
-}));
-
 vi.mock("@/hooks/useTasks", () => ({
   taskKeys: {
     lists: () => ["tasks", "list"],

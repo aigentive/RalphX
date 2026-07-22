@@ -11,12 +11,11 @@
         resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
     };
     use crate::application::agent_workspace_review::{
-        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext,
-        AgentWorkspaceReviewDiffSummary, AgentWorkspaceReviewHunkAnchor,
-        AgentWorkspaceReviewPacket,
+        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext, AgentWorkspaceReviewDiffSummary,
+        AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewPacket,
     };
     use crate::application::agent_workspace_review_publish_handoff::pr_fix_publish_can_resume_after_workspace_review;
-    use crate::application::{AppState, TeamService, TeamStateTracker};
+    use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
         AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
@@ -42,8 +41,7 @@
         PrSyncState,
     };
     use crate::http_server::handlers::agent_workspace_review_approval::{
-        approve_agent_workspace_review_anyway_handler,
-        ApproveAgentWorkspaceReviewAnywayRequest,
+        approve_agent_workspace_review_anyway_handler, ApproveAgentWorkspaceReviewAnywayRequest,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
@@ -66,13 +64,9 @@
     }
 
     fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -171,8 +165,7 @@
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 assert!(!force, "repair completion should start a normal refresh");
-                let context =
-                    load_agent_workspace_review_context(state.as_ref(), workspace).await?;
+                let context = load_agent_workspace_review_context(state.as_ref(), workspace).await?;
                 let target = context.target;
                 assert!(
                     target.is_some(),
@@ -435,8 +428,7 @@
     #[test]
     fn workspace_review_tool_run_id_requires_active_review_run_match() {
         let conversation_id = ChatConversationId::new();
-        let mut monitor =
-            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
+        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
         monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
         monitor.last_run_id = Some("run-current".to_string());
         monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
@@ -458,12 +450,10 @@
             "workspace Review completion",
         )
         .is_err());
-        assert!(validate_workspace_review_tool_run_id(
-            &monitor,
-            None,
-            "workspace Review completion",
-        )
-        .is_err());
+        assert!(
+            validate_workspace_review_tool_run_id(&monitor, None, "workspace Review completion",)
+                .is_err()
+        );
 
         monitor.last_run_id = None;
         assert!(validate_workspace_review_tool_run_id(
@@ -474,12 +464,10 @@
         .is_err());
 
         monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
-        assert!(validate_workspace_review_tool_run_id(
-            &monitor,
-            None,
-            "workspace Review completion",
-        )
-        .is_err());
+        assert!(
+            validate_workspace_review_tool_run_id(&monitor, None, "workspace Review completion",)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1596,12 +1584,10 @@
         seed_current_passing_workspace_review(app_state.as_ref(), &workspace).await;
         let state = test_http_state(app_state);
 
-        let Json(response) = check_agent_workspace_publish_readiness(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("readiness should load");
+        let Json(response) =
+            check_agent_workspace_publish_readiness(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("readiness should load");
 
         assert!(response.success);
         assert!(response.can_publish);
@@ -1689,12 +1675,10 @@
             .expect("seed workspace");
         let state = test_http_state(app_state);
 
-        let Json(response) = check_agent_workspace_publish_readiness(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("readiness should load");
+        let Json(response) =
+            check_agent_workspace_publish_readiness(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("readiness should load");
 
         assert!(response.success);
         assert_eq!(response.review_gate_status.as_deref(), Some("required"));
@@ -1846,10 +1830,9 @@
             .unwrap();
         let state = test_http_state(app_state);
 
-        let Json(response) =
-            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
-                .await
-                .unwrap();
+        let Json(response) = publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+            .await
+            .unwrap();
 
         assert!(response.success);
         assert_eq!(response.status, "publish_in_progress");
@@ -1869,10 +1852,9 @@
             .unwrap();
         let state = test_http_state(app_state);
 
-        let Json(response) =
-            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
-                .await
-                .unwrap();
+        let Json(response) = publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+            .await
+            .unwrap();
 
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
@@ -2414,11 +2396,9 @@
 
     #[tokio::test]
     async fn complete_pr_fix_blocks_when_workspace_review_failed() {
-        let fixture = setup_pr_fix_workspace_with_review_gate(
-            "failed",
-            AgentWorkspaceReviewGateStatus::Failed,
-        )
-        .await;
+        let fixture =
+            setup_pr_fix_workspace_with_review_gate("failed", AgentWorkspaceReviewGateStatus::Failed)
+                .await;
         let state = test_http_state(Arc::clone(&fixture.app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
@@ -3065,8 +3045,7 @@
 
     #[tokio::test]
     async fn blocking_review_is_noop_for_non_automation_conversation() {
-        let fixture =
-            setup_workspace_for_review_completion("block-interactive", false, false).await;
+        let fixture = setup_workspace_for_review_completion("block-interactive", false, false).await;
         let state = test_http_state(Arc::clone(&fixture.app_state));
 
         // No automation linked → the handler must still succeed and not attempt any pause.
@@ -3503,8 +3482,7 @@
 
         let mut project = Project::new("Diff Test".to_string(), repo.display().to_string());
         project.base_branch = Some("main".to_string());
-        project.worktree_parent_directory =
-            Some(tmp.path().join("worktrees").display().to_string());
+        project.worktree_parent_directory = Some(tmp.path().join("worktrees").display().to_string());
 
         let conversation_id = ChatConversationId::new();
         let workspace = prepare_agent_conversation_workspace(
@@ -3547,12 +3525,10 @@
         git(worktree_path.as_path(), &["add", "staged.txt"]);
 
         let state = test_http_state(app_state);
-        let Json(changes) = get_agent_workspace_staged_file_changes(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("staged changes should load");
+        let Json(changes) =
+            get_agent_workspace_staged_file_changes(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("staged changes should load");
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "staged.txt");
@@ -3566,12 +3542,10 @@
         std::fs::write(worktree_path.join("base.txt"), "base\nmodified\n").unwrap();
 
         let state = test_http_state(app_state);
-        let Json(changes) = get_agent_workspace_unstaged_file_changes(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("unstaged changes should load");
+        let Json(changes) =
+            get_agent_workspace_unstaged_file_changes(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("unstaged changes should load");
 
         assert!(changes.iter().any(|c| c.path == "base.txt"));
     }

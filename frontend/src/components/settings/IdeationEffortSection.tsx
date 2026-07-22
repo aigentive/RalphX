@@ -191,7 +191,7 @@ function GlobalEffortSubsection() {
         <EffortRow
           id="global-primary-effort"
           label="Primary Ideation Effort"
-          description="Effort level for ralphx-ideation and team-lead agents"
+          description="Effort level for the primary ideation agent"
           value={settings.primaryEffort}
           disabled={false}
           onChange={handlePrimaryChange}

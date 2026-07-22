@@ -26,7 +26,7 @@ use crate::application::plan_reference_import::{
 use crate::application::standalone_workspace::{
     create_workspace, remove_workspace_if_present, resolve_workspace,
 };
-use crate::application::{AppState, ChatService, SendResult, TeamService};
+use crate::application::{AppState, ChatService, SendResult};
 use crate::application::app_state::ApplicationExecutionState;
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualServiceTier,
@@ -143,7 +143,6 @@ pub struct AgentConversationStartResult {
 pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
     pub state: &'a AppState,
     pub execution_state: &'a Arc<ApplicationExecutionState>,
-    pub team_service: Option<Arc<TeamService>>,
     pub app_handle: tauri::AppHandle<R>,
 }
 

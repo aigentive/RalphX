@@ -1195,7 +1195,6 @@ pub async fn update_agent_workspace_from_base(
     match update_agent_conversation_workspace_from_base_for_app_state(
         state.app_state.as_ref(),
         &state.execution_state,
-        Some(state.team_service.clone()),
         conversation_id,
         selection,
     )
@@ -1254,7 +1253,6 @@ pub async fn publish_agent_workspace(
     match publish_agent_conversation_workspace_for_app_state(
         state.app_state.as_ref(),
         &state.execution_state,
-        Some(state.team_service.clone()),
         conversation_id,
         true,
     )
@@ -2335,7 +2333,6 @@ pub async fn complete_agent_workspace_pr_fix(
     match publish_agent_conversation_workspace_for_app_state(
         state.app_state.as_ref(),
         &state.execution_state,
-        Some(state.team_service.clone()),
         conversation_id.clone(),
         false,
     )
@@ -3296,7 +3293,6 @@ async fn resume_pr_fix_publish_after_workspace_review(
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let app_state = Arc::clone(&state.app_state);
     let execution_state = Arc::clone(&state.execution_state);
-    let team_service = Some(Arc::clone(&state.team_service));
     resume_pr_fix_publish_after_passed_workspace_review(
         Arc::clone(&state.app_state.agent_conversation_workspace_repo),
         conversation_id,
@@ -3306,12 +3302,10 @@ async fn resume_pr_fix_publish_after_workspace_review(
         move |conversation_id| {
             let app_state = Arc::clone(&app_state);
             let execution_state = Arc::clone(&execution_state);
-            let team_service = team_service.clone();
             async move {
                 publish_agent_conversation_workspace_for_app_state(
                     app_state.as_ref(),
                     &execution_state,
-                    team_service,
                     conversation_id,
                     false,
                 )
@@ -3371,7 +3365,6 @@ async fn resume_initial_auto_publish_after_workspace_review(
     match publish_agent_conversation_workspace_for_app_state(
         state.app_state.as_ref(),
         &state.execution_state,
-        Some(state.team_service.clone()),
         conversation_id.clone(),
         false,
     )
@@ -4979,7 +4972,6 @@ pub async fn complete_agent_workspace_repair(
         let auto_publish = publish_agent_conversation_workspace_for_app_state(
             state.app_state.as_ref(),
             &state.execution_state,
-            Some(state.team_service.clone()),
             conversation_id,
             false,
         )

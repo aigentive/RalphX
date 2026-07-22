@@ -2,8 +2,6 @@
 
 import type {
   IdeationSessionStatus,
-  TeamMode,
-  TeamConfig,
   VerificationStatus,
 } from "../types/ideation";
 
@@ -16,8 +14,6 @@ export interface IdeationSessionResponse {
   planArtifactId: string | null;
   seedTaskId: string | null;
   parentSessionId: string | null;
-  teamMode: TeamMode | null;
-  teamConfig: TeamConfig | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;

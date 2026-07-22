@@ -9,7 +9,6 @@ const ALL_ENABLED: FeatureFlags = {
   ideationPage: true,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
 };
 
@@ -1171,7 +1170,6 @@ describe("uiStore", () => {
             ideationPage: false,
             automationsPage: false,
             battleMode: true,
-            teamMode: false,
             atlassianOauth: false,
             ticketingDashboard: false,
           },
@@ -1190,7 +1188,6 @@ describe("uiStore", () => {
             ideationPage: false,
             automationsPage: false,
             battleMode: true,
-            teamMode: false,
             atlassianOauth: false,
             ticketingDashboard: true,
           },

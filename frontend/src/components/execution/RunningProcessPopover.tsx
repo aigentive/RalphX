@@ -2,7 +2,7 @@
  * RunningProcessPopover - Compact running processes list with tabbed view
  *
  * Dense row-based layout matching macOS Activity Monitor style.
- * Tabs: Execution (processes + team groups) | Ideation (ideation sessions)
+ * Tabs: Execution (processes) | Ideation (ideation sessions)
  * Controlled mode: uses PopoverAnchor (not PopoverTrigger) for external open control.
  */
 
@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/popover";
 import { Loader2, MessageSquare, Settings } from "lucide-react";
 import { ProcessCard } from "./ProcessCard";
-import { TeamProcessGroup } from "./TeamProcessGroup";
 import { IdeationSessionCard } from "./IdeationSessionCard";
 import type {
   ExecutionCapacitySummary,
@@ -80,10 +79,6 @@ interface RunningProcessPopoverProps {
   initialTab?: TabType;
   /** Whether to show the Ideation tab (false hides it entirely when ideationMax=0) */
   showIdeation?: boolean;
-  /** Whether execution team-specific UI should be shown. */
-  showExecutionTeamUi?: boolean;
-  /** Whether ideation team-specific UI should be shown. */
-  showIdeationTeamUi?: boolean;
 }
 
 const LANE_LABELS: Record<ExecutionLaneName, string> = {
@@ -194,8 +189,6 @@ export function RunningProcessPopover({
   alignOffset = -24,
   initialTab = "execution",
   showIdeation = false,
-  showExecutionTeamUi = true,
-  showIdeationTeamUi = true,
 }: RunningProcessPopoverProps) {
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
 
@@ -266,25 +259,15 @@ export function RunningProcessPopover({
       </div>
     ) : (
       <>
-        {processes.map((process) =>
-          process.teamName && showExecutionTeamUi ? (
-            <TeamProcessGroup
-              key={process.taskId}
-              process={process}
-              onPause={onPauseProcess}
-              onStop={onStopProcess}
-              onNavigate={handleNavigate}
-            />
-          ) : (
-            <ProcessCard
-              key={process.taskId}
-              process={process}
-              onPause={onPauseProcess}
-              onStop={onStopProcess}
-              onNavigate={handleNavigate}
-            />
-          )
-        )}
+        {processes.map((process) => (
+          <ProcessCard
+            key={process.taskId}
+            process={process}
+            onPause={onPauseProcess}
+            onStop={onStopProcess}
+            onNavigate={handleNavigate}
+          />
+        ))}
       </>
     );
 
@@ -372,7 +355,6 @@ export function RunningProcessPopover({
             key={session.sessionId}
             session={session}
             onClick={() => handleNavigateToSession(session.sessionId)}
-            showTeamModeBadge={showIdeationTeamUi}
           />
         ))}
       </>

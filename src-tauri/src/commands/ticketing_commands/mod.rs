@@ -12,13 +12,11 @@ use crate::application::external_issue_link_service::TicketConversationLinkInput
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
-    agent_conversation_start_service::{
-        AgentConversationStartDeps, AgentConversationStartService,
-    },
+    agent_conversation_start_service::{AgentConversationStartDeps, AgentConversationStartService},
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     ClickUpComment, ClickUpSpace, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
     JiraIssueDetail, JiraProjectSummary, LinearComment, LinearIntegrationSettings,
-    LinearIssueContent, LinearIssueSummary, LinearLabel, TauriTicketingEventSink, TeamService,
+    LinearIssueContent, LinearIssueSummary, LinearLabel, TauriTicketingEventSink,
     TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest, TicketTransitionRequest,
     TicketingCommentResult, TicketingLabelResult, TicketingMutationResult, TicketingPersonResult,
     TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
@@ -29,13 +27,13 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink,
-    ChatContextType, ChatConversation, ChatConversationId, ProjectId,
+    is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
+    ChatConversation, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ExternalIssueLink, ObservedTicketingStatus, ProviderTicketOperation, TicketingStatusCatalogEntry,
-    TicketingStatusPresentationPatch,
+    AtlassianIntegrationSettings, ClickUpIntegrationSettings, ExternalIssueLink,
+    IntegrationValidationStatus, ObservedTicketingStatus, ProviderTicketOperation,
+    TicketingStatusCatalogEntry, TicketingStatusPresentationPatch,
 };
 use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
@@ -897,7 +895,6 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     mut input: StartRalphxWorkFromTicketInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, Arc<TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let provider = input.ticket_ref.provider.clone();
@@ -918,7 +915,6 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     let mut result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
         app_handle: app,
     })
     .start(input.start)
@@ -2815,7 +2811,9 @@ async fn link_started_ticket_to_conversation(
                     link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
                         && (link.external_id.eq_ignore_ascii_case(reference.id.trim())
                             || match (link.external_key.as_deref(), reference.key.as_deref()) {
-                                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right.trim()),
+                                (Some(left), Some(right)) => {
+                                    left.eq_ignore_ascii_case(right.trim())
+                                }
                                 _ => false,
                             })
                 });
@@ -2825,23 +2823,23 @@ async fn link_started_ticket_to_conversation(
             state
                 .external_issue_link_service
                 .upsert_ticket_conversation_link(TicketConversationLinkInput {
-                provider: PROVIDER_CLICKUP.to_string(),
-                external_kind: PROVIDER_CLICKUP.to_string(),
-                external_id: reference.id.clone(),
-                external_key: reference.key.clone(),
-                external_url: reference.url.clone(),
-                conversation_id: conversation_id.as_str(),
-                project_id: project_id.to_string(),
-                local_sha: None,
-                local_state: Some("active".to_string()),
-                metadata_json: Some(
-                    serde_json::json!({
-                        "source": "ticket_start",
-                        "title": reference.title,
-                        "validated_at": Utc::now().to_rfc3339(),
-                    })
-                    .to_string(),
-                ),
+                    provider: PROVIDER_CLICKUP.to_string(),
+                    external_kind: PROVIDER_CLICKUP.to_string(),
+                    external_id: reference.id.clone(),
+                    external_key: reference.key.clone(),
+                    external_url: reference.url.clone(),
+                    conversation_id: conversation_id.as_str(),
+                    project_id: project_id.to_string(),
+                    local_sha: None,
+                    local_state: Some("active".to_string()),
+                    metadata_json: Some(
+                        serde_json::json!({
+                            "source": "ticket_start",
+                            "title": reference.title,
+                            "validated_at": Utc::now().to_rfc3339(),
+                        })
+                        .to_string(),
+                    ),
                 })
                 .await
                 .map(|_| ())

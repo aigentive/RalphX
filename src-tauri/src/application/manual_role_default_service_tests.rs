@@ -310,15 +310,6 @@ async fn resolution_rejects_missing_persona_when_personas_are_enabled() {
 #[test]
 fn validate_role_value_rejects_unsupported_manual_controls() {
     let mut value = exact("unsupported");
-    value.coordination_mode = Some(CoordinationMode::LegacyClaudeTeam);
-    assert!(super::manual_role_default_service::validate_role_value(
-        RoutingRole::WorkspaceEdit,
-        &value
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("legacy_claude_team"));
-
     value.coordination_mode = Some(CoordinationMode::CodexNativeUltra);
     value.harness = AgentHarnessKind::Claude;
     assert!(super::manual_role_default_service::validate_role_value(
