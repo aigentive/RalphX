@@ -126,6 +126,12 @@ vi.mock("@/hooks/usePersonas", () => ({
     isPending: false,
     mutateAsync: switchPersonaMock,
   }),
+  usePersonaOverlayPreview: () => ({
+    isPending: true,
+    isError: false,
+    data: undefined,
+    error: null,
+  }),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({

@@ -64,6 +64,26 @@ export function transformPersona(raw: PersonaResponse): Persona {
   });
 }
 
+/** Derived usage facts; Rust `PersonaUsage` serializes camelCase. */
+export const PersonaUsageSchema = z.object({
+  personaId: z.string().min(1),
+  boundConversationCount: z.number().int(),
+  lastRunAt: z.string().nullable(),
+});
+
+export type PersonaUsage = z.infer<typeof PersonaUsageSchema>;
+
+/** Rendered overlay for the next send; Rust `PersonaOverlayPreview` serializes camelCase. */
+export const PersonaOverlayPreviewSchema = z.object({
+  personaId: z.string().min(1),
+  slug: z.string().min(1),
+  version: z.number().int(),
+  renderedBlock: z.string(),
+  skippedReason: z.string().nullable(),
+});
+
+export type PersonaOverlayPreview = z.infer<typeof PersonaOverlayPreviewSchema>;
+
 /** Raw `persona:draft_updated` Tauri event payload; never contains persona content. */
 export const PersonaDraftUpdatedEventSchema = z.object({
   draft_id: z.string().min(1),

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use ralphx_domain::personas::validation::validate_persona_content;
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::domain::entities::{
@@ -41,6 +42,16 @@ pub fn builder_draft_updated_payload(persona: &Persona, conversation_id: &str) -
     let mut payload = draft_updated_payload(persona);
     payload["builder_conversation_id"] = json!(conversation_id);
     payload
+}
+
+/// Derived, read-only usage facts for one persona. Never denormalized; always
+/// computed live from `chat_conversations.persona_id` and `agent_runs` attribution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaUsage {
+    pub persona_id: String,
+    pub bound_conversation_count: i64,
+    pub last_run_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +385,35 @@ impl PersonaService {
         self.persona_repo.list(scope).await
     }
 
+    /// One aggregated read for every persona's derived usage; errors propagate
+    /// (fail closed) instead of collapsing into zero counts.
+    pub async fn list_persona_usage(&self, feature_enabled: bool) -> AppResult<Vec<PersonaUsage>> {
+        ensure_enabled(feature_enabled)?;
+        // Cross-table derived read; like archive_persona this is intentionally a
+        // SQLite-side query because usage spans conversations and agent runs.
+        let _ = &self.persona_repo;
+        self.db
+            .run(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT p.id,
+                            (SELECT COUNT(*) FROM chat_conversations c WHERE c.persona_id = p.id),
+                            (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.persona_id = p.id)
+                     FROM personas p",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok(PersonaUsage {
+                            persona_id: row.get(0)?,
+                            bound_conversation_count: row.get(1)?,
+                            last_run_at: row.get(2)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
     pub async fn get_persona(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         self.persona_repo
@@ -503,6 +543,8 @@ mod persona_service_artifact_tests;
 mod persona_service_lifecycle_tests;
 #[path = "persona_service_validation_tests.rs"]
 mod persona_service_validation_tests;
+#[path = "persona_service_usage_restore_tests.rs"]
+mod persona_service_usage_restore_tests;
 
 #[path = "persona_update_approval_test_support.rs"]
 mod persona_update_approval_test_support;
