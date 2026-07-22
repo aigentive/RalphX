@@ -47,7 +47,9 @@ Switching a persona stops an active agent before the new binding takes effect. A
 ## Boundaries
 
 - A persona changes prompt behavior; it is not a model, skill, project setting, or separate agent.
+- Manual runtime confirmation may bind a persona only for eligible Workspace-family roles; the selection is an exact role launch override for that project conversation, not persona inheritance for other roles.
 - Teammates, delegated agents, pipeline workers/reviewers/mergers, Ideation, Task, Merge, and external MCP sends remain persona-less.
+- Persona controls for persona-less roles stay visible but disabled so the backend reason remains visible; Settings also keeps its persona-management route available.
 - Standalone chat does not support persona binding; standalone **Persona** mode is the global builder flow.
 - Standalone Chat and Standalone PersonaBuilder both support Claude and Codex; PersonaBuilder keeps each provider's MCP-compatible launch policy plus enforced filesystem roots.
 - Native agent paths that cannot accept prompt injection report `persona:injection_skipped` without exposing persona content.

@@ -6,6 +6,7 @@ import {
   type AgentConversationWorkspaceMode,
   type SendAgentMessageResult,
 } from "@/api/chat";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -34,6 +35,42 @@ interface ActivateAgentPlanProposalsParams {
     conversationId: string,
     sessionId: string
   ) => void;
+  runtimeOverride?: ManualRoleRuntimeSelection;
+  workspaceActivationCompleted?: boolean;
+  onWorkspaceActivated?: () => void;
+}
+
+export class PlanContinuationCommittedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanContinuationCommittedError";
+  }
+}
+
+export async function refreshTransitionedAgentWorkspace({
+  queryClient,
+  conversationId,
+  onConversationModeSwitched,
+}: {
+  queryClient: QueryClient;
+  conversationId: string;
+  onConversationModeSwitched?: (
+    conversationId: string,
+    mode: AgentConversationWorkspaceMode,
+    workspace: AgentConversationWorkspace | null,
+  ) => void;
+}): Promise<AgentConversationWorkspace | null> {
+  try {
+    const workspace = await chatApi.getAgentConversationWorkspace(conversationId);
+    if (!workspace) return null;
+    queryClient.setQueryData(agentWorkspaceKeys.workspace(conversationId), workspace);
+    onConversationModeSwitched?.(conversationId, workspace.mode, workspace);
+    return workspace;
+  } catch {
+    return null;
+  } finally {
+    await invalidateWorkspaceQueries(queryClient, conversationId);
+  }
 }
 
 function pinIdeationConversation(
@@ -60,24 +97,29 @@ export async function activateAgentPlanProposals({
   canPromoteWorkspace,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
+  runtimeOverride,
+  workspaceActivationCompleted = false,
+  onWorkspaceActivated,
 }: ActivateAgentPlanProposalsParams): Promise<SendAgentMessageResult> {
   const conversationId = workspace?.conversationId ?? null;
   const ownsSession =
     Boolean(conversationId) &&
     (workspace?.taskPipelineSessionId === sessionId ||
       workspace?.linkedIdeationSessionId === sessionId);
-  let workspaceIsTasks = workspace?.mode === "tasks";
+  let workspaceIsTasks = workspaceActivationCompleted || workspace?.mode === "tasks";
 
   if (
     canPromoteWorkspace &&
     ownsSession &&
     workspace &&
+    !workspaceActivationCompleted &&
     workspace.mode !== "tasks" &&
     conversationId
   ) {
     const activatedWorkspace = await chatApi.activateAgentTaskPipeline({
       conversationId,
       sessionId,
+      ...(runtimeOverride ? { runtimeOverride } : {}),
     });
     queryClient.setQueryData(
       agentWorkspaceKeys.workspace(conversationId),
@@ -90,7 +132,13 @@ export async function activateAgentPlanProposals({
     );
     void invalidateWorkspaceQueries(queryClient, conversationId);
     workspaceIsTasks = activatedWorkspace.mode === "tasks";
-  } else if (ownsSession && workspaceIsTasks && conversationId) {
+    if (workspaceIsTasks) onWorkspaceActivated?.();
+  } else if (
+    ownsSession &&
+    workspaceIsTasks &&
+    workspace?.mode === "tasks" &&
+    conversationId
+  ) {
     onConversationModeSwitched?.(conversationId, "tasks", workspace);
   }
 
@@ -98,11 +146,30 @@ export async function activateAgentPlanProposals({
     onFocusIdeationSessionForConversation?.(conversationId, sessionId);
   }
 
-  const sendResult = await chatApi.sendAgentMessage(
-    "ideation",
-    sessionId,
-    PLAN_TO_PROPOSALS_REQUEST,
-  );
+  let sendResult: SendAgentMessageResult;
+  try {
+    sendResult = await chatApi.sendAgentMessage(
+      "ideation",
+      sessionId,
+      PLAN_TO_PROPOSALS_REQUEST,
+      undefined,
+      undefined,
+      runtimeOverride ? { runtimeOverride } : undefined,
+    );
+  } catch (error) {
+    if (ownsSession && workspaceIsTasks && conversationId) {
+      await refreshTransitionedAgentWorkspace({
+        queryClient,
+        conversationId,
+        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+      });
+      const detail = error instanceof Error ? ` ${error.message}` : "";
+      throw new PlanContinuationCommittedError(
+        `Tasks mode is active, but proposal launch failed. Retry will only send the proposal request; it will not activate Tasks again.${detail}`,
+      );
+    }
+    throw error;
+  }
   pinIdeationConversation(queryClient, sessionId, sendResult.conversationId);
   return sendResult;
 }

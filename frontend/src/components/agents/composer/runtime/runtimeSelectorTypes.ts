@@ -61,3 +61,20 @@ export interface ComposerRuntimeCapabilityField {
   pending?: boolean;
   testId?: string;
 }
+
+export interface ComposerRuntimePersonaField {
+  value: string;
+  onValueChange: (value: string) => void | Promise<unknown>;
+  options: ComposerRuntimeOption[];
+  disabled?: boolean;
+  testId?: string;
+  footerAction?: ReactNode;
+}
+
+export interface ComposerRuntimeSpeedField {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: ComposerRuntimeOption[];
+  disabled?: boolean;
+  testId?: string;
+}

@@ -53,6 +53,46 @@ import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+const { approvedPlanRuntime } = vi.hoisted(() => ({
+  approvedPlanRuntime: {
+    provider: "claude",
+    model: "opus",
+    effort: "high",
+    serviceTier: "provider_default",
+    coordinationMode: "solo",
+    personaId: null,
+  } as const,
+}));
+
+vi.mock("./useApprovedPlanContinuation", () => ({
+  useApprovedPlanContinuation: () => ({
+    confirmImplementDirectly: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime).catch(() => undefined),
+    confirmCreateProposals: (
+      onConfirm: (runtime: typeof approvedPlanRuntime) => Promise<unknown>,
+    ) => void onConfirm(approvedPlanRuntime).catch(() => undefined),
+    confirmationDialogProps: {},
+    ConfirmationDialog: () => null,
+  }),
+}));
+
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    registry: {
+      claude: [
+        {
+          id: "opus",
+          label: "Opus",
+          menuLabel: "Opus",
+          defaultEffort: "high",
+          supportedEfforts: ["high"],
+        },
+      ],
+      codex: [],
+    },
+  }),
+}));
 const initialPlanStoreActions = {
   loadActivePlan: usePlanStore.getState().loadActivePlan,
   setActivePlan: usePlanStore.getState().setActivePlan,
@@ -287,11 +327,43 @@ vi.mock("@/api/chat", async (importOriginal) => {
 vi.mock("./useWorkspaceReviewActions", () => ({
   useWorkspaceReviewActions: ({
     onStartReview,
+    onStartFixer,
   }: {
     onStartReview: (input: { force: boolean }) => Promise<unknown>;
+    onStartFixer: (input: {
+      confirmation: {
+        targetScope: string;
+        diffFingerprint: string;
+        artifactId: string;
+        artifactVersion: number;
+        blockingFingerprint: string;
+      };
+      runtimeOverride: typeof approvedPlanRuntime;
+    }) => Promise<unknown>;
   }) => ({
     startReview: (force: boolean) => {
       void onStartReview({ force }).catch(() => undefined);
+    },
+    startFixer: (context: AgentWorkspaceReviewContext) => {
+      const { target, monitor } = context;
+      if (
+        !target ||
+        !monitor.reviewArtifactId ||
+        !monitor.reviewArtifactVersion ||
+        !monitor.reviewBlockingFingerprint
+      ) {
+        return;
+      }
+      void onStartFixer({
+        confirmation: {
+          targetScope: target.scope,
+          diffFingerprint: target.diffFingerprint,
+          artifactId: monitor.reviewArtifactId,
+          artifactVersion: monitor.reviewArtifactVersion,
+          blockingFingerprint: monitor.reviewBlockingFingerprint,
+        },
+        runtimeOverride: approvedPlanRuntime,
+      }).catch(() => undefined);
     },
     confirmationDialogProps: {},
     ConfirmationDialog: () => null,
@@ -1090,6 +1162,7 @@ function workspaceReviewContext(
     reviewArtifactVersion?: number | null;
     reviewConversationId?: string | null;
     reviewBlockingSummary?: string | null;
+    reviewBlockingFingerprint?: string | null;
     reviewFixerStatus?: string | null;
     reviewFixerRunId?: string | null;
     reviewFixerConversationId?: string | null;
@@ -1172,7 +1245,11 @@ function workspaceReviewContext(
       reviewGateBypassedArtifactVersion:
         overrides.reviewGateBypassedArtifactVersion ?? null,
       reviewBlockingSummary: overrides.reviewBlockingSummary ?? null,
-      reviewBlockingFingerprint: null,
+      reviewBlockingFingerprint:
+        overrides.reviewBlockingFingerprint ??
+        (overrides.reviewOutcome === "blocking"
+          ? "blocking-fingerprint-1"
+          : null),
       reviewFixerStatus: overrides.reviewFixerStatus ?? null,
       reviewFixerRunId: overrides.reviewFixerRunId ?? null,
       reviewFixerConversationId: overrides.reviewFixerConversationId ?? null,
@@ -4209,6 +4286,16 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(startWorkspaceReviewFixerMock).toHaveBeenCalledWith(
         "conversation-1",
+        {
+          confirmation: {
+            targetScope: "selected_source",
+            diffFingerprint: "fingerprint-351",
+            artifactId: "review-artifact-1",
+            artifactVersion: 2,
+            blockingFingerprint: "blocking-fingerprint-1",
+          },
+          runtimeOverride: approvedPlanRuntime,
+        },
       ),
     );
     await waitFor(() =>
@@ -6485,6 +6572,7 @@ describe("AgentsArtifactPane", () => {
       expect(activateAgentTaskPipelineMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         sessionId: "session-1",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     await waitFor(() =>
@@ -6492,6 +6580,9 @@ describe("AgentsArtifactPane", () => {
         "ideation",
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
+        undefined,
+        undefined,
+        { runtimeOverride: approvedPlanRuntime },
       ),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
@@ -6545,6 +6636,9 @@ describe("AgentsArtifactPane", () => {
         "ideation",
         "session-1",
         expect.stringContaining("Create implementation task proposals"),
+        undefined,
+        undefined,
+        undefined,
       ),
     );
   });
@@ -7060,9 +7154,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(
-      screen.queryByTestId("plan-lifecycle-banner"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toHaveTextContent(
+      "This approved plan is guiding the current workspace agent.",
+    );
     expect(
       screen.queryByTestId("restart-implementation-button"),
     ).not.toBeInTheDocument();
@@ -7806,10 +7900,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(banner).queryByRole("button", { name: /Create Proposals/i }),
     ).not.toBeInTheDocument();
-    expect(within(banner).queryByText(/Tasks is off/i)).not.toBeInTheDocument();
-    expect(
-      within(banner).getByText(/Choose the next step/i),
-    ).toBeInTheDocument();
+    expect(within(banner).getByText(/Tasks is off/i)).toBeInTheDocument();
     expect(getPlanComplexityAssessmentMock).not.toHaveBeenCalled();
   });
 
@@ -8064,6 +8155,7 @@ describe("AgentsArtifactPane", () => {
       expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
         mode: "edit",
+        runtimeOverride: approvedPlanRuntime,
       }),
     );
     await waitFor(() =>
@@ -8075,6 +8167,7 @@ describe("AgentsArtifactPane", () => {
         undefined,
         {
           conversationId: "conversation-1",
+          runtimeOverride: approvedPlanRuntime,
           suppressUserMessage: true,
         },
       ),
@@ -8684,9 +8777,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(
-      screen.queryByTestId("plan-lifecycle-banner"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -8761,9 +8852,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await screen.findByTestId("plan-display-chromeless");
-    expect(
-      screen.queryByTestId("plan-lifecycle-banner"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("plan-lifecycle-banner")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();

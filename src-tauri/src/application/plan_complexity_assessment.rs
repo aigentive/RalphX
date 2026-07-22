@@ -165,6 +165,7 @@ async fn run_plan_complexity_assessor(
             Some(project.id.as_str()),
             Some(std::path::Path::new(&project.working_directory)),
             RoutingRole::UtilityLightweight,
+            None,
             agent_names::AGENT_PLAN_COMPLEXITY_ASSESSOR,
             "plan complexity assessor",
             None,
