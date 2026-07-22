@@ -1211,8 +1211,8 @@ export function AgentPublishPanel({
             borderColor: "var(--border-subtle)",
           }}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+            <div className="min-w-0">
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">
                 {publishPresentation.title}
               </h2>
@@ -1220,7 +1220,7 @@ export function AgentPublishPanel({
                 {publishPresentation.summary}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="col-span-2 flex max-w-full flex-wrap items-center justify-start gap-2">
               {isRepairPending ? (
                 <Button
                   type="button"

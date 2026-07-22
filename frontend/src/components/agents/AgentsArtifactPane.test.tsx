@@ -3407,6 +3407,32 @@ describe("AgentsArtifactPane", () => {
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
+  it("does not re-open generic Publish when switching to its Review sub-tab", async () => {
+    const onTabChange = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onTabChange },
+    );
+
+    fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-review"), {
+      button: 0,
+    });
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onTabChange).not.toHaveBeenCalledWith("publish");
+  });
+
   it("focuses the workspace Review chat when the user opens the Review tab", async () => {
     const onFocusWorkspaceReview = vi.fn();
     getWorkspaceReviewContextMock.mockResolvedValue(
@@ -3432,6 +3458,36 @@ describe("AgentsArtifactPane", () => {
     fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-review"), {
       button: 0,
     });
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
+      "review-conversation-1",
+    );
+  });
+
+  it("focuses the reviewer child after a programmatic Review tab request hydrates", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        reviewConversationId: "review-conversation-1",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      conversation(),
+      {
+        onFocusWorkspaceReview,
+        publishSubTabRequest: {
+          conversationId: "conversation-1",
+          requestId: 1,
+          tab: "review",
+        },
+      },
+    );
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(onFocusWorkspaceReview).toHaveBeenCalledWith(

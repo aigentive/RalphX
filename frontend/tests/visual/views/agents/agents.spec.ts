@@ -2,6 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
 import { setupApp } from "../../../fixtures/setup.fixtures";
+import {
+  AgentsPublishPage,
+  type WorkspaceReviewVisualState,
+} from "../../../pages/views/agents-publish.page";
 import { AgentsRuntimePage } from "../../../pages/views/agents-runtime.page";
 import type { StateTransition } from "@/api/tasks";
 import type { ChatMessageResponse } from "@/api/chat";
@@ -1080,6 +1084,33 @@ async function expectAgentsTaskDetailOneColumn(page: Page, detailTestId: string)
   expect(horizontalOverflow).toBeLessThanOrEqual(2);
 }
 
+async function expectPublishVisualAtWidths(
+  page: Page,
+  publishPage: AgentsPublishPage,
+  snapshotName: string,
+) {
+  const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  await publishPage.expectNoPaneOverflow();
+  await expect(page).toHaveScreenshot(`${snapshotName}.png`, {
+    fullPage: false,
+    maxDiffPixelRatio: 0.01,
+  });
+
+  await page.setViewportSize({ width: 960, height: standardViewport.height });
+  await publishPage.expectNoPaneOverflow();
+  await expect(page).toHaveScreenshot(`${snapshotName}-constrained.png`, {
+    fullPage: false,
+    maxDiffPixelRatio: 0.01,
+  });
+  await page.setViewportSize(standardViewport);
+}
+
+const workspaceReviewVisualLabels: Record<WorkspaceReviewVisualState, string> = {
+  running: "Reviewing",
+  blocking: "Review blocking",
+  passed: "Review passed",
+};
+
 async function seedAgentsScenario(
   page: Page,
   options: { includeAutomation?: boolean } = {},
@@ -1430,13 +1461,13 @@ test.describe("Agents View", () => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
     await selectAgentConversation(page, editConversationId);
+    const publishPage = new AgentsPublishPage(page);
 
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
     await expect(page.getByTestId("integrated-chat-messages")).toBeVisible();
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
     await seedPublishHistory(page, editConversationId);
-    await page.getByTestId("agents-publish-workspace").click();
-    await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
+    await publishPage.openFromHeader();
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
 
     await hydratePublishHistoryCache(page, editConversationId);
@@ -1449,11 +1480,24 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("pr-status-strip")).toBeVisible();
     await expect(page.getByText("1 passed")).toBeVisible();
     await expect(page.getByText("1 pending")).toBeVisible();
+    await publishPage.expectPrimaryActionContained("agents-publish-confirm");
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+
+    const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+    await page.setViewportSize({ width: 960, height: standardViewport.height });
+    await publishPage.expectNoPaneOverflow();
+    await expect(page).toHaveScreenshot(
+      "agents-edit-publish-pane-constrained.png",
+      {
+        fullPage: false,
+        maxDiffPixelRatio: 0.01,
+      },
+    );
+    await page.setViewportSize(standardViewport);
 
     await page.getByTestId("agents-artifact-tab-pr").click();
     const prContent = page.getByTestId("agents-artifact-content-pr");
@@ -1498,6 +1542,64 @@ test.describe("Agents View", () => {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+  });
+
+  test("dirty Changes and Workspace Review states match the visual contract", async ({
+    page,
+  }) => {
+    await setupAgentsView(page);
+    await seedAgentsScenario(page);
+    await selectAgentConversation(page, editConversationId);
+    const publishPage = new AgentsPublishPage(page);
+
+    await publishPage.openFromHeader();
+    await publishPage.selectChanges();
+    await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
+    await publishPage.expectPrimaryActionContained("agents-publish-confirm");
+    await expectPublishVisualAtWidths(
+      page,
+      publishPage,
+      "agents-edit-publish-dirty-changes",
+    );
+
+    for (const reviewState of [
+      "running",
+      "blocking",
+      "passed",
+    ] as const) {
+      await publishPage.seedWorkspaceReviewState(
+        editConversationId,
+        reviewState,
+      );
+      await publishPage.selectReview();
+      await expect(
+        publishPage.reviewContent.getByText(
+          workspaceReviewVisualLabels[reviewState],
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await publishPage.expectPrimaryActionContained(
+        reviewState === "running"
+          ? "agents-publish-reviewing"
+          : reviewState === "blocking"
+            ? "agents-publish-review-required"
+            : "agents-publish-confirm",
+      );
+      if (reviewState !== "running") {
+        await expect(
+          publishPage.reviewContent.getByRole("heading", {
+            name: reviewState === "blocking"
+              ? "Blocking findings"
+              : "Workspace Review",
+          }),
+        ).toBeVisible();
+      }
+      await expectPublishVisualAtWidths(
+        page,
+        publishPage,
+        `agents-edit-publish-review-${reviewState}`,
+      );
+    }
   });
 
   test("commit publish pane retains its direct git auth repair actions", async ({ page }) => {

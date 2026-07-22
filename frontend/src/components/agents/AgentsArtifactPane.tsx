@@ -1787,8 +1787,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const handleOpenReview = useCallback(() => {
     selectPublishSubTab("review");
     setPendingReviewFocusConversationId(conversationId);
-    onTabChange("publish");
-  }, [conversationId, onTabChange, selectPublishSubTab]);
+    if (activeTab !== "publish") {
+      onTabChange("publish");
+    }
+  }, [activeTab, conversationId, onTabChange, selectPublishSubTab]);
   const handlePublishSubTabChange = useCallback(
     (tab: AgentPublishSubTab) => {
       if (tab === "review") {
