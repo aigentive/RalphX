@@ -4,6 +4,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
@@ -934,9 +935,6 @@ fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &Chat
 fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
     let key = conversation_id.as_str();
     let in_flight = IN_FLIGHT_RECOVERIES.get_or_init(DashMap::new);
-    if in_flight.contains_key(&key) {
-        return false;
-    }
     if !force {
         let ttl = recovery_cache_ttl();
         if !ttl.is_zero() {
@@ -947,8 +945,14 @@ fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
             }
         }
     }
-    in_flight.insert(key, ());
-    true
+
+    match in_flight.entry(key) {
+        Entry::Occupied(_) => false,
+        Entry::Vacant(entry) => {
+            entry.insert(());
+            true
+        }
+    }
 }
 
 fn recovery_cache_ttl() -> Duration {

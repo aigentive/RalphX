@@ -7880,11 +7880,11 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
-    fn old_pid_zero_registry_entry_unblocks_send_gate() {
+    fn old_pid_zero_registry_entry_is_not_cleaned_by_send_gate() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
-        assert!(registry_entry_blocks_send_but_is_stale(
+        assert!(!registry_entry_blocks_send_but_is_stale(
             &info,
             now,
             RegistryCleanupCaller::SendGate,
