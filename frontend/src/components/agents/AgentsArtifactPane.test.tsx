@@ -3181,6 +3181,67 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("loads Commit & Publish activity from the focused run instead of the setup conversation", async () => {
+    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
+      conversationId === "conversation-run-7"
+        ? workspace({
+            conversationId,
+            mode: "edit",
+          })
+        : null,
+    );
+    getAgentConversationRuntimeStatusesMock.mockImplementation(
+      async (conversationIds: string[]) => ({
+        [conversationIds[0] ?? "missing"]: {
+          conversationId: conversationIds[0] ?? "missing",
+          isRunning: true,
+          agentStatus: "generating",
+          primarySource: "workspace",
+          summaryLabel: "Agent running",
+          items: [],
+        },
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        conversationId: "conversation-setup",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-7",
+          conversationId: "conversation-run-7",
+        },
+      },
+    );
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-run-7"),
+    );
+    expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledWith(
+      "conversation-run-7",
+    );
+    expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+      "conversation-run-7",
+    ]);
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalledWith(
+      "conversation-setup",
+    );
+  });
+
   it("fails closed when a focused automation run has no workspace", async () => {
     getConversationWorkspaceMock.mockResolvedValue(null);
 

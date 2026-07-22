@@ -112,7 +112,6 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
-  AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
@@ -130,6 +129,7 @@ import {
   agentWorkspaceOperationToastId,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
+import { useAgentPublishWorkspaceActivity } from "./useAgentPublishWorkspaceActivity";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -385,30 +385,23 @@ export function AgentPublishPanel({
   const inlineDiffsCandidate = canInspectAgentWorkspacePublishDiffs(workspace, {
     includeTerminalPublished: true,
   });
-  const reviewQuery = useQuery({
-    queryKey: agentWorkspaceKeys.review(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+  const publishWorkspaceActivity = useAgentPublishWorkspaceActivity({
+    conversationId,
     // Pane-wide: feeds the no-changes publish guard, header presentation, and
     // Changes badge even while the Review subtab is the first to mount.
-    enabled:
+    reviewEnabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
       (reviewOpen || inlineDiffsCandidate),
-    staleTime: 2_000,
-  });
-  const changeSummaryQuery = useQuery({
-    queryKey: agentWorkspaceKeys.changeSummary(conversationId),
-    queryFn: () =>
-      diffApi.getAgentConversationWorkspaceChangeSummary(conversationId!),
-    enabled:
+    liveRefreshEnabled:
       canHydratePublishFacts &&
       !!conversationId &&
-      inlineDiffsCandidate &&
       !isRepairPending &&
+      inlineDiffsCandidate &&
       !terminalPublicationStatus,
-    staleTime: AGENT_WORKSPACE_STALE_MS,
   });
+  const { changeSummaryQuery, reviewQuery } = publishWorkspaceActivity;
   const publicationEventsQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
     queryFn: () =>
