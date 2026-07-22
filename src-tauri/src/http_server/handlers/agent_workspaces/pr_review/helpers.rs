@@ -118,6 +118,7 @@ pub(in crate::http_server::handlers::agent_workspaces) async fn reconcile_termin
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
         Some(state.notification_service()),
+        Arc::clone(&state.task_outcome_repo),
         &workspace.conversation_id,
         &project,
         pr_number,

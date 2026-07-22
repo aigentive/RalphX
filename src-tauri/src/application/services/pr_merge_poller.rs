@@ -17,8 +17,8 @@ use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
-    settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
-    TerminalAgentWorkspaceCause,
+    settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr_with_observation,
+    TerminalAgentWorkspaceCause, TerminalPrObservation,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
@@ -1318,6 +1318,7 @@ async fn terminalize_polled_agent_workspace_with_notifications(
                 Some(Arc::clone(plan_branch_repo)),
                 Some(Arc::clone(chat_service)),
                 notification_service.cloned(),
+                Arc::clone(task_outcome_repo),
                 conversation_id,
                 project,
                 pr_number,
@@ -1379,11 +1380,19 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     }
 
     loop {
-        let terminalized = terminalize_agent_workspace_after_pr(
+        let observation = workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|workspace| TerminalPrObservation::from_persisted_workspace(&workspace));
+        let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(workspace_repo),
             Arc::clone(agent_run_repo),
             Some(Arc::clone(plan_branch_repo)),
             Some(Arc::clone(chat_service)),
+            Some(Arc::clone(task_outcome_repo)),
+            observation,
             conversation_id,
             project,
             cause,

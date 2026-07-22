@@ -21,8 +21,9 @@ use crate::domain::entities::{
     ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSessionId,
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
 };
+use crate::domain::repositories::TaskOutcomeListOptions;
 use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::RunningAgentKey;
+use crate::domain::services::{RunningAgentKey, AGENT_WORKSPACE_PR_OUTCOME_SOURCE};
 use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -510,6 +511,25 @@ async fn archive_skips_remote_close_for_terminal_workspace_pr() {
         .expect("archive should succeed");
 
     assert_eq!(github.state().close_pr_calls, 0);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("terminal archive outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].source_ref_id, "43:terminal");
 }
 
 #[tokio::test]
@@ -770,6 +790,18 @@ async fn archive_without_pr_close_request_preserves_open_workspace_pr() {
         .unwrap();
     assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+    assert!(state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("open archive outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]

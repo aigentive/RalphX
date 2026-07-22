@@ -162,7 +162,12 @@ pub use skill_usage_event_repository::{SkillUsageEventRepository, SkillUsageList
 pub use status_transition::StatusTransition;
 pub use task_dependency_repository::TaskDependencyRepository;
 pub use task_outcome_repository::{
-    TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    canonical_terminal_pr_source_ref_id, resolve_task_outcome_upsert,
+    terminal_pr_status_for_class, ResolvedTaskOutcomeUpsert, TaskOutcomeListOptions,
+    TaskOutcomeRepository, UpsertTaskOutcomeInput, AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
+    TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PR_FAILED_CLASS,
+    WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
+    WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
 };
 pub use task_proposal_repository::TaskProposalRepository;
 pub use task_qa_repository::TaskQARepository;

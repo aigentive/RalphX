@@ -2,8 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    record_terminal_pr_observation_best_effort,
+    terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
     TerminalAgentWorkspaceOutcome, TerminalCleanupClaimState, TerminalLocalCleanupResult,
+    TerminalPrObservation,
 };
 use crate::application::chat_service::ChatService;
 use crate::application::task_cleanup_service::{StopMode, TaskCleanupService};
@@ -99,11 +101,21 @@ pub async fn archive_agent_conversation_for_state(
         )
     })?;
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    let outcome = terminalize_agent_workspace_after_pr(
+    let persisted_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let observation = persisted_workspace
+        .as_ref()
+        .and_then(TerminalPrObservation::from_persisted_workspace);
+    let outcome = terminalize_agent_workspace_after_pr_with_observation(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
+        Some(Arc::clone(&state.task_outcome_repo)),
+        observation,
         conversation_id,
         &project,
         TerminalAgentWorkspaceCause::ArchivedConversation,
@@ -161,11 +173,17 @@ pub async fn close_agent_workspace_pr_for_state(
     .await?;
 
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    let outcome = terminalize_agent_workspace_after_pr(
+    let outcome = terminalize_agent_workspace_after_pr_with_observation(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
+        Some(Arc::clone(&state.task_outcome_repo)),
+        Some(TerminalPrObservation::new(
+            target.number,
+            "closed",
+            "Pull request closed without merging",
+        )),
         conversation_id,
         &project,
         TerminalAgentWorkspaceCause::ClosedPr,
@@ -222,17 +240,48 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
                         number, error
                     ))
                 })?;
-            if remote_status == RemotePrStatus::Open {
-                github_svc
-                    .close_pr(&project_path, number)
-                    .await
-                    .map_err(|error| {
-                        crate::error::AppError::Infrastructure(format!(
-                            "Restart could not close existing PR {}: {}",
-                            number, error
-                        ))
-                    })?;
-            }
+            let status = match remote_status {
+                RemotePrStatus::Open => {
+                    github_svc
+                        .close_pr(&project_path, number)
+                        .await
+                        .map_err(|error| {
+                            crate::error::AppError::Infrastructure(format!(
+                                "Restart could not close existing PR {}: {}",
+                                number, error
+                            ))
+                        })?;
+                    "closed"
+                }
+                RemotePrStatus::Merged { .. } => "merged",
+                RemotePrStatus::Closed => "closed",
+            };
+            let summary = if status == "merged" {
+                "Pull request already merged before restart"
+            } else {
+                "Pull request closed before restart"
+            };
+            let event = crate::domain::entities::AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id.clone(),
+                format!("pr_{status}"),
+                "succeeded",
+                summary,
+                None,
+            );
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(event.clone())
+                .await?;
+            record_terminal_pr_observation_best_effort(
+                &state.agent_conversation_workspace_repo,
+                Some(&state.task_outcome_repo),
+                &workspace.conversation_id,
+                Some(
+                    &TerminalPrObservation::new(number, status, summary)
+                        .with_publication_event(event),
+                ),
+            )
+            .await;
         }
     }
     Ok(())

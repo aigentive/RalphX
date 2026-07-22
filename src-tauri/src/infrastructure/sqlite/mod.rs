@@ -78,6 +78,11 @@ pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
 pub mod sqlite_learned_skill_repos;
+#[cfg(test)]
+mod sqlite_learned_skill_repos_tests;
+pub mod sqlite_task_outcome_repository;
+#[cfg(test)]
+mod sqlite_task_outcome_repository_tests;
 pub mod sqlite_linear_integration_settings_repo;
 pub mod sqlite_linear_webhook_store;
 pub mod sqlite_memory_archive_job_repository;
@@ -195,8 +200,9 @@ pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsReposito
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
 pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
 pub use sqlite_learned_skill_repos::{
-    SqliteProjectSkillRepository, SqliteSkillUsageEventRepository, SqliteTaskOutcomeRepository,
+    SqliteProjectSkillRepository, SqliteSkillUsageEventRepository,
 };
+pub use sqlite_task_outcome_repository::SqliteTaskOutcomeRepository;
 pub use sqlite_linear_integration_settings_repo::SqliteLinearIntegrationSettingsRepository;
 pub use sqlite_linear_webhook_store::SqliteLinearWebhookStore;
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;

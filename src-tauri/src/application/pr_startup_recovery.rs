@@ -20,7 +20,10 @@ use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_linked_plan_branch_agent_worktree_path,
     resolve_valid_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_terminal_cleanup::settle_review_pr_terminal_observation;
+use crate::application::agent_workspace_terminal_cleanup::{
+    cleanup_terminal_agent_workspace_after_pr_with_observation,
+    settle_review_pr_terminal_observation, TerminalPrObservation,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_merged_plan_branch_local_artifacts_with_known_local_branches,
@@ -1302,6 +1305,7 @@ async fn recover_one_agent_workspace_pr_poller(
             Some(Arc::clone(&plan_branch_repo)),
             Some(Arc::clone(&chat_service)),
             notification_service,
+            Arc::clone(&task_outcome_repo),
             &workspace.conversation_id,
             &project,
             pr_number,
@@ -1433,6 +1437,7 @@ async fn recover_one_agent_workspace_pr_poller(
                     Some(Arc::clone(&plan_branch_repo)),
                     Some(Arc::clone(&chat_service)),
                     notification_service,
+                    Arc::clone(&task_outcome_repo),
                     &workspace.conversation_id,
                     &project,
                     pr_number,
@@ -1756,6 +1761,28 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
+    cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_outcomes(
+        workspace_repo,
+        plan_branch_repo,
+        project_repo,
+        None,
+        _github_service,
+        blocked_git_project_ids,
+        running_agent_registry,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_outcomes(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+    _github_service: Option<Arc<dyn GithubServiceTrait>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
     let started_at = Instant::now();
     let mut stats = TerminalCleanupStats::default();
     let projects = match project_repo.get_all().await {
@@ -1815,14 +1842,26 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                 ),
             }
 
-            let outcome =
+            let outcome = if let Some(task_outcome_repo) = task_outcome_repo.as_ref() {
+                let observation = TerminalPrObservation::from_persisted_workspace(&workspace);
+                cleanup_terminal_agent_workspace_after_pr_with_observation(
+                    Arc::clone(&workspace_repo),
+                    Some(Arc::clone(&plan_branch_repo)),
+                    Arc::clone(task_outcome_repo),
+                    observation,
+                    &workspace.conversation_id,
+                    &project,
+                )
+                .await
+            } else {
                 crate::application::agent_workspace_terminal_cleanup::cleanup_terminal_agent_workspace_after_pr(
                     Arc::clone(&workspace_repo),
                     Some(Arc::clone(&plan_branch_repo)),
                     &workspace.conversation_id,
                     &project,
                 )
-                .await;
+                .await
+            };
             stats.cleanup_markers_written += usize::from(matches!(
                 outcome.cleanup_claim,
                 crate::application::agent_workspace_terminal_cleanup::TerminalCleanupClaimState::Claimed
@@ -1847,22 +1886,43 @@ pub async fn run_periodic_terminal_pr_local_cleanup(
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
-    let Some(interval) = terminal_pr_local_cleanup_interval() else {
-        tracing::info!("Terminal PR local cleanup: periodic cleanup disabled by runtime config");
-        return;
-    };
-
-    run_periodic_terminal_pr_local_cleanup_with_interval(
-        interval,
+    run_periodic_terminal_pr_local_cleanup_with_outcomes(
         plan_branch_repo,
         workspace_repo,
         project_repo,
+        None,
         github_service,
         running_agent_registry,
     )
     .await;
 }
 
+pub async fn run_periodic_terminal_pr_local_cleanup_with_outcomes(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    let Some(interval) = terminal_pr_local_cleanup_interval() else {
+        tracing::info!("Terminal PR local cleanup: periodic cleanup disabled by runtime config");
+        return;
+    };
+
+    run_periodic_terminal_pr_local_cleanup_with_interval_and_outcomes(
+        interval,
+        plan_branch_repo,
+        workspace_repo,
+        project_repo,
+        task_outcome_repo,
+        github_service,
+        running_agent_registry,
+    )
+    .await;
+}
+
+#[cfg(test)]
 async fn run_periodic_terminal_pr_local_cleanup_with_interval(
     interval: Duration,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
@@ -1871,12 +1931,35 @@ async fn run_periodic_terminal_pr_local_cleanup_with_interval(
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
+    run_periodic_terminal_pr_local_cleanup_with_interval_and_outcomes(
+        interval,
+        plan_branch_repo,
+        workspace_repo,
+        project_repo,
+        None,
+        github_service,
+        running_agent_registry,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_periodic_terminal_pr_local_cleanup_with_interval_and_outcomes(
+    interval: Duration,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
     loop {
         tokio::time::sleep(interval).await;
-        run_terminal_pr_local_cleanup_once(
+        run_terminal_pr_local_cleanup_once_with_outcomes(
             Arc::clone(&plan_branch_repo),
             Arc::clone(&workspace_repo),
             Arc::clone(&project_repo),
+            task_outcome_repo.as_ref().map(Arc::clone),
             github_service.as_ref().map(Arc::clone),
             Arc::clone(&running_agent_registry),
         )
@@ -1884,10 +1967,30 @@ async fn run_periodic_terminal_pr_local_cleanup_with_interval(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn run_terminal_pr_local_cleanup_once(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    run_terminal_pr_local_cleanup_once_with_outcomes(
+        plan_branch_repo,
+        workspace_repo,
+        project_repo,
+        None,
+        github_service,
+        running_agent_registry,
+    )
+    .await;
+}
+
+pub(crate) async fn run_terminal_pr_local_cleanup_once_with_outcomes(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1901,10 +2004,11 @@ pub(crate) async fn run_terminal_pr_local_cleanup_once(
             Arc::clone(&running_agent_registry),
         )
         .await;
-        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_outcomes(
             workspace_repo,
             plan_branch_repo,
             project_repo,
+            task_outcome_repo,
             github_service,
             unblocked_git_projects,
             running_agent_registry,
