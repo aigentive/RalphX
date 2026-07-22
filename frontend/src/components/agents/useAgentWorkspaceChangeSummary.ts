@@ -40,7 +40,13 @@ export interface AgentWorkspaceChangeSummaryState {
   unstagedCount: number | undefined;
   totalAdditions: number;
   totalDeletions: number;
-  repairChangeSignature?: string | undefined;
+  worktreeChangeSignature?: string | undefined;
+}
+
+function liveBucketSignature(
+  bucket: AgentWorkspaceChangeBucketSummary,
+): string {
+  return `live:${bucket.fileCount}:${bucket.additions}:${bucket.deletions}`;
 }
 
 export function mapReviewCommitsToDiffViewerCommits(
@@ -89,6 +95,10 @@ export function useAgentWorkspaceChangeSummary({
     () => (repairMode ? buildRepairChangeSignature(liveSummary) : undefined),
     [liveSummary, repairMode],
   );
+  const stagedChangeSignature = repairChangeSignature ??
+    (liveSummary ? liveBucketSignature(liveSummary.staged) : undefined);
+  const unstagedChangeSignature = repairChangeSignature ??
+    (liveSummary ? liveBucketSignature(liveSummary.unstaged) : undefined);
   const liveStagedCount = liveSummary?.staged.fileCount;
   const liveUnstagedCount = liveSummary?.unstaged.fileCount;
   const liveConflictedCount = liveSummary?.conflicted?.fileCount;
@@ -122,7 +132,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-staged-files" : "staged-files",
-      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
+      ...(stagedChangeSignature !== undefined ? [stagedChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -144,7 +154,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-unstaged-files" : "unstaged-files",
-      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
+      ...(unstagedChangeSignature !== undefined ? [unstagedChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -212,6 +222,12 @@ export function useAgentWorkspaceChangeSummary({
   const isUnstagedMode = effectiveMode === "unstaged";
   const isConflictedMode = effectiveMode === "conflicted";
   const isCumulativeMode = effectiveMode === "cumulative";
+  const worktreeChangeSignature = repairChangeSignature ??
+    (isStagedMode
+      ? stagedChangeSignature
+      : isUnstagedMode
+        ? unstagedChangeSignature
+        : undefined);
   const isCommitMode =
     effectiveMode !== "uncommitted" &&
     !isConflictedMode &&
@@ -369,6 +385,6 @@ export function useAgentWorkspaceChangeSummary({
     unstagedCount,
     totalAdditions,
     totalDeletions,
-    repairChangeSignature,
+    worktreeChangeSignature,
   };
 }
