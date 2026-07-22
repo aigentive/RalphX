@@ -1471,7 +1471,6 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
     )));
     let github_trait: Arc<dyn GithubServiceTrait> = github;
     let execution_state = Arc::new(ExecutionState::new());
-    execution_state.pause();
     let service = build_test_service_with_execution_state(&app_state, execution_state)
         .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
         .with_agent_conversation_workspace_repo(Arc::clone(
