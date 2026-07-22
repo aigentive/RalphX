@@ -1476,6 +1476,59 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn compare_and_set_repair_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
+        transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_push_status = expected.publication_push_status.clone();
+        let expected_supervision_status = expected.pr_supervision_status.clone();
+        let expected_supervision_updated_at = expected
+            .pr_supervision_updated_at
+            .map(|value| value.to_rfc3339());
+        let push_status = transition.publication_push_status.clone();
+        let supervision_status = transition.pr_supervision_status.clone();
+        let supervision_summary = transition.pr_supervision_summary.clone();
+        let supervision_updated_at = transition.pr_supervision_updated_at.to_rfc3339();
+        let auto_merge_current = transition.pr_auto_merge_current;
+        let base_commit = transition.base_commit.clone();
+        self.db
+            .run(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_push_status = ?2,
+                         pr_supervision_status = ?3,
+                         pr_supervision_summary = ?4,
+                         pr_supervision_updated_at = ?5,
+                         pr_auto_merge_current = CASE
+                             WHEN ?6 IS NULL THEN pr_auto_merge_current ELSE ?6
+                         END,
+                         base_commit = COALESCE(?7, base_commit),
+                         updated_at = ?5
+                     WHERE conversation_id = ?1
+                       AND publication_push_status IS ?8
+                       AND pr_supervision_status IS ?9
+                       AND pr_supervision_updated_at IS ?10",
+                    rusqlite::params![
+                        conversation_id,
+                        push_status,
+                        supervision_status,
+                        supervision_summary,
+                        supervision_updated_at,
+                        auto_merge_current,
+                        base_commit,
+                        expected_push_status,
+                        expected_supervision_status,
+                        expected_supervision_updated_at,
+                    ],
+                )?;
+                Ok(rows == 1)
+            })
+            .await
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,

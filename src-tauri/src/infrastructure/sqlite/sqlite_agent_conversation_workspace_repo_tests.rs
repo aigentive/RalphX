@@ -16,7 +16,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition,
 };
 use crate::testing::SqliteTestDb;
 
@@ -322,6 +323,72 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn repair_state_cas_is_null_safe_atomic_and_preserves_unrelated_fields() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some("old blocker".to_string());
+    workspace.pr_supervision_updated_at = None;
+    workspace.publication_pr_url = Some("https://example.test/pr/9".to_string());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+
+    let claimed_at = chrono::Utc::now();
+    assert!(repo
+        .compare_and_set_repair_state(
+            &conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+            &AgentWorkspaceRepairStateTransition {
+                publication_push_status: Some("needs_agent".to_string()),
+                pr_supervision_status: Some("fixing".to_string()),
+                pr_supervision_summary: Some("Repair is running.".to_string()),
+                pr_supervision_updated_at: claimed_at,
+                pr_auto_merge_current: Some(false),
+                base_commit: Some("base-repaired".to_string()),
+            },
+        )
+        .await
+        .unwrap());
+    let claimed = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(claimed.pr_auto_merge_current, Some(false));
+    assert_eq!(claimed.base_commit.as_deref(), Some("base-repaired"));
+    assert_eq!(claimed.publication_pr_url, workspace.publication_pr_url);
+
+    let stale_guard = AgentWorkspaceRepairStateGuard {
+        publication_push_status: Some("needs_agent".to_string()),
+        pr_supervision_status: Some("fixing".to_string()),
+        pr_supervision_updated_at: None,
+    };
+    assert!(!repo
+        .compare_and_set_repair_state(
+            &conversation_id,
+            &stale_guard,
+            &AgentWorkspaceRepairStateTransition {
+                publication_push_status: Some("failed".to_string()),
+                pr_supervision_status: Some("blocked".to_string()),
+                pr_supervision_summary: Some("stale failure".to_string()),
+                pr_supervision_updated_at: claimed_at + chrono::Duration::seconds(1),
+                pr_auto_merge_current: Some(true),
+                base_commit: Some("stale-base".to_string()),
+            },
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        claimed
+    );
 }
 
 #[tokio::test]

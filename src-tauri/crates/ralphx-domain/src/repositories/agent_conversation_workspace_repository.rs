@@ -43,6 +43,33 @@ pub struct AgentWorkspacePrReviewStateTransition {
     pub action: Option<AgentWorkspacePrReviewAction>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateGuard {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_updated_at: Option<DateTime<Utc>>,
+}
+
+impl AgentWorkspaceRepairStateGuard {
+    pub fn from_workspace(workspace: &AgentConversationWorkspace) -> Self {
+        Self {
+            publication_push_status: workspace.publication_push_status.clone(),
+            pr_supervision_status: workspace.pr_supervision_status.clone(),
+            pr_supervision_updated_at: workspace.pr_supervision_updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceRepairStateTransition {
+    pub publication_push_status: Option<String>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_summary: Option<String>,
+    pub pr_supervision_updated_at: DateTime<Utc>,
+    pub pr_auto_merge_current: Option<bool>,
+    pub base_commit: Option<String>,
+}
+
 #[async_trait]
 pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn create_or_update(
@@ -271,6 +298,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()>;
+
+    async fn compare_and_set_repair_state(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
 
     async fn update_pr_supervision_preferences(
         &self,
