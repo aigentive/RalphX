@@ -1510,7 +1510,6 @@ async fn queue_processing_stops_before_launch_when_run_persistence_fails() {
             Some(app_handle),
             None,
             None,
-            false,
             tokio_util::sync::CancellationToken::new(),
             None,
             None,
