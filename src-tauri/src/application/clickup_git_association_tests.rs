@@ -503,7 +503,7 @@ async fn pr_reconciliation_fails_closed_for_ambiguous_validated_tasks() {
         ClickUpPrAssociationInput {
             conversation_id: "conversation-ambiguous".to_string(),
             project_id: "project-1".to_string(),
-            evidence: evidence("feature/DEV-42", "Also OPS-7", None, &[]),
+            evidence: evidence("feature/DEV-42", "No title ticket", None, &["OPS-7 follow-up"]),
             pr_number: 52,
             pr_url: None,
             pr_status: "open".to_string(),
@@ -538,7 +538,7 @@ async fn pr_reconciliation_persists_link_and_sync_record_for_single_validated_ta
             conversation_id: "conversation-linked".to_string(),
             project_id: "project-1".to_string(),
             evidence: evidence(
-                "feature/no-branch-ticket",
+                "feature/DEV-42-fix",
                 "No title ticket",
                 Some("Body links DEV-42 for context"),
                 &[],
@@ -571,11 +571,130 @@ async fn pr_reconciliation_persists_link_and_sync_record_for_single_validated_ta
         .metadata_json
         .as_deref()
         .unwrap()
-        .contains("\"source\":\"pr_body\""));
+        .contains("\"source\":\"branch\""));
 
     let sync_records = links.list_sync_records_for_link(&link_id).await.unwrap();
     assert_eq!(sync_records.len(), 1);
     assert_eq!(sync_records[0].sync_kind, "clickup_git_association");
     assert_eq!(sync_records[0].local_sha.as_deref(), Some("abc123"));
     assert_eq!(sync_records[0].local_state.as_deref(), Some("merged"));
+}
+
+// Regression: a ticket token appearing only in the PR body (e.g. a
+// documentation example like `@clickup:DEV-42`) must not create a
+// ticket↔conversation link, even when the referenced task exists.
+#[tokio::test]
+async fn pr_reconciliation_does_not_link_from_body_only_ticket_mentions() {
+    let clickup = static_clickup_service(vec![clickup_task("8689abc", "DEV-42")]).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-body-only".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence(
+                "ralphx/ralphx/agent-1234abcd",
+                "No title ticket",
+                Some("Docs example: use @clickup:DEV-42 to reference a ticket"),
+                &[],
+            ),
+            pr_number: 60,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(outcome, ClickUpPrAssociationOutcome::NoValidatedCandidate);
+    assert!(links
+        .list_ticket_links_for_conversation("conversation-body-only")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+// Regression: a ticket prefix appearing only in the PR title must not create
+// or re-validate a link. RalphX's own title normalizer writes that prefix, so
+// accepting it as evidence lets the normalizer's output validate the very link
+// that produced it (self-reinforcing contamination loop).
+#[tokio::test]
+async fn pr_reconciliation_does_not_link_from_title_only_ticket_prefix() {
+    let clickup = static_clickup_service(vec![clickup_task("8689abc", "DEV-42")]).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-title-only".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence(
+                "ralphx/ralphx/agent-1234abcd",
+                "DEV-42: Normalizer-written title",
+                None,
+                &[],
+            ),
+            pr_number: 61,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(outcome, ClickUpPrAssociationOutcome::NoValidatedCandidate);
+    assert!(links
+        .list_ticket_links_for_conversation("conversation-title-only")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+// Branch-authored commit subjects remain valid link evidence.
+#[tokio::test]
+async fn pr_reconciliation_links_from_commit_subject_evidence() {
+    let clickup = static_clickup_service(vec![clickup_task("8689abc", "DEV-42")]).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-commit-subject".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence(
+                "ralphx/ralphx/agent-1234abcd",
+                "No title ticket",
+                None,
+                &["DEV-42: implement the fix"],
+            ),
+            pr_number: 62,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    let ClickUpPrAssociationOutcome::Linked { task_id, link_id } = outcome else {
+        panic!("expected link outcome");
+    };
+    assert_eq!(task_id, "8689abc");
+    let ticket_links = links
+        .list_ticket_links_for_conversation("conversation-commit-subject")
+        .await
+        .unwrap();
+    assert_eq!(ticket_links.len(), 1);
+    assert_eq!(ticket_links[0].id, link_id);
+    assert!(ticket_links[0]
+        .metadata_json
+        .as_deref()
+        .unwrap()
+        .contains("\"source\":\"commit_subject\""));
 }
