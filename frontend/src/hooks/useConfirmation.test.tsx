@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -93,6 +93,53 @@ function RecoveringConfirmationHarness({
         }}
       >
         Open recoverable confirmation
+      </button>
+      <ConfirmationDialog {...confirmationDialogProps} />
+    </>
+  );
+}
+
+function SupersedingConfirmationHarness({
+  firstAction,
+  secondAction,
+  onFirstResult,
+  onSecondResult,
+}: {
+  firstAction: () => Promise<void>;
+  secondAction: () => Promise<void>;
+  onFirstResult: (result: boolean) => void;
+  onSecondResult: (result: boolean) => void;
+}) {
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void confirm({
+            title: "First confirmation",
+            description: "The first action is still running.",
+            confirmText: "Confirm first",
+            onConfirm: firstAction,
+          }).then(onFirstResult);
+        }}
+      >
+        Open first
+      </button>
+      <button
+        type="button"
+        data-testid="open-second-confirmation"
+        onClick={() => {
+          void confirm({
+            title: "Second confirmation",
+            description: "This request supersedes the first dialog.",
+            confirmText: "Confirm second",
+            onConfirm: secondAction,
+          }).then(onSecondResult);
+        }}
+      >
+        Open second
       </button>
       <ConfirmationDialog {...confirmationDialogProps} />
     </>
@@ -272,5 +319,50 @@ describe("useConfirmation", () => {
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps a newer dialog isolated from a superseded submission", async () => {
+    let finishFirst!: () => void;
+    const firstAction = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        }),
+    );
+    const secondAction = vi.fn().mockResolvedValue(undefined);
+    const onFirstResult = vi.fn();
+    const onSecondResult = vi.fn();
+    const user = userEvent.setup();
+
+    render(
+      <SupersedingConfirmationHarness
+        firstAction={firstAction}
+        secondAction={secondAction}
+        onFirstResult={onFirstResult}
+        onSecondResult={onSecondResult}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open first" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Confirm first",
+      }),
+    );
+    fireEvent.click(screen.getByTestId("open-second-confirmation"));
+
+    await waitFor(() => expect(onFirstResult).toHaveBeenCalledWith(false));
+    const secondDialog = await screen.findByRole("alertdialog");
+    expect(within(secondDialog).getByText("Second confirmation")).toBeInTheDocument();
+
+    finishFirst();
+    await Promise.resolve();
+    expect(screen.getByRole("alertdialog")).toBe(secondDialog);
+    expect(onSecondResult).not.toHaveBeenCalled();
+
+    await user.click(
+      within(secondDialog).getByRole("button", { name: "Confirm second" }),
+    );
+    await waitFor(() => expect(onSecondResult).toHaveBeenCalledWith(true));
   });
 });

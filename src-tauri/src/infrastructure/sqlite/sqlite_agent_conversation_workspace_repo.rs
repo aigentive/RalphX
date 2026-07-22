@@ -3097,6 +3097,54 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         self.get_workspace_review_monitor(&fetch_id).await
     }
 
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: Option<&str>,
+        error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let fetch_id = *conversation_id;
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_attempt_id = expected_attempt_id.map(str::to_string);
+        let error = error.to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        let changed = self
+            .db
+            .run(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET review_fixer_status = 'failed',
+                         review_fixer_run_id = NULL,
+                         review_fixer_conversation_id = NULL,
+                         last_error = ?3,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1
+                       AND ((?2 IS NULL AND review_fixer_attempt_id IS NULL)
+                            OR review_fixer_attempt_id = ?2)
+                       AND review_fixer_status IN ('routing', 'queued', 'running')
+                       AND (current_target_scope IS NULL
+                            OR reviewed_target_scope IS NULL
+                            OR current_target_scope != reviewed_target_scope
+                            OR current_diff_fingerprint IS NULL
+                            OR TRIM(current_diff_fingerprint) = ''
+                            OR reviewed_diff_fingerprint IS NULL
+                            OR current_diff_fingerprint != reviewed_diff_fingerprint
+                            OR review_artifact_id IS NULL
+                            OR TRIM(review_artifact_id) = ''
+                            OR review_artifact_version IS NULL
+                            OR review_artifact_version <= 0
+                            OR review_blocking_fingerprint IS NULL
+                            OR TRIM(review_blocking_fingerprint) = '')",
+                    rusqlite::params![conversation_id, expected_attempt_id, error, updated_at,],
+                )? == 1)
+            })
+            .await?;
+        if !changed {
+            return Ok(None);
+        }
+        self.get_workspace_review_monitor(&fetch_id).await
+    }
+
     async fn fail_reserved_workspace_review_start(
         &self,
         conversation_id: &ChatConversationId,
@@ -3264,14 +3312,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
-    async fn list_routing_workspace_review_fixers(
+    async fn list_active_workspace_review_fixers(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         self.db
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_workspace_review_monitors
-                     WHERE review_fixer_status = 'routing'
+                     WHERE review_fixer_status IN ('routing', 'queued', 'running')
                      ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_workspace_review_monitor)?;

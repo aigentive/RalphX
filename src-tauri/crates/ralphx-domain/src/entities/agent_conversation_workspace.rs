@@ -713,12 +713,34 @@ pub struct AgentWorkspaceReviewFixerSnapshot {
 
 impl AgentWorkspaceReviewFixerSnapshot {
     pub fn from_monitor(monitor: &AgentWorkspaceReviewMonitor) -> Option<Self> {
+        let target_scope = monitor.current_target_scope?;
+        if monitor.reviewed_target_scope != Some(target_scope) {
+            return None;
+        }
+        let diff_fingerprint = monitor
+            .current_diff_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        if monitor.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint.as_str()) {
+            return None;
+        }
+        let artifact_id = monitor
+            .review_artifact_id
+            .clone()
+            .filter(|value| !value.as_str().trim().is_empty())?;
+        let artifact_version = monitor
+            .review_artifact_version
+            .filter(|version| *version > 0)?;
+        let blocking_fingerprint = monitor
+            .review_blocking_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
         Some(Self {
-            target_scope: monitor.current_target_scope?,
-            diff_fingerprint: monitor.current_diff_fingerprint.clone()?,
-            artifact_id: monitor.review_artifact_id.clone()?,
-            artifact_version: monitor.review_artifact_version?,
-            blocking_fingerprint: monitor.review_blocking_fingerprint.clone()?,
+            target_scope,
+            diff_fingerprint,
+            artifact_id,
+            artifact_version,
+            blocking_fingerprint,
         })
     }
 }

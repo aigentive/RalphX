@@ -150,16 +150,20 @@ export function useConfirmation(): UseConfirmationReturn {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepareFailed, setPrepareFailed] = useState(false);
-  const resolveRef = useRef<((value: boolean) => void) | null>(null);
+  const resolveRef = useRef<{
+    requestId: number;
+    resolve: (value: boolean) => void;
+  } | null>(null);
   const requestIdRef = useRef(0);
 
   const confirm = useCallback((opts: ConfirmOptions): Promise<boolean> => {
+    const requestId = ++requestIdRef.current;
+    resolveRef.current?.resolve(false);
     setOptions(opts);
     setIsSubmitting(false);
     setIsPreparing(Boolean(opts.prepare));
     setPrepareFailed(false);
     setIsOpen(true);
-    const requestId = ++requestIdRef.current;
     if (opts.prepare) {
       const controller: ConfirmationController = {
         update: (patch) => {
@@ -205,18 +209,22 @@ export function useConfirmation(): UseConfirmationReturn {
         });
     }
     return new Promise((resolve) => {
-      resolveRef.current = resolve;
+      resolveRef.current = { requestId, resolve };
     });
   }, []);
 
-  const settle = useCallback((value: boolean) => {
+  const settle = useCallback((requestId: number, value: boolean) => {
+    if (requestId !== requestIdRef.current) return false;
+    const pending = resolveRef.current;
+    if (!pending || pending.requestId !== requestId) return false;
     requestIdRef.current += 1;
     setIsOpen(false);
     setOptions(null);
     setIsPreparing(false);
     setPrepareFailed(false);
-    resolveRef.current?.(value);
     resolveRef.current = null;
+    pending.resolve(value);
+    return true;
   }, []);
 
   const onConfirm = useCallback(() => {
@@ -229,19 +237,19 @@ export function useConfirmation(): UseConfirmationReturn {
       return;
     }
 
+    const requestId = requestIdRef.current;
     const action = options?.onConfirm;
     const recoverFromError = options?.recoverFromError;
     if (!action) {
-      settle(true);
+      settle(requestId, true);
       return;
     }
 
-    const requestId = requestIdRef.current;
     setIsSubmitting(true);
     void Promise.resolve()
       .then(action)
       .then(() => {
-        settle(true);
+        settle(requestId, true);
       })
       .catch((error: unknown) =>
         Promise.resolve()
@@ -255,10 +263,11 @@ export function useConfirmation(): UseConfirmationReturn {
               );
               return;
             }
-            settle(false);
+            settle(requestId, false);
           }),
       )
       .finally(() => {
+        if (requestId !== requestIdRef.current) return;
         setIsSubmitting(false);
       });
   }, [isPreparing, isSubmitting, options, prepareFailed, settle]);
@@ -267,7 +276,7 @@ export function useConfirmation(): UseConfirmationReturn {
     if (isSubmitting) {
       return;
     }
-    settle(false);
+    settle(requestIdRef.current, false);
   }, [isSubmitting, settle]);
 
   const confirmationDialogProps = useMemo(

@@ -521,6 +521,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Fails a malformed active repair attempt only while the same attempt still owns the row.
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: Option<&str>,
+        _error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
     /// Atomically records a reviewer launch failure only while the exact reserved launch still
     /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
     async fn fail_reserved_workspace_review_start(
@@ -552,8 +562,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Lists fixer claims interrupted before routing settlement completed.
-    async fn list_routing_workspace_review_fixers(
+    /// Lists active fixer attempts that require startup reconciliation.
+    async fn list_active_workspace_review_fixers(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())

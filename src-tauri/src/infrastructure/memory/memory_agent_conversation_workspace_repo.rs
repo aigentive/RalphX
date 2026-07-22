@@ -1450,6 +1450,33 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(Some(current.clone()))
     }
 
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: Option<&str>,
+        error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(current) = monitors.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        if current.review_fixer_attempt_id.as_deref() != expected_attempt_id
+            || !matches!(
+                current.review_fixer_status.as_deref(),
+                Some("routing" | "queued" | "running")
+            )
+            || AgentWorkspaceReviewFixerSnapshot::from_monitor(current).is_some()
+        {
+            return Ok(None);
+        }
+        current.review_fixer_status = Some("failed".to_string());
+        current.review_fixer_run_id = None;
+        current.review_fixer_conversation_id = None;
+        current.last_error = Some(error.to_string());
+        current.updated_at = Utc::now();
+        Ok(Some(current.clone()))
+    }
+
     async fn fail_reserved_workspace_review_start(
         &self,
         conversation_id: &ChatConversationId,
@@ -1556,7 +1583,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(monitors)
     }
 
-    async fn list_routing_workspace_review_fixers(
+    async fn list_active_workspace_review_fixers(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         let mut monitors = self
@@ -1564,7 +1591,12 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .read()
             .await
             .values()
-            .filter(|monitor| monitor.review_fixer_status.as_deref() == Some("routing"))
+            .filter(|monitor| {
+                matches!(
+                    monitor.review_fixer_status.as_deref(),
+                    Some("routing" | "queued" | "running")
+                )
+            })
             .cloned()
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));

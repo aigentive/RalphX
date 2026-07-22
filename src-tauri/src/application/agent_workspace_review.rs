@@ -62,6 +62,8 @@ const WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR: &str =
     "Workspace reviewer completed without writing a current Review";
 const WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer routing was interrupted when the app restarted";
+const WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR: &str =
+    "Workspace Review fixer recovery found invalid attempt authority";
 const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
 const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
 const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
@@ -352,9 +354,7 @@ pub async fn reconcile_interrupted_workspace_review_fixers_on_startup(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     queued_message_repo: Arc<dyn QueuedMessageRepository>,
 ) -> AppResult<usize> {
-    let monitors = workspace_repo
-        .list_routing_workspace_review_fixers()
-        .await?;
+    let monitors = workspace_repo.list_active_workspace_review_fixers().await?;
     let queue_keys = queued_message_repo.list_keys().await?;
     let mut queued_messages = Vec::new();
     for key in queue_keys {
@@ -363,9 +363,24 @@ pub async fn reconcile_interrupted_workspace_review_fixers_on_startup(
 
     let mut reconciled = 0usize;
     for claimed in monitors {
-        let Some(attempt_id) = claimed.review_fixer_attempt_id.as_deref() else {
+        let attempt_id = claimed.review_fixer_attempt_id.as_deref();
+        let snapshot = AgentWorkspaceReviewFixerSnapshot::from_monitor(&claimed);
+        if attempt_id.is_none() || snapshot.is_none() {
+            if workspace_repo
+                .fail_invalid_workspace_review_fixer_attempt(
+                    &claimed.conversation_id,
+                    attempt_id,
+                    WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR,
+                )
+                .await?
+                .is_some()
+            {
+                reconciled += 1;
+            }
             continue;
-        };
+        }
+        let attempt_id = attempt_id.expect("validated fixer attempt id");
+        let snapshot = snapshot.expect("validated fixer authority snapshot");
         let conversation_id = claimed.conversation_id.clone();
         let action_context_id = conversation_id.as_str();
         let action_run = agent_run_repo
@@ -414,12 +429,6 @@ pub async fn reconcile_interrupted_workspace_review_fixers_on_startup(
             }
         }
 
-        let snapshot =
-            AgentWorkspaceReviewFixerSnapshot::from_monitor(&claimed).ok_or_else(|| {
-                AppError::Infrastructure(
-                    "workspace Review fixer recovery is missing target authority".to_string(),
-                )
-            })?;
         if workspace_repo
             .settle_workspace_review_fixer_attempt(next, attempt_id, &snapshot)
             .await?
@@ -753,14 +762,6 @@ pub async fn start_agent_workspace_review_with_runtime_override(
         runtime_override,
     )
     .await
-}
-
-pub(crate) async fn start_agent_workspace_review_unlocked(
-    state: Arc<AppState>,
-    workspace: &AgentConversationWorkspace,
-    force: bool,
-) -> AppResult<AgentWorkspaceReviewStart> {
-    start_agent_workspace_review_unlocked_with_runtime_override(state, workspace, force, None).await
 }
 
 pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(

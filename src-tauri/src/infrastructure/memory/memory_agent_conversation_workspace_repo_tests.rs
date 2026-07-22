@@ -152,6 +152,42 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
 }
 
 #[tokio::test]
+async fn invalid_workspace_review_fixer_attempt_failure_is_attempt_scoped() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-invalid-fixer");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = monitor.current_target_scope;
+    monitor.current_diff_fingerprint = Some("diff-current".to_string());
+    monitor.reviewed_diff_fingerprint = monitor.current_diff_fingerprint.clone();
+    monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_blocking_fingerprint = Some("   ".to_string());
+    monitor.review_fixer_status = Some("routing".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    assert!(repo
+        .fail_invalid_workspace_review_fixer_attempt(
+            &conversation_id,
+            Some("attempt-stale"),
+            "invalid authority",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    let failed = repo
+        .fail_invalid_workspace_review_fixer_attempt(&conversation_id, None, "invalid authority")
+        .await
+        .unwrap()
+        .expect("the exact malformed attempt without an id should fail");
+    assert_eq!(failed.review_fixer_status.as_deref(), Some("failed"));
+    assert_eq!(failed.last_error.as_deref(), Some("invalid authority"));
+}
+
+#[tokio::test]
 async fn latest_pending_pr_review_action_is_deterministic_and_owner_scoped() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");

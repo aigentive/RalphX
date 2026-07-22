@@ -3792,8 +3792,9 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         let coordination_mode = runtime_override.coordination_mode.unwrap_or_default();
         state
             .chat_conversation_repo
-            .update_role_default_bindings(
+            .update_agent_mode_and_role_default_bindings(
                 &conversation.id,
+                target_mode,
                 coordination_mode,
                 runtime_override
                     .persona_id
@@ -3808,14 +3809,15 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             .persona_id
             .as_ref()
             .map(|persona_id| persona_id.to_string());
+        conversation.set_agent_mode(Some(target_mode));
+    } else {
+        state
+            .chat_conversation_repo
+            .update_agent_mode(&conversation.id, Some(target_mode))
+            .await
+            .map_err(|error| error.to_string())?;
+        conversation.set_agent_mode(Some(target_mode));
     }
-
-    state
-        .chat_conversation_repo
-        .update_agent_mode(&conversation.id, Some(target_mode))
-        .await
-        .map_err(|error| error.to_string())?;
-    conversation.set_agent_mode(Some(target_mode));
 
     let conversation = state
         .chat_conversation_repo
