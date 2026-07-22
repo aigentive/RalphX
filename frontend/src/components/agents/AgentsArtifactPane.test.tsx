@@ -10511,6 +10511,7 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
+    const publish = vi.fn();
     renderPane(
       "publish",
       workspace({
@@ -10519,7 +10520,7 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         publicationPushStatus: "needs_agent",
       }),
-      vi.fn(),
+      publish,
       false,
       null,
       {},
@@ -10568,9 +10569,27 @@ describe("AgentsArtifactPane", () => {
       screen.queryByText("Could not load workspace changes"),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByTestId("agents-pr-supervision-controls"),
+      screen.getByTestId("agents-pr-supervision-controls"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Auto Publish" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Autofix CI & Reviews" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+    expect(
+      screen.queryByTestId("agents-update-from-base"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-close-pr")).not.toBeInTheDocument();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+    expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    expect(closeWorkspacePrMock).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(getWorkspaceRepairSummaryMock).toHaveBeenCalledWith(
         "conversation-1",
@@ -10578,6 +10597,189 @@ describe("AgentsArtifactPane", () => {
     );
     expect(getWorkspaceRepairConflictDiffMock).not.toHaveBeenCalled();
     expect(getWorkspaceRepairUnstagedChangesMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps pre-PR repair automation preferences configurable while initial Auto Publish is off", async () => {
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean },
+      ) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          publicationPushStatus: "needs_agent",
+          autoPublishInitialPrEnabled: false,
+          prAutofixEnabled: input.autoFixEnabled,
+          prAutoMergeDesired: input.autoMergeDesired,
+          prAutoMergeMethod: "squash",
+          prSupervisionStatus:
+            input.autoFixEnabled || input.autoMergeDesired
+              ? "monitoring"
+              : "disabled",
+        }),
+    );
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+        autoPublishInitialPrEnabled: false,
+      }),
+    );
+
+    expect(
+      await screen.findByTestId("agents-auto-publish-switch"),
+    ).not.toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-autofix-switch")).toBeChecked(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+  });
+
+  it("preserves published-PR automation pause and resume semantics during repair", async () => {
+    const initialRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      prAutofixEnabled: false,
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "disabled",
+    });
+    const enabledRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      prAutofixEnabled: true,
+      prAutoMergeDesired: true,
+      prAutoMergeCurrent: true,
+      prSupervisionStatus: "monitoring",
+    });
+    const pausedRepair = publishedPrSupervisionWorkspace({
+      publicationPushStatus: "needs_agent",
+      autoPublishEnabled: false,
+      autoPublishPausedPrAutofixEnabled: true,
+      autoPublishPausedPrAutoMergeDesired: true,
+      prAutofixEnabled: false,
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "paused",
+    });
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        _conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean },
+      ) => ({
+        ...initialRepair,
+        prAutofixEnabled: input.autoFixEnabled,
+        prAutoMergeDesired: input.autoMergeDesired,
+        prAutoMergeCurrent: input.autoMergeDesired,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+    setWorkspaceAutoPublishMock.mockImplementation(
+      async (
+        _conversationId: string,
+        input: { autoPublishEnabled: boolean },
+      ) => (input.autoPublishEnabled ? enabledRepair : pausedRepair),
+    );
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialRepair);
+
+    expect(await screen.findByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-autofix-switch")).toBeChecked(),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    rerenderWorkspace(enabledRepair);
+
+    fireEvent.click(screen.getByTestId("agents-auto-publish-switch"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Pause Auto Publish",
+      }),
+    );
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        { autoPublishEnabled: false },
+      ),
+    );
+    rerenderWorkspace(pausedRepair);
+
+    expect(screen.getByTestId("agents-auto-publish-switch")).not.toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeDisabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeDisabled();
+    expect(screen.getByTestId("agents-publish-repair-pending")).toBeDisabled();
+    expect(
+      screen.queryByTestId("agents-update-from-base"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-close-pr")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-auto-publish-switch"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Resume Auto Publish",
+      }),
+    );
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        { autoPublishEnabled: true },
+      ),
+    );
+    rerenderWorkspace(enabledRepair);
+
+    expect(screen.getByTestId("agents-auto-publish-switch")).toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
   });
 
   it("labels merge-paused repair state", async () => {

@@ -781,7 +781,7 @@ export function AgentPublishPanel({
   const canClosePr = hasPublishedPr && !isRepairPending && !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
-    !isRepairPending && (workspace.mode === "edit" || isPipelinePrAutomationWorkspace);
+    workspace.mode === "edit" || isPipelinePrAutomationWorkspace;
   const shouldShowPublishNotices = !isRepairPending;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
