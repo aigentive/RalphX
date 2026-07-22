@@ -193,6 +193,7 @@ fn test_baseline_and_fallback_quality_do_not_count_raw_baseline() {
     let response = build_conversation_stats_response(&conversation, &[baseline, fallback], &[]);
 
     assert_eq!(response.effective_usage_totals.input_tokens, 400);
+    assert_eq!(response.effective_usage_totals.processed_tokens, None);
     assert_eq!(response.usage_coverage.fallback_estimated_sample_count, 1);
     assert_eq!(response.usage_coverage.uncounted_sample_count, 1);
 }

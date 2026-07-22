@@ -130,7 +130,7 @@ describe("buildFallbackConversationStats", () => {
       }),
     ]);
 
-    expect(stats?.effectiveUsageTotals.processedTokens).toBe(55);
+    expect(stats?.effectiveUsageTotals.processedTokens).toBeNull();
     expect(stats?.usageCoverage.fallbackEstimatedSampleCount).toBe(1);
     expect(stats?.usageCoverage.uncountedSampleCount).toBe(1);
   });

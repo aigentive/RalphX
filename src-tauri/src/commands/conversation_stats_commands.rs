@@ -195,8 +195,8 @@ fn build_usage_aggregates(
         .collect::<Vec<_>>();
     let message_usage = resolve_usage_samples(message_samples.clone());
     let run_usage = resolve_usage_samples(run_samples.clone());
-    let message_usage_totals = sum_resolved_samples(&message_usage.samples);
-    let run_usage_totals = sum_resolved_samples(&run_usage.samples);
+    let message_usage_totals = sum_resolved_samples(&message_usage);
+    let run_usage_totals = sum_resolved_samples(&run_usage);
 
     let mut messages_by_conversation: HashMap<String, Vec<UsageSample>> = HashMap::new();
     for sample in message_samples {
@@ -256,7 +256,7 @@ fn build_usage_aggregates(
         (false, true) => "runs",
         (false, false) => "none",
     };
-    let effective_usage_totals = sum_resolved_samples(&effective_usage.samples);
+    let effective_usage_totals = sum_resolved_samples(&effective_usage);
     let by_context_type = aggregate_usage_buckets(&effective_usage.samples, |sample| {
         sample.context_type.clone()
     });
@@ -811,7 +811,15 @@ fn resolve_usage_samples(samples: Vec<UsageSample>) -> ResolvedUsage {
     resolved
 }
 
-fn sum_resolved_samples(samples: &[UsageSample]) -> UsageTotalsResponse {
+fn sum_resolved_samples(resolved: &ResolvedUsage) -> UsageTotalsResponse {
+    let mut total = sum_usage_samples(&resolved.samples);
+    if resolved.uncounted_sample_count > 0 {
+        total.processed_tokens = None;
+    }
+    total
+}
+
+fn sum_usage_samples(samples: &[UsageSample]) -> UsageTotalsResponse {
     let mut total = UsageAccumulator::default();
     for sample in samples {
         total.add_sample(sample);
@@ -934,7 +942,7 @@ fn aggregate_usage_buckets(
         .map(|(key, samples)| UsageBucketResponse {
             key,
             count: samples.len() as u64,
-            usage: sum_resolved_samples(&samples),
+            usage: sum_usage_samples(&samples),
         })
         .collect()
 }

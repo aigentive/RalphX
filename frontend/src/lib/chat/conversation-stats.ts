@@ -95,9 +95,10 @@ function collapseProviderMessageBlocks(
 function buildUsageTotals(
   messages: ChatMessageResponse[],
   fallbackHarness: string | null,
+  hasUncountedSample = false,
 ) {
   let processedTokens = 0;
-  let processedAvailable = messages.length > 0;
+  let processedAvailable = messages.length > 0 && !hasUncountedSample;
   const totals = messages.reduce(
     (current, message) => {
       const sampleProcessed = processedTokensForMessage(message, fallbackHarness);
@@ -181,10 +182,6 @@ export function buildFallbackConversationStats(
   const providerMessagesWithUsage = providerMessages.filter(hasUsage);
   const providerMessagesWithAttribution = providerMessages.filter(hasAttribution);
   const fallbackHarness = conversation.providerHarness ?? null;
-  const effectiveUsageTotals = buildUsageTotals(
-    providerMessagesWithUsage,
-    fallbackHarness,
-  );
   const legacyEstimatedSampleCount = providerMessagesWithUsage.filter(
     (message) => message.usageProvenance == null,
   ).length;
@@ -196,6 +193,11 @@ export function buildFallbackConversationStats(
       message.usageProvenance === "cumulative_baseline_only" ||
       (hasUsage(message) && processedTokensForMessage(message, fallbackHarness) == null),
   ).length;
+  const effectiveUsageTotals = buildUsageTotals(
+    providerMessagesWithUsage,
+    fallbackHarness,
+    uncountedSampleCount > 0,
+  );
 
   return {
     conversationId: conversation.id,
