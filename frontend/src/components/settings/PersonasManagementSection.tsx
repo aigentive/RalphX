@@ -13,6 +13,7 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { formatPersonaErrorMessage } from "@/lib/personaErrors";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { Persona } from "@/types/persona";
 
@@ -56,6 +57,7 @@ export function PersonasManagementSection({
   const setStartConversationDraft = useAgentSessionStore((state) => state.setStartConversationDraft);
   const setFocusedProject = useAgentSessionStore((state) => state.setFocusedProject);
   const clearSelection = useAgentSessionStore((state) => state.clearSelection);
+  const setActiveConversation = useChatStore((state) => state.setActiveConversation);
   const closeModal = useUiStore((state) => state.closeModal);
   const modalContext = useUiStore((state) => state.modalContext);
   const setCurrentView = useUiStore((state) => state.setCurrentView);
@@ -128,6 +130,9 @@ export function PersonasManagementSection({
     closeModal();
     setFocusedProject(projectId ?? null);
     clearSelection();
+    if (projectId) {
+      setActiveConversation(`project:${projectId}`, null);
+    }
     setCurrentView("agents");
   };
 
