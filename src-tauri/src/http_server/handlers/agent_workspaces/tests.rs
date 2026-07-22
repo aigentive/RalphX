@@ -30,7 +30,7 @@
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
-        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        AgentWorkspaceSourcePullRequest, AgentRunId, ArtifactId, ChatContextType, ChatConversation,
         IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
         ProjectId, TaskId,
     };
@@ -1772,10 +1772,10 @@
             .agent_conversation_workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),
-                "repair_requested",
+                "repair_sent",
                 "started",
-                "Workspace agent repair requested before the base update can complete",
-                Some("agent_fixable:update_only".to_string()),
+                "Starting workspace repair agent for base update failure",
+                Some(format!("agent_fixable:run:{}", AgentRunId::new())),
             ))
             .await
             .unwrap();
