@@ -1044,8 +1044,6 @@ async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
         Some(pre_assistant_id),
         None,
         CancellationToken::new(),
-        None,
-        false,
         StreamingStateCache::new(),
         None,
         Some(run_repo),
