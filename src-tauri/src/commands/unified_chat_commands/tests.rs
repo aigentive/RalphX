@@ -4775,7 +4775,6 @@ async fn strict_policy_blocks_update_from_base_before_pr_or_branch_mutation() {
     let error = update_agent_conversation_workspace_from_base_for_app_state(
         &state,
         &Arc::new(ExecutionState::new()),
-        None,
         conversation_id,
         AgentConversationWorkspaceBaseSelection {
             kind: None,
@@ -5537,7 +5536,6 @@ async fn strict_publish_policy_guards_linked_plan_branch_before_commit_or_push()
     let error = publish_agent_conversation_workspace_for_app_state(
         &state,
         &Arc::new(ExecutionState::new()),
-        None,
         conversation_id,
         false,
     )
@@ -5638,7 +5636,6 @@ async fn strict_publish_policy_blocks_before_commit_push_or_pr_side_effects() {
     let error = publish_agent_conversation_workspace_for_app_state(
         &state,
         &Arc::new(ExecutionState::new()),
-        None,
         conversation_id,
         false,
     )
