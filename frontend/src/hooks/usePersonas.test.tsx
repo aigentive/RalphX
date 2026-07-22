@@ -8,12 +8,16 @@ import { chatKeys } from "./useChat";
 import {
   fetchPersonas,
   fetchPersona,
+  fetchPersonaOverlayPreview,
+  fetchPersonaUsage,
   personaKeys,
   useApprovePersona,
   useArchivePersona,
   useCreatePersonaDraft,
   useDeletePersonaDraft,
+  useReseedPersonaDraft,
   useSwitchConversationPersona,
+  useUnarchivePersona,
   useUpdatePersona,
   useUpdatePersonaDraft,
 } from "./usePersonas";
@@ -166,6 +170,22 @@ describe("persona mutations", () => {
       args: { input: { id: "persona-1" } },
       response: undefined,
     },
+    {
+      name: "unarchive",
+      useHook: useUnarchivePersona,
+      input: "persona-1",
+      command: "unarchive_persona",
+      args: { input: { id: "persona-1" } },
+      response: personaResponse,
+    },
+    {
+      name: "reseed draft",
+      useHook: useReseedPersonaDraft,
+      input: "persona-1",
+      command: "reseed_persona_draft",
+      args: { input: { id: "persona-1" } },
+      response: personaResponse,
+    },
   ] as const;
 
   for (const mutation of mutations) {
@@ -259,6 +279,59 @@ describe("useSwitchConversationPersona", () => {
       expect(invalidateQueries).toHaveBeenCalledWith({
         queryKey: chatKeys.conversations(),
       });
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: personaKeys.usage(),
+      });
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: personaKeys.overlayPreview("conversation-1"),
+      });
+    });
+  });
+});
+
+describe("derived persona reads", () => {
+  it("parses camelCase usage rows without any transform", async () => {
+    vi.mocked(invoke).mockResolvedValue([
+      {
+        personaId: "persona-1",
+        boundConversationCount: 2,
+        lastRunAt: "2026-07-21T09:00:00Z",
+      },
+      { personaId: "persona-2", boundConversationCount: 0, lastRunAt: null },
+    ]);
+
+    const usage = await fetchPersonaUsage();
+
+    expect(invoke).toHaveBeenCalledWith("list_persona_usage");
+    expect(usage[1]).toEqual({
+      personaId: "persona-2",
+      boundConversationCount: 0,
+      lastRunAt: null,
+    });
+  });
+
+  it("fails closed on malformed usage payloads instead of defaulting to zeros", async () => {
+    vi.mocked(invoke).mockResolvedValue([{ personaId: "persona-1" }]);
+    await expect(fetchPersonaUsage()).rejects.toThrow();
+  });
+
+  it("wraps the overlay preview conversation id and parses null and payloads", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(fetchPersonaOverlayPreview("conversation-1")).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith("preview_persona_overlay", {
+      input: { conversationId: "conversation-1" },
+    });
+
+    vi.mocked(invoke).mockResolvedValueOnce({
+      personaId: "persona-1",
+      slug: "focused-reviewer",
+      version: 3,
+      renderedBlock: "<ralphx_agent_persona>…</ralphx_agent_persona>",
+      skippedReason: null,
+    });
+    await expect(fetchPersonaOverlayPreview("conversation-1")).resolves.toMatchObject({
+      slug: "focused-reviewer",
+      version: 3,
     });
   });
 });

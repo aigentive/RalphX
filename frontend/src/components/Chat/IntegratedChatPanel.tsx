@@ -40,6 +40,7 @@ import {
   type AgentStatus,
 } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useProjectStore } from "@/stores/projectStore";
 import { useTaskStore } from "@/stores/taskStore";
 import { useTasks, taskKeys } from "@/hooks/useTasks";
 import { useChatPanelContext } from "@/hooks/useChatPanelContext";
@@ -1149,6 +1150,9 @@ export function IntegratedChatPanel({
     conversationsData,
     effectiveConversationId,
   ]);
+  const personaChipProjectName = useProjectStore(
+    (state) => state.projects[currentContextId]?.name,
+  );
   const personaAttributedRun = useMemo<PersonaAttributedRun | null>(() => {
     if (agentRunQuery.data) {
       return agentRunQuery.data;
@@ -1581,6 +1585,8 @@ export function IntegratedChatPanel({
     showPersonaChip && effectiveConversationId ? (
       <PersonaChip
         conversationId={effectiveConversationId}
+        projectId={currentContextId}
+        projectName={personaChipProjectName ?? "Project"}
         personaId={activeConversationMeta?.personaId}
         isAgentRunning={isAgentRunning}
         {...(onBuildPersona ? { onBuildPersona } : {})}
@@ -1590,6 +1596,7 @@ export function IntegratedChatPanel({
           null
         }
         lastRunPersonaSlug={personaAttributedRun?.personaSlug ?? null}
+        lastRunPersonaVersion={personaAttributedRun?.personaVersion ?? null}
         lastRunPersonaInjected={
           personaAttributedRun?.personaInjected ?? null
         }

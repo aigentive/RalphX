@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
+import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { PersonaContentDiff } from "@/components/personas/PersonaContentDiff";
 import { PersonaVersionHistory } from "@/components/personas/PersonaVersionHistory";
 import { Button } from "@/components/ui/button";
 import {
@@ -71,6 +75,9 @@ export function PersonaEditor({
   const [instructions, setInstructions] = useState(
     editor.kind === "create" ? "" : splitPersonaBody(editor.persona.content),
   );
+  const [instructionsTab, setInstructionsTab] = useState<
+    "write" | "preview" | "diff"
+  >("write");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [draftConflict, setDraftConflict] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
@@ -323,17 +330,79 @@ export function PersonaEditor({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="persona-instructions" className="text-xs text-[var(--text-secondary)]">
-          Instructions
-        </Label>
-        <textarea
-          id="persona-instructions"
-          value={instructions}
-          onChange={(event) => setInstructions(event.target.value)}
-          disabled={isSaving}
-          placeholder="Plain Markdown. How should the agent behave, what tone should it use, and what should it avoid? No YAML needed."
-          className="min-h-[50vh] w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
-        />
+        <div className="flex items-center justify-between gap-2">
+          <Label htmlFor="persona-instructions" className="text-xs text-[var(--text-secondary)]">
+            Instructions
+          </Label>
+          <div
+            role="tablist"
+            aria-label="Instructions view"
+            className="inline-flex items-center gap-0.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-0.5"
+          >
+            {(
+              [
+                { value: "write", label: "Write" },
+                { value: "preview", label: "Preview" },
+                ...(currentPersona
+                  ? [
+                      {
+                        value: "diff",
+                        label: `Diff vs v${currentPersona.version}`,
+                      } as const,
+                    ]
+                  : []),
+              ] as { value: "write" | "preview" | "diff"; label: string }[]
+            ).map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={instructionsTab === tab.value}
+                onClick={() => setInstructionsTab(tab.value)}
+                className={
+                  instructionsTab === tab.value
+                    ? "rounded px-2 py-1 text-xs font-medium bg-[var(--bg-surface)] text-[var(--text-primary)]"
+                    : "rounded px-2 py-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                }
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {instructionsTab === "write" ? (
+          <textarea
+            id="persona-instructions"
+            value={instructions}
+            onChange={(event) => setInstructions(event.target.value)}
+            disabled={isSaving}
+            placeholder="Plain Markdown. How should the agent behave, what tone should it use, and what should it avoid? No YAML needed."
+            className="min-h-[50vh] w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
+          />
+        ) : instructionsTab === "preview" ? (
+          <div
+            role="tabpanel"
+            aria-label="Instructions preview"
+            data-testid="persona-instructions-preview"
+            className="min-h-[50vh] w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--text-primary)]"
+          >
+            {instructions.trim() === "" ? (
+              <p className="text-xs text-[var(--text-muted)]">Nothing to preview.</p>
+            ) : (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {instructions}
+              </ReactMarkdown>
+            )}
+          </div>
+        ) : (
+          currentPersona && (
+            <PersonaContentDiff
+              oldContent={splitPersonaBody(currentPersona.content)}
+              newContent={instructions}
+              ariaLabel={`Changes against version ${currentPersona.version}`}
+            />
+          )
+        )}
       </div>
 
       {saveError && (
@@ -373,7 +442,7 @@ export function PersonaEditor({
           disabled={isSaving || requiredFieldsMissing}
           className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
         >
-          Save
+          {currentPersona ? `Save (creates v${currentPersona.version + 1})` : "Save"}
         </Button>
       </div>
 
