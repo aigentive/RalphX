@@ -407,11 +407,6 @@
         "text": "use crate::infrastructure::memory::MemoryApiKeyRepository;"
       },
       {
-        "path": "src-tauri/src/domain/services/learned_skill_substrate.rs",
-        "target": "crate::infrastructure",
-        "text": "use crate::infrastructure::memory::{"
-      },
-      {
         "path": "src-tauri/src/domain/services/payload_enrichment_tests.rs",
         "target": "crate::infrastructure",
         "text": "use crate::infrastructure::memory::MemoryExternalEventsRepository;"
@@ -1237,16 +1232,6 @@
         "path": "src-tauri/src/http_server/handlers/issues.rs",
         "target": "crate::commands",
         "text": "use crate::commands::review_commands_types::{IssueProgressResponse, ReviewIssueResponse};"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/learned_skills.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/learned_skills_export.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/handlers/memory_tests.rs",

@@ -77,6 +77,11 @@ fn make_project_skill(project_id: &str) -> crate::domain::entities::ProjectSkill
         predicted_effect: Some("test effect".to_string()),
         provenance_json: serde_json::json!({}),
         companion_of_skill_id: None,
+        version: 1,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     }

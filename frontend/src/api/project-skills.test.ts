@@ -28,6 +28,11 @@ function projectSkill(overrides: Record<string, unknown> = {}) {
     predicted_effect: "Prevents repeated validation loops.",
     provenance_json: { outcome_id: "outcome-1" },
     companion_of_skill_id: null,
+    version: 1,
+    content_hash: "content-hash",
+    evidence_hash: "evidence-hash",
+    created_by: "agent",
+    pipeline_role: "reviewer",
     created_at: "2026-06-14T10:00:00Z",
     updated_at: "2026-06-14T10:00:00Z",
     ...overrides,
@@ -99,6 +104,11 @@ describe("projectSkillsApi", () => {
         sourceRoot: null,
         sourceSyncEnabled: false,
         companionOfSkillId: null,
+        version: 1,
+        contentHash: "content-hash",
+        evidenceHash: "evidence-hash",
+        createdBy: "agent",
+        pipelineRole: "reviewer",
         createdAt: "2026-06-14T10:00:00Z",
         updatedAt: "2026-06-14T10:00:00Z",
       },
@@ -140,6 +150,59 @@ describe("projectSkillsApi", () => {
         status: "staged",
       }),
     ).rejects.toThrow();
+  });
+
+  it("accepts stale as read-only lifecycle metadata", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skills: [projectSkill({ status: "stale" })],
+        count: 1,
+      }),
+    );
+
+    const skills = await projectSkillsApi.list({
+      projectId: "project-1",
+      status: "stale",
+    });
+
+    expect(skills[0]).toEqual(
+      expect.objectContaining({
+        status: "stale",
+        version: 1,
+        contentHash: "content-hash",
+        evidenceHash: "evidence-hash",
+        createdBy: "agent",
+        pipelineRole: "reviewer",
+      }),
+    );
+  });
+
+  it("rejects malformed B1 metadata and settings", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        skills: [projectSkill({ created_by: "system" })],
+        count: 1,
+      }),
+    );
+    await expect(
+      projectSkillsApi.list({ projectId: "project-1" }),
+    ).rejects.toThrow();
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        project_id: "project-1",
+        enabled: true,
+        auto_inject: false,
+        auto_distill: false,
+        injection_max_skills: 0,
+        injection_max_chars: 6000,
+        injection_guidance_max_chars: 400,
+        report_min_outcomes: 5,
+        verification_corpus_gate: 0,
+        export_enabled: false,
+      }),
+    );
+    await expect(projectSkillsApi.getSettings("project-1")).rejects.toThrow();
   });
 
   it("approves project skills through the lifecycle endpoint", async () => {
@@ -407,6 +470,7 @@ describe("projectSkillsApi", () => {
     await expect(
       projectSkillsApi.update({
         projectSkillId: "skill-1",
+        expectedVersion: 1,
         title: "Updated skill",
         bucket: "review",
         stage: "review",
@@ -425,6 +489,7 @@ describe("projectSkillsApi", () => {
       expect.objectContaining({
         body: JSON.stringify({
           project_skill_id: "skill-1",
+          expected_version: 1,
           title: "Updated skill",
           bucket: "review",
           stage: "review",
@@ -796,24 +861,56 @@ describe("projectSkillsApi", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         project_id: "project-1",
+        enabled: true,
+        auto_inject: false,
+        auto_distill: false,
+        injection_max_skills: 4,
+        injection_max_chars: 6000,
+        injection_guidance_max_chars: 400,
+        report_min_outcomes: 5,
+        verification_corpus_gate: 0,
         export_enabled: false,
       }),
     );
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         project_id: "project-1",
+        enabled: true,
+        auto_inject: false,
+        auto_distill: false,
+        injection_max_skills: 4,
+        injection_max_chars: 6000,
+        injection_guidance_max_chars: 400,
+        report_min_outcomes: 5,
+        verification_corpus_gate: 0,
         export_enabled: true,
       }),
     );
 
     await expect(projectSkillsApi.getSettings("project-1")).resolves.toEqual({
       projectId: "project-1",
+      enabled: true,
+      autoInject: false,
+      autoDistill: false,
+      injectionMaxSkills: 4,
+      injectionMaxChars: 6000,
+      injectionGuidanceMaxChars: 400,
+      reportMinOutcomes: 5,
+      verificationCorpusGate: 0,
       exportEnabled: false,
     });
     await expect(
       projectSkillsApi.updateSettings("project-1", { exportEnabled: true }),
     ).resolves.toEqual({
       projectId: "project-1",
+      enabled: true,
+      autoInject: false,
+      autoDistill: false,
+      injectionMaxSkills: 4,
+      injectionMaxChars: 6000,
+      injectionGuidanceMaxChars: 400,
+      reportMinOutcomes: 5,
+      verificationCorpusGate: 0,
       exportEnabled: true,
     });
 

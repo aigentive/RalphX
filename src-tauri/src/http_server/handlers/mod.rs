@@ -25,7 +25,11 @@ pub mod ideation;
 pub mod internal;
 pub mod issues;
 pub mod learned_skills;
+#[cfg(test)]
+mod learned_skills_tests;
 pub mod learned_skills_export;
+#[cfg(test)]
+mod learned_skills_export_tests;
 pub mod memory;
 #[cfg(test)]
 mod memory_tests;

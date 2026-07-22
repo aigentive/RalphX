@@ -30,6 +30,8 @@ pub mod event_type;
 pub mod execution_plan;
 pub mod ideation;
 pub mod learned_skill;
+#[cfg(test)]
+mod learned_skill_tests;
 pub mod memory_archive;
 pub mod memory_entry;
 pub mod memory_event;
@@ -43,6 +45,11 @@ pub mod persona;
 pub mod project;
 pub mod project_memory_settings;
 pub mod project_skill_settings;
+#[cfg(test)]
+mod project_skill_settings_tests;
+pub mod project_skill_versioning;
+#[cfg(test)]
+mod project_skill_versioning_tests;
 pub mod research;
 pub mod scripted_agent_workflow;
 #[cfg(test)]
@@ -201,7 +208,13 @@ pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
 pub use persona::{Persona, PersonaDirective, PersonaId, PersonaScopeFilter, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use project_memory_settings::ProjectMemorySettings;
-pub use project_skill_settings::ProjectSkillSettings;
+pub use project_skill_settings::{ProjectSkillSettings, ProjectSkillSettingsPatch};
+pub use project_skill_versioning::{
+    prepare_new_project_skill, project_skill_authorship_from_provenance,
+    project_skill_content_hash, project_skill_content_matches, project_skill_evidence_hash,
+    project_skill_evidence_hash_from_raw, project_skill_pipeline_role_from_provenance,
+    refresh_project_skill_metadata, ProjectSkillCreatedBy, ProjectSkillVersion,
+};
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,
     ResearchDepth, ResearchDepthPreset, ResearchOutput, ResearchPresets, ResearchProcess,

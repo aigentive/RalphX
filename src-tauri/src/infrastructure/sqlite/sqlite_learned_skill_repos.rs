@@ -2,14 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
+use super::project_skill_version_rows::{insert_skill_snapshot, version_from_row, VERSION_COLUMNS};
 use super::DbConnection;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcomeId,
+    prepare_new_project_skill, project_skill_content_matches, refresh_project_skill_metadata,
+    ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
+    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, TaskOutcomeId,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
@@ -72,6 +74,10 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSkill> {
                 "invalid project_skills provenance_json: {error}"
             )))
         })?;
+    let created_by = row
+        .get::<_, String>("created_by")?
+        .parse::<ProjectSkillCreatedBy>()
+        .map_err(db_parse_error)?;
     Ok(ProjectSkill {
         id: ProjectSkillId::from_string(row.get::<_, String>("id")?),
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
@@ -89,6 +95,11 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSkill> {
         companion_of_skill_id: row
             .get::<_, Option<String>>("companion_of_skill_id")?
             .map(ProjectSkillId::from_string),
+        version: row.get("version")?,
+        content_hash: row.get("content_hash")?,
+        evidence_hash: row.get("evidence_hash")?,
+        created_by,
+        pipeline_role: row.get("pipeline_role")?,
         created_at: parse_datetime(&row.get::<_, String>("created_at")?),
         updated_at: parse_datetime(&row.get::<_, String>("updated_at")?),
     })
@@ -122,7 +133,7 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillUsageEvent> 
 fn select_skill_columns() -> &'static str {
     "id, project_id, title, bucket, stage, status, pinned, archived, scope_paths_json,
      compact_guidance, body_markdown, predicted_effect, provenance_json, companion_of_skill_id,
-     created_at, updated_at"
+     version, content_hash, evidence_hash, created_by, pipeline_role, created_at, updated_at"
 }
 
 fn select_usage_columns() -> &'static str {
@@ -133,21 +144,23 @@ fn select_usage_columns() -> &'static str {
 #[async_trait]
 impl ProjectSkillRepository for SqliteProjectSkillRepository {
     async fn create(&self, skill: ProjectSkill) -> AppResult<ProjectSkill> {
+        let skill = prepare_new_project_skill(skill);
         let scope_paths_json = serde_json::to_string(&skill.scope_paths)
             .map_err(|error| AppError::Database(error.to_string()))?;
         let provenance_json = serde_json::to_string(&skill.provenance_json)
             .map_err(|error| AppError::Database(error.to_string()))?;
         let saved = skill.clone();
         self.db
-            .run(move |conn| {
+            .run_transaction(move |conn| {
                 conn.execute(
                     "INSERT INTO project_skills (
                         id, project_id, title, bucket, stage, status, pinned, archived,
                         scope_paths_json, compact_guidance, body_markdown, predicted_effect,
-                        provenance_json, companion_of_skill_id, created_at, updated_at
+                        provenance_json, companion_of_skill_id, version, content_hash,
+                        evidence_hash, created_by, pipeline_role, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                        ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+                        ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
                     )",
                     rusqlite::params![
                         saved.id.as_str(),
@@ -167,10 +180,16 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
                             .companion_of_skill_id
                             .as_ref()
                             .map(|id| id.as_str().to_string()),
+                        saved.version,
+                        saved.content_hash,
+                        saved.evidence_hash,
+                        saved.created_by.to_string(),
+                        saved.pipeline_role,
                         saved.created_at.to_rfc3339(),
                         saved.updated_at.to_rfc3339(),
                     ],
                 )?;
+                insert_skill_snapshot(conn, &skill)?;
                 Ok(skill)
             })
             .await
@@ -245,14 +264,47 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
             .await
     }
 
-    async fn update_content(&self, mut skill: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
-        let scope_paths_json = serde_json::to_string(&skill.scope_paths)
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        skill.updated_at = Utc::now();
-        let saved = skill;
+    async fn update_content(&self, requested: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
         self.db
-            .query_optional(move |conn| {
-                conn.execute(
+            .run_transaction(move |conn| {
+                let current = conn
+                    .query_row(
+                        &format!(
+                            "SELECT {} FROM project_skills WHERE id = ?1",
+                            select_skill_columns()
+                        ),
+                        [requested.id.as_str()],
+                        skill_from_row,
+                    )
+                    .optional()?;
+                let Some(mut current) = current else {
+                    return Ok(None);
+                };
+                if current.version != requested.version {
+                    return Err(AppError::Conflict(format!(
+                        "project skill expected version {} but current version is {}",
+                        requested.version, current.version
+                    )));
+                }
+                if project_skill_content_matches(&current, &requested) {
+                    return Ok(Some(current));
+                }
+                current.title = requested.title;
+                current.bucket = requested.bucket;
+                current.stage = requested.stage;
+                current.scope_paths = requested.scope_paths;
+                current.compact_guidance = requested.compact_guidance;
+                current.body_markdown = requested.body_markdown;
+                current.predicted_effect = requested.predicted_effect;
+                current.provenance_json = requested.provenance_json;
+                current.version += 1;
+                current.updated_at = Utc::now();
+                refresh_project_skill_metadata(&mut current);
+                let scope_paths_json = serde_json::to_string(&current.scope_paths)
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                let provenance_json = serde_json::to_string(&current.provenance_json)
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                let changed = conn.execute(
                     "UPDATE project_skills
                      SET title = ?2,
                          bucket = ?3,
@@ -260,29 +312,52 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
                          scope_paths_json = ?5,
                          compact_guidance = ?6,
                          body_markdown = ?7,
-                         predicted_effect = ?8,
-                         updated_at = ?9
-                     WHERE id = ?1",
+                         predicted_effect = ?8, provenance_json = ?9, version = ?10,
+                         content_hash = ?11, evidence_hash = ?12, created_by = ?13,
+                         pipeline_role = ?14, updated_at = ?15
+                     WHERE id = ?1 AND version = ?16",
                     rusqlite::params![
-                        saved.id.as_str(),
-                        saved.title,
-                        saved.bucket,
-                        saved.stage,
+                        current.id.as_str(),
+                        current.title,
+                        current.bucket,
+                        current.stage,
                         scope_paths_json,
-                        saved.compact_guidance,
-                        saved.body_markdown,
-                        saved.predicted_effect,
-                        saved.updated_at.to_rfc3339(),
+                        current.compact_guidance,
+                        current.body_markdown,
+                        current.predicted_effect,
+                        provenance_json,
+                        current.version,
+                        current.content_hash,
+                        current.evidence_hash,
+                        current.created_by.to_string(),
+                        current.pipeline_role,
+                        current.updated_at.to_rfc3339(),
+                        requested.version,
                     ],
                 )?;
-                conn.query_row(
-                    &format!(
-                        "SELECT {} FROM project_skills WHERE id = ?1",
-                        select_skill_columns()
-                    ),
-                    [saved.id.as_str()],
-                    skill_from_row,
-                )
+                if changed != 1 {
+                    return Err(AppError::Conflict(
+                        "project skill changed concurrently".to_string(),
+                    ));
+                }
+                insert_skill_snapshot(conn, &current)?;
+                Ok(Some(current))
+            })
+            .await
+    }
+
+    async fn list_versions(&self, id: &ProjectSkillId) -> AppResult<Vec<ProjectSkillVersion>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut statement = conn.prepare(&format!(
+                    "SELECT {VERSION_COLUMNS} FROM project_skill_versions
+                 WHERE project_skill_id = ?1 ORDER BY version ASC"
+                ))?;
+                let versions = statement
+                    .query_map([id], version_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(versions)
             })
             .await
     }

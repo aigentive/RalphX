@@ -320,6 +320,9 @@ mod v20260614120000_learned_skill_substrate_tests;
 mod v20260615092455_project_skill_settings;
 #[cfg(test)]
 mod v20260615092455_project_skill_settings_tests;
+mod v20260722090527_project_skill_schema_versioning;
+#[cfg(test)]
+mod v20260722090527_project_skill_schema_versioning_tests;
 mod v20260616182441_external_issue_links;
 #[cfg(test)]
 mod v20260616182441_external_issue_links_tests;
@@ -618,7 +621,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260720200633;
+pub const SCHEMA_VERSION: i64 = 20260722090527;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1702,6 +1705,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260720200633,
         name: "auto_verify_draft_plans",
         migrate: v20260720200633_auto_verify_draft_plans::migrate,
+    },
+    Migration {
+        version: 20260722090527,
+        name: "project_skill_schema_versioning",
+        migrate: v20260722090527_project_skill_schema_versioning::migrate,
     },
 ];
 

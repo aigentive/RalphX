@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::{ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus};
+use crate::domain::entities::{
+    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillVersion,
+};
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Default)]
@@ -26,6 +28,8 @@ pub trait ProjectSkillRepository: Send + Sync {
     ) -> AppResult<Vec<ProjectSkill>>;
 
     async fn update_content(&self, skill: ProjectSkill) -> AppResult<Option<ProjectSkill>>;
+
+    async fn list_versions(&self, id: &ProjectSkillId) -> AppResult<Vec<ProjectSkillVersion>>;
 
     async fn update_lifecycle_status(
         &self,

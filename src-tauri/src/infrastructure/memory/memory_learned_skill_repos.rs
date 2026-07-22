@@ -5,8 +5,9 @@ use chrono::Utc;
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, TaskOutcome,
-    TaskOutcomeId,
+    prepare_new_project_skill, project_skill_content_matches, refresh_project_skill_metadata,
+    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillVersion,
+    SkillUsageEvent, TaskOutcome, TaskOutcomeId,
 };
 use crate::domain::repositories::{
     resolve_task_outcome_upsert, ProjectSkillListOptions, ProjectSkillRepository,
@@ -107,8 +108,14 @@ impl TaskOutcomeRepository for MemoryTaskOutcomeRepository {
 }
 
 #[derive(Default)]
+struct MemoryProjectSkillState {
+    rows: Vec<ProjectSkill>,
+    versions: Vec<ProjectSkillVersion>,
+}
+
+#[derive(Default)]
 pub struct MemoryProjectSkillRepository {
-    rows: RwLock<Vec<ProjectSkill>>,
+    state: RwLock<MemoryProjectSkillState>,
 }
 
 impl MemoryProjectSkillRepository {
@@ -120,15 +127,26 @@ impl MemoryProjectSkillRepository {
 #[async_trait]
 impl ProjectSkillRepository for MemoryProjectSkillRepository {
     async fn create(&self, skill: ProjectSkill) -> AppResult<ProjectSkill> {
-        self.rows.write().unwrap().push(skill.clone());
+        let skill = prepare_new_project_skill(skill);
+        let snapshot = ProjectSkillVersion::from_skill(&skill, skill.updated_at);
+        let mut state = self.state.write().unwrap();
+        if state.rows.iter().any(|row| row.id == skill.id) {
+            return Err(crate::error::AppError::Conflict(format!(
+                "project skill {} already exists",
+                skill.id.as_str()
+            )));
+        }
+        state.rows.push(skill.clone());
+        state.versions.push(snapshot);
         Ok(skill)
     }
 
     async fn get_by_id(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
         Ok(self
-            .rows
+            .state
             .read()
             .unwrap()
+            .rows
             .iter()
             .find(|row| row.id.as_str() == id.as_str())
             .cloned())
@@ -140,9 +158,10 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         options: ProjectSkillListOptions,
     ) -> AppResult<Vec<ProjectSkill>> {
         let mut rows = self
-            .rows
+            .state
             .read()
             .unwrap()
+            .rows
             .iter()
             .filter(|row| &row.project_id == project_id)
             .filter(|row| options.include_archived || !row.archived)
@@ -180,13 +199,25 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
     }
 
     async fn update_content(&self, skill: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
-        let mut rows = self.rows.write().unwrap();
-        let Some(row) = rows
+        let mut state = self.state.write().unwrap();
+        let Some(index) = state
+            .rows
             .iter_mut()
-            .find(|row| row.id.as_str() == skill.id.as_str())
+            .position(|row| row.id.as_str() == skill.id.as_str())
         else {
             return Ok(None);
         };
+        let row = &state.rows[index];
+        if row.version != skill.version {
+            return Err(crate::error::AppError::Conflict(format!(
+                "project skill expected version {} but current version is {}",
+                skill.version, row.version
+            )));
+        }
+        if project_skill_content_matches(row, &skill) {
+            return Ok(Some(row.clone()));
+        }
+        let row = &mut state.rows[index];
         row.title = skill.title;
         row.bucket = skill.bucket;
         row.stage = skill.stage;
@@ -194,8 +225,29 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         row.compact_guidance = skill.compact_guidance;
         row.body_markdown = skill.body_markdown;
         row.predicted_effect = skill.predicted_effect;
+        row.provenance_json = skill.provenance_json;
+        row.version += 1;
         row.updated_at = Utc::now();
-        Ok(Some(row.clone()))
+        refresh_project_skill_metadata(row);
+        let saved = row.clone();
+        state
+            .versions
+            .push(ProjectSkillVersion::from_skill(&saved, saved.updated_at));
+        Ok(Some(saved))
+    }
+
+    async fn list_versions(&self, id: &ProjectSkillId) -> AppResult<Vec<ProjectSkillVersion>> {
+        let mut versions = self
+            .state
+            .read()
+            .unwrap()
+            .versions
+            .iter()
+            .filter(|row| row.project_skill_id.as_str() == id.as_str())
+            .cloned()
+            .collect::<Vec<_>>();
+        versions.sort_by_key(|row| row.version);
+        Ok(versions)
     }
 
     async fn update_lifecycle_status(
@@ -203,8 +255,12 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         id: &ProjectSkillId,
         status: ProjectSkillLifecycleStatus,
     ) -> AppResult<Option<ProjectSkill>> {
-        let mut rows = self.rows.write().unwrap();
-        let Some(row) = rows.iter_mut().find(|row| row.id.as_str() == id.as_str()) else {
+        let mut state = self.state.write().unwrap();
+        let Some(row) = state
+            .rows
+            .iter_mut()
+            .find(|row| row.id.as_str() == id.as_str())
+        else {
             return Ok(None);
         };
         row.status = status;
@@ -221,8 +277,12 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         id: &ProjectSkillId,
         pinned: bool,
     ) -> AppResult<Option<ProjectSkill>> {
-        let mut rows = self.rows.write().unwrap();
-        let Some(row) = rows.iter_mut().find(|row| row.id.as_str() == id.as_str()) else {
+        let mut state = self.state.write().unwrap();
+        let Some(row) = state
+            .rows
+            .iter_mut()
+            .find(|row| row.id.as_str() == id.as_str())
+        else {
             return Ok(None);
         };
         row.pinned = pinned;

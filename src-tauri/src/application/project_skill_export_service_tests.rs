@@ -73,6 +73,11 @@ fn approved_skill(project_id: ProjectId, title: &str) -> ProjectSkill {
         predicted_effect: Some("Reduces repeated review changes.".to_string()),
         provenance_json: json!({ "test": true }),
         companion_of_skill_id: None,
+        version: 1,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
         created_at: now,
         updated_at: now,
     }
@@ -151,6 +156,7 @@ async fn apply_export_writes_skill_markdown_and_is_idempotent() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
@@ -216,6 +222,7 @@ async fn apply_export_requires_git_repository() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
@@ -252,6 +259,7 @@ async fn apply_export_requires_named_branch() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
@@ -278,6 +286,7 @@ async fn apply_export_rejects_protected_git_branch() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
@@ -305,6 +314,7 @@ async fn apply_export_requires_clean_review_branch() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
@@ -416,6 +426,7 @@ async fn export_rejects_symlinked_skills_directory() {
         .upsert(ProjectSkillSettings {
             project_id: project_id.clone(),
             export_enabled: true,
+            ..ProjectSkillSettings::default_for_project(project_id.clone())
         })
         .await
         .unwrap();
