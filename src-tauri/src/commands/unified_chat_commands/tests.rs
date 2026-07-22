@@ -2536,6 +2536,107 @@ async fn auto_publish_pause_disables_and_restores_pr_supervision_preferences() {
 }
 
 #[tokio::test]
+async fn agent_workspace_automation_preferences_remain_mutable_during_repair() {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(257);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/257".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("repair workspace should persist");
+
+    let supervised = set_agent_conversation_workspace_pr_supervision_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspacePrSupervisionInput {
+            auto_fix_enabled: true,
+            auto_merge_desired: true,
+            auto_merge_method: Some("squash".to_string()),
+        },
+        &state,
+    )
+    .await
+    .expect("PR supervision should remain configurable during repair");
+
+    assert!(supervised.pr_autofix_enabled);
+    assert!(supervised.pr_auto_merge_desired);
+    assert_eq!(
+        supervised.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let paused = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: false,
+        },
+        &state,
+    )
+    .await
+    .expect("Auto Publish should pause during repair");
+
+    assert!(!paused.auto_publish_enabled);
+    assert_eq!(paused.auto_publish_paused_pr_autofix_enabled, Some(true));
+    assert_eq!(paused.auto_publish_paused_pr_auto_merge_desired, Some(true));
+    assert!(!paused.pr_autofix_enabled);
+    assert!(!paused.pr_auto_merge_desired);
+    assert_eq!(paused.pr_supervision_status.as_deref(), Some("paused"));
+    assert_eq!(
+        paused.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let resumed = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect("Auto Publish should resume during repair");
+
+    assert!(resumed.auto_publish_enabled);
+    assert_eq!(resumed.auto_publish_paused_pr_autofix_enabled, None);
+    assert_eq!(resumed.auto_publish_paused_pr_auto_merge_desired, None);
+    assert!(resumed.pr_autofix_enabled);
+    assert!(resumed.pr_auto_merge_desired);
+    assert_eq!(resumed.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(
+        resumed.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("repair workspace lookup should succeed")
+        .expect("repair workspace should remain persisted");
+    assert!(stored.auto_publish_enabled);
+    assert_eq!(stored.auto_publish_paused_pr_autofix_enabled, None);
+    assert_eq!(stored.auto_publish_paused_pr_auto_merge_desired, None);
+    assert!(stored.pr_autofix_enabled);
+    assert!(stored.pr_auto_merge_desired);
+    assert_eq!(
+        stored.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+
+    let github_state = github.state();
+    assert_eq!(github_state.enable_pr_auto_merge_calls, 2);
+    assert_eq!(github_state.fetch_pr_health_calls, 1);
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+}
+
+#[tokio::test]
 async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
     let state = AppState::new_test();
     let workspace = command_test_workspace();
