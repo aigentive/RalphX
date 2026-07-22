@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use super::{
     get_schema_version,
     helpers::{column_exists, table_exists},
@@ -5,6 +7,7 @@ use super::{
     SCHEMA_VERSION,
 };
 use crate::infrastructure::sqlite::open_memory_connection;
+use crate::testing::SqliteTestDb;
 
 const PREVIOUS_SCHEMA_VERSION: i64 = 20260718182035;
 
@@ -434,4 +437,29 @@ fn migration_rolls_back_all_state_when_destructive_cleanup_fails() {
     assert!(!table_exists(&conn, "chat_conversations_old_plan_mode"));
     assert!(super::v20260521222911_agent_plan_mode::foreign_keys_enabled(&conn).unwrap());
     assert!(!super::v20260521222911_agent_plan_mode::legacy_alter_table_enabled(&conn).unwrap());
+}
+
+#[test]
+fn migration_restores_pragmas_when_begin_immediate_is_locked() {
+    let db = SqliteTestDb::new("legacy-team-removal-begin-lock");
+    let lock_conn = db.new_connection();
+    lock_conn
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("acquire competing write lock");
+
+    let conn = db.new_connection();
+    conn.busy_timeout(Duration::ZERO)
+        .expect("disable busy wait for injected lock failure");
+    conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+    conn.execute("PRAGMA legacy_alter_table = OFF", []).unwrap();
+
+    let error = v20260720140000_remove_legacy_claude_team::migrate(&conn)
+        .expect_err("competing write lock must reject BEGIN IMMEDIATE");
+    assert!(error.to_string().contains("database is locked"));
+    assert!(super::v20260521222911_agent_plan_mode::foreign_keys_enabled(&conn).unwrap());
+    assert!(!super::v20260521222911_agent_plan_mode::legacy_alter_table_enabled(&conn).unwrap());
+
+    lock_conn
+        .execute_batch("ROLLBACK")
+        .expect("release competing write lock");
 }

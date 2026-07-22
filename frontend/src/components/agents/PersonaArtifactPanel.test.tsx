@@ -110,7 +110,6 @@ const featureFlags: FeatureFlags = {
   ideationPage: false,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: true,

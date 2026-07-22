@@ -4,7 +4,7 @@
 # - Per-agent metadata -> `agents/<agent>/agent.yaml`
 # - Claude harness globals/tool sets -> `config/harnesses/claude.yaml`
 # - Codex harness defaults -> `config/harnesses/codex.yaml`
-# - Process mapping/team constraints -> `config/processes.yaml`
+# - Process mapping -> `config/processes.yaml`
 # - External MCP defaults -> `config/external-mcp.yaml`
 # Notes:
 # - Unknown attributes are ignored by the current parser.

@@ -11,7 +11,6 @@ const TICKETING_FLAGS = {
   activityPage: true,
   extensibilityPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: true,
 };

@@ -70,8 +70,8 @@ Codex support is intentionally incremental. The current product contract is:
 
 | Area | Current behavior |
 |---|---|
-| Team mode | Claude-only |
-| Codex team sessions | Not supported; Codex runs are normalized to solo mode |
+| RX-native Team | Provider-neutral; availability follows workflow and harness capabilities |
+| Legacy Claude Team mode | Removed; supported coordination now uses RX-native Team |
 | Codex execution/review/merge | Supported when those lanes are configured to Codex |
 | Legacy Claude sessions/data | Still supported; provider-neutral fields are additive |
 | Harness fallback | A lane may fall back to another harness if configured to do so |

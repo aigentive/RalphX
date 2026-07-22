@@ -420,7 +420,6 @@ describe("IntegratedChatPanel", () => {
         isSending: {},
         activeConversationIds: {},
         activeAgentRunIds: {},
-        isTeamActive: {},
         lastAgentEventTimestamp: {},
         toolCallStartTimes: {},
         lastToolCallCompletionTimestamp: {},

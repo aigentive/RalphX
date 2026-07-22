@@ -223,7 +223,6 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
 /**
  * ActionButtonsCard - Restart button for terminal/suspended states
  * For stopped tasks with stop metadata, shows enhanced confirmation dialog.
- * Supports execution mode selection (solo/team) for start/restart operations.
  */
 function ActionButtonsCard({ task }: { task: Task }) {
   const queryClient = useQueryClient();

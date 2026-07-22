@@ -11,27 +11,29 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         super::v20260521222911_agent_plan_mode::foreign_keys_enabled(conn)?;
     let legacy_alter_table_was_enabled =
         super::v20260521222911_agent_plan_mode::legacy_alter_table_enabled(conn)?;
-    conn.execute("PRAGMA foreign_keys = OFF", [])
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    conn.execute("PRAGMA legacy_alter_table = ON", [])
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|error| AppError::Database(error.to_string()))?;
-
-    let migration_result = migrate_inner(conn).and_then(|()| {
-        let violation_count = conn
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get::<_, i64>(0)
-            })
+    let migration_result = (|| {
+        conn.execute("PRAGMA foreign_keys = OFF", [])
             .map_err(|error| AppError::Database(error.to_string()))?;
-        if violation_count != 0 {
-            return Err(AppError::Database(format!(
-                "legacy Claude team removal left {violation_count} foreign-key violations"
-            )));
-        }
-        conn.execute_batch("COMMIT")
-            .map_err(|error| AppError::Database(error.to_string()))
-    });
+        conn.execute("PRAGMA legacy_alter_table = ON", [])
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| AppError::Database(error.to_string()))?;
+
+        migrate_inner(conn).and_then(|()| {
+            let violation_count = conn
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            if violation_count != 0 {
+                return Err(AppError::Database(format!(
+                    "legacy Claude team removal left {violation_count} foreign-key violations"
+                )));
+            }
+            conn.execute_batch("COMMIT")
+                .map_err(|error| AppError::Database(error.to_string()))
+        })
+    })();
 
     if migration_result.is_err() {
         let _ = conn.execute_batch("ROLLBACK");
